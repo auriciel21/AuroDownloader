@@ -233,3 +233,37 @@ Changements de méthode (SPEC §9.1) :
   des téléchargements de 7 à 8 s, comme sous Windows. Il ne fait pas partie de la porte.
 - **Avant correction :** l'écart venait des vidages simultanés, et non d'un défaut de
   la règle 1. Le même code vide maintenant autant, mais un seul vidage à la fois.
+
+## 2026-10-16, second relevé : Windows 11, banc équitable, vidages groupés
+
+Même machine et mêmes outils que le troisième relevé du 2026-10-15 (aria2 1.37.0 sans
+vérification du certificat), commit 1937ef7, antivirus actif. 512 Mio, médiane de 5.
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur machine par octet auro / aria2 | Processeur du processus (s) |
+| --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 109,2 | 1,53 | 0,58 | 1,31 |
+| local, sans bridage | aria2c -x 4 | 71,6 | | | 2,85 |
+| local, sans bridage | curl (disque) | 164,7 | | | 1,67 |
+| local HTTPS, sans bridage | auro -c 4 | 97,2 | 1,30 | 0,61 | 2,24 |
+| local HTTPS, sans bridage | aria2c -x 4 | 74,8 | | | 3,34 |
+| local HTTPS, sans bridage | curl (disque) | 130,4 | | | 2,59 |
+| local, 8 Mio/s par connexion | auro -c 16 | 87,2 | 1,22 | 1,38 | 1,01 |
+| local, 8 Mio/s par connexion | auro (automatique) | 62,9 | 0,88 | 1,52 | 1,02 |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 71,3 | | | 1,68 |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 76,7 | 1,06 | 0,84 | 2,25 |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 56,8 | 0,78 | 0,74 | 2,29 |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 72,3 | | | 2,89 |
+
+**Lecture :**
+- **Débit :** auro dépasse aria2 à nombre de connexions égal, de 1,06 à 1,53.
+- **Processeur de la machine : mesure trop bruitée sous Windows.** Au repos, la machine
+  utilise déjà 2 à 8 % de ses 12 cœurs (applications de bureau ouvertes), soit 1,4 à
+  5,8 s de processeur sur 6 s de mesure : autant que les outils eux-mêmes. Le seul
+  rapport au-dessus de 1,0 (1,38, HTTP bridé à 16 connexions) en vient très
+  probablement : dans ce scénario, le processus auro coûte 1,01 s contre 1,68 s pour
+  aria2. Sous WSL, `/proc/stat` ne voit que la machine virtuelle, qui est au repos.
+- **Processeur du processus seul :** auro coûte 0,46 à 0,78 fois aria2 dans tous les
+  scénarios à nombre de connexions égal.
+- **Méthode :** pour un relevé Windows avec le processeur de la machine, il faut une
+  machine au repos (applications fermées), avec et sans exclusion de l'antivirus
+  (SPEC §9.1). La porte reste mesurée sous Linux.

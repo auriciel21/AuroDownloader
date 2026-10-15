@@ -103,9 +103,10 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
 - Prochaine étape : porte de la phase 1 (SPEC 9.3).
   - N-01 et débit : portes tenues sous Linux (WSL, relevé du 2026-10-16 dans
-    `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows : à remesurer avec le banc
-    équitable et les vidages groupés. Le travail `perf` de la CI n'a pas encore tourné
-    (pas de dépôt distant).
+    `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows (relevé du 2026-10-16) : débit
+    tenu ; processeur de la machine trop bruité sur un poste de travail ouvert, celui
+    du processus seul tient (0,46 à 0,78). Le travail `perf` de la CI n'a pas encore
+    tourné (pas de dépôt distant).
   - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : passé le 2026-10-15
     (SPEC 9.1).
   - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
