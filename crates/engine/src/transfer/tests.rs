@@ -502,18 +502,27 @@ mod auto {
     use crate::testing::{Pace, serve_file_paced};
 
     #[test]
-    fn grows_while_the_rate_improves_then_stops() {
-        let mut a = AutoConnections::new(4, 16);
-        assert_eq!(a.on_rate(0.0), 4, "débit nul : rien à conclure");
-        assert_eq!(a.on_rate(100.0), 5, "première mesure : un essai");
-        assert_eq!(a.on_rate(111.0), 6, "+11 % : encore une");
-        assert_eq!(a.on_rate(115.0), 6, "+3,6 % : on s'arrête");
+    fn doubles_while_the_rate_improves_then_stops() {
+        let mut a = AutoConnections::new(2, 16);
+        assert_eq!(a.on_rate(0.0), 2, "débit nul : rien à conclure");
+        assert_eq!(a.on_rate(100.0), 4, "première mesure : un essai");
+        assert_eq!(a.on_rate(111.0), 8, "+11 % : on double encore");
+        assert_eq!(a.on_rate(115.0), 8, "+3,6 % : on s'arrête");
         assert!(a.is_frozen());
         assert_eq!(
             a.on_rate(1000.0),
-            6,
+            8,
             "plus d'augmentation pour cette exécution"
         );
+    }
+
+    #[test]
+    fn reaches_the_cap_in_two_windows_from_the_default_start() {
+        let mut a = AutoConnections::new(AUTO_START_CONNECTIONS, AUTO_MAX_CONNECTIONS);
+        assert_eq!(a.on_rate(100.0), 8);
+        assert_eq!(a.on_rate(180.0), 16);
+        assert_eq!(a.on_rate(400.0), 16, "au plafond, sans gel");
+        assert!(!a.is_frozen());
     }
 
     #[test]
@@ -534,9 +543,8 @@ mod auto {
 
     #[test]
     fn overload_halves_and_caps() {
-        let mut a = AutoConnections::new(4, 16);
+        let mut a = AutoConnections::new(3, 16);
         a.on_rate(100.0);
-        a.on_rate(200.0);
         assert_eq!(a.width(), 6);
         assert_eq!(a.on_overload(), 5, "plafond : valeur atteinte moins une");
         assert_eq!(a.width(), 3);

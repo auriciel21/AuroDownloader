@@ -14,6 +14,11 @@ d'un cœur que coûterait 1 Gbit/s au même coût par octet ; N-01 demande moins
 
 ## 2026-10-15 : Windows 11, Intel Core i7-3930K, aria2 1.37.0, auro 0.1.0 (d7176a9 + banc)
 
+> **Correction :** les colonnes « Cœur à 1 Gbit/s » de cette section sont fausses. Elles
+> venaient de `GetProcessTimes`, qui échantillonne le temps à chaque tic d'horloge et compte
+> très mal un processus qui s'endort sans cesse pour ses entrées-sorties. Voir la section
+> suivante, mesurée en cycles. Les débits restent valables.
+
 **Serveur local, fichier de 512 Mio, médiane de 5 mesures :**
 
 | Scénario | Outil | Débit (Mio/s) | auro / aria2 | Cœur à 1 Gbit/s |
@@ -50,3 +55,49 @@ médiane de 2 mesures :**
   critère « saturer 1 Gbit/s » reste à vérifier sur une machine plus rapide.
 - Le serveur réel répond par des miroirs différents d'une mesure à l'autre : ce sont les
   chiffres les plus bruités.
+
+## 2026-10-15, second relevé : même machine, montée automatique par doublement, temps processeur en cycles
+
+Changements depuis le relevé précédent :
+- le mode automatique double ses connexions à chaque fenêtre (SPEC 7.3) ;
+- le temps processeur vient de `QueryProcessCycleTime` (cycles exacts, convertis avec la
+  fréquence du compteur, étalonnée) ;
+- curl (livré avec Windows, une seule connexion) sert de référence : vers le disque, et
+  sans rien écrire.
+
+**Serveur local, fichier de 512 Mio, médiane de 5 mesures :**
+
+| Scénario | Outil | Débit (Mio/s) | auro / aria2 | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 136,5 | 1,76 | 28,3 % |
+| local, sans bridage | aria2c -x 4 | 77,4 | | 62,5 % |
+| local, sans bridage | curl (disque) | 320,7 | | 36,0 % |
+| local, sans bridage | curl (sans disque) | 791,9 | | 10,1 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 77,2 | 1,07 | 23,7 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 61,1 | 0,85 | 25,3 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 72,3 | | 55,5 % |
+
+Trois autres campagnes identiques, mesurées avant le passage aux cycles, donnent les mêmes
+rapports de débit : mode automatique entre 0,85 et 0,91, auro -c 16 entre 1,03 et 1,27.
+
+**Lecture :**
+
+- **Mode automatique :** il passe de 0,62 à environ 0,87 face à aria2 réglé sur 16
+  connexions. Il reste derrière sur un téléchargement de 7 à 8 s, car il passe ses deux
+  premières fenêtres de mesure à 4 puis 8 connexions.
+- **Coût processeur :** auro coûte 2,2 à 2,4 fois moins qu'aria2. Mais il dépasse N-01
+  (moins de 15 % d'un cœur à 1 Gbit/s) sur cette machine.
+- **Ce dépassement vient du système, pas d'auro :**
+  - recevoir seulement coûte 10 % (curl sans disque) ;
+  - recevoir et écrire coûte 36 % (curl vers disque), soit environ 26 points pour le seul
+    chemin d'écriture de Windows, antivirus compris ;
+  - auro, à 28 %, coûte moins que curl vers disque.
+  N-01 tel qu'écrit n'est pas atteignable ici, même par l'outil le plus simple. Il faut le
+  redéfinir (par exemple par rapport à curl vers disque sur la même machine) ou le mesurer
+  sur une machine de référence.
+- **Débit sans bridage :** curl écrit à 321 Mio/s, auro à 136 Mio/s. Auro vide ses données
+  sur disque (`fdatasync`) toutes les 2 s et à la fin de chaque segment (règle 1) : son
+  débit est très probablement celui du disque (hypothèse, à confirmer en mesurant le disque
+  seul). Curl laisse les données dans le cache du système, et le
+  fichier n'est pas encore sur disque quand il rend la main. Le coût de la fiabilité est
+  là, et il est voulu.

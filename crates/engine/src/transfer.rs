@@ -529,19 +529,19 @@ enum Fetch {
     Whole { total: Option<u64> },
 }
 
-/// Nombre de connexions automatique (SPEC §7.3) : augmentation lente, réduction rapide,
-/// comme le contrôle de congestion de TCP.
+/// Nombre de connexions automatique (SPEC §7.3), comme le démarrage de TCP : montée
+/// rapide tant qu'elle paie, réduction rapide quand le serveur résiste.
 ///
-/// À chaque fenêtre de mesure, une connexion de plus si le débit a progressé d'au moins
-/// 10 % depuis le dernier ajout ; sinon l'augmentation s'arrête pour cette exécution. Sur
-/// un serveur qui résiste, moitié moins de connexions, et un plafond égal à la valeur
-/// atteinte moins une.
+/// À chaque fenêtre de mesure, le nombre de connexions double (dans la limite du plafond)
+/// si le débit a progressé d'au moins 10 % depuis la dernière augmentation ; sinon
+/// l'augmentation s'arrête pour cette exécution. Sur un serveur qui résiste, moitié moins
+/// de connexions, et un plafond égal à la valeur atteinte moins une.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutoConnections {
     width: u32,
     cap: u32,
     frozen: bool,
-    /// Débit de la fenêtre qui a précédé le dernier ajout, en octets par seconde.
+    /// Débit de la fenêtre qui a précédé la dernière augmentation, en octets par seconde.
     baseline: Option<f64>,
 }
 
@@ -576,7 +576,7 @@ impl AutoConnections {
             Some(before) if rate < before * AUTO_MIN_GAIN => self.frozen = true,
             _ => {
                 self.baseline = Some(rate);
-                self.width += 1;
+                self.width = self.width.saturating_mul(2).min(self.cap);
             }
         }
         self.width

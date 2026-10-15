@@ -12,7 +12,9 @@
 //!
 //! Scénarios : serveur local sans bridage (coût processeur), serveur local bridé par
 //! connexion (gain des connexions multiples), et un serveur réel si `AURO_PERF_REAL_URL`
-//! est donnée.
+//! est donnée. Sans bridage, curl sert de référence (une connexion, vers le disque ou sans
+//! rien écrire) : il sépare le coût du système (réseau, disque, antivirus) de celui des
+//! outils, et rappelle qu'auro vide ses données sur disque (règle 1), pas curl.
 //!
 //! Réglages : `AURO_PERF_SIZE` (octets, défaut 256 Mio), `AURO_PERF_RUNS` (mesures par
 //! outil et scénario, défaut 3 ; la médiane est retenue), `AURO_PERF_REAL_URL`,
@@ -40,37 +42,52 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// Temps processeur (utilisateur et système) d'un processus terminé mais pas encore
-/// libéré.
+/// Temps processeur d'un processus terminé mais pas encore libéré.
+///
+/// `GetProcessTimes` compte le temps par échantillonnage à chaque tic d'horloge (environ
+/// 15,6 ms) : un processus qui s'endort et se réveille sans cesse pour ses entrées-sorties
+/// y est mal compté, dans un sens comme dans l'autre. Les cycles de `QueryProcessCycleTime`
+/// sont exacts ; ils sont convertis en secondes avec la fréquence du compteur de cycles,
+/// étalonnée une fois.
 #[cfg(windows)]
 fn cpu_time(child: &Child) -> Duration {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
 
-    let zero = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY : la poignée du processus reste valide tant que `child` existe ; les quatre
-    // pointeurs désignent des variables locales.
-    let ok = unsafe {
-        GetProcessTimes(
-            child.as_raw_handle(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    };
-    assert_ne!(ok, 0, "GetProcessTimes a échoué");
-    // Unités de 100 ns.
-    let ticks = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
-    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+    let mut cycles = 0u64;
+    // SAFETY : la poignée du processus reste valide tant que `child` existe ; `cycles` est
+    // une variable locale.
+    let ok = unsafe { QueryProcessCycleTime(child.as_raw_handle(), &mut cycles) };
+    assert_ne!(ok, 0, "QueryProcessCycleTime a échoué");
+    Duration::from_secs_f64(cycles as f64 / cycles_per_second())
 }
 
-/// Temps processeur cumulé des processus enfants déjà attendus.
+/// Fréquence du compteur de cycles, mesurée sur ce fil en tournant 300 ms à vide. Un fil
+/// interrompu pendant l'étalonnage donne une fréquence plus basse, donc des temps
+/// processeur plus hauts : l'erreur va dans le sens prudent.
+#[cfg(windows)]
+fn cycles_per_second() -> f64 {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+
+    static RATE: OnceLock<f64> = OnceLock::new();
+    *RATE.get_or_init(|| {
+        let (mut before, mut after) = (0u64, 0u64);
+        // SAFETY : pseudo-poignée du fil courant, variables locales.
+        unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut before) };
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(300) {
+            std::hint::spin_loop();
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        // SAFETY : idem.
+        unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut after) };
+        (after - before) as f64 / elapsed
+    })
+}
+
+/// Temps processeur cumulé des processus enfants déjà attendus (utilisateur et système).
 #[cfg(unix)]
 fn children_cpu() -> Duration {
     // SAFETY : `usage` est une variable locale que getrusage remplit.
@@ -106,6 +123,9 @@ enum Tool {
     /// `None` : nombre de connexions automatique.
     Auro(Option<u32>),
     Aria2(u32),
+    /// Référence : curl, une seule connexion, vers le disque (`true`) ou sans rien écrire.
+    /// Elle sépare le coût du système (réseau, disque, antivirus) de celui des outils.
+    Curl(bool),
 }
 
 impl Tool {
@@ -114,6 +134,8 @@ impl Tool {
             Tool::Auro(None) => "auro (auto)".into(),
             Tool::Auro(Some(n)) => format!("auro -c {n}"),
             Tool::Aria2(n) => format!("aria2c -x {n}"),
+            Tool::Curl(true) => "curl (disque)".into(),
+            Tool::Curl(false) => "curl (sans disque)".into(),
         }
     }
 
@@ -144,6 +166,25 @@ impl Tool {
                     .args(["-o", name, url]);
                 cmd
             }
+            Tool::Curl(to_disk) => {
+                // Sous Windows, le curl livré avec le système, pas celui d'un autre outil.
+                let curl = match std::env::var_os("SystemRoot") {
+                    Some(root) if cfg!(windows) => {
+                        Path::new(&root).join("System32").join("curl.exe")
+                    }
+                    _ => PathBuf::from("curl"),
+                };
+                let mut cmd = Command::new(curl);
+                cmd.args(["-s", "-f", "-o"]);
+                if to_disk {
+                    cmd.arg(dir.join(name));
+                } else {
+                    cmd.arg(if cfg!(windows) { "NUL" } else { "/dev/null" })
+                        .args(["-w", "%{size_download}"]);
+                }
+                cmd.arg(url);
+                cmd
+            }
         }
     }
 
@@ -151,8 +192,13 @@ impl Tool {
     fn measure(self, url: &str, name: &str) -> (Measure, tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let mut cmd = self.command(url, dir.path(), name);
+        let discard = matches!(self, Tool::Curl(false));
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if discard {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(stderr_for(self));
         #[cfg(unix)]
         let before = children_cpu();
@@ -168,9 +214,21 @@ impl Tool {
         #[cfg(unix)]
         let cpu = children_cpu() - before;
         let path = dir.path().join(name);
-        let bytes = std::fs::metadata(&path)
-            .unwrap_or_else(|e| panic!("{} : fichier absent : {e}", self.label()))
-            .len();
+        let bytes = if discard {
+            // curl écrit le nombre d'octets reçus (`-w`).
+            let mut out = String::new();
+            child
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut out)
+                .unwrap();
+            out.trim().parse().unwrap()
+        } else {
+            std::fs::metadata(&path)
+                .unwrap_or_else(|e| panic!("{} : fichier absent : {e}", self.label()))
+                .len()
+        };
         (Measure { wall, cpu, bytes }, dir, path)
     }
 }
@@ -230,14 +288,15 @@ fn scenario(
     for _ in 0..runs {
         for (i, tool) in tools.iter().enumerate() {
             let (m, _dir, path) = tool.measure(url, file);
-            assert!(check(&path, m.bytes), "{} : contenu faux", tool.label());
+            let checked = matches!(tool, Tool::Curl(false)) || check(&path, m.bytes);
+            assert!(checked, "{} : contenu faux", tool.label());
             samples[i].push(m);
         }
     }
     for (tool, s) in tools.iter().zip(samples) {
         let measure = median(s);
         eprintln!(
-            "  {name:<26} {:<14} {:>8.1} Mio/s  {:>6.2} s  cpu {:>6.2} s",
+            "  {name:<28} {:<14} {:>8.1} Mio/s  {:>6.2} s  cpu {:>5.2} s",
             tool.label(),
             measure.mib_per_s(),
             measure.wall.as_secs_f64(),
@@ -309,7 +368,12 @@ fn throughput_and_cpu_against_aria2() {
         "local, sans bridage",
         &free.url("/banc.bin"),
         "banc.bin",
-        &[Tool::Auro(Some(4)), Tool::Aria2(4)],
+        &[
+            Tool::Auro(Some(4)),
+            Tool::Aria2(4),
+            Tool::Curl(true),
+            Tool::Curl(false),
+        ],
         runs,
         &served,
     );

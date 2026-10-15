@@ -23,7 +23,11 @@ tempfile = "3.27.0"
 
 # Temps processeur des outils comparés par le banc de performance.
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.190"

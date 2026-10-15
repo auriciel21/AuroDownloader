@@ -633,18 +633,18 @@ Le milieu se calcule sur les octets déjà reçus par la connexion, y compris ce
 
 ### 7.3 Nombre de connexions automatique
 
-Quand l'utilisateur ne fixe pas `maxConnections`, le moteur ajuste le nombre de connexions par tâche selon une règle d'augmentation lente et de réduction rapide :
+Quand l'utilisateur ne fixe pas `maxConnections`, le moteur ajuste le nombre de connexions par tâche selon une règle de montée rapide tant qu'elle paie et de réduction rapide :
 
 - Départ à 4 connexions.
-- Toutes les 2 secondes, si le débit total a progressé d'au moins 10 % depuis la dernière connexion ajoutée, il en ajoute une, jusqu'à 16 (plafond automatique ; 32 au maximum en réglage manuel).
+- Toutes les 2 secondes, si le débit total a progressé d'au moins 10 % depuis la dernière augmentation, il double le nombre de connexions, jusqu'à 16 (plafond automatique ; 32 au maximum en réglage manuel). Depuis 4, le plafond est atteint en deux fenêtres.
 - Si le gain est inférieur, il cesse d'augmenter.
 - Sur une réponse 429 ou 503, ou une connexion refusée, il divise le nombre de connexions par deux et mémorise pour cet hôte, pendant la session, un plafond égal à la valeur atteinte moins une.
 
-Cette boucle est volontairement proche de celle du contrôle de congestion TCP : prudente quand le serveur résiste, rapide quand il répond.
+Cette boucle est volontairement proche du démarrage de TCP (le nombre double à chaque fenêtre tant que le débit suit) : prudente quand le serveur résiste, rapide quand il répond. Une première version ajoutait une seule connexion par fenêtre ; elle laissait le mode automatique loin derrière sur les téléchargements courts face à un serveur qui bride chaque connexion (`docs/MESURES.md`).
 
 Précisions de mise en œuvre :
-- La première mesure ajoute toujours une connexion, car il n'y a pas encore de débit de référence. Une fenêtre sans aucun octet reçu ne permet aucune conclusion : elle ne change rien.
-- Une connexion ajoutée prend la moitié du plus gros segment en cours (section 7.2).
+- La première mesure double toujours le nombre de connexions, car il n'y a pas encore de débit de référence. Une fenêtre sans aucun octet reçu ne permet aucune conclusion : elle ne change rien.
+- Chaque connexion ajoutée prend la moitié du plus gros segment en cours (section 7.2).
 - Quand une connexion reçoit un 429 ou un 503, ou voit sa connexion refusée, alors que d'autres connexions tournent encore, la tâche n'échoue pas. Le segment de cette connexion attend son tour à partir de ses octets enregistrés, et les autres connexions continuent.
 - Si c'est la dernière connexion de la tâche, l'échec suit la section 7.8 (nouvelle tentative, `Retry-After`).
 - Le plafond par hôte vit en mémoire, pour la durée du processus du moteur.

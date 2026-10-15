@@ -83,10 +83,13 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   écrivain peut encore accepter.
 - Mesures de performance : seulement en `--release`, sur des téléchargements longs
   (512 Mio et plus) et répétés (médiane de 5) ; sous 4 s, le bruit atteint 10 %.
-- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision : accélérer
-  la montée du mode automatique (SPEC 7.3), lente sur les téléchargements courts
-  (`docs/MESURES.md`). Puis la version longue du banc de reprise (1 000 cycles sur
-  1 Gio) et l'essai Android (SPEC 7.5 et 9.2).
+- Temps processeur sous Windows : par cycles (`QueryProcessCycleTime`), jamais par
+  `GetProcessTimes`, qui échantillonne et compte mal les processus d'entrées-sorties.
+- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision sur N-01
+  (`docs/MESURES.md` : le seuil de 15 % n'est pas atteignable sur cette machine, même par
+  curl vers disque ; le redéfinir ou le mesurer sur une machine de référence). Puis la
+  version longue du banc de reprise (1 000 cycles sur 1 Gio) et l'essai Android (SPEC 7.5
+  et 9.2).
 
 ## Façon de travailler
 
