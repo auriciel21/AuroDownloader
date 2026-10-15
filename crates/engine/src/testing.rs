@@ -7,8 +7,8 @@
 //! Compilé pour les tests du moteur et, avec la fonctionnalité `testing`, pour ceux des
 //! autres paquets (banc de reprise de la CLI). Ne fait pas partie de l'API du moteur.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -95,7 +95,7 @@ impl Server {
     }
 }
 
-fn read_request(stream: &TcpStream) -> Option<Request> {
+fn read_request(stream: &mut impl Read) -> Option<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
@@ -120,7 +120,7 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
 }
 
 /// Envoie la réponse ; s'arrête sans bruit si le client a fermé la connexion.
-fn write_reply(stream: &mut TcpStream, reply: &Reply, pace: Option<Pace>) -> std::io::Result<()> {
+fn write_reply(stream: &mut impl Write, reply: &Reply, pace: Option<Pace>) -> std::io::Result<()> {
     stream.write_all(&reply.head)?;
     let len = reply.body.len().min(reply.cut_after.unwrap_or(u64::MAX));
     let chunk = pace.map_or(64 * 1024, |p| p.chunk.max(1)) as u64;
@@ -138,7 +138,75 @@ fn write_reply(stream: &mut TcpStream, reply: &Reply, pace: Option<Pace>) -> std
             thread::sleep(p.delay);
         }
     }
-    Ok(())
+    stream.flush()
+}
+
+/// Autorité de certification et certificat de serveur créés pour les tests HTTPS.
+pub struct TestTls {
+    /// Certificat de l'autorité, en PEM : la racine à ajouter côté client.
+    pub ca_pem: String,
+    config: Arc<rustls::ServerConfig>,
+}
+
+impl TestTls {
+    /// Autorité neuve, et certificat signé par elle pour `127.0.0.1` et `localhost`.
+    pub fn new() -> Self {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+        };
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        ca.distinguished_name
+            .push(DnType::CommonName, "AuroDownloader, autorité de test");
+        let ca_pem = ca.self_signed(&ca_key).unwrap().pem();
+        let issuer = Issuer::new(ca, ca_key);
+
+        let key = KeyPair::generate().unwrap();
+        let names = vec!["127.0.0.1".to_owned(), "localhost".to_owned()];
+        let cert = CertificateParams::new(names)
+            .unwrap()
+            .signed_by(&key, &issuer)
+            .unwrap();
+        let private = rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into());
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], private)
+        .unwrap();
+        TestTls {
+            ca_pem,
+            config: Arc::new(config),
+        }
+    }
+}
+
+impl Default for TestTls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Une connexion : une requête, une réponse, en clair ou chiffrée.
+fn answer(
+    mut stream: impl Read + Write,
+    handler: &(dyn Fn(&Request) -> Reply + Send + Sync),
+    log: &Mutex<Vec<Request>>,
+    (active, peak): (&AtomicUsize, &AtomicUsize),
+    pace: Option<Pace>,
+) {
+    let Some(request) = read_request(&mut stream) else {
+        return;
+    };
+    log.lock().unwrap().push(request.clone());
+    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+    peak.fetch_max(now, Ordering::SeqCst);
+    let _ = write_reply(&mut stream, &handler(&request), pace);
+    active.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// Serveur qui répond à chaque connexion, dans son propre fil, par `handler(requête)`,
@@ -152,8 +220,19 @@ pub fn serve_paced(
     handler: impl Fn(&Request) -> Reply + Send + Sync + 'static,
     pace: Option<Pace>,
 ) -> Server {
+    serve_with(handler, pace, None)
+}
+
+/// Serveur en clair, ou en HTTPS avec le certificat de `tls`.
+fn serve_with(
+    handler: impl Fn(&Request) -> Reply + Send + Sync + 'static,
+    pace: Option<Pace>,
+    tls: Option<&TestTls>,
+) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let base = format!("{scheme}://{}", listener.local_addr().unwrap());
+    let tls = tls.map(|t| Arc::clone(&t.config));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&requests);
     let (active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -161,18 +240,22 @@ pub fn serve_paced(
     let handler = Arc::new(handler);
     thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
+            let Ok(stream) = stream else { break };
             let (log, handler) = (Arc::clone(&log), Arc::clone(&handler));
             let (active, peak) = (Arc::clone(&active_count), Arc::clone(&peak_count));
+            let tls = tls.clone();
             thread::spawn(move || {
-                let Some(request) = read_request(&stream) else {
-                    return;
-                };
-                log.lock().unwrap().push(request.clone());
-                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(now, Ordering::SeqCst);
-                let _ = write_reply(&mut stream, &handler(&request), pace);
-                active.fetch_sub(1, Ordering::SeqCst);
+                let counters = (&*active, &*peak);
+                match tls {
+                    None => answer(stream, &*handler, &log, counters, pace),
+                    Some(config) => {
+                        let Ok(conn) = rustls::ServerConnection::new(config) else {
+                            return;
+                        };
+                        let stream = rustls::StreamOwned::new(conn, stream);
+                        answer(stream, &*handler, &log, counters, pace);
+                    }
+                }
             });
         }
     });
@@ -274,9 +357,18 @@ pub fn serve_file(site: Arc<Mutex<FileSite>>) -> Server {
 
 /// Comme [`serve_file`], avec un débit bridé par connexion.
 pub fn serve_file_paced(site: Arc<Mutex<FileSite>>, pace: Option<Pace>) -> Server {
+    serve_with(file_handler(site), pace, None)
+}
+
+/// Comme [`serve_file_paced`], en HTTPS avec le certificat de `tls`.
+pub fn serve_file_tls(site: Arc<Mutex<FileSite>>, pace: Option<Pace>, tls: &TestTls) -> Server {
+    serve_with(file_handler(site), pace, Some(tls))
+}
+
+fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
     let cuts_done = AtomicUsize::new(0);
     let busy_done = AtomicUsize::new(0);
-    let handler = move |r: &Request| {
+    move |r: &Request| {
         let site = site.lock().unwrap();
         if r.method == "GET"
             && r.header("range").is_some()
@@ -349,8 +441,7 @@ pub fn serve_file_paced(site: Arc<Mutex<FileSite>>, pace: Option<Pace>) -> Serve
             body,
             cut_after: cut.then_some(site.cut_after),
         }
-    };
-    serve_paced(handler, pace)
+    }
 }
 
 #[cfg(test)]

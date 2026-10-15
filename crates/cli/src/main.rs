@@ -24,6 +24,11 @@ struct Cli {
     #[arg(long, global = true, default_value = "auro.db")]
     db: PathBuf,
 
+    /// Autorités de certification à ajouter à celles du système (fichier PEM) : serveur
+    /// interne, banc de test. La validation des certificats reste stricte.
+    #[arg(long, global = true, value_name = "FICHIER")]
+    ca_cert: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -82,16 +87,16 @@ fn main() -> Result<()> {
             let version = auro_engine::store::current_version(&conn)?;
             println!("Base prête : {} (schéma version {version})", path.display());
         }
-        Command::Probe { url } => probe(&url)?,
+        Command::Probe { url } => probe(&url, cli.ca_cert.as_deref())?,
         Command::Get {
             url,
             dir,
             connections,
-        } => get(&cli.db, &url, &dir, connections)?,
+        } => get(&cli.db, &url, &dir, connections, cli.ca_cert.as_deref())?,
         Command::Resume {
             task_id,
             connections,
-        } => resume(&cli.db, &task_id, connections)?,
+        } => resume(&cli.db, &task_id, connections, cli.ca_cert.as_deref())?,
         Command::List => list(&cli.db)?,
     }
     Ok(())
@@ -102,13 +107,30 @@ fn open_db(path: &Path) -> Result<Connection> {
         .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))
 }
 
+fn client(ca: Option<&Path>) -> Result<Client> {
+    Ok(match ca {
+        None => Client::new()?,
+        Some(path) => {
+            let pem = std::fs::read(path)
+                .with_context(|| format!("impossible de lire {}", path.display()))?;
+            Client::with_extra_roots(&pem)?
+        }
+    })
+}
+
 fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
 }
 
-fn get(db: &Path, url: &str, dir: &Path, connections: Option<u32>) -> Result<()> {
+fn get(
+    db: &Path,
+    url: &str,
+    dir: &Path,
+    connections: Option<u32>,
+    ca: Option<&Path>,
+) -> Result<()> {
     auro_engine::net::check_url(url)?;
     let dir = std::path::absolute(dir)?;
     if !dir.is_dir() {
@@ -131,10 +153,10 @@ fn get(db: &Path, url: &str, dir: &Path, connections: Option<u32>) -> Result<()>
         },
     )?;
     println!("Tâche {task_id}");
-    execute(&mut conn, &task_id, connections)
+    execute(&mut conn, &task_id, connections, ca)
 }
 
-fn resume(db: &Path, task_id: &str, connections: Option<u32>) -> Result<()> {
+fn resume(db: &Path, task_id: &str, connections: Option<u32>, ca: Option<&Path>) -> Result<()> {
     let mut conn = open_db(db)?;
     let task = tasks::load_task(&conn, task_id)?;
     match task.state {
@@ -145,12 +167,17 @@ fn resume(db: &Path, task_id: &str, connections: Option<u32>) -> Result<()> {
         TaskState::Paused | TaskState::Failed => transfer::requeue(&mut conn, task_id)?,
         _ => {}
     }
-    execute(&mut conn, task_id, connections)
+    execute(&mut conn, task_id, connections, ca)
 }
 
-fn execute(conn: &mut Connection, task_id: &str, connections: Option<u32>) -> Result<()> {
+fn execute(
+    conn: &mut Connection,
+    task_id: &str,
+    connections: Option<u32>,
+    ca: Option<&Path>,
+) -> Result<()> {
     let runtime = runtime()?;
-    let client = Client::new()?;
+    let client = client(ca)?;
     // Sans -c : le nombre enregistré dans la tâche, sinon automatique (SPEC §7.3).
     let opts = Options {
         connections,
@@ -270,9 +297,9 @@ fn list(db: &Path) -> Result<()> {
     Ok(())
 }
 
-fn probe(url: &str) -> Result<()> {
+fn probe(url: &str, ca: Option<&Path>) -> Result<()> {
     let runtime = runtime()?;
-    let client = Client::new()?;
+    let client = client(ca)?;
     let probe = match runtime.block_on(client.probe(url, &[])) {
         Ok(probe) => probe,
         Err(error) => {

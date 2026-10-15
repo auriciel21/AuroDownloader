@@ -10,7 +10,9 @@ AURO_ARIA2=chemin/vers/aria2c cargo test --release -p auro-cli --test perf_vs_ar
 Chaque mesure lance un processus neuf dans un dossier vide, à nombre de connexions égal
 (`auro -c N` face à `aria2c -x N -s N -k 1M --file-allocation=none`). Le temps processeur
 est celui du processus, en mode utilisateur et système. « Cœur à 1 Gbit/s » est la part
-d'un cœur que coûterait 1 Gbit/s au même coût par octet ; N-01 demande moins de 15 %.
+d'un cœur que coûterait 1 Gbit/s au même coût par octet. Depuis le troisième relevé, la
+porte de N-01 est le rapport des coûts par octet auro / aria2. Les 15 % d'un cœur sont un
+objectif indicatif, qui n'a de sens que sur la machine de référence (SPEC §3).
 
 ## 2026-10-15 : Windows 11, Intel Core i7-3930K, aria2 1.37.0, auro 0.1.0 (d7176a9 + banc)
 
@@ -101,3 +103,60 @@ rapports de débit : mode automatique entre 0,85 et 0,91, auro -c 16 entre 1,03 
   seul). Curl laisse les données dans le cache du système, et le
   fichier n'est pas encore sur disque quand il rend la main. Le coût de la fiabilité est
   là, et il est voulu.
+
+## 2026-10-15, troisième relevé : même machine, HTTP et HTTPS, coût processeur relatif
+
+Changements depuis le relevé précédent :
+- N-01 est redéfini (SPEC §3). Sa porte est le rapport des coûts processeur par octet
+  auro / aria2, à nombre de connexions égal ; son seuil reste à fixer. Les 15 % d'un cœur
+  deviennent un objectif indicatif, sur une machine de référence nommée ;
+- nouvelle colonne « Processeur par octet auro / aria2 » ;
+- scénarios HTTPS : le serveur de test présente un certificat signé par une autorité créée
+  pour le banc. auro la reçoit par `--ca-cert`, curl par `--cacert --ssl-no-revoke`. aria2
+  tourne avec `--check-certificate=false`, car sa version Windows ignore
+  `--ca-certificate` (son journal : « TLS CA bundle files are not supported ») ;
+- machine : celle des relevés précédents, avec l'antivirus actif sur le dossier
+  temporaire. Ce n'est pas la machine de référence de N-01.
+
+**Serveur local, fichier de 512 Mio, médiane de 5 mesures :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet auro / aria2 | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 106,1 | 1,52 | 0,42 | 27,8 % |
+| local, sans bridage | aria2c -x 4 | 69,9 | | | 65,8 % |
+| local, sans bridage | curl (disque) | 319,6 | | | 36,6 % |
+| local, sans bridage | curl (sans disque) | 803,7 | | | 9,9 % |
+| local HTTPS, sans bridage | auro -c 4 | 105,3 | 1,56 | 0,63 | 50,9 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 67,4 | | | 81,0 % |
+| local HTTPS, sans bridage | curl (disque) | 205,4 | | | 57,1 % |
+| local HTTPS, sans bridage | curl (sans disque) | 336,9 | | | 32,5 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 89,0 | 1,22 | 0,42 | 24,8 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 62,8 | 0,86 | 0,41 | 24,4 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 72,9 | | | 59,5 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 74,7 | 1,06 | 0,87 | 58,1 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 58,7 | 0,84 | 0,81 | 54,4 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 70,2 | | | 66,7 % |
+
+**Lecture :**
+
+- **Coût processeur relatif :** auro coûte par octet 0,41 à 0,42 fois aria2 en HTTP, et
+  0,63 à 0,87 fois en HTTPS. Il reste moins coûteux qu'aria2 dans tous les scénarios,
+  alors qu'aria2 ne vérifie pas le certificat ici.
+- **Surcoût de HTTPS :**
+  - auro : de 23 à 33 points d'un cœur ;
+  - curl : 23 points, avec la pile TLS de Windows (Schannel) ;
+  - aria2 : 7 à 15 points, alors que sa version Windows passe aussi par Schannel.
+  Le chiffrement d'auro (rustls) coûte donc plus que celui d'aria2. La marge la plus
+  faible est en HTTPS bridé à 16 connexions (0,87).
+- **Coût fixe par processus (hypothèse, à confirmer) :** sur un essai de 32 Mio, auro
+  coûtait en HTTPS deux fois aria2 par octet. Sur 512 Mio, ce n'est plus que 0,63 : une
+  grande part du surcoût est fixe. Une mesure isolée donne environ 2,4 ms par poignée de
+  main TLS une fois le client chaud, et 13 ms en moyenne sur les vingt premières. Le coût
+  fixe viendrait donc surtout du démarrage, par exemple du chargement des racines du
+  système, plutôt que de chaque connexion.
+- **Proposition de seuil pour N-01 :** 1,0, soit jamais plus coûteux qu'aria2 par octet.
+  Le pire cas mesuré (0,87) le tient avec une marge de 13 %, qui reste à confirmer sous
+  Linux, où aria2 vérifie le certificat.
+- **Débit :** à nombre de connexions égal, auro va aussi vite qu'aria2 ou plus vite en
+  HTTPS comme en HTTP. Le mode automatique reste à 0,84–0,86 sur les téléchargements de
+  7 à 9 s, comme au relevé précédent.

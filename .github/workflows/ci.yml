@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Banc de performance (SPEC §9.1, N-01) : à la demande, et chaque lundi.
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
 
 jobs:
   test:
@@ -22,3 +26,27 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # La porte de performance se mesure sous Linux, sans antivirus (SPEC §9.1). Le tableau
+  # va dans le résumé de l'exécution ; rien n'échoue tant que le seuil de N-01 n'est pas
+  # fixé.
+  perf:
+    name: performance (Linux)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y aria2 curl
+      - name: Banc face à aria2
+        env:
+          AURO_ARIA2: aria2c
+          AURO_PERF_SIZE: "536870912"
+          AURO_PERF_RUNS: "5"
+        run: |
+          set -o pipefail
+          { echo "Machine : $(nproc) processeurs, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"; \
+            aria2c --version | head -1; } | tee perf.txt
+          cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture 2>&1 | tee -a perf.txt
+          grep -E '^(Machine|aria2|\|)' perf.txt >> "$GITHUB_STEP_SUMMARY"

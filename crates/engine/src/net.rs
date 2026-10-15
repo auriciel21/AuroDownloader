@@ -52,6 +52,9 @@ pub enum NetError {
     #[error("en-tête de la tâche invalide : {0}")]
     BadHeader(String),
 
+    #[error("fichier d'autorités de certification invalide : {0}")]
+    BadRootCertificates(&'static str),
+
     #[error("le serveur a répondu {status}")]
     Status {
         status: u16,
@@ -104,9 +107,10 @@ impl NetError {
     /// avant toute tâche (erreur de protocole, SPEC §6.7).
     pub fn error_code(&self) -> Option<&'static str> {
         match self {
-            NetError::InvalidUrl(_) | NetError::UnsupportedScheme(_) | NetError::BadHeader(_) => {
-                None
-            }
+            NetError::InvalidUrl(_)
+            | NetError::UnsupportedScheme(_)
+            | NetError::BadHeader(_)
+            | NetError::BadRootCertificates(_) => None,
             NetError::Status { .. }
             | NetError::Redirect(_)
             | NetError::RedirectNotFollowed { .. }
@@ -249,6 +253,26 @@ impl Client {
 
     /// Client avec des délais choisis (tests, réglages).
     pub fn with_timeouts(connect: Duration, read: Duration) -> Result<Self, NetError> {
+        Self::build(connect, read, Vec::new())
+    }
+
+    /// Client qui ajoute aux racines du système les autorités d'un fichier PEM : serveur
+    /// interne, banc de performance. La validation reste aussi stricte (N-07) : seules les
+    /// racines de confiance changent.
+    pub fn with_extra_roots(pem: &[u8]) -> Result<Self, NetError> {
+        let roots = reqwest::Certificate::from_pem_bundle(pem)
+            .map_err(|_| NetError::BadRootCertificates("PEM illisible"))?;
+        if roots.is_empty() {
+            return Err(NetError::BadRootCertificates("aucun certificat"));
+        }
+        Self::build(CONNECT_TIMEOUT, READ_TIMEOUT, roots)
+    }
+
+    fn build(
+        connect: Duration,
+        read: Duration,
+        roots: Vec<reqwest::Certificate>,
+    ) -> Result<Self, NetError> {
         let policy = redirect::Policy::custom(|attempt| {
             // `previous()` contient aussi l'adresse de départ.
             if attempt.previous().len() > MAX_REDIRECTS {
@@ -268,6 +292,7 @@ impl Client {
             .connect_timeout(connect)
             .read_timeout(read)
             .redirect(policy)
+            .tls_certs_merge(roots)
             .build()
             .map_err(NetError::from_reqwest)?;
         Ok(Client {

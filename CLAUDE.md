@@ -25,7 +25,8 @@ téléchargement.
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
   écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final ;
   préallocation et espace libre à écrire), `net` (préparation, requêtes de segments avec
-  `If-Range`, noms de fichier, classement des erreurs ; FTP, proxies à écrire),
+  `If-Range`, noms de fichier, classement des erreurs, autorités de certification
+  ajoutées par `--ca-cert` ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
   (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
   nombre de connexions automatique). Phase 2 : `rpc` et `scheduler` (vides). En
@@ -48,7 +49,8 @@ cargo run -p auro-cli -- resume <id-de-tâche>
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
-# Banc de performance face à aria2 (ignoré par défaut ; aria2c installé par winget) :
+# Banc de performance face à aria2, HTTP et HTTPS (ignoré par défaut ; aria2c installé
+# par winget ; sous Linux, travail `perf` de la CI, lancé à la main ou chaque lundi) :
 AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870912 \
   AURO_PERF_RUNS=5 cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture
 ```
@@ -85,11 +87,14 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   (512 Mio et plus) et répétés (médiane de 5) ; sous 4 s, le bruit atteint 10 %.
 - Temps processeur sous Windows : par cycles (`QueryProcessCycleTime`), jamais par
   `GetProcessTimes`, qui échantillonne et compte mal les processus d'entrées-sorties.
-- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision sur N-01
-  (`docs/MESURES.md` : le seuil de 15 % n'est pas atteignable sur cette machine, même par
-  curl vers disque ; le redéfinir ou le mesurer sur une machine de référence). Puis la
-  version longue du banc de reprise (1 000 cycles sur 1 Gio) et l'essai Android (SPEC 7.5
-  et 9.2).
+- N-01 (SPEC 3) : la porte est le rapport des coûts processeur par octet auro / aria2, à
+  nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
+  machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
+- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision sur le seuil
+  de N-01 (proposé : 1,0 ; voir `docs/MESURES.md`, troisième relevé) et d'un premier
+  relevé sous Linux (travail `perf` de `.github/workflows/ci.yml`, pas encore exécuté :
+  pas de dépôt distant). Puis la version longue du banc de reprise (1 000 cycles sur
+  1 Gio) et l'essai Android (SPEC 7.5 et 9.2).
 
 ## Façon de travailler
 

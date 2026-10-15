@@ -345,7 +345,7 @@ mod segments {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::testing::{FileSite, content, serve_file};
+    use crate::testing::{FileSite, TestTls, content, serve_file, serve_file_tls};
 
     async fn read_all(mut body: Body) -> Vec<u8> {
         let mut out = Vec::new();
@@ -381,6 +381,45 @@ mod segments {
         assert_eq!(r.header("range"), Some("bytes=100-4099"));
         assert_eq!(r.header("if-range"), Some("\"v1\""));
         assert_eq!(r.header("accept-encoding"), Some("identity"));
+    }
+
+    #[tokio::test]
+    async fn added_authority_is_trusted_and_nothing_else_changes() {
+        let tls = TestTls::new();
+        let data = content(10_000);
+        let site = Arc::new(Mutex::new(FileSite::new(data.len() as u64)));
+        let server = serve_file_tls(site, None, &tls);
+        // Sans l'autorité : refusé, comme tout certificat inconnu.
+        let err = client().probe(&server.url("/f"), &[]).await.unwrap_err();
+        assert!(matches!(err, NetError::InvalidCertificate(_)), "{err:?}");
+
+        let trusting = Client::with_extra_roots(tls.ca_pem.as_bytes()).unwrap();
+        let probe = trusting.probe(&server.url("/f"), &[]).await.unwrap();
+        assert_eq!(probe.total_bytes, Some(10_000));
+        assert!(probe.accepts_ranges);
+        let body = trusting
+            .get_range(
+                &server.url("/f"),
+                &[],
+                &range(100, 4099, 10_000, Some("\"v1\"")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_all(body).await, data[100..4100]);
+
+        // Une autre autorité ne suffit pas : la validation reste stricte (N-07).
+        let other = Client::with_extra_roots(TestTls::new().ca_pem.as_bytes()).unwrap();
+        let err = other.probe(&server.url("/f"), &[]).await.unwrap_err();
+        assert!(matches!(err, NetError::InvalidCertificate(_)), "{err:?}");
+    }
+
+    #[test]
+    fn unreadable_authorities_are_refused() {
+        for pem in [&b""[..], b"pas un certificat"] {
+            let err = Client::with_extra_roots(pem).unwrap_err();
+            assert!(matches!(err, NetError::BadRootCertificates(_)), "{err:?}");
+            assert_eq!(err.error_code(), None);
+        }
     }
 
     #[tokio::test]

@@ -142,7 +142,7 @@ Quinze exigences encadrent la qualité du produit. Les chiffres sont des cibles 
 
 | ID | Domaine | Exigence | Cible |
 | --- | --- | --- | --- |
-| N-01 | Performance | Débit proche du maximum de la liaison | Saturer 1 Gbit/s en utilisant moins de 15 % d'un cœur de processeur |
+| N-01 | Performance | Coût processeur du transfert | Porte (bloquante) : coût processeur par octet transféré au plus égal à un seuil, à fixer après mesure, multiplié par celui d'aria2, à nombre de connexions égal, sur la même machine, avec le même fichier et le même serveur. Objectif indicatif (non bloquant) : saturer 1 Gbit/s avec moins de 15 % d'un cœur sur la machine de référence nommée dans le relevé de performance |
 | N-02 | Performance | Démarrage du moteur | Prêt à recevoir des commandes en moins d'une seconde sur ordinateur |
 | N-03 | Mémoire | Consommation du moteur | Moins de 50 Mo au repos ; moins de 150 Mo avec 100 tâches actives |
 | N-04 | Fiabilité | Reprise après arrêt brutal (coupure de courant, arrêt forcé) | Perte limitée aux octets d'un segment en cours ; aucun segment terminé perdu |
@@ -745,7 +745,7 @@ Le projet repose sur un principe simple : aucune version ne sort si un test de r
 | Unitaires | Segmentation (tests à propriétés : après un nombre aléatoire de redécoupages, la couverture reste exacte), délais de reprise, seaux de jetons, lecture des en-têtes | Oui |
 | Intégration | Serveur de test local qui simule `Range` accepté ou refusé, `ETag` qui change, coupures, lenteur, réponses 429 et 503, redirections, noms de fichiers piégés | Oui |
 | Reprise sous arrêt brutal | Tuer le moteur à des instants aléatoires pendant un téléchargement de 1 Go, puis vérifier l'empreinte du fichier final ; 1 000 cycles (objectif de la section 1) | Oui |
-| Performance | Mesures face à aria2 sur serveur local bridé et sur serveurs réels ; une régression de plus de 5 % bloque | Oui |
+| Performance | Mesures face à aria2, à nombre de connexions égal, sur serveur local bridé (HTTP et HTTPS) et sur serveurs réels. Bloquent : un débit inférieur de plus de 5 % à celui d'aria2, et un coût processeur par octet au-dessus du seuil de N-01. La porte se mesure sous Linux en intégration continue ; Windows se mesure à part, avec et sans exclusion antivirus du dossier de téléchargement | Oui |
 | Sécurité | Cas de la section 8.1 (traversée de dossier, `Host` et `Origin` falsifiés, SSRF), fuzzing des lecteurs d'en-têtes, d'URL et de fichiers `.torrent` | Oui |
 | Contrat du protocole | Échanges de référence validés par des schémas JSON ; un client de la version précédente doit toujours fonctionner | Oui |
 | Plateformes | Intégration continue sur Windows, Linux et émulateur Android | Oui |
@@ -753,7 +753,7 @@ Le projet repose sur un principe simple : aucune version ne sort si un test de r
 
 Le banc de reprise sous arrêt brutal (`crates/cli/tests/crash_resume.rs`) tue le processus à un instant aléatoire et relance la tâche. Après chaque arrêt, il vérifie les règles 1 à 4 de la section 5.6 sur la base et le `.part`, puis compare chaque fichier terminé octet par octet au contenu servi. Une version courte tourne à chaque intégration continue ; la version de la porte de phase 1 se règle par variables d'environnement. Tuer le processus laisse intact le cache du système : une coupure de la machine elle-même demande un banc séparé (machine virtuelle coupée net, ou système de fichiers qui simule la perte du cache), à prévoir.
 
-Le banc de performance (`crates/cli/tests/perf_vs_aria2.rs`, ignoré par défaut) compare `auro` et `aria2c` à nombre de connexions égal : serveur local sans bridage, serveur local bridé par connexion, et un serveur réel au choix. Il relève le débit et le temps processeur de chaque processus. Les relevés datés sont consignés dans `docs/MESURES.md`.
+Le banc de performance (`crates/cli/tests/perf_vs_aria2.rs`, ignoré par défaut) compare `auro` et `aria2c` à nombre de connexions égal : serveur local sans bridage, en HTTP puis en HTTPS ; serveur local bridé par connexion ; et un serveur réel au choix. Il relève le débit et le temps processeur de chaque processus, et le rapport des coûts processeur par octet entre `auro` et `aria2c` (critère de N-01). Le serveur HTTPS présente un certificat signé par une autorité créée pour le banc. `auro` la reçoit par `--ca-cert`, qui l'ajoute aux racines du système sans affaiblir la validation (N-07). `aria2c` la reçoit par `--ca-certificate`, sauf sous Windows : sa version Windows passe par la pile TLS du système, qui ignore cette option. Il y tourne donc sans vérification du certificat (`--check-certificate=false`). Cette vérification n'a lieu qu'une fois par connexion : l'écart qu'elle crée sur un long transfert est négligeable, et il joue en faveur d'aria2. Les relevés datés sont consignés dans `docs/MESURES.md`, avec la machine, le système et la présence d'un antivirus sur le dossier de téléchargement. Le seuil absolu de N-01 n'a de sens que sur la machine de référence nommée dans le relevé.
 
 ### 9.2 Risques principaux
 
