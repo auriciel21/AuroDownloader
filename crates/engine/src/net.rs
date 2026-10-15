@@ -11,6 +11,8 @@
 pub mod filename;
 pub mod headers;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
@@ -128,6 +130,16 @@ impl NetError {
         }
     }
 
+    /// Le serveur résiste : réponse 429 ou 503, ou connexion refusée. En mode automatique,
+    /// le moteur divise alors ses connexions par deux (SPEC §7.3).
+    pub fn is_overload(&self) -> bool {
+        match self {
+            NetError::Status { status, .. } => matches!(status, 429 | 503),
+            NetError::Unreachable(e) => e.is_connect(),
+            _ => false,
+        }
+    }
+
     /// Délai demandé par le serveur (`Retry-After`), qui prime sur le calcul de la
     /// SPEC §7.8.
     pub fn retry_after(&self) -> Option<Duration> {
@@ -221,10 +233,12 @@ impl Observed {
     }
 }
 
-/// Client HTTP(S) du moteur.
+/// Client HTTP(S) du moteur, partagé par ses tâches pendant toute la session.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
+    /// Plafond de connexions par hôte, appris d'un serveur qui a résisté (SPEC §7.3).
+    host_caps: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl Client {
@@ -256,7 +270,10 @@ impl Client {
             .redirect(policy)
             .build()
             .map_err(NetError::from_reqwest)?;
-        Ok(Client { http })
+        Ok(Client {
+            http,
+            host_caps: Arc::default(),
+        })
     }
 
     /// Préparation d'une tâche (SPEC §7.1) : taille, acceptation des plages, validateurs
@@ -419,6 +436,27 @@ impl Client {
             }
         }
         Ok(Body { response })
+    }
+
+    /// Plafond de connexions retenu pour `host` pendant la session, s'il y en a un.
+    pub fn host_cap(&self, host: &str) -> Option<u32> {
+        let caps = self
+            .host_caps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        caps.get(host).copied()
+    }
+
+    /// Retient au plus `cap` connexions vers `host` pour le reste de la session ; un
+    /// plafond déjà plus bas est gardé.
+    pub fn limit_host(&self, host: &str, cap: u32) {
+        let mut caps = self
+            .host_caps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let cap = cap.max(1);
+        let entry = caps.entry(host.to_owned()).or_insert(cap);
+        *entry = (*entry).min(cap);
     }
 
     async fn send(

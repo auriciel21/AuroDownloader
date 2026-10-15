@@ -17,8 +17,8 @@
 //! - `AURO_CRASH_SECONDS` : durée visée d'un téléchargement sans arrêt (défaut 3) ;
 //! - `AURO_CRASH_SEED` : graine du hasard, affichée au départ pour rejouer un échec.
 //!
-//! Chaque lancement tire son nombre de connexions (1, 2, 4 ou 8) : une reprise avec plus de
-//! connexions que le départ redécoupe les segments en cours (F-02).
+//! Chaque lancement tire son nombre de connexions (automatique, 1, 2, 4 ou 8) : une reprise
+//! avec plus de connexions que le départ redécoupe les segments en cours (F-02, SPEC §7.3).
 //!
 //! Porte de la phase 1 (SPEC §9.3) :
 //! `AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
@@ -43,10 +43,12 @@ use auro_engine::testing::{FileSite, Pace, content_range, serve_file_paced};
 
 const MIB: u64 = 1024 * 1024;
 /// Connexions de référence pour régler le débit ; chaque lancement en tire un nombre parmi
-/// [`CONNECTION_CHOICES`] : une reprise avec plus de connexions que le départ coupe les
-/// segments en cours (redécoupage dynamique, F-02).
+/// [`CONNECTION_CHOICES`] (`None` : automatique) : une reprise avec plus de connexions que
+/// le départ coupe les segments en cours (redécoupage dynamique, F-02).
 const CONNECTIONS: f64 = 4.0;
-const CONNECTION_CHOICES: [u32; 4] = [1, 2, 4, 8];
+const CONNECTION_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
+/// Découpages initiaux possibles : 4 connexions au départ en mode automatique.
+const INITIAL_WIDTHS: [u32; 4] = [1, 2, 4, 8];
 
 /// Générateur pseudo-aléatoire xorshift64* : reproductible à partir de sa graine.
 struct Rng(u64);
@@ -147,15 +149,17 @@ impl Bench {
     }
 
     /// Reprend la tâche inachevée, ou en commence une nouvelle.
-    fn launch(&self, connections: u32) -> Child {
+    fn launch(&self, connections: Option<u32>) -> Child {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_auro"));
         cmd.arg("--db").arg(&self.db);
         match self.unfinished() {
             Some(task) => cmd.args(["resume", &task.id]),
             None => cmd.args(["get", &self.url, "-o"]).arg(&self.downloads),
         };
-        cmd.args(["-c", &connections.to_string()])
-            .stdin(Stdio::null())
+        if let Some(n) = connections {
+            cmd.args(["-c", &n.to_string()]);
+        }
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(File::create(&self.log).unwrap())
             .spawn()
@@ -229,7 +233,7 @@ impl Bench {
                 TaskState::Queued | TaskState::Active => {
                     let sum: u64 = segs.iter().map(|s| s.written).sum();
                     let ranges: Vec<(u64, u64)> = segs.iter().map(|s| (s.start, s.end)).collect();
-                    let initial = CONNECTION_CHOICES.iter().any(|&n| {
+                    let initial = INITIAL_WIDTHS.iter().any(|&n| {
                         initial_split(self.size, n, DEFAULT_MIN_SEGMENT_SIZE)
                             .iter()
                             .map(|s| (s.start, s.end))
@@ -299,7 +303,7 @@ fn killed_downloads_resume_without_corruption() {
         if bench.unfinished().is_some_and(|t| t.done_bytes > 0) {
             resumed_with_progress += 1;
         }
-        let connections = CONNECTION_CHOICES[rng.below(4) as usize];
+        let connections = CONNECTION_CHOICES[rng.below(CONNECTION_CHOICES.len() as u64) as usize];
         let mut child = bench.launch(connections);
         // Un lancement sur dix va jusqu'au bout.
         let kill_at = (cycle % 10 != 9).then(|| Duration::from_millis(rng.below(horizon_ms)));
@@ -316,7 +320,7 @@ fn killed_downloads_resume_without_corruption() {
 
     // Fin : la tâche en cours est reprise sans arrêt jusqu'au bout.
     if bench.unfinished().is_some() {
-        let mut child = bench.launch(4);
+        let mut child = bench.launch(None);
         match wait_or_kill(&mut child, None, timeout) {
             End::Exited(status) => assert!(status.success(), "{}", bench.log_tail()),
             End::Killed => unreachable!(),

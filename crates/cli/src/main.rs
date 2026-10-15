@@ -151,10 +151,11 @@ fn resume(db: &Path, task_id: &str, connections: Option<u32>) -> Result<()> {
 fn execute(conn: &mut Connection, task_id: &str, connections: Option<u32>) -> Result<()> {
     let runtime = runtime()?;
     let client = Client::new()?;
-    let mut opts = Options::default();
-    if let Some(c) = connections {
-        opts.connections = c;
-    }
+    // Sans -c : le nombre enregistré dans la tâche, sinon automatique (SPEC §7.3).
+    let opts = Options {
+        connections,
+        ..Options::default()
+    };
     let (stop_tx, stop) = watch::channel(false);
     let mut display = Display::new();
     let outcome = runtime.block_on(async {

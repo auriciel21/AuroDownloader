@@ -12,12 +12,23 @@ use crate::testing::{FileSite, Server, content, serve_file};
 
 const SIZE: usize = 200_000;
 
+/// Quatre connexions imposées : les tests restent déterministes.
 fn opts() -> Options {
     Options {
-        connections: 4,
+        connections: Some(4),
         min_segment: 16 * 1024,
         buffer: 4096,
         checkpoint_every: Duration::from_millis(20),
+        ..Options::default()
+    }
+}
+
+/// Nombre de connexions automatique, mesuré souvent.
+fn auto_opts() -> Options {
+    Options {
+        connections: None,
+        measure_every: Duration::from_millis(100),
+        ..opts()
     }
 }
 
@@ -484,4 +495,142 @@ async fn split_layout_survives_a_stop_and_resumes() {
     requeue(&mut case.conn, &case.task_id).unwrap();
     let outcome = case.run().await;
     assert_completed(&case, &outcome, "gros.bin", &data);
+}
+
+mod auto {
+    use super::*;
+    use crate::testing::{Pace, serve_file_paced};
+
+    #[test]
+    fn grows_while_the_rate_improves_then_stops() {
+        let mut a = AutoConnections::new(4, 16);
+        assert_eq!(a.on_rate(0.0), 4, "débit nul : rien à conclure");
+        assert_eq!(a.on_rate(100.0), 5, "première mesure : un essai");
+        assert_eq!(a.on_rate(111.0), 6, "+11 % : encore une");
+        assert_eq!(a.on_rate(115.0), 6, "+3,6 % : on s'arrête");
+        assert!(a.is_frozen());
+        assert_eq!(
+            a.on_rate(1000.0),
+            6,
+            "plus d'augmentation pour cette exécution"
+        );
+    }
+
+    #[test]
+    fn never_exceeds_its_cap() {
+        let mut a = AutoConnections::new(4, 6);
+        let mut rate = 100.0;
+        for _ in 0..10 {
+            rate *= 2.0;
+            a.on_rate(rate);
+        }
+        assert_eq!(a.width(), 6);
+        assert_eq!(
+            AutoConnections::new(4, 2).width(),
+            2,
+            "départ sous le plafond"
+        );
+    }
+
+    #[test]
+    fn overload_halves_and_caps() {
+        let mut a = AutoConnections::new(4, 16);
+        a.on_rate(100.0);
+        a.on_rate(200.0);
+        assert_eq!(a.width(), 6);
+        assert_eq!(a.on_overload(), 5, "plafond : valeur atteinte moins une");
+        assert_eq!(a.width(), 3);
+        assert!(a.is_frozen());
+        assert_eq!(a.on_overload(), 2);
+        assert_eq!(a.width(), 1);
+        assert_eq!(a.on_overload(), 1, "jamais moins d'une connexion");
+        assert_eq!(a.width(), 1);
+    }
+
+    #[test]
+    fn host_cap_lowers_the_automatic_cap() {
+        let client = client();
+        let opts = Options::default();
+        assert_eq!(auto_cap(&client, "http://lent.example/f", &opts), 16);
+        client.limit_host("lent.example", 3);
+        client.limit_host("lent.example", 7);
+        assert_eq!(auto_cap(&client, "http://lent.example/f", &opts), 3);
+        assert_eq!(auto_cap(&client, "http://autre.example/f", &opts), 16);
+    }
+
+    /// Serveur bridé par connexion : plus de connexions, plus de débit.
+    fn paced_site(len: u64) -> (Arc<Mutex<FileSite>>, Server) {
+        let site = Arc::new(Mutex::new(FileSite::new(len)));
+        let pace = Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(20),
+        };
+        let server = serve_file_paced(Arc::clone(&site), Some(pace));
+        (site, server)
+    }
+
+    async fn run_auto(case: &mut Case, client: &Client) -> Outcome {
+        let (_, stop) = watch::channel(false);
+        run(
+            &mut case.conn,
+            client,
+            &case.task_id,
+            &auto_opts(),
+            stop,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn automatic_mode_adds_connections_when_it_pays() {
+        let len = 4 * 1024 * 1024;
+        let (_, server) = paced_site(len);
+        let mut case = new_case(&server.url("/gros.bin"));
+        let outcome = run_auto(&mut case, &client()).await;
+        assert_completed(&case, &outcome, "gros.bin", &content(len as usize));
+        assert!(
+            server.peak_connections() > 4,
+            "au plus {} connexions simultanées",
+            server.peak_connections()
+        );
+    }
+
+    /// SPEC §7.3 : sur un 503, moitié moins de connexions et un plafond pour l'hôte ; le
+    /// téléchargement continue au lieu d'échouer.
+    #[tokio::test]
+    async fn busy_server_halves_connections_and_the_download_goes_on() {
+        let len = 2 * 1024 * 1024;
+        let (site, server) = paced_site(len);
+        site.lock().unwrap().busy_responses = 1;
+        let mut case = new_case(&server.url("/gros.bin"));
+        let client = client();
+        let outcome = run_auto(&mut case, &client).await;
+        assert_completed(&case, &outcome, "gros.bin", &content(len as usize));
+        assert_eq!(
+            client.host_cap("127.0.0.1"),
+            Some(3),
+            "4 atteintes, moins une"
+        );
+    }
+
+    #[tokio::test]
+    async fn imposed_connections_do_not_adapt() {
+        let len = 2 * 1024 * 1024;
+        let (site, server) = paced_site(len);
+        site.lock().unwrap().busy_responses = 1;
+        let mut case = new_case(&server.url("/gros.bin"));
+        let outcome = case.run().await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::RetryLater {
+                    code: "HTTP_STATUS",
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+    }
 }

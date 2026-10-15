@@ -237,6 +237,7 @@ async fn http_errors_are_classified() {
         .await
         .unwrap_err();
     assert!(matches!(err, NetError::Status { status: 404, .. }));
+    assert!(!err.is_overload());
     assert_eq!(err.error_code(), Some("HTTP_STATUS"));
     assert!(!err.retryable());
 
@@ -245,6 +246,7 @@ async fn http_errors_are_classified() {
         .await
         .unwrap_err();
     assert!(matches!(err, NetError::Status { status: 503, .. }));
+    assert!(err.is_overload());
     assert!(err.retryable());
     assert_eq!(err.retry_after(), Some(Duration::from_secs(120)));
 }
@@ -260,6 +262,7 @@ async fn closed_port_is_unreachable_and_the_url_is_not_leaked() {
         .await
         .unwrap_err();
     assert_eq!(err.error_code(), Some("NET_UNREACHABLE"), "{err:?}");
+    assert!(err.is_overload(), "connexion refusée");
     assert!(err.retryable());
     let mut text = err.to_string();
     let mut source = std::error::Error::source(&err);

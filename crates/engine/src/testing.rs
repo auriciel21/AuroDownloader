@@ -70,6 +70,9 @@ pub struct Pace {
 pub struct Server {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,
+    /// Connexions servies en même temps : actuelles, et maximum atteint.
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
 }
 
 impl Server {
@@ -79,6 +82,16 @@ impl Server {
 
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Connexions servies en ce moment.
+    pub fn active_connections(&self) -> usize {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    /// Nombre maximal de connexions servies en même temps.
+    pub fn peak_connections(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
     }
 }
 
@@ -143,21 +156,32 @@ pub fn serve_paced(
     let base = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&requests);
+    let (active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (active_count, peak_count) = (Arc::clone(&active), Arc::clone(&peak));
     let handler = Arc::new(handler);
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let (log, handler) = (Arc::clone(&log), Arc::clone(&handler));
+            let (active, peak) = (Arc::clone(&active_count), Arc::clone(&peak_count));
             thread::spawn(move || {
                 let Some(request) = read_request(&stream) else {
                     return;
                 };
                 log.lock().unwrap().push(request.clone());
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
                 let _ = write_reply(&mut stream, &handler(&request), pace);
+                active.fetch_sub(1, Ordering::SeqCst);
             });
         }
     });
-    Server { base, requests }
+    Server {
+        base,
+        requests,
+        active,
+        peak,
+    }
 }
 
 fn head(status: &str, headers: &[(&str, &str)]) -> Vec<u8> {
@@ -206,6 +230,9 @@ pub struct FileSite {
     /// octets du corps, connexion fermée.
     pub cut_responses: usize,
     pub cut_after: u64,
+    /// Les `busy_responses` prochaines requêtes par plage reçoivent un 503 (serveur qui
+    /// résiste, SPEC §7.3).
+    pub busy_responses: usize,
 }
 
 impl FileSite {
@@ -217,6 +244,7 @@ impl FileSite {
             send_length: true,
             cut_responses: 0,
             cut_after: 0,
+            busy_responses: 0,
         }
     }
 }
@@ -229,8 +257,16 @@ pub fn serve_file(site: Arc<Mutex<FileSite>>) -> Server {
 /// Comme [`serve_file`], avec un débit bridé par connexion.
 pub fn serve_file_paced(site: Arc<Mutex<FileSite>>, pace: Option<Pace>) -> Server {
     let cuts_done = AtomicUsize::new(0);
+    let busy_done = AtomicUsize::new(0);
     let handler = move |r: &Request| {
         let site = site.lock().unwrap();
+        if r.method == "GET"
+            && r.header("range").is_some()
+            && busy_done.load(Ordering::SeqCst) < site.busy_responses
+        {
+            busy_done.fetch_add(1, Ordering::SeqCst);
+            return reply("503 Service Unavailable", &[("Content-Length", "0")], b"");
+        }
         let total = site.len;
         let mut headers: Vec<(String, String)> = Vec::new();
         if let Some(etag) = &site.etag {

@@ -111,6 +111,8 @@ pub struct TaskRow {
     pub total_bytes: Option<u64>,
     pub done_bytes: u64,
     pub retry_count: u32,
+    /// Connexions imposées ; `None` : nombre automatique (SPEC §7.3).
+    pub max_connections: Option<u32>,
     pub pause_reason: Option<String>,
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
@@ -199,39 +201,65 @@ pub fn create_task(
 }
 
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
-     done_bytes, retry_count, pause_reason, error_code, error_detail";
+     done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections";
 
-fn task_from_row(row: &Row<'_>) -> rusqlite::Result<(TaskRow, String, Option<i64>, i64, i64)> {
-    Ok((
-        TaskRow {
-            id: row.get(0)?,
-            state: TaskState::Queued, // remplacé après lecture
-            display_name: row.get(2)?,
-            dest_dir: row.get(3)?,
-            file_name: row.get(4)?,
-            total_bytes: None, // idem
-            done_bytes: 0,     // idem
-            retry_count: 0,    // idem
-            pause_reason: row.get(8)?,
-            error_code: row.get(9)?,
-            error_detail: row.get(10)?,
-        },
-        row.get(1)?,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-    ))
+/// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
+struct RawTask {
+    id: String,
+    state: String,
+    display_name: String,
+    dest_dir: String,
+    file_name: Option<String>,
+    total_bytes: Option<i64>,
+    done_bytes: i64,
+    retry_count: i64,
+    pause_reason: Option<String>,
+    error_code: Option<String>,
+    error_detail: Option<String>,
+    max_connections: Option<i64>,
 }
 
-fn finish_task_row(
-    (mut task, state, total, done, retries): (TaskRow, String, Option<i64>, i64, i64),
-) -> Result<TaskRow, StoreError> {
-    let bad = |what: &str| StoreError::BadValue(format!("tâche {} : {what}", task.id));
-    task.state = TaskState::from_sql(&state).ok_or_else(|| bad("état inconnu"))?;
-    task.total_bytes = to_u64(total, "taille")?;
-    task.done_bytes = u64::try_from(done).map_err(|_| bad("octets écrits négatifs"))?;
-    task.retry_count = u32::try_from(retries).map_err(|_| bad("nombre d'essais invalide"))?;
-    Ok(task)
+fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
+    Ok(RawTask {
+        id: row.get(0)?,
+        state: row.get(1)?,
+        display_name: row.get(2)?,
+        dest_dir: row.get(3)?,
+        file_name: row.get(4)?,
+        total_bytes: row.get(5)?,
+        done_bytes: row.get(6)?,
+        retry_count: row.get(7)?,
+        pause_reason: row.get(8)?,
+        error_code: row.get(9)?,
+        error_detail: row.get(10)?,
+        max_connections: row.get(11)?,
+    })
+}
+
+impl TryFrom<RawTask> for TaskRow {
+    type Error = StoreError;
+
+    fn try_from(raw: RawTask) -> Result<Self, StoreError> {
+        let bad = |what: &str| StoreError::BadValue(format!("tâche {} : {what}", raw.id));
+        Ok(TaskRow {
+            state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
+            total_bytes: to_u64(raw.total_bytes, "taille")?,
+            done_bytes: u64::try_from(raw.done_bytes).map_err(|_| bad("octets écrits négatifs"))?,
+            retry_count: u32::try_from(raw.retry_count)
+                .map_err(|_| bad("nombre d'essais invalide"))?,
+            max_connections: raw
+                .max_connections
+                .map(|c| u32::try_from(c).map_err(|_| bad("nombre de connexions invalide")))
+                .transpose()?,
+            id: raw.id,
+            display_name: raw.display_name,
+            dest_dir: raw.dest_dir,
+            file_name: raw.file_name,
+            pause_reason: raw.pause_reason,
+            error_code: raw.error_code,
+            error_detail: raw.error_detail,
+        })
+    }
 }
 
 /// Lit une tâche.
@@ -240,13 +268,13 @@ pub fn load_task(conn: &Connection, task_id: &str) -> Result<TaskRow, StoreError
         .query_row(
             &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
             [task_id],
-            task_from_row,
+            raw_task,
         )
         .optional()?
         .ok_or_else(|| StoreError::TaskNotFound {
             task_id: task_id.to_owned(),
         })?;
-    finish_task_row(raw)
+    raw.try_into()
 }
 
 /// Toutes les tâches, dans l'ordre de création.
@@ -254,8 +282,8 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {TASK_COLUMNS} FROM tasks ORDER BY created_at, id"
     ))?;
-    let rows = stmt.query_map([], task_from_row)?;
-    rows.map(|r| finish_task_row(r?)).collect()
+    let rows = stmt.query_map([], raw_task)?;
+    rows.map(|r| r?.try_into()).collect()
 }
 
 /// Source de rang le plus faible (la préférée) d'une tâche.

@@ -36,13 +36,19 @@ use crate::store::segments::{
     check_task_coverage, load_segments, reset_segments, save_progress, save_split,
 };
 use crate::store::tasks::{
-    Change, PauseReason, Preparation, SourceRow, TaskState, change_state, complete_task, load_task,
-    primary_source, save_preparation,
+    Change, PauseReason, Preparation, SourceRow, TaskRow, TaskState, change_state, complete_task,
+    load_task, primary_source, save_preparation,
 };
 use crate::store::{StoreError, now_ms};
 
-/// Connexions par tâche au départ (SPEC §7.3).
-pub const DEFAULT_CONNECTIONS: u32 = 4;
+/// Nombre de connexions automatique (SPEC §7.3) : départ, plafond, et gain de débit
+/// exigé pour ajouter une connexion.
+pub const AUTO_START_CONNECTIONS: u32 = 4;
+pub const AUTO_MAX_CONNECTIONS: u32 = 16;
+pub const AUTO_MIN_GAIN: f64 = 1.10;
+
+/// Connexions au plus, en réglage manuel (F-01).
+pub const MAX_CONNECTIONS: u32 = 32;
 
 /// Échecs d'affilée avant l'abandon (SPEC §7.8).
 pub const MAX_FAILURES: u32 = 10;
@@ -54,7 +60,13 @@ pub const RETRY_CAP: Duration = Duration::from_secs(5 * 60);
 /// Réglages d'une exécution.
 #[derive(Debug, Clone)]
 pub struct Options {
-    pub connections: u32,
+    /// Connexions imposées pour cette exécution ; `None` : celles de la tâche
+    /// (`max_connections`), sinon nombre automatique (SPEC §7.3).
+    pub connections: Option<u32>,
+    pub auto_start: u32,
+    pub auto_max: u32,
+    /// Fenêtre de mesure du débit (SPEC §7.10 : 2 s).
+    pub measure_every: Duration,
     pub min_segment: u64,
     pub buffer: usize,
     /// Intervalle des points de contrôle (SPEC §7.10 : 2 s).
@@ -64,7 +76,10 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            connections: DEFAULT_CONNECTIONS,
+            connections: None,
+            auto_start: AUTO_START_CONNECTIONS,
+            auto_max: AUTO_MAX_CONNECTIONS,
+            measure_every: Duration::from_secs(2),
             min_segment: DEFAULT_MIN_SEGMENT_SIZE,
             buffer: DEFAULT_WRITE_BUFFER,
             checkpoint_every: Duration::from_secs(2),
@@ -306,7 +321,7 @@ async fn execute(
         };
         let name = io::available_name(Path::new(&task.dest_dir), &probe.file_name);
         let connections = if probe.accepts_ranges {
-            opts.connections
+            first_width(client, &source.url, &task, opts)
         } else {
             1
         };
@@ -374,13 +389,18 @@ async fn execute(
         },
         total => Fetch::Whole { total },
     };
-    let width = if ranged { opts.connections.max(1) } else { 1 };
+    let plan = if ranged {
+        plan_for(client, &source.url, &task, opts)
+    } else {
+        Plan::Fixed(1)
+    };
     let part = Arc::new(part);
     let ctx = Pool {
         client,
         url: &source.url,
         fetch,
-        width: width as usize,
+        plan,
+        host: host_of(&source.url),
         opts,
         part: Arc::clone(&part),
         persist: total.is_some(),
@@ -509,12 +529,117 @@ enum Fetch {
     Whole { total: Option<u64> },
 }
 
+/// Nombre de connexions automatique (SPEC §7.3) : augmentation lente, réduction rapide,
+/// comme le contrôle de congestion de TCP.
+///
+/// À chaque fenêtre de mesure, une connexion de plus si le débit a progressé d'au moins
+/// 10 % depuis le dernier ajout ; sinon l'augmentation s'arrête pour cette exécution. Sur
+/// un serveur qui résiste, moitié moins de connexions, et un plafond égal à la valeur
+/// atteinte moins une.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoConnections {
+    width: u32,
+    cap: u32,
+    frozen: bool,
+    /// Débit de la fenêtre qui a précédé le dernier ajout, en octets par seconde.
+    baseline: Option<f64>,
+}
+
+impl AutoConnections {
+    pub fn new(start: u32, cap: u32) -> Self {
+        let cap = cap.max(1);
+        AutoConnections {
+            width: start.clamp(1, cap),
+            cap,
+            frozen: false,
+            baseline: None,
+        }
+    }
+
+    /// Connexions visées.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// L'augmentation est terminée pour cette exécution.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Débit total mesuré sur la dernière fenêtre ; renvoie les connexions visées.
+    pub fn on_rate(&mut self, rate: f64) -> u32 {
+        // Un débit nul (serveur muet) ne dit rien du gain d'une connexion de plus.
+        if self.frozen || rate <= 0.0 || self.width >= self.cap {
+            return self.width;
+        }
+        match self.baseline {
+            Some(before) if rate < before * AUTO_MIN_GAIN => self.frozen = true,
+            _ => {
+                self.baseline = Some(rate);
+                self.width += 1;
+            }
+        }
+        self.width
+    }
+
+    /// Le serveur résiste (429, 503, connexion refusée) : divise par deux et renvoie le
+    /// plafond à retenir pour l'hôte pendant la session.
+    pub fn on_overload(&mut self) -> u32 {
+        let reached = self.width;
+        self.width = (reached / 2).max(1);
+        self.cap = self.cap.min(reached.saturating_sub(1).max(1));
+        self.frozen = true;
+        self.cap
+    }
+}
+
+/// Connexions d'une exécution : imposées, ou automatiques.
+#[derive(Debug, Clone)]
+enum Plan {
+    Fixed(u32),
+    Auto(AutoConnections),
+}
+
+fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url).ok()?.host_str().map(str::to_owned)
+}
+
+/// Plafond automatique : celui des réglages, abaissé par ce que l'hôte a appris à la
+/// session (SPEC §7.3).
+fn auto_cap(client: &Client, url: &str, opts: &Options) -> u32 {
+    host_of(url)
+        .and_then(|h| client.host_cap(&h))
+        .map_or(opts.auto_max, |c| c.min(opts.auto_max))
+}
+
+/// Connexions de l'exécution : imposées pour celle-ci, sinon celles de la tâche, sinon
+/// automatiques.
+fn plan_for(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> Plan {
+    match opts.connections.or(task.max_connections) {
+        Some(n) => Plan::Fixed(n.clamp(1, MAX_CONNECTIONS)),
+        None => Plan::Auto(AutoConnections::new(
+            opts.auto_start,
+            auto_cap(client, url, opts),
+        )),
+    }
+}
+
+/// Nombre de segments du découpage initial.
+fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u32 {
+    match plan_for(client, url, task, opts) {
+        Plan::Fixed(n) => n,
+        Plan::Auto(a) => a.width(),
+    }
+}
+
 /// Ce que partagent les connexions d'une exécution.
 struct Pool<'a> {
     client: &'a Client,
     url: &'a str,
     fetch: Fetch,
-    width: usize,
+    plan: Plan,
+    /// Hôte de la source, pour le plafond appris d'un serveur qui résiste.
+    host: Option<String>,
     opts: &'a Options,
     part: Arc<PartFile>,
     /// Taille connue : les compteurs sont enregistrés en base.
@@ -560,9 +685,16 @@ async fn pool(
     checkpoint.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut display = interval_at(start, Duration::from_millis(500));
     display.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let (mut width, mut auto) = match &ctx.plan {
+        Plan::Fixed(n) => (*n as usize, None),
+        Plan::Auto(a) => (a.width() as usize, Some(a.clone())),
+    };
+    let mut measure = interval_at(start + ctx.opts.measure_every, ctx.opts.measure_every);
+    measure.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut measured = (start, progress(&saved, &handles, total, 0).received);
 
     loop {
-        while failure.is_none() && !user_stop && running.len() < ctx.width {
+        while failure.is_none() && !user_stop && running.len() < width {
             let segment = match todo.pop_front() {
                 Some(segment) => segment,
                 // Plus rien en attente : la connexion libre coupe le plus gros segment en
@@ -602,18 +734,47 @@ async fn pool(
         tokio::select! {
             joined = running.join_next() => {
                 let end = joined.expect("au moins une connexion")?;
-                handles.remove(&end.idx);
+                let handle = handles.remove(&end.idx);
+                let mut written = None;
                 match end.progress {
                     Ok(p) => {
                         if ctx.persist {
                             save_progress(conn, task_id, &[p])?;
                         }
                         saved.insert(p.idx(), p.written());
+                        written = Some(p.written());
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
                 }
-                if let Err(f) = end.result {
-                    first_failure(f, &mut failure);
+                match end.result {
+                    Ok(()) => {}
+                    // Le serveur résiste alors que d'autres connexions tournent : moitié
+                    // moins de connexions, plafond retenu pour l'hôte, et le segment
+                    // attend son tour depuis ses octets enregistrés (SPEC §7.3).
+                    Err(Failure::Net(e))
+                        if e.is_overload()
+                            && failure.is_none()
+                            && !running.is_empty()
+                            && auto.is_some() =>
+                    {
+                        let a = auto.as_mut().expect("mode automatique");
+                        let cap = a.on_overload();
+                        width = a.width() as usize;
+                        if let Some(host) = &ctx.host {
+                            ctx.client.limit_host(host, cap);
+                        }
+                        if let (Some(h), Some(written)) = (handle, written) {
+                            let (_, last) = h.accepted_and_end();
+                            todo.push_front(Segment {
+                                idx: end.idx,
+                                start: h.start(),
+                                end: last,
+                                written,
+                                state: SegmentState::Pending,
+                            });
+                        }
+                    }
+                    Err(f) => first_failure(f, &mut failure),
                 }
             }
             _ = checkpoint.tick(), if ctx.persist && !handles.is_empty() => {
@@ -629,6 +790,18 @@ async fn pool(
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
                 }
+            }
+            _ = measure.tick(),
+                if auto.as_ref().is_some_and(|a| !a.is_frozen()) && failure.is_none() && !user_stop =>
+            {
+                let now = Instant::now();
+                let received = progress(&saved, &handles, total, 0).received;
+                let elapsed = now.duration_since(measured.0).as_secs_f64();
+                if let (Some(a), true) = (auto.as_mut(), elapsed > 0.0) {
+                    let rate = received.saturating_sub(measured.1) as f64 / elapsed;
+                    width = a.on_rate(rate) as usize;
+                }
+                measured = (now, received);
             }
             _ = display.tick() => {
                 on_progress(progress(&saved, &handles, total, running.len()));

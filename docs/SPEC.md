@@ -642,6 +642,14 @@ Quand l'utilisateur ne fixe pas `maxConnections`, le moteur ajuste le nombre de 
 
 Cette boucle est volontairement proche de celle du contrôle de congestion TCP : prudente quand le serveur résiste, rapide quand il répond.
 
+Précisions de mise en œuvre :
+- La première mesure ajoute toujours une connexion, car il n'y a pas encore de débit de référence. Une fenêtre sans aucun octet reçu ne permet aucune conclusion : elle ne change rien.
+- Une connexion ajoutée prend la moitié du plus gros segment en cours (section 7.2).
+- Quand une connexion reçoit un 429 ou un 503, ou voit sa connexion refusée, alors que d'autres connexions tournent encore, la tâche n'échoue pas. Le segment de cette connexion attend son tour à partir de ses octets enregistrés, et les autres connexions continuent.
+- Si c'est la dernière connexion de la tâche, l'échec suit la section 7.8 (nouvelle tentative, `Retry-After`).
+- Le plafond par hôte vit en mémoire, pour la durée du processus du moteur.
+- Un nombre de connexions fixé par l'utilisateur (`maxConnections`) n'est jamais ajusté.
+
 ### 7.4 Reprise après arrêt
 
 Au démarrage, pour chaque tâche `active` ou `retry_wait` :

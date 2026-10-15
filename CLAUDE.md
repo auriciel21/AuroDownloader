@@ -26,7 +26,7 @@ téléchargement.
   `If-Range`, noms de fichier, classement des erreurs ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
   (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
-  connexions automatiques à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
+  nombre de connexions automatique). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -76,9 +76,11 @@ AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   `ProgressHandle::shrink_end`, avant l'enregistrement de la coupe (`save_split`). Jamais
   l'inverse : la base ne doit pas promettre à un nouveau segment des octets que l'ancien
   écrivain peut encore accepter.
-- Prochaine étape : phase 1 (SPEC 9.3), nombre de connexions automatique (SPEC 7.3) dans
-  `transfer` : départ à 4, ajout toutes les 2 s si le débit progresse d'au moins 10 %,
-  plafond 16 ; division par deux sur 429, 503 ou connexion refusée, plafond par hôte.
+- Prochaine étape : porte de la phase 1 (SPEC 9.3). Banc de performance face à aria2
+  (SPEC 9.1 : serveur local bridé et serveurs réels, écart de débit sous 5 %, moins de
+  15 % d'un cœur à 1 Gbit/s, N-01) ; il dira s'il faut sortir de la boucle asynchrone les
+  écritures et les accès à la base (aujourd'hui exécutés sur place). Puis la version
+  longue du banc de reprise (1 000 cycles sur 1 Gio) et l'essai Android.
 
 ## Façon de travailler
 

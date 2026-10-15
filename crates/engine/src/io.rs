@@ -335,6 +335,11 @@ impl ProgressHandle {
         self.idx
     }
 
+    /// Premier octet du segment.
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
     /// Octets remis au système depuis le début du segment, pas forcément vidés : pour
     /// l'affichage de l'avancement, jamais pour la base.
     pub fn handed_over(&self) -> u64 {
