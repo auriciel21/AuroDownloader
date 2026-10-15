@@ -10,6 +10,8 @@ téléchargement.
 - `docs/SPEC.md` : cahier des charges, modèle de données (section 5), protocole du moteur
   (section 6), algorithmes (section 7), tests et feuille de route (section 9). À lire avant
   toute modification du moteur.
+- `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
+  section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
   l'export Markdown, qui les remplace par des marqueurs « embedded content ». L'architecture
   est décrite en texte aux sections 4.2 à 4.6 et 6.2 ; la feuille de route a été recopiée en
@@ -46,6 +48,9 @@ cargo run -p auro-cli -- resume <id-de-tâche>
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
+# Banc de performance face à aria2 (ignoré par défaut ; aria2c installé par winget) :
+AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870912 \
+  AURO_PERF_RUNS=5 cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture
 ```
 
 ## Règles du projet
@@ -76,11 +81,12 @@ AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   `ProgressHandle::shrink_end`, avant l'enregistrement de la coupe (`save_split`). Jamais
   l'inverse : la base ne doit pas promettre à un nouveau segment des octets que l'ancien
   écrivain peut encore accepter.
-- Prochaine étape : porte de la phase 1 (SPEC 9.3). Banc de performance face à aria2
-  (SPEC 9.1 : serveur local bridé et serveurs réels, écart de débit sous 5 %, moins de
-  15 % d'un cœur à 1 Gbit/s, N-01) ; il dira s'il faut sortir de la boucle asynchrone les
-  écritures et les accès à la base (aujourd'hui exécutés sur place). Puis la version
-  longue du banc de reprise (1 000 cycles sur 1 Gio) et l'essai Android.
+- Mesures de performance : seulement en `--release`, sur des téléchargements longs
+  (512 Mio et plus) et répétés (médiane de 5) ; sous 4 s, le bruit atteint 10 %.
+- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision : accélérer
+  la montée du mode automatique (SPEC 7.3), lente sur les téléchargements courts
+  (`docs/MESURES.md`). Puis la version longue du banc de reprise (1 000 cycles sur
+  1 Gio) et l'essai Android (SPEC 7.5 et 9.2).
 
 ## Façon de travailler
 

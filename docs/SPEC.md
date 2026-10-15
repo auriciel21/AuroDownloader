@@ -753,6 +753,8 @@ Le projet repose sur un principe simple : aucune version ne sort si un test de r
 
 Le banc de reprise sous arrêt brutal (`crates/cli/tests/crash_resume.rs`) tue le processus à un instant aléatoire et relance la tâche. Après chaque arrêt, il vérifie les règles 1 à 4 de la section 5.6 sur la base et le `.part`, puis compare chaque fichier terminé octet par octet au contenu servi. Une version courte tourne à chaque intégration continue ; la version de la porte de phase 1 se règle par variables d'environnement. Tuer le processus laisse intact le cache du système : une coupure de la machine elle-même demande un banc séparé (machine virtuelle coupée net, ou système de fichiers qui simule la perte du cache), à prévoir.
 
+Le banc de performance (`crates/cli/tests/perf_vs_aria2.rs`, ignoré par défaut) compare `auro` et `aria2c` à nombre de connexions égal : serveur local sans bridage, serveur local bridé par connexion, et un serveur réel au choix. Il relève le débit et le temps processeur de chaque processus. Les relevés datés sont consignés dans `docs/MESURES.md`.
+
 ### 9.2 Risques principaux
 
 | Risque | Conséquence | Réponse prévue |

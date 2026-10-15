@@ -10,7 +10,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -207,9 +207,27 @@ pub fn byte_at(i: u64) -> u8 {
     (i.wrapping_mul(31) ^ (i >> 9)) as u8
 }
 
-/// `len` octets des fichiers de test à partir de `first`.
+/// Période du contenu : l'octet de rang `i` ne dépend que de ses 17 bits de poids faible
+/// (`i * 31` modulo 256 et les bits 9 à 16 de `i`).
+const PERIOD: usize = 1 << 17;
+
+fn period_table() -> &'static [u8] {
+    static TABLE: OnceLock<Vec<u8>> = OnceLock::new();
+    TABLE.get_or_init(|| (0..PERIOD as u64).map(byte_at).collect())
+}
+
+/// `len` octets des fichiers de test à partir de `first`, recopiés d'une période
+/// précalculée : le serveur de test tient plus de 1 Gbit/s.
 pub fn content_range(first: u64, len: usize) -> Vec<u8> {
-    (first..first + len as u64).map(byte_at).collect()
+    let table = period_table();
+    let mut out = Vec::with_capacity(len);
+    let mut pos = (first % PERIOD as u64) as usize;
+    while out.len() < len {
+        let n = (PERIOD - pos).min(len - out.len());
+        out.extend_from_slice(&table[pos..pos + n]);
+        pos = 0;
+    }
+    out
 }
 
 /// Fichier de test complet de `len` octets.
@@ -333,4 +351,22 @@ pub fn serve_file_paced(site: Arc<Mutex<FileSite>>, pace: Option<Pace>) -> Serve
         }
     };
     serve_paced(handler, pace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn periodic_content_matches_the_formula() {
+        for first in [0, 1, 131_071, 131_072, 1 << 30, (1 << 40) + 12_345] {
+            let expected: Vec<u8> = (first..first + 300_000).map(byte_at).collect();
+            assert_eq!(
+                content_range(first, 300_000),
+                expected,
+                "à partir de {first}"
+            );
+        }
+        assert!(content_range(7, 0).is_empty());
+    }
 }
