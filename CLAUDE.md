@@ -101,8 +101,8 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - Prochaine étape : porte de la phase 1 (SPEC 9.3).
   - N-01 : seuil 1,0, provisoire, à confirmer par un premier relevé sous Linux (travail
     `perf` de `.github/workflows/ci.yml`, pas encore exécuté faute de dépôt distant).
-  - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : lancé le 2026-10-15,
-    sans résultat consigné.
+  - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : passé le 2026-10-15
+    (SPEC 9.1).
   - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
     « Téléchargements ») validés sur un appareil ; Google Drive refuse `"rw"`, le repli
     (fichier temporaire interne copié à la fin) y fonctionne. HTTPS y est refusé par `TLS_UNAVAILABLE`
