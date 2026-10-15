@@ -677,7 +677,11 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
     - 48 Mio écrits par `pwrite` depuis quatre fils, dans le désordre, à 675 Mio/s, puis `fdatasync` en 44 ms.
     - La relecture est exacte, par `pread` comme par flux.
     - Après la mort du processus, la permission persistante rouvre le fichier, dont le contenu est intact, et l'écriture des 16 Mio restants le complète. L'écriture positionnée par ce sélecteur est donc possible sur cet appareil.
-    - Restent à essayer : les autres fournisseurs (carte SD, stockage en ligne comme Google Drive) et d'autres appareils et versions d'Android (phase 4).
+  - **Sélecteur de stockage, Google Drive** (fournisseur `com.google.android.apps.docs.storage`) :
+    - L'ouverture en `"rw"` est refusée (« Unsupported mode: rw »), donc toute écriture positionnée est impossible.
+    - Le repli fonctionne. La copie finale d'un seul flux (`openOutputStream`) écrit 64 Mio à 476 Mio/s, et la relecture est exacte.
+    - Le moteur devra donc savoir qu'un emplacement refuse `"rw"` et basculer alors sur le fichier temporaire interne, copié à la fin. Il lui faudra aussi l'espace pour ce fichier dans le stockage de l'application.
+  - Restent à essayer : la carte SD, d'autres appareils et d'autres versions d'Android (phase 4).
 
 ### 7.6 Limitation de débit
 

@@ -98,7 +98,8 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : lancé le 2026-10-15,
     sans résultat consigné.
   - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
-    « Téléchargements ») validés sur un appareil. HTTPS y est refusé par `TLS_UNAVAILABLE`
+    « Téléchargements ») validés sur un appareil ; Google Drive refuse `"rw"`, le repli
+    (fichier temporaire interne copié à la fin) y fonctionne. HTTPS y est refusé par `TLS_UNAVAILABLE`
     (`net::tls_available`) tant que l'application n'initialise pas
     `rustls-platform-verifier` (phase 4).
 - Compilation Android : NDK du SDK (`ndk/27.2.12479018`), cible `aarch64-linux-android`,

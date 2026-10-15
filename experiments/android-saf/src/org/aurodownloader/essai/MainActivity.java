@@ -20,6 +20,7 @@ import android.widget.TextView;
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -156,6 +157,7 @@ public class MainActivity extends Activity {
             log("Relecture par pread : " + check(fd, 0, BLOCKS - LATER));
         } catch (IOException | RuntimeException e) {
             log("Ouverture en lecture-écriture : ÉCHEC " + e);
+            fallbackTest(uri);
             return;
         }
         try (InputStream in = cr.openInputStream(uri)) {
@@ -165,6 +167,36 @@ public class MainActivity extends Activity {
         }
         log("Tuer maintenant l'application (adb shell am kill, ou depuis les applications "
                 + "récentes), la relancer, puis toucher « Reprendre ».");
+    }
+
+    /**
+     * Repli de la SPEC 7.5 quand l'écriture positionnée est impossible : le moteur
+     * télécharge dans un fichier temporaire interne, puis le copie d'un seul flux.
+     * L'essai fait cette copie finale, puis relit le fichier.
+     */
+    private void fallbackTest(Uri uri) {
+        log("Repli : copie séquentielle par flux, comme celle d'un fichier temporaire interne");
+        ContentResolver cr = getContentResolver();
+        long t0 = System.nanoTime();
+        try (OutputStream o = cr.openOutputStream(uri)) {
+            if (o == null) {
+                log("Flux en écriture : ÉCHEC (aucun flux)");
+                return;
+            }
+            for (int i = 0; i < BLOCKS; i++) {
+                o.write(block(i));
+            }
+        } catch (IOException | RuntimeException e) {
+            log("Flux en écriture : ÉCHEC " + e);
+            return;
+        }
+        double seconds = (System.nanoTime() - t0) / 1e9;
+        log(String.format("Flux en écriture, %d Mio : OK (%.1f Mio/s)", BLOCKS, BLOCKS / seconds));
+        try (InputStream in = cr.openInputStream(uri)) {
+            log("Relecture par flux : " + checkStream(in, BLOCKS));
+        } catch (IOException | RuntimeException e) {
+            log("Relecture par flux : ÉCHEC " + e);
+        }
     }
 
     private void resumeTest() {
