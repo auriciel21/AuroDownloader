@@ -1,0 +1,10 @@
+/target
+
+# Bases de données locales et leurs copies
+*.db
+*.db-wal
+*.db-shm
+*.db.bak-v*
+
+# Fichiers de téléchargement en cours
+*.part
