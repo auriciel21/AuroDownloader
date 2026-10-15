@@ -43,6 +43,9 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- list
 cargo run -p auro-cli -- resume <id-de-tâche>
+# Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
+AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
+  cargo test --release -p auro-cli --test crash_resume -- --nocapture
 ```
 
 ## Règles du projet
@@ -67,10 +70,12 @@ cargo run -p auro-cli -- resume <id-de-tâche>
   Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
 - États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
   vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
-- Prochaine étape : phase 1 (SPEC 9.3). D'abord le banc de reprise sous arrêt brutal
-  (SPEC 9.1, porte de la phase 1 : tuer le processus à des instants aléatoires, reprendre,
-  comparer l'empreinte), puis le redécoupage dynamique (F-02, SPEC 7.2) et le nombre de
-  connexions automatique (SPEC 7.3).
+- Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
+  (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
+- Prochaine étape : phase 1 (SPEC 9.3), redécoupage dynamique (F-02, SPEC 7.2) dans
+  `transfer` : une connexion libre coupe le plus gros segment actif, l'écrivain de ce
+  segment recule sa borne (`SegmentWriter::shrink_end`) ; puis le nombre de connexions
+  automatique (SPEC 7.3).
 
 ## Façon de travailler
 

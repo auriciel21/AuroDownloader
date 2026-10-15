@@ -83,8 +83,10 @@ impl Case {
     }
 }
 
+/// Serveur du fichier de test dont `body` est le contenu (toujours `content(n)`).
 fn site(body: Vec<u8>) -> (Arc<Mutex<FileSite>>, Server) {
-    let site = Arc::new(Mutex::new(FileSite::new(body)));
+    assert_eq!(body, content(body.len()));
+    let site = Arc::new(Mutex::new(FileSite::new(body.len() as u64)));
     let server = serve_file(Arc::clone(&site));
     (site, server)
 }

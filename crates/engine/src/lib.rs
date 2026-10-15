@@ -14,6 +14,7 @@ pub mod rpc;
 pub mod scheduler;
 pub mod segmenter;
 pub mod store;
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testing;
 pub mod transfer;

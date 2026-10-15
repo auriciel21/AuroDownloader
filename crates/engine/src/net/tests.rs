@@ -364,7 +364,7 @@ mod segments {
     #[tokio::test]
     async fn matching_range_is_streamed() {
         let data = content(10_000);
-        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.clone()))));
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.len() as u64))));
         let body = client()
             .get_range(
                 &server.url("/f"),
@@ -382,7 +382,7 @@ mod segments {
 
     #[tokio::test]
     async fn changed_validator_means_file_changed() {
-        let site = Arc::new(Mutex::new(FileSite::new(content(1000))));
+        let site = Arc::new(Mutex::new(FileSite::new(1000)));
         let server = serve_file(Arc::clone(&site));
         site.lock().unwrap().etag = Some("\"v2\"".into());
         let err = client()
@@ -396,7 +396,7 @@ mod segments {
 
     #[tokio::test]
     async fn changed_size_means_file_changed() {
-        let server = serve_file(Arc::new(Mutex::new(FileSite::new(content(1000)))));
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(1000))));
         let c = client();
         let err = c
             .get_range(&server.url("/f"), &[], &range(0, 99, 2000, None))
@@ -413,7 +413,7 @@ mod segments {
 
     #[tokio::test]
     async fn range_ignored_without_validator() {
-        let site = Arc::new(Mutex::new(FileSite::new(content(1000))));
+        let site = Arc::new(Mutex::new(FileSite::new(1000)));
         site.lock().unwrap().ranges = false;
         let server = serve_file(site);
         let err = client()
@@ -426,7 +426,7 @@ mod segments {
 
     #[tokio::test]
     async fn cut_body_is_a_retryable_network_error() {
-        let site = Arc::new(Mutex::new(FileSite::new(content(100_000))));
+        let site = Arc::new(Mutex::new(FileSite::new(100_000)));
         {
             let mut s = site.lock().unwrap();
             s.cut_responses = 1;
@@ -452,7 +452,7 @@ mod segments {
     #[tokio::test]
     async fn whole_file_checks_the_expected_size() {
         let data = content(3000);
-        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.clone()))));
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.len() as u64))));
         let c = client();
         let body = c.get_all(&server.url("/f"), &[], Some(3000)).await.unwrap();
         assert_eq!(read_all(body).await, data);
