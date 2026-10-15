@@ -3,12 +3,14 @@
 //!
 //! Chaque écriture se fait dans une transaction qui relit les segments enregistrés et
 //! vérifie leur couverture avant de valider : un état incohérent n'est jamais validé.
-//! Les compteurs `written_bytes` ne sont pas écrits ici : ils suivent le vidage des
-//! octets sur disque (règle 1).
+//! Les compteurs `written_bytes` suivent le vidage des octets sur disque (règle 1) :
+//! [`save_progress`] n'accepte que des [`SyncedProgress`], fabriqués par le module `io`
+//! après `fdatasync`.
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{StoreError, now_ms};
+use crate::io::SyncedProgress;
 use crate::segmenter::{self, Segment, SegmentState, Split};
 
 fn state_to_sql(state: SegmentState) -> &'static str {
@@ -199,6 +201,94 @@ pub fn save_split(
     Ok(())
 }
 
+/// `tasks.done_bytes` est la somme des `written_bytes` (SPEC §5.6, règle 3).
+fn refresh_done_bytes(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
+    let updated = conn.execute(
+        "UPDATE tasks SET updated_at = ?2,
+           done_bytes = (SELECT COALESCE(SUM(written_bytes), 0) FROM segments WHERE task_id = ?1)
+         WHERE id = ?1",
+        params![task_id, now_ms()],
+    )?;
+    if updated == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Enregistre les compteurs d'octets vidés sur disque (SPEC §5.6, règle 1, et §7.5), avec
+/// `tasks.done_bytes`, dans une seule transaction. Un segment entièrement écrit passe à
+/// `done`.
+///
+/// Un compteur ne recule jamais ici : un relevé plus ancien que celui déjà enregistré (un
+/// point de contrôle qui croise la fin d'une connexion) est ignoré. Le recul passe par
+/// [`reset_segments`].
+pub fn save_progress(
+    conn: &mut Connection,
+    task_id: &str,
+    progress: &[SyncedProgress],
+) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for p in progress {
+        let written = to_sql_int(p.written(), "octets écrits")?;
+        let size: Option<i64> = tx
+            .query_row(
+                "SELECT end_offset - start_offset + 1 FROM segments
+                 WHERE task_id = ?1 AND idx = ?2",
+                params![task_id, p.idx()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let size = size.ok_or_else(|| StoreError::SegmentNotFound {
+            task_id: task_id.to_owned(),
+            idx: p.idx(),
+        })?;
+        if written > size {
+            return Err(StoreError::BadValue(format!(
+                "tâche {task_id}, segment {} : {written} octets écrits pour {size}",
+                p.idx()
+            )));
+        }
+        tx.execute(
+            "UPDATE segments
+             SET written_bytes = ?3,
+                 state = CASE WHEN ?3 = end_offset - start_offset + 1 THEN 'done' ELSE state END
+             WHERE task_id = ?1 AND idx = ?2 AND written_bytes < ?3",
+            params![task_id, p.idx(), written],
+        )?;
+    }
+    refresh_done_bytes(&tx, task_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Reprise, étape 1 (SPEC §7.4) : les segments `idxs`, dont les octets déclarés manquent
+/// au `.part`, repartent de zéro à l'état `pending`.
+pub fn reset_segments(
+    conn: &mut Connection,
+    task_id: &str,
+    idxs: &[u32],
+) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for &idx in idxs {
+        let updated = tx.execute(
+            "UPDATE segments SET written_bytes = 0, state = 'pending'
+             WHERE task_id = ?1 AND idx = ?2",
+            params![task_id, idx],
+        )?;
+        if updated == 0 {
+            return Err(StoreError::SegmentNotFound {
+                task_id: task_id.to_owned(),
+                idx,
+            });
+        }
+    }
+    refresh_done_bytes(&tx, task_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Contrôle de démarrage (SPEC §7.4, étape 2) : tâches HTTP et FTP non terminées dont les
 /// segments enregistrés violent l'invariant de couverture, avec la cause.
 ///
@@ -232,6 +322,7 @@ pub fn find_coverage_errors(conn: &Connection) -> Result<Vec<(String, StoreError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::{PartFile, SegmentWriter, part_path, segments_beyond};
     use crate::segmenter::{CoverageError, initial_split, split_largest};
     use crate::store::open_in_memory;
     use proptest::prelude::*;
@@ -454,6 +545,222 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn done_bytes(conn: &Connection, task_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT done_bytes FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Écrit `len` octets au début de `segment` et renvoie le compteur vidé sur disque.
+    fn synced(part: &PartFile, segment: &Segment, len: usize) -> SyncedProgress {
+        let mut w = part.writer(segment, 64);
+        w.write(&vec![0xAB; len]).unwrap();
+        w.finish().unwrap()
+    }
+
+    /// Tâche de 300 octets en trois segments actifs de 100, et son `.part`.
+    fn task_with_part(dir: &tempfile::TempDir) -> (Connection, Vec<Segment>, PartFile) {
+        let mut conn = open_in_memory().unwrap();
+        new_task(&conn, "t1", "http", "active");
+        let segments = active(initial_split(300, 3, 1));
+        save_initial_segments(&mut conn, "t1", 300, &segments).unwrap();
+        let part = PartFile::create(&dir.path().join("fichier.iso")).unwrap();
+        (conn, segments, part)
+    }
+
+    #[test]
+    fn synced_progress_is_saved_with_done_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut conn, segments, part) = task_with_part(&dir);
+        let progress = [
+            synced(&part, &segments[0], 100),
+            synced(&part, &segments[1], 40),
+        ];
+        save_progress(&mut conn, "t1", &progress).unwrap();
+
+        let saved = load_segments(&conn, "t1").unwrap();
+        assert_eq!(
+            (saved[0].written, saved[0].state),
+            (100, SegmentState::Done)
+        );
+        assert_eq!(
+            (saved[1].written, saved[1].state),
+            (40, SegmentState::Active)
+        );
+        assert_eq!(
+            (saved[2].written, saved[2].state),
+            (0, SegmentState::Active)
+        );
+        assert_eq!(done_bytes(&conn, "t1"), 140);
+    }
+
+    #[test]
+    fn older_progress_never_lowers_a_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut conn, segments, part) = task_with_part(&dir);
+        let mut w = part.writer(&segments[1], 10);
+        let handle = w.progress();
+        w.write(&[1; 30]).unwrap();
+        let early = part.checkpoint(&[handle]).unwrap();
+        w.write(&[1; 30]).unwrap();
+        let late = w.finish().unwrap();
+
+        save_progress(&mut conn, "t1", &[late]).unwrap();
+        save_progress(&mut conn, "t1", &early).unwrap();
+        assert_eq!(load_segments(&conn, "t1").unwrap()[1].written, 60);
+        assert_eq!(done_bytes(&conn, "t1"), 60);
+    }
+
+    #[test]
+    fn progress_past_a_shrunk_segment_is_rolled_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut conn, mut segments, part) = task_with_part(&dir);
+        // Écrivain ouvert avant le redécoupage, jamais raccourci : il dépasse la borne.
+        let old_first = segments[0].clone();
+        let split = split_largest(&mut segments, 1).unwrap();
+        assert_eq!(split.from, 0);
+        save_split(&mut conn, "t1", &segments, split).unwrap();
+
+        let ok = synced(&part, &segments[1], 10);
+        let too_far = synced(&part, &old_first, 100);
+        assert!(matches!(
+            save_progress(&mut conn, "t1", &[ok, too_far]),
+            Err(StoreError::BadValue(_))
+        ));
+        assert!(
+            load_segments(&conn, "t1")
+                .unwrap()
+                .iter()
+                .all(|s| s.written == 0)
+        );
+        assert_eq!(done_bytes(&conn, "t1"), 0);
+    }
+
+    #[test]
+    fn progress_of_an_unknown_segment_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut conn, _, part) = task_with_part(&dir);
+        let stray = synced(
+            &part,
+            &Segment {
+                idx: 9,
+                start: 0,
+                end: 9,
+                written: 0,
+                state: SegmentState::Active,
+            },
+            5,
+        );
+        assert!(matches!(
+            save_progress(&mut conn, "t1", &[stray]),
+            Err(StoreError::SegmentNotFound { idx: 9, .. })
+        ));
+    }
+
+    #[test]
+    fn reset_segments_restart_from_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut conn, segments, part) = task_with_part(&dir);
+        let progress = [
+            synced(&part, &segments[0], 100),
+            synced(&part, &segments[2], 50),
+        ];
+        save_progress(&mut conn, "t1", &progress).unwrap();
+
+        reset_segments(&mut conn, "t1", &[0]).unwrap();
+        let saved = load_segments(&conn, "t1").unwrap();
+        assert_eq!(
+            (saved[0].written, saved[0].state),
+            (0, SegmentState::Pending)
+        );
+        assert_eq!(saved[2].written, 50);
+        assert_eq!(done_bytes(&conn, "t1"), 50);
+        assert!(matches!(
+            reset_segments(&mut conn, "t1", &[2, 42]),
+            Err(StoreError::SegmentNotFound { idx: 42, .. })
+        ));
+        assert_eq!(load_segments(&conn, "t1").unwrap()[2].written, 50, "annulé");
+    }
+
+    /// Arrêt brutal simulé : des octets reçus après le dernier point de contrôle sont
+    /// perdus avec la connexion. À la reprise, la base n'annonce que des octets présents
+    /// dans le `.part`, et l'écriture repart de là.
+    #[test]
+    fn resume_after_crash_restarts_from_the_saved_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("fichier.iso");
+        let (mut conn, segments, part) = task_with_part(&dir);
+        let byte = |offset: u64| (offset % 251) as u8;
+        let bytes = |from: u64, len: u64| (from..from + len).map(byte).collect::<Vec<u8>>();
+
+        let mut writers: Vec<_> = segments.iter().map(|s| part.writer(s, 16)).collect();
+        let handles: Vec<_> = writers.iter().map(SegmentWriter::progress).collect();
+        for (w, s) in writers.iter_mut().zip(&segments) {
+            w.write(&bytes(s.start, 50)).unwrap();
+        }
+        save_progress(&mut conn, "t1", &part.checkpoint(&handles).unwrap()).unwrap();
+        for (w, s) in writers.iter_mut().zip(&segments) {
+            w.write(&bytes(s.start + 50, 25)).unwrap();
+        }
+        drop((writers, handles, part)); // arrêt brutal : rien d'autre n'est enregistré
+
+        let part = PartFile::open(&dest).unwrap();
+        let saved = load_segments(&conn, "t1").unwrap();
+        assert!(segments_beyond(part.size_on_disk().unwrap(), &saved).is_empty());
+        let file = std::fs::read(part.path()).unwrap();
+        for s in &saved {
+            let (from, to) = (s.start as usize, (s.start + s.written) as usize);
+            assert_eq!(file[from..to], bytes(s.start, s.written)[..]);
+        }
+
+        let progress: Vec<_> = saved
+            .iter()
+            .map(|s| {
+                let mut w = part.writer(s, 16);
+                w.write(&bytes(s.next_offset(), s.remaining())).unwrap();
+                w.finish().unwrap()
+            })
+            .collect();
+        save_progress(&mut conn, "t1", &progress).unwrap();
+        assert!(
+            load_segments(&conn, "t1")
+                .unwrap()
+                .iter()
+                .all(|s| s.state == SegmentState::Done)
+        );
+        assert_eq!(done_bytes(&conn, "t1"), 300);
+        part.finish().unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), bytes(0, 300));
+    }
+
+    /// Un `.part` tronqué (disque restauré, fichier remplacé) : les segments dont les
+    /// octets manquent repartent de zéro.
+    #[test]
+    fn truncated_part_file_resets_the_missing_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("fichier.iso");
+        let (mut conn, segments, part) = task_with_part(&dir);
+        let progress: Vec<_> = segments.iter().map(|s| synced(&part, s, 60)).collect();
+        save_progress(&mut conn, "t1", &progress).unwrap();
+        drop(part);
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(part_path(&dest))
+            .unwrap()
+            .set_len(150)
+            .unwrap();
+        let part = PartFile::open(&dest).unwrap();
+        let saved = load_segments(&conn, "t1").unwrap();
+        let missing = segments_beyond(part.size_on_disk().unwrap(), &saved);
+        assert_eq!(missing, [1, 2]);
+        reset_segments(&mut conn, "t1", &missing).unwrap();
+        assert_eq!(done_bytes(&conn, "t1"), 60);
     }
 
     proptest! {

@@ -21,7 +21,8 @@ téléchargement.
 
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
-  écrire), `net`, `io` (à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
+  écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final ;
+  préallocation et espace libre à écrire), `net` (à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -51,8 +52,11 @@ cargo run -p auro-cli -- db migrate auro.db
   base dans `store::segments` (vérifié dans la transaction de chaque écriture, contrôle au
   démarrage par `find_coverage_errors`). Ne jamais écrire dans `segments` sans passer par
   ce module.
-- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3), module `io` (écriture
-  positionnée, `fdatasync` puis compteur `written_bytes`, SPEC 5.6 règle 1 et 7.5).
+- Ordre d'écriture, application : `written_bytes` ne s'enregistre que par
+  `store::segments::save_progress`, qui n'accepte que des `io::SyncedProgress`, fabriqués
+  par `io` après `sync_data`. Ne pas ajouter d'autre chemin d'écriture de ce compteur.
+- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3), module `net` (préparation
+  d'une tâche, SPEC 7.1 : `HEAD`, repli `GET` `Range: bytes=0-0`, validateurs).
 
 ## Façon de travailler
 

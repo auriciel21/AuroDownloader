@@ -642,7 +642,7 @@ Cette boucle est volontairement proche de celle du contrôle de congestion TCP :
 
 Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 
-1. Le moteur ouvre le `.part` et vérifie que sa taille couvre tous les octets que `segments` déclare écrits. Sinon, les segments concernés repassent à `pending`.
+1. Le moteur ouvre le `.part` et vérifie que sa taille couvre tous les octets que `segments` déclare écrits. Sinon, les segments concernés repassent à `pending`, avec `written_bytes` remis à zéro.
 2. Il vérifie les invariants de couverture (section 5.6).
 3. Il rouvre les connexions avec `Range` et `If-Range` portant l'`ETag` mémorisé (ou la date `Last-Modified`).
 4. Réponse `206` : le fichier n'a pas changé, le transfert reprend là où il s'était arrêté. Réponse `200` : le fichier distant a changé, la tâche passe en pause avec `pause_reason = file_changed` (F-13).
@@ -651,7 +651,8 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 ### 7.5 Écriture sur disque
 
 - Chaque connexion écrit à sa position dans le fichier (écriture positionnée), avec un tampon de 256 Kio à 1 Mio, sans verrou partagé entre segments.
-- Le moteur vide les données sur disque (`fdatasync`) à la fin de chaque segment et à chaque point de contrôle, avant d'enregistrer les compteurs (règle 1 de la section 5.6).
+- Le moteur vide les données sur disque (`fdatasync`) à la fin de chaque segment et à chaque point de contrôle, avant d'enregistrer les compteurs (règle 1 de la section 5.6). Au point de contrôle, les compteurs sont relevés avant le vidage : les octets écrits pendant le vidage attendent le point suivant. Un compteur enregistré ne recule jamais, sauf à la reprise (section 7.4, étape 1).
+- À la fin, le `.part` est vidé, fermé, puis renommé en nom final ; un fichier déjà présent sous ce nom n'est jamais écrasé.
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
 
 ### 7.6 Limitation de débit
