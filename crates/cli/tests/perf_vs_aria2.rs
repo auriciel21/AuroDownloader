@@ -7,10 +7,12 @@
 //! connexions égal, dans un dossier neuf, et mesure le temps écoulé et le temps processeur
 //! du processus (utilisateur et système). Le résultat est un tableau : débit, rapport des
 //! débits auro / aria2 (la porte de la phase 1 demande au moins 0,95), rapport des coûts
-//! processeur par octet auro / aria2 (porte de N-01, seuil à fixer), et part d'un cœur que
+//! processeur par octet auro / aria2 (porte de N-01 : au plus 1,0), et part d'un cœur que
 //! coûterait un débit de 1 Gbit/s (objectif indicatif de N-01 : moins de 15 %, sur la
-//! machine de référence). Rien n'est imposé : les mesures dépendent de la machine, le
-//! tableau sert à décider.
+//! machine de référence). Un « ⚠ » marque un rapport hors porte. Les portes ne
+//! s'appliquent qu'à nombre de connexions égal, pas au mode automatique, et ne font échouer
+//! le banc qu'avec `AURO_PERF_ENFORCE=1` : c'est le cas sous Linux en intégration
+//! continue, où se mesure la porte (SPEC §9.1). Ailleurs, le tableau sert à décider.
 //!
 //! Scénarios : serveur local sans bridage (coût processeur) et bridé par connexion (gain
 //! des connexions multiples), chacun en HTTP puis en HTTPS, et un serveur réel si
@@ -24,7 +26,7 @@
 //! Réglages : `AURO_PERF_SIZE` (octets, défaut 256 Mio), `AURO_PERF_RUNS` (mesures par
 //! outil et scénario, défaut 3 ; la médiane est retenue), `AURO_PERF_REAL_URL`,
 //! `AURO_PERF_LOGS` (dossier où garder la sortie d'erreurs de chaque lancement, pour
-//! examiner l'avancement affiché par auro).
+//! examiner l'avancement affiché par auro), `AURO_PERF_ENFORCE`.
 
 use std::fs::File;
 use std::io::Read;
@@ -38,6 +40,11 @@ use auro_engine::testing::{
 };
 
 const MIB: u64 = 1024 * 1024;
+
+/// Porte de débit de la phase 1 : auro au moins à 95 % d'aria2 (SPEC §9.1).
+const GATE_SPEED: f64 = 0.95;
+/// Porte de N-01 : coût processeur par octet au plus égal à celui d'aria2 (SPEC §3).
+const GATE_CPU: f64 = 1.0;
 
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -363,7 +370,10 @@ fn reference<'a>(rows: &'a [Row], row: &Row) -> Option<&'a Measure> {
         .max_by(|a, b| a.mib_per_s().total_cmp(&b.mib_per_s()))
 }
 
-fn report(rows: &[Row]) {
+/// Affiche le tableau ; renvoie les portes manquées à nombre de connexions égal.
+fn report(rows: &[Row]) -> Vec<String> {
+    let mark = |ok: bool| if ok { "" } else { " ⚠" };
+    let mut missed = Vec::new();
     eprintln!();
     eprintln!(
         "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet \
@@ -371,11 +381,22 @@ fn report(rows: &[Row]) {
     );
     for row in rows {
         let (speed, cpu) = match (row.tool, reference(rows, row)) {
-            (Tool::Auro(_), Some(aria2)) => {
+            (Tool::Auro(connections), Some(aria2)) => {
                 let speed = row.measure.mib_per_s() / aria2.mib_per_s();
-                let verdict = if speed >= 0.95 { "" } else { " ⚠" };
                 let cpu = row.measure.cpu_per_byte() / aria2.cpu_per_byte();
-                (format!("{speed:.2}{verdict}"), format!("{cpu:.2}"))
+                let (speed_ok, cpu_ok) = (speed >= GATE_SPEED, cpu <= GATE_CPU);
+                if connections.is_some() && !(speed_ok && cpu_ok) {
+                    missed.push(format!(
+                        "{}, {} : débit {speed:.2} (porte {GATE_SPEED}), processeur \
+                         {cpu:.2} (porte {GATE_CPU})",
+                        row.scenario,
+                        row.tool.label()
+                    ));
+                }
+                (
+                    format!("{speed:.2}{}", mark(speed_ok)),
+                    format!("{cpu:.2}{}", mark(cpu_ok)),
+                )
             }
             _ => (String::new(), String::new()),
         };
@@ -387,6 +408,7 @@ fn report(rows: &[Row]) {
             row.measure.core_at_gbit()
         );
     }
+    missed
 }
 
 #[test]
@@ -474,5 +496,10 @@ fn throughput_and_cpu_against_aria2() {
         scenario(&mut rows, s, runs, &any_size);
     }
 
-    report(&rows);
+    let missed = report(&rows);
+    if !missed.is_empty() {
+        eprintln!("\nportes manquées :\n  {}", missed.join("\n  "));
+        let enforce = std::env::var("AURO_PERF_ENFORCE").is_ok_and(|v| v == "1");
+        assert!(!enforce, "portes de performance manquées (SPEC §9.1)");
+    }
 }

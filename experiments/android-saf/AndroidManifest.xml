@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Essai de faisabilité Android, phase 1 (SPEC 7.5 et 9.2) : écriture positionnée
+     sur un fichier obtenu par le sélecteur de stockage du système. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.aurodownloader.essai">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
+    <application android:label="Auro essai SAF">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

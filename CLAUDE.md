@@ -34,6 +34,8 @@ téléchargement.
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
 - `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande.
+- `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
+  construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 
 ## Commandes
 
@@ -90,11 +92,15 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - N-01 (SPEC 3) : la porte est le rapport des coûts processeur par octet auro / aria2, à
   nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
-- Prochaine étape : porte de la phase 1 (SPEC 9.3). En attente d'une décision sur le seuil
-  de N-01 (proposé : 1,0 ; voir `docs/MESURES.md`, troisième relevé) et d'un premier
-  relevé sous Linux (travail `perf` de `.github/workflows/ci.yml`, pas encore exécuté :
-  pas de dépôt distant). Puis la version longue du banc de reprise (1 000 cycles sur
-  1 Gio) et l'essai Android (SPEC 7.5 et 9.2).
+- Prochaine étape : porte de la phase 1 (SPEC 9.3).
+  - N-01 : seuil 1,0, provisoire, à confirmer par un premier relevé sous Linux (travail
+    `perf` de `.github/workflows/ci.yml`, pas encore exécuté faute de dépôt distant).
+  - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : lancé le 2026-10-15,
+    sans résultat consigné.
+  - Essai Android (SPEC 7.5) : premier relevé fait sur le stockage interne. Reste le
+    sélecteur de stockage (`experiments/android-saf`). HTTPS sous Android demande
+    l'initialisation de `rustls-platform-verifier` ; en attendant, renvoyer une erreur au
+    lieu de paniquer.
 
 ## Façon de travailler
 

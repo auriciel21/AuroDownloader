@@ -142,7 +142,7 @@ Quinze exigences encadrent la qualité du produit. Les chiffres sont des cibles 
 
 | ID | Domaine | Exigence | Cible |
 | --- | --- | --- | --- |
-| N-01 | Performance | Coût processeur du transfert | Porte (bloquante) : coût processeur par octet transféré au plus égal à un seuil, à fixer après mesure, multiplié par celui d'aria2, à nombre de connexions égal, sur la même machine, avec le même fichier et le même serveur. Objectif indicatif (non bloquant) : saturer 1 Gbit/s avec moins de 15 % d'un cœur sur la machine de référence nommée dans le relevé de performance |
+| N-01 | Performance | Coût processeur du transfert | Porte (bloquante) : coût processeur par octet transféré au plus égal à celui d'aria2 (seuil 1,0, provisoire : fixé d'après les mesures sous Windows de `docs/MESURES.md`, à confirmer sous Linux), à nombre de connexions égal, sur la même machine, avec le même fichier et le même serveur. Objectif indicatif (non bloquant) : saturer 1 Gbit/s avec moins de 15 % d'un cœur sur la machine de référence nommée dans le relevé de performance |
 | N-02 | Performance | Démarrage du moteur | Prêt à recevoir des commandes en moins d'une seconde sur ordinateur |
 | N-03 | Mémoire | Consommation du moteur | Moins de 50 Mo au repos ; moins de 150 Mo avec 100 tâches actives |
 | N-04 | Fiabilité | Reprise après arrêt brutal (coupure de courant, arrêt forcé) | Perte limitée aux octets d'un segment en cours ; aucun segment terminé perdu |
@@ -668,6 +668,10 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 - Le moteur vide les données sur disque (`fdatasync`) à la fin de chaque segment et à chaque point de contrôle, avant d'enregistrer les compteurs (règle 1 de la section 5.6). Au point de contrôle, les compteurs sont relevés avant le vidage : les octets écrits pendant le vidage attendent le point suivant. Un compteur enregistré ne recule jamais, sauf à la reprise (section 7.4, étape 1).
 - À la fin, le `.part` est vidé, fermé, puis renommé en nom final ; un fichier déjà présent sous ce nom n'est jamais écrasé.
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
+- Essai de phase 1, premier relevé (2026-10-15, Galaxy S25 Ultra, Android 16, moteur compilé avec le NDK pour l'API 26) :
+  - **Stockage interne de l'application** : 128 des 130 tests du moteur passent sur l'appareil. Une ISO de 756 Mio téléchargée en HTTP, tuée deux fois puis reprise, garde l'empreinte publiée.
+  - **HTTPS** : `rustls-platform-verifier` exige sous Android une initialisation par l'application (JNI et `Context`), et le moteur panique sans elle. C'est la cause des deux tests en échec. L'application devra faire cette initialisation au démarrage du moteur. D'ici là, le moteur doit renvoyer une erreur au lieu de paniquer.
+  - **Sélecteur de stockage** : l'outil d'essai est `experiments/android-saf` (écritures positionnées depuis plusieurs fils, vidage, reprise après la mort du processus) ; aucun résultat n'est encore relevé.
 
 ### 7.6 Limitation de débit
 

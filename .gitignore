@@ -8,3 +8,6 @@
 
 # Fichiers de téléchargement en cours
 *.part
+
+# Essais Android construits
+/experiments/android-saf/build/

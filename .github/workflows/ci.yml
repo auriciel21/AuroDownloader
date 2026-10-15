@@ -27,9 +27,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # La porte de performance se mesure sous Linux, sans antivirus (SPEC §9.1). Le tableau
-  # va dans le résumé de l'exécution ; rien n'échoue tant que le seuil de N-01 n'est pas
-  # fixé.
+  # La porte de performance se mesure sous Linux, sans antivirus (SPEC §9.1) : à nombre de
+  # connexions égal, débit au moins 0,95 fois et coût processeur par octet au plus 1,0
+  # fois ceux d'aria2. Le tableau va dans le résumé de l'exécution.
   perf:
     name: performance (Linux)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -44,9 +44,12 @@ jobs:
           AURO_ARIA2: aria2c
           AURO_PERF_SIZE: "536870912"
           AURO_PERF_RUNS: "5"
+          AURO_PERF_ENFORCE: "1"
         run: |
           set -o pipefail
           { echo "Machine : $(nproc) processeurs, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"; \
             aria2c --version | head -1; } | tee perf.txt
           cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture 2>&1 | tee -a perf.txt
-          grep -E '^(Machine|aria2|\|)' perf.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Tableau dans le résumé
+        if: always()
+        run: grep -E '^(Machine|aria2|\||  [^ ])' perf.txt >> "$GITHUB_STEP_SUMMARY" || true
