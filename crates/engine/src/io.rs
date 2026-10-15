@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
 
 /// Taille par défaut du tampon d'un écrivain : 256 Kio (SPEC §7.10).
@@ -79,6 +80,35 @@ pub fn part_path(dest: &Path) -> PathBuf {
     let mut name = dest.as_os_str().to_os_string();
     name.push(".part");
     PathBuf::from(name)
+}
+
+/// Nom libre dans `dir` pour un nouveau téléchargement : `name` si ni lui ni son `.part`
+/// n'existent, sinon `nom (1).ext`, `nom (2).ext`… Un fichier existant n'est jamais
+/// réutilisé ; [`PartFile::create`] et [`PartFile::finish`] le refusent de toute façon.
+pub fn available_name(dir: &Path, name: &str) -> String {
+    let free = |n: &str| {
+        let path = dir.join(n);
+        !path.exists() && !part_path(&path).exists()
+    };
+    if free(name) {
+        return name.to_owned();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    (1u32..)
+        .map(|i| {
+            let suffix = format!(" ({i}){ext}");
+            // Le nom reste dans la limite de longueur du nettoyage.
+            let mut keep = MAX_NAME_BYTES.saturating_sub(suffix.len()).min(stem.len());
+            while !stem.is_char_boundary(keep) {
+                keep -= 1;
+            }
+            format!("{}{suffix}", &stem[..keep])
+        })
+        .find(|candidate| free(candidate))
+        .expect("un nom libre finit par se trouver")
 }
 
 /// Octets d'un segment dont la présence sur disque est prouvée : relevés avant un vidage
@@ -264,6 +294,19 @@ pub struct ProgressHandle {
     issued: Arc<AtomicU64>,
 }
 
+impl ProgressHandle {
+    /// Numéro du segment.
+    pub fn idx(&self) -> u32 {
+        self.idx
+    }
+
+    /// Octets remis au système depuis le début du segment, pas forcément vidés : pour
+    /// l'affichage de l'avancement, jamais pour la base.
+    pub fn handed_over(&self) -> u64 {
+        self.issued.load(Ordering::Relaxed)
+    }
+}
+
 /// Écrivain d'un segment, propre à une connexion.
 ///
 /// Les octets reçus passent par un tampon, écrit à sa position dès qu'il est plein. Un
@@ -406,6 +449,25 @@ mod tests {
         assert_eq!(
             part_path(Path::new("dl/a.tar.gz")),
             PathBuf::from("dl/a.tar.gz.part")
+        );
+    }
+
+    #[test]
+    fn available_name_avoids_files_and_downloads_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(available_name(dir.path(), "a.iso"), "a.iso");
+        std::fs::write(dir.path().join("a.iso"), b"").unwrap();
+        assert_eq!(available_name(dir.path(), "a.iso"), "a (1).iso");
+        std::fs::write(dir.path().join("a (1).iso.part"), b"").unwrap();
+        assert_eq!(available_name(dir.path(), "a.iso"), "a (2).iso");
+        std::fs::write(dir.path().join("LISEZMOI"), b"").unwrap();
+        assert_eq!(available_name(dir.path(), "LISEZMOI"), "LISEZMOI (1)");
+        let long = "é".repeat(125);
+        std::fs::write(dir.path().join(&long), b"").unwrap();
+        let other = available_name(dir.path(), &long);
+        assert!(
+            other.len() <= MAX_NAME_BYTES && other.ends_with(" (1)"),
+            "{other}"
         );
     }
 

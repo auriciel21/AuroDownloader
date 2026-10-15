@@ -22,9 +22,11 @@ téléchargement.
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
   écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final ;
-  préallocation et espace libre à écrire), `net` (préparation d'une tâche HTTP(S) faite,
-  avec noms de fichier et classement des erreurs ; requêtes de segments, FTP, proxies à
-  écrire). Phase 2 : `rpc` et `scheduler` (vides). En
+  préallocation et espace libre à écrire), `net` (préparation, requêtes de segments avec
+  `If-Range`, noms de fichier, classement des erreurs ; FTP, proxies à écrire),
+  `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
+  (exécution d'une tâche : relie `net`, `io` et `store` ; redécoupage dynamique et
+  connexions automatiques à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -38,6 +40,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p auro-cli -- db migrate auro.db
 cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
+cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
+cargo run -p auro-cli -- list
+cargo run -p auro-cli -- resume <id-de-tâche>
 ```
 
 ## Règles du projet
@@ -60,9 +65,12 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
   par `io` après `sync_data`. Ne pas ajouter d'autre chemin d'écriture de ce compteur.
 - Noms de fichier venus du serveur : toujours par `net::filename::sanitize` (SPEC 8.1).
   Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
-- Prochaine étape : phase 1 (SPEC 9.3), premier téléchargement complet : enregistrer la
-  préparation en base (`sources`, taille et segments initiaux), requêtes de segments
-  (`206` vérifié, `If-Range`), écriture par `io`, commande `auro get`.
+- États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
+  vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
+- Prochaine étape : phase 1 (SPEC 9.3). D'abord le banc de reprise sous arrêt brutal
+  (SPEC 9.1, porte de la phase 1 : tuer le processus à des instants aléatoires, reprendre,
+  comparer l'empreinte), puis le redécoupage dynamique (F-02, SPEC 7.2) et le nombre de
+  connexions automatique (SPEC 7.3).
 
 ## Façon de travailler
 

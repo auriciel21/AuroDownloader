@@ -180,6 +180,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 | `net` | Clients HTTP(S) et FTP, TLS, proxies, HTTP/2 et HTTP/3 |
 | `io` | Écriture positionnée, préallocation, empreintes ; abstraction du stockage (fichier local ou sélecteur Android) |
 | `store` | Base SQLite, migrations, points de contrôle |
+| `transfer` | Exécution d'une tâche : préparation, connexions, points de contrôle, reprise et fin ; relie `net`, `io` et `store` |
 | `torrent` | Interface interne et bibliothèque de torrent derrière elle |
 | `media` | Pilotage de yt-dlp et ffmpeg comme processus externes |
 | `postproc` | Règles de rangement, archives, commandes de fin de tâche |
@@ -575,6 +576,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `FILE_CHANGED` | non | Le fichier distant a changé ; la tâche attend la décision de l'utilisateur |
 | `DISK_FULL` | après libération | Plus d'espace ; la tâche reprend quand l'espace revient |
 | `DEST_PERMISSION` | non | Écriture refusée dans le dossier |
+| `DISK_IO` | non | Autre erreur de lecture, d'écriture ou de renommage sur le disque |
 | `CHECKSUM_MISMATCH` | non | L'empreinte du fichier final diffère de celle attendue |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 
@@ -647,6 +649,8 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 3. Il rouvre les connexions avec `Range` et `If-Range` portant l'`ETag` mémorisé (ou la date `Last-Modified`).
 4. Réponse `206` : le fichier n'a pas changé, le transfert reprend là où il s'était arrêté. Réponse `200` : le fichier distant a changé, la tâche passe en pause avec `pause_reason = file_changed` (F-13).
 5. Sans `ETag` ni `Last-Modified`, le moteur compare la taille et signale une validation faible ; une empreinte fournie par l'utilisateur reste alors la seule garantie.
+6. Une tâche sans plages, ou de taille inconnue, ne reprend pas en cours de route : elle repart du début.
+7. Si le `.part` a disparu alors que tous les segments sont terminés et que le fichier final existe avec la bonne taille, l'arrêt a eu lieu entre le renommage et l'enregistrement de la fin : la tâche est terminée sans nouveau téléchargement. Pour une tâche de taille inconnue, la présence du fichier final suffit.
 
 ### 7.5 Écriture sur disque
 

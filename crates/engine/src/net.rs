@@ -1,11 +1,12 @@
 //! Clients HTTP(S) et FTP, TLS, proxies. Voir SPEC §2.1 et §7.1.
 //!
-//! Fait : préparation d'une tâche HTTP(S) ([`Client::probe`], SPEC §7.1), noms de fichier
-//! ([`filename`]), classement des erreurs selon la SPEC §6.8. TLS par `rustls`, avec les
-//! certificats racines du système (`rustls-platform-verifier`).
+//! Fait : préparation d'une tâche HTTP(S) ([`Client::probe`], SPEC §7.1), requêtes de
+//! segments avec `If-Range` ([`Client::get_range`], SPEC §7.4) et flux unique
+//! ([`Client::get_all`]), noms de fichier ([`filename`]), classement des erreurs selon la
+//! SPEC §6.8. TLS par `rustls`, avec les certificats racines du système
+//! (`rustls-platform-verifier`).
 //!
-//! À faire : requêtes par plage des segments (vérification du `206`), `If-Range`, FTP,
-//! proxies (F-07), cookies et authentification (F-06), HTTP/3 (F-05).
+//! À faire : FTP, proxies (F-07), cookies et authentification (F-06), HTTP/3 (F-05).
 
 pub mod filename;
 pub mod headers;
@@ -14,9 +15,12 @@ use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LENGTH,
-    CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, RANGE, RETRY_AFTER,
+    CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_RANGE, LAST_MODIFIED, RANGE,
+    RETRY_AFTER,
 };
 use reqwest::{Method, Response, StatusCode, Url, redirect};
+
+pub use bytes::Bytes;
 
 use filename::NameRules;
 
@@ -69,6 +73,15 @@ pub enum NetError {
 
     #[error("serveur injoignable : {0}")]
     Unreachable(#[source] reqwest::Error),
+
+    #[error("le fichier distant a changé depuis le début du téléchargement")]
+    FileChanged,
+
+    #[error("le serveur n'accepte plus les requêtes par plage : reprise impossible")]
+    RangeIgnored,
+
+    #[error("réponse incohérente du serveur : {0}")]
+    BadResponse(&'static str),
 }
 
 impl NetError {
@@ -94,10 +107,13 @@ impl NetError {
             }
             NetError::Status { .. }
             | NetError::Redirect(_)
-            | NetError::RedirectNotFollowed { .. } => Some("HTTP_STATUS"),
+            | NetError::RedirectNotFollowed { .. }
+            | NetError::BadResponse(_) => Some("HTTP_STATUS"),
             NetError::Timeout(_) => Some("NET_TIMEOUT"),
             NetError::InvalidCertificate(_) => Some("TLS_INVALID_CERT"),
             NetError::Unreachable(_) => Some("NET_UNREACHABLE"),
+            NetError::FileChanged => Some("FILE_CHANGED"),
+            NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
         }
     }
 
@@ -284,11 +300,7 @@ impl Client {
         let status = get.status();
         let get_url = get.url().clone();
         let g = Observed::from_headers(get.headers());
-        let retry_after = get
-            .headers()
-            .get(RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| headers::retry_after(v, SystemTime::now()));
+        let retry_after = retry_after_of(&get);
         // Le corps n'est jamais lu : le fermer coupe un serveur qui enverrait tout.
         drop(get);
 
@@ -328,12 +340,93 @@ impl Client {
         Ok(conclude(&url, get_url, fallback, &g, total, ranges))
     }
 
+    /// Requête d'une plage `[first, last]` d'un fichier de `total` octets (SPEC §7.2).
+    ///
+    /// `if_range` porte l'`ETag` fort ou la date `Last-Modified` mémorisés (SPEC §7.4,
+    /// étape 3). Seul un `206` qui commence à `first`, ne dépasse pas `last` et annonce
+    /// `total` est accepté. Un `200` en réponse à `If-Range`, une autre taille ou un `416`
+    /// signifient que le fichier a changé ([`NetError::FileChanged`]) ; un `200` sans
+    /// `If-Range`, que le serveur ignore désormais les plages.
+    pub async fn get_range(
+        &self,
+        url: &str,
+        task_headers: &[(String, String)],
+        req: &RangeRequest<'_>,
+    ) -> Result<Body, NetError> {
+        let url = parse_url(url)?;
+        let mut extra = header_map(task_headers)?;
+        if let Some(validator) = req.if_range {
+            let value = HeaderValue::from_str(validator)
+                .map_err(|_| NetError::BadHeader("validateur If-Range invalide".into()))?;
+            extra.insert(IF_RANGE, value);
+        }
+        let range = format!("bytes={}-{}", req.first, req.last);
+        let response = self.send(Method::GET, &url, &extra, Some(&range)).await?;
+        let seen = Observed::from_headers(response.headers());
+        match response.status() {
+            StatusCode::PARTIAL_CONTENT => {
+                if seen.encoded {
+                    return Err(NetError::BadResponse("plage compressée"));
+                }
+                let cr = seen
+                    .content_range
+                    .ok_or(NetError::BadResponse("206 sans Content-Range lisible"))?;
+                if cr.total.is_some_and(|t| t != req.total) {
+                    return Err(NetError::FileChanged);
+                }
+                match (cr.range, cr.total) {
+                    (Some((first, last)), Some(_)) if first == req.first && last <= req.last => {
+                        Ok(Body { response })
+                    }
+                    _ => Err(NetError::BadResponse(
+                        "plage reçue différente de la demande",
+                    )),
+                }
+            }
+            StatusCode::OK if req.if_range.is_some() => Err(NetError::FileChanged),
+            StatusCode::OK => Err(NetError::RangeIgnored),
+            StatusCode::RANGE_NOT_SATISFIABLE => Err(NetError::FileChanged),
+            s if s.is_success() => Err(NetError::BadResponse("statut inattendu")),
+            _ => Err(status_error(&response)),
+        }
+    }
+
+    /// Requête du fichier entier, en un seul flux (F-04). Si `expected_total` est connu, une
+    /// autre taille annoncée signifie que le fichier a changé.
+    pub async fn get_all(
+        &self,
+        url: &str,
+        task_headers: &[(String, String)],
+        expected_total: Option<u64>,
+    ) -> Result<Body, NetError> {
+        let url = parse_url(url)?;
+        let extra = header_map(task_headers)?;
+        let response = self.send(Method::GET, &url, &extra, None).await?;
+        if response.status() != StatusCode::OK {
+            return Err(if response.status().is_success() {
+                NetError::BadResponse("statut inattendu")
+            } else {
+                status_error(&response)
+            });
+        }
+        let seen = Observed::from_headers(response.headers());
+        if let Some(expected) = expected_total {
+            if seen.encoded {
+                return Err(NetError::BadResponse("corps compressé"));
+            }
+            if seen.length.is_some_and(|l| l != expected) {
+                return Err(NetError::FileChanged);
+            }
+        }
+        Ok(Body { response })
+    }
+
     async fn send(
         &self,
         method: Method,
         url: &Url,
         extra: &HeaderMap,
-        range: Option<&'static str>,
+        range: Option<&str>,
     ) -> Result<Response, NetError> {
         let mut request = self
             .http
@@ -353,6 +446,46 @@ impl Client {
             });
         }
         Ok(response)
+    }
+}
+
+/// Plage demandée par [`Client::get_range`], bornes incluses.
+#[derive(Debug, Clone, Copy)]
+pub struct RangeRequest<'a> {
+    pub first: u64,
+    pub last: u64,
+    /// Taille du fichier mémorisée à la préparation.
+    pub total: u64,
+    /// Valeur de `If-Range` : `ETag` fort ou date `Last-Modified`.
+    pub if_range: Option<&'a str>,
+}
+
+/// Corps d'une réponse acceptée, lu morceau par morceau.
+#[derive(Debug)]
+pub struct Body {
+    response: Response,
+}
+
+impl Body {
+    /// Morceau suivant ; `None` à la fin du corps. Une coupure avant la fin annoncée par
+    /// le serveur est une erreur réseau.
+    pub async fn chunk(&mut self) -> Result<Option<Bytes>, NetError> {
+        self.response.chunk().await.map_err(NetError::from_reqwest)
+    }
+}
+
+fn retry_after_of(response: &Response) -> Option<Duration> {
+    response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| headers::retry_after(v, SystemTime::now()))
+}
+
+fn status_error(response: &Response) -> NetError {
+    NetError::Status {
+        status: response.status().as_u16(),
+        retry_after: retry_after_of(response),
     }
 }
 
@@ -381,6 +514,11 @@ fn conclude(
         file_name: filename::sanitize(raw_name.as_deref().unwrap_or(""), NameRules::native()),
         final_url,
     }
+}
+
+/// Vérifie qu'une adresse est utilisable (HTTP ou HTTPS) avant de créer une tâche.
+pub fn check_url(url: &str) -> Result<(), NetError> {
+    parse_url(url).map(|_| ())
 }
 
 fn parse_url(url: &str) -> Result<Url, NetError> {

@@ -14,3 +14,6 @@ pub mod rpc;
 pub mod scheduler;
 pub mod segmenter;
 pub mod store;
+#[cfg(test)]
+mod testing;
+pub mod transfer;

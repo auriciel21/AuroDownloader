@@ -137,7 +137,20 @@ pub fn save_initial_segments(
     segments: &[Segment],
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let existing: i64 = tx.query_row(
+    set_size_and_segments(&tx, task_id, Some(total), segments)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Corps de [`save_initial_segments`], à appeler dans une transaction ouverte. Une taille
+/// inconnue (`None`) n'admet aucun segment (flux unique).
+pub(super) fn set_size_and_segments(
+    conn: &Connection,
+    task_id: &str,
+    total: Option<u64>,
+    segments: &[Segment],
+) -> Result<(), StoreError> {
+    let existing: i64 = conn.query_row(
         "SELECT COUNT(*) FROM segments WHERE task_id = ?1",
         [task_id],
         |row| row.get(0),
@@ -147,9 +160,10 @@ pub fn save_initial_segments(
             task_id: task_id.to_owned(),
         });
     }
-    let updated = tx.execute(
+    let total = total.map(|t| to_sql_int(t, "taille")).transpose()?;
+    let updated = conn.execute(
         "UPDATE tasks SET total_bytes = ?2, updated_at = ?3 WHERE id = ?1",
-        params![task_id, to_sql_int(total, "taille")?, now_ms()],
+        params![task_id, total, now_ms()],
     )?;
     if updated == 0 {
         return Err(StoreError::TaskNotFound {
@@ -157,11 +171,9 @@ pub fn save_initial_segments(
         });
     }
     for s in segments {
-        insert_segment(&tx, task_id, s)?;
+        insert_segment(conn, task_id, s)?;
     }
-    check_task_coverage(&tx, task_id)?;
-    tx.commit()?;
-    Ok(())
+    check_task_coverage(conn, task_id)
 }
 
 /// Enregistre un redécoupage calculé par [`segmenter::split_largest`] (SPEC §7.2) : la

@@ -1,99 +1,13 @@
 //! Préparation d'une tâche face à un serveur HTTP local qui simule les cas de la
 //! SPEC §9.1 : `Range` accepté ou refusé, `HEAD` refusé, redirections, erreurs, lenteur.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::io::Read;
+use std::net::TcpListener;
+use std::sync::Arc;
 use std::thread;
 
 use super::*;
-
-/// Requête reçue par le serveur de test.
-#[derive(Debug, Clone)]
-struct Request {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-}
-
-impl Request {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-}
-
-struct Server {
-    base: String,
-    requests: Arc<Mutex<Vec<Request>>>,
-}
-
-impl Server {
-    fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
-    }
-
-    fn requests(&self) -> Vec<Request> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-fn read_request(stream: &TcpStream) -> Option<Request> {
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    let mut words = line.split_whitespace();
-    let (method, path) = (words.next()?.to_owned(), words.next()?.to_owned());
-    let mut headers = Vec::new();
-    loop {
-        line.clear();
-        reader.read_line(&mut line).ok()?;
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        let (n, v) = line.split_once(':')?;
-        headers.push((n.trim().to_owned(), v.trim().to_owned()));
-    }
-    Some(Request {
-        method,
-        path,
-        headers,
-    })
-}
-
-/// Serveur qui répond à chaque connexion par `handler(requête)`, puis ferme.
-fn serve(handler: impl Fn(&Request) -> Vec<u8> + Send + 'static) -> Server {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let log = Arc::clone(&requests);
-    thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let Some(request) = read_request(&stream) else {
-                continue;
-            };
-            log.lock().unwrap().push(request.clone());
-            let _ = stream.write_all(&handler(&request));
-        }
-    });
-    Server { base, requests }
-}
-
-/// Réponse brute ; `Connection: close` est ajouté.
-fn reply(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
-    let mut out = format!("HTTP/1.1 {status}\r\nConnection: close\r\n");
-    for (n, v) in headers {
-        out.push_str(&format!("{n}: {v}\r\n"));
-    }
-    out.push_str("\r\n");
-    let mut out = out.into_bytes();
-    out.extend_from_slice(body);
-    out
-}
+use crate::testing::{reply, serve};
 
 fn client() -> Client {
     Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap()
@@ -422,4 +336,131 @@ async fn invalid_requests_are_refused_before_any_connection() {
     let err = c.probe("http://127.0.0.1:1/", &bad).await.unwrap_err();
     assert!(matches!(err, NetError::BadHeader(_)));
     assert!(!err.to_string().contains("Bearer"), "{err}");
+}
+
+mod segments {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::testing::{FileSite, content, serve_file};
+
+    async fn read_all(mut body: Body) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(chunk) = body.chunk().await.unwrap() {
+            out.extend_from_slice(&chunk);
+        }
+        out
+    }
+
+    fn range(first: u64, last: u64, total: u64, if_range: Option<&str>) -> RangeRequest<'_> {
+        RangeRequest {
+            first,
+            last,
+            total,
+            if_range,
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_range_is_streamed() {
+        let data = content(10_000);
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.clone()))));
+        let body = client()
+            .get_range(
+                &server.url("/f"),
+                &[],
+                &range(100, 4099, 10_000, Some("\"v1\"")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_all(body).await, data[100..4100]);
+        let r = &server.requests()[0];
+        assert_eq!(r.header("range"), Some("bytes=100-4099"));
+        assert_eq!(r.header("if-range"), Some("\"v1\""));
+        assert_eq!(r.header("accept-encoding"), Some("identity"));
+    }
+
+    #[tokio::test]
+    async fn changed_validator_means_file_changed() {
+        let site = Arc::new(Mutex::new(FileSite::new(content(1000))));
+        let server = serve_file(Arc::clone(&site));
+        site.lock().unwrap().etag = Some("\"v2\"".into());
+        let err = client()
+            .get_range(&server.url("/f"), &[], &range(0, 99, 1000, Some("\"v1\"")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::FileChanged), "{err:?}");
+        assert_eq!(err.error_code(), Some("FILE_CHANGED"));
+        assert!(!err.retryable());
+    }
+
+    #[tokio::test]
+    async fn changed_size_means_file_changed() {
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(content(1000)))));
+        let c = client();
+        let err = c
+            .get_range(&server.url("/f"), &[], &range(0, 99, 2000, None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::FileChanged), "{err:?}");
+        // Fichier raccourci : la plage n'existe plus (416).
+        let err = c
+            .get_range(&server.url("/f"), &[], &range(1500, 1999, 1000, None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::FileChanged), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn range_ignored_without_validator() {
+        let site = Arc::new(Mutex::new(FileSite::new(content(1000))));
+        site.lock().unwrap().ranges = false;
+        let server = serve_file(site);
+        let err = client()
+            .get_range(&server.url("/f"), &[], &range(10, 99, 1000, None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::RangeIgnored), "{err:?}");
+        assert_eq!(err.error_code(), Some("RANGE_UNSUPPORTED"));
+    }
+
+    #[tokio::test]
+    async fn cut_body_is_a_retryable_network_error() {
+        let site = Arc::new(Mutex::new(FileSite::new(content(100_000))));
+        {
+            let mut s = site.lock().unwrap();
+            s.cut_responses = 1;
+            s.cut_after = 5000;
+        }
+        let server = serve_file(site);
+        let mut body = client()
+            .get_range(&server.url("/f"), &[], &range(0, 99_999, 100_000, None))
+            .await
+            .unwrap();
+        let mut received = 0;
+        let err = loop {
+            match body.chunk().await {
+                Ok(Some(c)) => received += c.len(),
+                Ok(None) => panic!("fin propre après {received} octets"),
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(received, 5000);
+        assert!(err.retryable(), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn whole_file_checks_the_expected_size() {
+        let data = content(3000);
+        let server = serve_file(Arc::new(Mutex::new(FileSite::new(data.clone()))));
+        let c = client();
+        let body = c.get_all(&server.url("/f"), &[], Some(3000)).await.unwrap();
+        assert_eq!(read_all(body).await, data);
+        assert!(server.requests()[0].header("range").is_none());
+        let err = c
+            .get_all(&server.url("/f"), &[], Some(2999))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::FileChanged), "{err:?}");
+    }
 }

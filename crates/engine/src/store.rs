@@ -14,6 +14,7 @@ use rusqlite::{Connection, params};
 use crate::segmenter::CoverageError;
 
 pub mod segments;
+pub mod tasks;
 
 /// Une étape de migration du schéma.
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +73,21 @@ pub enum StoreError {
 
     #[error("valeur incohérente : {0}")]
     BadValue(String),
+
+    #[error("la tâche {task_id} ne peut pas passer de l'état {from} à l'état {to}")]
+    BadTransition {
+        task_id: String,
+        from: &'static str,
+        to: &'static str,
+    },
+
+    #[error("la tâche {task_id} n'a aucune source")]
+    NoSource { task_id: String },
+}
+
+/// Identifiant d'une ligne : UUID v7 en texte, triable par date de création (SPEC §5.1).
+pub fn new_id() -> String {
+    uuid::Uuid::now_v7().to_string()
 }
 
 /// Ouvre (ou crée) la base du moteur dans `path` et la met à jour.
@@ -211,7 +227,7 @@ fn backup_before_upgrade(
 }
 
 /// Millisecondes Unix en UTC (SPEC §5.1).
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
