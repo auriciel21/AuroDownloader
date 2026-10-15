@@ -190,7 +190,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 | Domaine | Choix | Raison |
 | --- | --- | --- |
 | Langage du moteur | Rust avec `tokio` | Un binaire sans environnement d'exécution, sûreté mémoire, compilation pour Windows, Linux et Android |
-| HTTP et TLS | `hyper` ou `reqwest` avec `rustls` | Même comportement TLS sur les trois plateformes, sans dépendre des bibliothèques du système ; HTTP/3 ensuite (priorité S) |
+| HTTP et TLS | `reqwest` avec `rustls`, certificats racines du système (`rustls-platform-verifier`) | Même comportement TLS sur les trois plateformes, sans dépendre des bibliothèques TLS du système ; HTTP/3 ensuite (priorité S) |
 | Base de données | SQLite via `rusqlite` | Embarquée, transactionnelle, adaptée à la reprise |
 | Torrent | Bibliothèque Rust ou `libtorrent`, derrière une interface interne | À trancher par un prototype ; l'interface permet d'en changer |
 | Vidéo | yt-dlp et ffmpeg en processus externes | Extracteurs maintenus par d'autres, licences séparées, mises à jour indépendantes (F-25) |
@@ -600,8 +600,8 @@ Les mécanismes ci-dessous décident de la vitesse et de la fiabilité du moteur
 
 ### 7.1 Préparation d'une tâche
 
-1. Le moteur envoie une requête `HEAD`. Si le serveur la refuse, il envoie un `GET` avec `Range: bytes=0-0` et lit `Content-Range` dans la réponse.
-2. Une réponse `206` avec `Content-Range` prouve que `Range` est accepté, et donne la taille totale. Une réponse `200` signifie que le serveur l'ignore : tâche en un seul flux (F-04).
+1. Le moteur envoie une requête `HEAD`. Si elle annonce `Accept-Ranges: bytes` et une taille (`Content-Length`), il s'arrête là ; `Accept-Ranges: none` suffit aussi, pour un seul flux. Sinon, ou si le serveur refuse le `HEAD`, il envoie un `GET` avec `Range: bytes=0-0` et lit `Content-Range` dans la réponse, sans lire le corps.
+2. Une réponse `206` avec `Content-Range` prouve que `Range` est accepté, et donne la taille totale. Une réponse `200` signifie que le serveur l'ignore : tâche en un seul flux (F-04). Une réponse `416` avec `Content-Range: bytes */0` désigne un fichier vide. Un corps compressé (`Content-Encoding` autre que `identity`) rend la taille inconnue : un seul flux. Chaque requête de segment vérifie de toute façon son `206`. Une redirection n'est suivie que vers HTTP ou HTTPS, dix fois au plus ; sinon la tâche échoue avec `HTTP_STATUS`, sans nouvelle tentative.
 3. Le moteur mémorise `ETag`, `Last-Modified` et la taille dans `sources`, pour valider la reprise.
 4. Les requêtes par plage demandent `Accept-Encoding: identity`, car une compression ferait dérailler les décalages d'octets.
 5. Il crée le fichier `.part`, vérifie l'espace libre (F-18) et découpe la plage `[0, taille − 1]` en segments initiaux.

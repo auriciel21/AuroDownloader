@@ -22,7 +22,9 @@ téléchargement.
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
   écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final ;
-  préallocation et espace libre à écrire), `net` (à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
+  préallocation et espace libre à écrire), `net` (préparation d'une tâche HTTP(S) faite,
+  avec noms de fichier et classement des erreurs ; requêtes de segments, FTP, proxies à
+  écrire). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -35,6 +37,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p auro-cli -- db migrate auro.db
+cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 ```
 
 ## Règles du projet
@@ -55,8 +58,11 @@ cargo run -p auro-cli -- db migrate auro.db
 - Ordre d'écriture, application : `written_bytes` ne s'enregistre que par
   `store::segments::save_progress`, qui n'accepte que des `io::SyncedProgress`, fabriqués
   par `io` après `sync_data`. Ne pas ajouter d'autre chemin d'écriture de ce compteur.
-- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3), module `net` (préparation
-  d'une tâche, SPEC 7.1 : `HEAD`, repli `GET` `Range: bytes=0-0`, validateurs).
+- Noms de fichier venus du serveur : toujours par `net::filename::sanitize` (SPEC 8.1).
+  Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
+- Prochaine étape : phase 1 (SPEC 9.3), premier téléchargement complet : enregistrer la
+  préparation en base (`sources`, taille et segments initiaux), requêtes de segments
+  (`206` vérifié, `If-Range`), écriture par `io`, commande `auro get`.
 
 ## Façon de travailler
 
