@@ -160,3 +160,76 @@ Changements depuis le relevé précédent :
 - **Débit :** à nombre de connexions égal, auro va aussi vite qu'aria2 ou plus vite en
   HTTPS comme en HTTP. Le mode automatique reste à 0,84–0,86 sur les téléchargements de
   7 à 9 s, comme au relevé précédent.
+
+## 2026-10-16 : Linux (WSL 2), banc équitable, vidages groupés
+
+Machine : la même (Intel Core i7-3930K, 12 processeurs logiques), Ubuntu 20.04.6 sous
+WSL 2, système de fichiers ext4 du disque virtuel, sans antivirus. aria2 1.35.0 (celui de
+la distribution), curl 7.68.0. C'est une approximation de Linux : le disque virtuel de
+WSL rend chaque vidage plus coûteux qu'un disque natif.
+
+Changements de méthode (SPEC §9.1) :
+- chaque mesure va jusqu'au fichier sur disque : le banc vide lui-même le fichier après
+  chaque outil, car aria2 et curl ne le font pas, alors qu'auro le fait (règle 1) ;
+- le temps processeur est celui de toute la machine pendant la mesure, moins celui du
+  banc et de son serveur : il compte l'écriture différée par le système ;
+- aria2 vérifie ici le certificat HTTPS (`--ca-certificate`), contrairement à Windows.
+
+**Avant correction (f845435), 512 Mio, médiane de 5 :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet auro / aria2 | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 66,2 | 0,40 | 9,90 | 208,5 % |
+| local, sans bridage | aria2c -x 4 | 166,3 | | | 21,1 % |
+| local HTTPS, sans bridage | auro -c 4 | 92,9 | 0,63 | 3,43 | 137,1 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 146,7 | | | 39,9 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 99,1 | 1,21 | 1,37 | 33,4 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 32,8 | 0,40 | 10,48 | 256,5 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 82,0 | | | 24,5 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 94,9 | 1,16 | 0,82 | 25,8 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 31,9 | 0,39 | 9,18 | 290,1 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 82,1 | | | 31,6 % |
+
+**Diagnostic :**
+- **Où part le coût :** pendant un lancement d'auro sans bridage, `/proc/stat` relève
+  6,9 s de temps système et 22,7 s d'attente disque (tous cœurs), contre 0,66 s et
+  0,09 s pour aria2. Le relevé `strace` montre 7 `fdatasync` de 1,7 s en moyenne.
+- **Ce qui n'est pas en cause :** un script Python qui reproduit le motif d'écriture
+  d'auro (4 flux positionnés), avec un vidage toutes les 2 s, va aussi vite que sans
+  vidage (environ 200 Mio/s, 2 s de temps système).
+- **La cause :** quand chaque flux vide aussi le fichier à sa fin, comme un segment
+  d'auro, les vidages simultanés du même fichier font monter le temps système à 6–8 s et
+  l'attente disque à 12–20 s.
+- **La correction (`io::SyncGate`) :** un seul vidage à la fois par fichier ; les
+  demandes faites pendant un vidage attendent le suivant, qui les couvre toutes.
+
+**Après correction, 512 Mio, médiane de 5 :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet auro / aria2 | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 197,0 | 1,03 | 0,68 | 15,9 % |
+| local, sans bridage | aria2c -x 4 | 190,7 | | | 23,5 % |
+| local, sans bridage | curl (disque) | 166,3 | | | 18,9 % |
+| local, sans bridage | curl (sans disque) | 2619,9 | | | 4,8 % |
+| local HTTPS, sans bridage | auro -c 4 | 154,3 | 1,06 | 0,83 | 33,8 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 145,2 | | | 40,7 % |
+| local HTTPS, sans bridage | curl (disque) | 137,2 | | | 44,7 % |
+| local HTTPS, sans bridage | curl (sans disque) | 512,7 | | | 24,4 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 98,6 | 1,20 | 0,80 | 18,1 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 67,0 | 0,82 | 1,23 | 27,9 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 81,8 | | | 22,7 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 92,4 | 1,23 | 0,62 | 35,9 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 64,5 | 0,86 | 0,80 | 46,7 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 75,4 | | | 58,1 % |
+
+**Lecture :**
+- **Portes de la phase 1, à nombre de connexions égal :** toutes tenues sous Linux.
+  - Débit : 1,03 à 1,23 fois celui d'aria2 (porte : au moins 0,95).
+  - Coût processeur par octet : 0,62 à 0,83 fois (N-01 : au plus 1,0).
+- **Objectif indicatif de N-01 :** auro sans bridage coûterait 15,9 % d'un cœur à
+  1 Gbit/s, contre 23,5 % pour aria2 et 18,9 % pour curl vers disque. Ce n'est pas la
+  machine de référence.
+- **Mode automatique :** il reste sous aria2 réglé sur 16 connexions (0,82 à 0,86) sur
+  des téléchargements de 7 à 8 s, comme sous Windows. Il ne fait pas partie de la porte.
+- **Avant correction :** l'écart venait des vidages simultanés, et non d'un défaut de
+  la règle 1. Le même code vide maintenant autant, mais un seul vidage à la fois.

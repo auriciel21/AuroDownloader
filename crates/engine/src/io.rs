@@ -11,6 +11,9 @@
 //! Linux et Android, `FlushFileBuffers` sous Windows). Le compteur est relevé *avant* le
 //! vidage : il ne compte donc que des octets que le vidage a couverts.
 //!
+//! Les vidages d'un même fichier sont groupés ([`SyncGate`]) : un seul à la fois, partagé
+//! par tous ceux qui l'ont demandé pendant le précédent.
+//!
 //! Pas encore traités : la préallocation d'espace (F-10, en option), la vérification de
 //! l'espace libre (F-18) et le stockage Android par le sélecteur du système (SPEC §7.5).
 
@@ -18,7 +21,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
@@ -132,10 +135,75 @@ impl SyncedProgress {
     }
 }
 
+/// Vidages groupés d'un fichier : un seul `sync_data` à la fois.
+///
+/// Plusieurs vidages simultanés du même fichier coûtent très cher : sous Linux (ext4,
+/// mesuré sous WSL), quatre fils qui vident ensemble multiplient le temps système et
+/// l'attente disque (`docs/MESURES.md`). Qui demande un vidage pendant qu'un autre est en
+/// cours attend le suivant, qu'un seul fil fait pour tous. Règle 1 : un vidage commencé
+/// après la demande couvre tout ce qui était écrit avant elle ; celui qui était déjà en
+/// cours ne suffit donc pas.
+#[derive(Debug, Default)]
+struct SyncGate {
+    state: Mutex<GateState>,
+    finished: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct GateState {
+    /// Numéro du dernier vidage commencé.
+    started: u64,
+    /// Numéro du dernier vidage réussi ; les vidages se suivent, jamais en même temps.
+    succeeded: u64,
+    running: bool,
+}
+
+impl SyncGate {
+    fn lock(&self) -> MutexGuard<'_, GateState> {
+        // Trois compteurs toujours cohérents : un verrou empoisonné reste utilisable.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Revient quand un vidage commencé après l'appel a réussi ; `sync` fait ce vidage,
+    /// si c'est à ce fil de le faire. Une erreur ne revient qu'au fil qui a fait le vidage
+    /// raté ; ceux qui l'attendaient en recommencent un.
+    fn sync(&self, sync: impl Fn() -> io::Result<()>) -> io::Result<()> {
+        let mut state = self.lock();
+        // Premier vidage à commencer après cet appel.
+        let needed = state.started + 1;
+        loop {
+            if state.succeeded >= needed {
+                return Ok(());
+            }
+            if state.running {
+                state = self
+                    .finished
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            state.running = true;
+            state.started += 1;
+            let mine = state.started;
+            drop(state);
+            let result = sync();
+            state = self.lock();
+            state.running = false;
+            if result.is_ok() {
+                state.succeeded = mine;
+            }
+            self.finished.notify_all();
+            // Ici `mine >= needed` : ce vidage a commencé après l'appel.
+            return result;
+        }
+    }
+}
+
 /// Fichier `.part` d'une tâche, partagé par ses écrivains de segments.
 #[derive(Debug)]
 pub struct PartFile {
     file: Arc<File>,
+    gate: Arc<SyncGate>,
     part: PathBuf,
     dest: PathBuf,
 }
@@ -171,6 +239,7 @@ impl PartFile {
     fn from_parts(file: File, part: PathBuf, dest: &Path) -> Self {
         Self {
             file: Arc::new(file),
+            gate: Arc::default(),
             part,
             dest: dest.to_owned(),
         }
@@ -190,6 +259,7 @@ impl PartFile {
     pub fn writer(&self, segment: &Segment, buffer: usize) -> SegmentWriter {
         SegmentWriter {
             file: Arc::clone(&self.file),
+            gate: Arc::clone(&self.gate),
             part: self.part.clone(),
             idx: segment.idx,
             start: segment.start,
@@ -204,8 +274,9 @@ impl PartFile {
     }
 
     /// Point de contrôle (SPEC §7.5) : relève ce que chaque écrivain a remis au système,
-    /// vide le fichier une fois, puis renvoie ces relevés. Les écrivains continuent
-    /// pendant ce temps ; ce qu'ils écrivent après le relevé attend le point suivant.
+    /// vide le fichier une fois (vidage groupé), puis renvoie ces relevés. Les écrivains
+    /// continuent pendant ce temps ; ce qu'ils écrivent après le relevé attend le point
+    /// suivant.
     pub fn checkpoint(&self, progress: &[ProgressHandle]) -> Result<Vec<SyncedProgress>, IoError> {
         let mut snapshot = Vec::with_capacity(progress.len());
         for p in progress {
@@ -217,7 +288,9 @@ impl PartFile {
                 written: p.issued.load(Ordering::Acquire),
             });
         }
-        self.file.sync_data().map_err(file_error(&self.part))?;
+        self.gate
+            .sync(|| self.file.sync_data())
+            .map_err(file_error(&self.part))?;
         Ok(snapshot)
     }
 
@@ -226,7 +299,9 @@ impl PartFile {
     /// Refuse si un écrivain est encore ouvert, ou si `dest` existe : un fichier déjà
     /// présent n'est jamais écrasé. En cas de refus, le `.part` reste en place.
     pub fn finish(self) -> Result<PathBuf, IoError> {
-        let PartFile { file, part, dest } = self;
+        let PartFile {
+            file, part, dest, ..
+        } = self;
         let file = Arc::try_unwrap(file).map_err(|_| IoError::StillInUse(part.clone()))?;
         file.sync_data().map_err(file_error(&part))?;
         // Windows refuse de renommer un fichier ouvert.
@@ -367,6 +442,7 @@ impl ProgressHandle {
 #[derive(Debug)]
 pub struct SegmentWriter {
     file: Arc<File>,
+    gate: Arc<SyncGate>,
     part: PathBuf,
     idx: u32,
     start: u64,
@@ -445,11 +521,13 @@ impl SegmentWriter {
     }
 
     /// Fin de la connexion (segment terminé, pause ou erreur réseau) : écrit le tampon,
-    /// vide le fichier et renvoie le compteur à enregistrer (SPEC §7.5).
+    /// vide le fichier (vidage groupé) et renvoie le compteur à enregistrer (SPEC §7.5).
     pub fn finish(mut self) -> Result<SyncedProgress, IoError> {
         self.flush()?;
         let written = self.issued.load(Ordering::Acquire);
-        self.file.sync_data().map_err(file_error(&self.part))?;
+        self.gate
+            .sync(|| self.file.sync_data())
+            .map_err(file_error(&self.part))?;
         Ok(SyncedProgress {
             idx: self.idx,
             written,
@@ -754,6 +832,116 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    mod gate {
+        use std::sync::Barrier;
+        use std::sync::atomic::AtomicUsize;
+        use std::thread;
+        use std::time::Duration;
+
+        use super::*;
+
+        /// Chaque fil écrit, puis demande un vidage : à son retour, un vidage commencé
+        /// après son écriture a réussi (règle 1), et les demandes simultanées se partagent
+        /// quelques vidages au lieu d'en faire chacune un.
+        #[test]
+        fn simultaneous_requests_share_syncs_and_each_is_covered() {
+            const THREADS: usize = 16;
+            let gate = Arc::new(SyncGate::default());
+            let written = Arc::new(AtomicU64::new(0));
+            let durable = Arc::new(AtomicU64::new(0));
+            let syncs = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let threads: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let (gate, written, durable) = (
+                        Arc::clone(&gate),
+                        Arc::clone(&written),
+                        Arc::clone(&durable),
+                    );
+                    let (syncs, barrier) = (Arc::clone(&syncs), Arc::clone(&barrier));
+                    thread::spawn(move || {
+                        barrier.wait();
+                        let mine = written.fetch_add(1, Ordering::SeqCst) + 1;
+                        gate.sync(|| {
+                            syncs.fetch_add(1, Ordering::SeqCst);
+                            // Un vidage couvre ce qui était écrit quand il a commencé.
+                            let covered = written.load(Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(20));
+                            durable.fetch_max(covered, Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .unwrap();
+                        assert!(durable.load(Ordering::SeqCst) >= mine);
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            let n = syncs.load(Ordering::SeqCst);
+            assert!(n <= THREADS / 2, "{n} vidages pour {THREADS} demandes");
+        }
+
+        /// Un vidage raté ne vaut pour personne : la demande suivante en refait un.
+        #[test]
+        fn a_failed_sync_covers_nothing() {
+            let gate = SyncGate::default();
+            let calls = AtomicUsize::new(0);
+            let failed = gate.sync(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(io::Error::other("disque"))
+            });
+            assert!(failed.is_err());
+            gate.sync(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+
+        /// Des demandes qui arrivent pendant un vidage raté en refont un elles-mêmes, et
+        /// toutes finissent couvertes.
+        #[test]
+        fn waiters_retry_after_a_failed_sync() {
+            let gate = Arc::new(SyncGate::default());
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(4));
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    let (gate, attempts, barrier) = (
+                        Arc::clone(&gate),
+                        Arc::clone(&attempts),
+                        Arc::clone(&barrier),
+                    );
+                    thread::spawn(move || {
+                        barrier.wait();
+                        // Le premier vidage échoue, les suivants réussissent ; un fil
+                        // réessaie tant que son propre vidage a échoué.
+                        loop {
+                            let result = gate.sync(|| {
+                                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                                thread::sleep(Duration::from_millis(20));
+                                if n == 0 {
+                                    Err(io::Error::other("disque"))
+                                } else {
+                                    Ok(())
+                                }
+                            });
+                            if result.is_ok() {
+                                break;
+                            }
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            assert!(attempts.load(Ordering::SeqCst) >= 2);
         }
     }
 }

@@ -81,6 +81,9 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
+- Vidages du `.part` : toujours par le `SyncGate` du fichier (`PartFile::checkpoint`,
+  `SegmentWriter::finish`), jamais par un `sync_data` direct pendant que des écrivains
+  tournent : des vidages simultanés du même fichier coûtent très cher sous Linux.
 - Redécoupage (SPEC 7.2) : la borne d'un segment en cours ne recule que par
   `ProgressHandle::shrink_end`, avant l'enregistrement de la coupe (`save_split`). Jamais
   l'inverse : la base ne doit pas promettre à un nouveau segment des octets que l'ancien
@@ -99,8 +102,10 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
 - Prochaine étape : porte de la phase 1 (SPEC 9.3).
-  - N-01 : seuil 1,0, provisoire, à confirmer par un premier relevé sous Linux (travail
-    `perf` de `.github/workflows/ci.yml`, pas encore exécuté faute de dépôt distant).
+  - N-01 et débit : portes tenues sous Linux (WSL, relevé du 2026-10-16 dans
+    `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows : à remesurer avec le banc
+    équitable et les vidages groupés. Le travail `perf` de la CI n'a pas encore tourné
+    (pas de dépôt distant).
   - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : passé le 2026-10-15
     (SPEC 9.1).
   - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
