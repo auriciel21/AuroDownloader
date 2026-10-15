@@ -4,8 +4,12 @@
 //!  -- --ignored --nocapture`
 //!
 //! Chaque scénario télécharge le même fichier avec `auro` et avec `aria2c`, à nombre de
-//! connexions égal, dans un dossier neuf, et mesure le temps écoulé et le temps processeur
-//! du processus (utilisateur et système). Le résultat est un tableau : débit, rapport des
+//! connexions égal, dans un dossier neuf. La mesure va jusqu'au fichier sur disque : le
+//! banc vide lui-même le fichier après chaque outil, car auro le fait déjà (règle 1) et
+//! les autres non. Le temps processeur est celui de toute la machine pendant la mesure,
+//! moins celui du banc et de son serveur : il compte aussi ce que le système fait hors du
+//! processus de l'outil (écriture différée, antivirus). Le temps du seul processus figure
+//! dans le journal, pour comparaison. Faire tourner le banc sur une machine au repos. Le résultat est un tableau : débit, rapport des
 //! débits auro / aria2 (la porte de la phase 1 demande au moins 0,95), rapport des coûts
 //! processeur par octet auro / aria2 (porte de N-01 : au plus 1,0), et part d'un cœur que
 //! coûterait un débit de 1 Gbit/s (objectif indicatif de N-01 : moins de 15 %, sur la
@@ -101,23 +105,108 @@ fn cycles_per_second() -> f64 {
     })
 }
 
-/// Temps processeur cumulé des processus enfants déjà attendus (utilisateur et système).
+/// Temps processeur du banc lui-même, serveur de test compris.
+#[cfg(windows)]
+fn own_cpu() -> Duration {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
+
+    let mut cycles = 0u64;
+    // SAFETY : pseudo-poignée du processus courant, variable locale.
+    let ok = unsafe { QueryProcessCycleTime(GetCurrentProcess(), &mut cycles) };
+    assert_ne!(ok, 0, "QueryProcessCycleTime a échoué");
+    Duration::from_secs_f64(cycles as f64 / cycles_per_second())
+}
+
+/// Temps processeur de toute la machine depuis son démarrage, tous cœurs, hors repos.
+/// Il compte aussi ce que le système fait pour un outil hors de son processus : l'écriture
+/// différée sur disque de ce qu'il a laissé en mémoire, l'analyse par l'antivirus.
+#[cfg(windows)]
+fn machine_cpu() -> Duration {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut idle, mut kernel, mut user) = (zero, zero, zero);
+    // SAFETY : trois variables locales que GetSystemTimes remplit.
+    let ok = unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) };
+    assert_ne!(ok, 0, "GetSystemTimes a échoué");
+    let v = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    // Le temps noyau comprend le temps de repos ; unités de 100 ns.
+    Duration::from_nanos((v(kernel) + v(user) - v(idle)) * 100)
+}
+
 #[cfg(unix)]
-fn children_cpu() -> Duration {
+fn rusage(who: libc::c_int) -> Duration {
     // SAFETY : `usage` est une variable locale que getrusage remplit.
     let usage = unsafe {
         let mut usage = std::mem::zeroed::<libc::rusage>();
-        assert_eq!(libc::getrusage(libc::RUSAGE_CHILDREN, &mut usage), 0);
+        assert_eq!(libc::getrusage(who, &mut usage), 0);
         usage
     };
     let tv = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
     tv(usage.ru_utime) + tv(usage.ru_stime)
 }
 
+/// Temps processeur cumulé des processus enfants déjà attendus (utilisateur et système).
+#[cfg(unix)]
+fn children_cpu() -> Duration {
+    rusage(libc::RUSAGE_CHILDREN)
+}
+
+/// Temps processeur du banc lui-même, serveur de test compris.
+#[cfg(unix)]
+fn own_cpu() -> Duration {
+    rusage(libc::RUSAGE_SELF)
+}
+
+/// Temps processeur de toute la machine (Linux : `/proc/stat`), tous cœurs, hors repos et
+/// attente d'entrées-sorties. Voir la version Windows.
+#[cfg(unix)]
+fn machine_cpu() -> Duration {
+    let stat = std::fs::read_to_string("/proc/stat").expect("/proc/stat (Linux seulement)");
+    // user nice system idle iowait irq softirq steal…
+    let ticks: Vec<u64> = stat
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .skip(1)
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let busy: u64 = [0, 1, 2, 5, 6, 7]
+        .iter()
+        .filter_map(|&i| ticks.get(i))
+        .sum();
+    // SAFETY : sysconf sans effet de bord.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    Duration::from_secs_f64(busy as f64 / hz)
+}
+
+/// Vide un fichier téléchargé sur disque, avec son dossier sous Unix. auro le fait déjà
+/// (règle 1) ; aria2 et curl laissent leurs données en mémoire, que le système écrit plus
+/// tard. Le banc mesure chaque outil jusqu'à ce que le fichier soit sur disque.
+fn flush_to_disk(path: &Path) {
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.sync_data().unwrap();
+    #[cfg(unix)]
+    File::open(path.parent().unwrap())
+        .unwrap()
+        .sync_all()
+        .unwrap();
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Measure {
+    /// Du lancement jusqu'au fichier sur disque.
     wall: Duration,
+    /// Temps processeur de la machine pendant la mesure, moins celui du banc.
     cpu: Duration,
+    /// Temps processeur du seul processus de l'outil, pour comparaison.
+    process_cpu: Duration,
     bytes: u64,
 }
 
@@ -246,18 +335,26 @@ impl Tool {
             .stderr(stderr_for(self));
         #[cfg(unix)]
         let before = children_cpu();
+        let (machine_before, own_before) = (machine_cpu(), own_cpu());
         let start = Instant::now();
         let mut child = cmd
             .spawn()
             .unwrap_or_else(|e| panic!("{} : {e}", self.label()));
         let status = child.wait().unwrap();
-        let wall = start.elapsed();
         assert!(status.success(), "{} a échoué : {status}", self.label());
-        #[cfg(windows)]
-        let cpu = cpu_time(&child);
-        #[cfg(unix)]
-        let cpu = children_cpu() - before;
+        // Le banc (et son serveur) s'arrête de compter ici : le vidage qui suit compte pour
+        // l'outil, comme s'il l'avait fait lui-même.
+        let own = own_cpu() - own_before;
         let path = dir.path().join(name);
+        if !discard {
+            flush_to_disk(&path);
+        }
+        let wall = start.elapsed();
+        let cpu = (machine_cpu() - machine_before).saturating_sub(own);
+        #[cfg(windows)]
+        let process_cpu = cpu_time(&child);
+        #[cfg(unix)]
+        let process_cpu = children_cpu() - before;
         let bytes = if discard {
             // curl écrit le nombre d'octets reçus (`-w`).
             let mut out = String::new();
@@ -273,7 +370,13 @@ impl Tool {
                 .unwrap_or_else(|e| panic!("{} : fichier absent : {e}", self.label()))
                 .len()
         };
-        (Measure { wall, cpu, bytes }, dir, path)
+        let measure = Measure {
+            wall,
+            cpu,
+            process_cpu,
+            bytes,
+        };
+        (measure, dir, path)
     }
 }
 
@@ -341,12 +444,13 @@ fn scenario(rows: &mut Vec<Row>, s: Scenario<'_>, runs: u64, check: &dyn Fn(&Pat
     for (tool, samples) in s.tools.iter().zip(samples) {
         let measure = median(samples);
         eprintln!(
-            "  {:<32} {:<18} {:>8.1} Mio/s  {:>6.2} s  cpu {:>5.2} s",
+            "  {:<32} {:<18} {:>8.1} Mio/s  {:>6.2} s  cpu machine {:>5.2} s, processus {:>5.2} s",
             s.name,
             tool.label(),
             measure.mib_per_s(),
             measure.wall.as_secs_f64(),
-            measure.cpu.as_secs_f64()
+            measure.cpu.as_secs_f64(),
+            measure.process_cpu.as_secs_f64()
         );
         rows.push(Row {
             scenario: s.name,

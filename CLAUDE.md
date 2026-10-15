@@ -89,6 +89,12 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   (512 Mio et plus) et répétés (médiane de 5) ; sous 4 s, le bruit atteint 10 %.
 - Temps processeur sous Windows : par cycles (`QueryProcessCycleTime`), jamais par
   `GetProcessTimes`, qui échantillonne et compte mal les processus d'entrées-sorties.
+- Banc de performance équitable (SPEC 9.1) : chaque mesure va jusqu'au fichier sur
+  disque (le banc le vide après chaque outil) ; le temps processeur est celui de la
+  machine moins celui du banc. Ne rien faire tourner d'autre pendant une campagne.
+- WSL : `wsl -d Ubuntu -- bash -lc '…'` développe les `$` trop tôt ; passer par un script
+  (`wsl -d Ubuntu -- bash /mnt/c/…/script.sh`). Clone de travail : `~/AuroDownloader`
+  (système de fichiers Linux, jamais `/mnt/c` pour mesurer).
 - N-01 (SPEC 3) : la porte est le rapport des coûts processeur par octet auro / aria2, à
   nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
