@@ -629,6 +629,8 @@ quand une connexion est libre :
 
 La taille minimale d'un segment est de 1 Mio au départ : en dessous, le coût d'une connexion supplémentaire dépasse le gain. Le nouveau segment réutilise une connexion déjà ouverte (HTTP keep-alive ou flux HTTP/2) pour éviter une négociation TLS de plus.
 
+Le milieu se calcule sur les octets déjà reçus par la connexion, y compris ceux qui ne sont pas encore enregistrés. La connexion du segment coupé recule d'abord sa borne : elle n'accepte plus rien au-delà. Ensuite seulement, la coupe est enregistrée, dans une transaction qui vérifie la couverture. Un arrêt entre les deux laisse en base l'ancien découpage, qui reste juste. Si la connexion a dépassé le milieu entre la lecture et la coupe, le calcul est refait.
+
 ### 7.3 Nombre de connexions automatique
 
 Quand l'utilisateur ne fixe pas `maxConnections`, le moteur ajuste le nombre de connexions par tâche selon une règle d'augmentation lente et de réduction rapide :

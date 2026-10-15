@@ -2,6 +2,7 @@
 //! taille inconnue, coupures et reprise, fichier changé, arrêt demandé, `.part` perdu,
 //! arrêt brutal entre le renommage et l'enregistrement de la fin.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use super::*;
@@ -121,7 +122,8 @@ async fn segmented_download_completes() {
         .into_iter()
         .filter(|r| r.method == "GET")
         .collect();
-    assert_eq!(gets.len(), 4, "une requête par segment initial");
+    // Une par segment initial, plus une par coupe d'une connexion finie en avance (F-02).
+    assert!(gets.len() >= 4, "{} requêtes", gets.len());
     for r in &gets {
         assert!(r.header("range").is_some());
         assert_eq!(r.header("if-range"), Some("\"v1\""));
@@ -421,4 +423,65 @@ fn display_names_before_preparation() {
     assert_eq!(display_name_for("https://h/a/b%C3%A9.iso?x=1"), "bé.iso");
     assert_eq!(display_name_for("https://exemple.org/"), "exemple.org");
     assert_eq!(display_name_for("pas une url"), "download");
+}
+
+/// Prépare la tâche comme si elle avait été lancée avec une seule connexion : un seul
+/// segment couvre tout le fichier.
+fn prepare_single_segment(case: &mut Case, len: u64) {
+    let source = primary_source(&case.conn, &case.task_id).unwrap();
+    let prep = Preparation {
+        source_id: &source.id,
+        accepts_ranges: true,
+        etag: Some("\"v1\""),
+        last_modified: None,
+        total_bytes: Some(len),
+        file_name: "gros.bin",
+    };
+    let single = initial_split(len, 1, 1);
+    save_preparation(&mut case.conn, &case.task_id, &prep, &single).unwrap();
+}
+
+/// F-02 : les connexions libres coupent le segment en cours au lieu de rester oisives.
+#[tokio::test]
+async fn idle_connections_split_the_running_segment() {
+    let data = content(SIZE);
+    let (_, server) = site(data.clone());
+    let mut case = new_case(&server.url("/gros.bin"));
+    prepare_single_segment(&mut case, SIZE as u64);
+
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "gros.bin", &data);
+    let starts: HashSet<String> = server
+        .requests()
+        .iter()
+        .filter_map(|r| r.header("range").map(str::to_owned))
+        .collect();
+    assert!(
+        starts.len() >= 4,
+        "au moins quatre plages distinctes : {starts:?}"
+    );
+}
+
+/// Arrêt demandé juste après les coupes : la base garde un découpage couvrant, que la
+/// reprise termine.
+#[tokio::test]
+async fn split_layout_survives_a_stop_and_resumes() {
+    let data = content(SIZE);
+    let (_, server) = site(data.clone());
+    let mut case = new_case(&server.url("/gros.bin"));
+    prepare_single_segment(&mut case, SIZE as u64);
+
+    let (stop_tx, stop) = watch::channel(true);
+    assert_eq!(case.run_with(stop).await, Outcome::Paused);
+    drop(stop_tx);
+    let segments = load_segments(&case.conn, &case.task_id).unwrap();
+    assert!(
+        segments.len() > 1,
+        "les coupes sont enregistrées : {segments:?}"
+    );
+    check_task_coverage(&case.conn, &case.task_id).unwrap();
+
+    requeue(&mut case.conn, &case.task_id).unwrap();
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "gros.bin", &data);
 }

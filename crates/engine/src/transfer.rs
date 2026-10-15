@@ -29,8 +29,12 @@ use crate::io::{
     segments_beyond,
 };
 use crate::net::{Client, NetError, RangeRequest, headers};
-use crate::segmenter::{DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split};
-use crate::store::segments::{check_task_coverage, load_segments, reset_segments, save_progress};
+use crate::segmenter::{
+    DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
+};
+use crate::store::segments::{
+    check_task_coverage, load_segments, reset_segments, save_progress, save_split,
+};
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, TaskState, change_state, complete_task, load_task,
     primary_source, save_preparation,
@@ -559,8 +563,20 @@ async fn pool(
 
     loop {
         while failure.is_none() && !user_stop && running.len() < ctx.width {
-            let Some(segment) = todo.pop_front() else {
-                break;
+            let segment = match todo.pop_front() {
+                Some(segment) => segment,
+                // Plus rien en attente : la connexion libre coupe le plus gros segment en
+                // cours (F-02).
+                None if ctx.persist => {
+                    match split_running(conn, task_id, &handles, ctx.opts.min_segment)? {
+                        Some(segment) => {
+                            saved.insert(segment.idx, 0);
+                            segment
+                        }
+                        None => break,
+                    }
+                }
+                None => break,
             };
             let writer = ctx.part.writer(&segment, ctx.opts.buffer);
             handles.insert(segment.idx, writer.progress());
@@ -636,6 +652,53 @@ async fn pool(
         return Ok(Err(Stop::User));
     }
     Ok(Ok(saved.values().sum()))
+}
+
+/// Redécoupage dynamique (SPEC §7.2) : coupe en deux le segment en cours qui a le plus
+/// d'octets restants et renvoie la seconde moitié, à confier à la connexion libre.
+///
+/// Ordre : l'écrivain du segment coupé recule d'abord sa borne, puis le découpage est
+/// enregistré (couverture vérifiée dans la transaction). Un arrêt entre les deux laisse
+/// la base à l'ancien découpage, toujours juste. Si la connexion a dépassé le milieu
+/// entre la lecture et la coupe, le calcul est refait.
+fn split_running(
+    conn: &mut Connection,
+    task_id: &str,
+    handles: &HashMap<u32, ProgressHandle>,
+    min_size: u64,
+) -> Result<Option<Segment>, TransferError> {
+    if handles.is_empty() {
+        return Ok(None);
+    }
+    for _ in 0..3 {
+        let mut segments = load_segments(conn, task_id)?;
+        for s in &mut segments {
+            match handles.get(&s.idx) {
+                Some(h) => {
+                    let (accepted, end) = h.accepted_and_end();
+                    s.end = end;
+                    s.written = accepted;
+                    s.state = SegmentState::Active;
+                }
+                // Seuls les segments en cours de téléchargement se coupent.
+                None if s.state == SegmentState::Active => s.state = SegmentState::Pending,
+                None => {}
+            }
+        }
+        let Some(split) = split_largest(&mut segments, min_size) else {
+            return Ok(None);
+        };
+        let find = |idx: u32| segments.iter().find(|s| s.idx == idx).cloned();
+        let (Some(from), Some(new)) = (find(split.from), find(split.new)) else {
+            return Ok(None);
+        };
+        if handles[&split.from].shrink_end(from.end).is_err() {
+            continue;
+        }
+        save_split(conn, task_id, &segments, split)?;
+        return Ok(Some(new));
+    }
+    Ok(None)
 }
 
 fn progress(

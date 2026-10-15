@@ -17,8 +17,8 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
@@ -193,7 +193,10 @@ impl PartFile {
             part: self.part.clone(),
             idx: segment.idx,
             start: segment.start,
-            end: segment.end,
+            bounds: Arc::new(Mutex::new(Bounds {
+                end: segment.end,
+                accepted: segment.written,
+            })),
             issued: Arc::new(AtomicU64::new(segment.written)),
             buf: Vec::with_capacity(buffer),
             capacity: buffer.max(1),
@@ -285,12 +288,44 @@ fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> 
     Ok(())
 }
 
-/// Suivi d'un écrivain, pour [`PartFile::checkpoint`] : se partage avec la tâche qui fait
-/// les points de contrôle pendant que la connexion écrit.
+/// Borne de fin et octets acceptés d'un segment, partagés entre son écrivain et la boucle
+/// de coordination, qui peut reculer la borne (redécoupage, SPEC §7.2). Le verrou est
+/// propre au segment : aucun verrou n'est partagé entre segments.
+#[derive(Debug)]
+struct Bounds {
+    end: u64,
+    /// Octets acceptés depuis le début du segment : remis au système ou en tampon.
+    accepted: u64,
+}
+
+fn lock(bounds: &Mutex<Bounds>) -> MutexGuard<'_, Bounds> {
+    // Deux entiers toujours cohérents : un verrou empoisonné reste utilisable.
+    bounds.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Recule la borne de fin à `end`, si aucun octet déjà accepté ne la dépasse.
+fn shrink(bounds: &Mutex<Bounds>, idx: u32, start: u64, end: u64) -> Result<(), IoError> {
+    let mut b = lock(bounds);
+    if end > b.end || end < start || end + 1 < start + b.accepted {
+        return Err(IoError::EndBeforeReceived {
+            idx,
+            start,
+            end,
+            accepted: b.accepted,
+        });
+    }
+    b.end = end;
+    Ok(())
+}
+
+/// Suivi d'un écrivain, partagé avec la boucle de coordination pendant que la connexion
+/// écrit : points de contrôle ([`PartFile::checkpoint`]), avancement et redécoupage.
 #[derive(Debug, Clone)]
 pub struct ProgressHandle {
     file: Arc<File>,
     idx: u32,
+    start: u64,
+    bounds: Arc<Mutex<Bounds>>,
     issued: Arc<AtomicU64>,
 }
 
@@ -305,6 +340,19 @@ impl ProgressHandle {
     pub fn handed_over(&self) -> u64 {
         self.issued.load(Ordering::Relaxed)
     }
+
+    /// Octets acceptés par l'écrivain (remis au système ou en tampon), et borne de fin
+    /// actuelle, lus ensemble.
+    pub fn accepted_and_end(&self) -> (u64, u64) {
+        let b = lock(&self.bounds);
+        (b.accepted, b.end)
+    }
+
+    /// Recule la fin du segment à `end` (SPEC §7.2) : l'écrivain n'acceptera plus rien
+    /// au-delà. Refusé si des octets déjà acceptés la dépassent.
+    pub fn shrink_end(&self, end: u64) -> Result<(), IoError> {
+        shrink(&self.bounds, self.idx, self.start, end)
+    }
 }
 
 /// Écrivain d'un segment, propre à une connexion.
@@ -317,7 +365,7 @@ pub struct SegmentWriter {
     part: PathBuf,
     idx: u32,
     start: u64,
-    end: u64,
+    bounds: Arc<Mutex<Bounds>>,
     /// Octets remis au système depuis `start`, enregistrés compris.
     issued: Arc<AtomicU64>,
     buf: Vec<u8>,
@@ -332,19 +380,22 @@ impl SegmentWriter {
 
     /// Octets acceptés depuis le début du segment : remis au système ou en tampon.
     pub fn accepted(&self) -> u64 {
-        self.issued.load(Ordering::Relaxed) + self.buf.len() as u64
+        lock(&self.bounds).accepted
     }
 
     /// Octets qu'il reste à recevoir jusqu'à la fin du segment.
     pub fn remaining(&self) -> u64 {
-        (self.end - self.start + 1) - self.accepted()
+        let b = lock(&self.bounds);
+        (b.end - self.start + 1) - b.accepted
     }
 
-    /// Suivi à confier à la tâche des points de contrôle.
+    /// Suivi à confier à la boucle de coordination.
     pub fn progress(&self) -> ProgressHandle {
         ProgressHandle {
             file: Arc::clone(&self.file),
             idx: self.idx,
+            start: self.start,
+            bounds: Arc::clone(&self.bounds),
             issued: Arc::clone(&self.issued),
         }
     }
@@ -353,9 +404,15 @@ impl SegmentWriter {
     /// nombre : au-delà de la fin du segment, les octets du serveur sont ignorés. Le
     /// tampon est écrit quand il est plein ou que le segment est complet.
     pub fn write(&mut self, data: &[u8]) -> Result<usize, IoError> {
-        let n = usize::try_from(self.remaining()).map_or(data.len(), |r| r.min(data.len()));
+        let (n, complete) = {
+            let mut b = lock(&self.bounds);
+            let remaining = (b.end - self.start + 1) - b.accepted;
+            let n = usize::try_from(remaining).map_or(data.len(), |r| r.min(data.len()));
+            b.accepted += n as u64;
+            (n, b.accepted == b.end - self.start + 1)
+        };
         self.buf.extend_from_slice(&data[..n]);
-        if self.buf.len() >= self.capacity || self.remaining() == 0 {
+        if self.buf.len() >= self.capacity || complete {
             self.flush()?;
         }
         Ok(n)
@@ -379,17 +436,7 @@ impl SegmentWriter {
     /// Nouvelle fin du segment après un redécoupage (SPEC §7.2) : la connexion s'arrêtera
     /// à `end`. Refusé si des octets déjà reçus dépassent cette borne.
     pub fn shrink_end(&mut self, end: u64) -> Result<(), IoError> {
-        let accepted = self.accepted();
-        if end > self.end || end < self.start || end + 1 < self.start + accepted {
-            return Err(IoError::EndBeforeReceived {
-                idx: self.idx,
-                start: self.start,
-                end,
-                accepted,
-            });
-        }
-        self.end = end;
-        Ok(())
+        shrink(&self.bounds, self.idx, self.start, end)
     }
 
     /// Fin de la connexion (segment terminé, pause ou erreur réseau) : écrit le tampon,
@@ -604,6 +651,25 @@ mod tests {
         w.shrink_end(129).unwrap();
         assert_eq!(w.remaining(), 0);
         assert_eq!(w.write(b"x").unwrap(), 0);
+    }
+
+    /// Redécoupage vu de la boucle de coordination : la borne recule par le suivi pendant
+    /// que la connexion écrit, et l'écrivain s'arrête à la nouvelle fin.
+    #[test]
+    fn handle_shrinks_a_running_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = PartFile::create(&dest_in(&dir)).unwrap();
+        let mut w = part.writer(&segment(0, 0, 999, 0), 64);
+        let handle = w.progress();
+        w.write(&pattern(0, 100)).unwrap();
+        assert_eq!(handle.accepted_and_end(), (100, 999));
+        assert!(handle.shrink_end(98).is_err(), "100 octets déjà acceptés");
+        handle.shrink_end(499).unwrap();
+        assert_eq!(handle.accepted_and_end(), (100, 499));
+        assert_eq!(w.remaining(), 400);
+        assert_eq!(w.write(&pattern(100, 1000)).unwrap(), 400);
+        assert_eq!(w.finish().unwrap().written(), 500);
+        assert_eq!(std::fs::read(part.path()).unwrap(), pattern(0, 500));
     }
 
     #[test]

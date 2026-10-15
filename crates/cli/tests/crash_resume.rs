@@ -17,6 +17,9 @@
 //! - `AURO_CRASH_SECONDS` : durée visée d'un téléchargement sans arrêt (défaut 3) ;
 //! - `AURO_CRASH_SEED` : graine du hasard, affichée au départ pour rejouer un échec.
 //!
+//! Chaque lancement tire son nombre de connexions (1, 2, 4 ou 8) : une reprise avec plus de
+//! connexions que le départ redécoupe les segments en cours (F-02).
+//!
 //! Porte de la phase 1 (SPEC §9.3) :
 //! `AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
 //!  cargo test --release -p auro-cli --test crash_resume -- --nocapture`
@@ -31,6 +34,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use auro_engine::io::part_path;
+use auro_engine::segmenter::{DEFAULT_MIN_SEGMENT_SIZE, initial_split};
 use auro_engine::store::{
     self, segments,
     tasks::{self, TaskRow, TaskState},
@@ -38,7 +42,11 @@ use auro_engine::store::{
 use auro_engine::testing::{FileSite, Pace, content_range, serve_file_paced};
 
 const MIB: u64 = 1024 * 1024;
-const CONNECTIONS: &str = "4";
+/// Connexions de référence pour régler le débit ; chaque lancement en tire un nombre parmi
+/// [`CONNECTION_CHOICES`] : une reprise avec plus de connexions que le départ coupe les
+/// segments en cours (redécoupage dynamique, F-02).
+const CONNECTIONS: f64 = 4.0;
+const CONNECTION_CHOICES: [u32; 4] = [1, 2, 4, 8];
 
 /// Générateur pseudo-aléatoire xorshift64* : reproductible à partir de sa graine.
 struct Rng(u64);
@@ -106,6 +114,8 @@ struct Bench {
     size: u64,
     /// Tâches terminées dont le fichier a été comparé puis supprimé.
     verified: HashSet<String>,
+    /// Arrêts survenus sur un découpage qui n'est aucun découpage initial : redécoupé.
+    split_layouts: usize,
 }
 
 impl Bench {
@@ -121,6 +131,7 @@ impl Bench {
             url,
             size,
             verified: HashSet::new(),
+            split_layouts: 0,
         }
     }
 
@@ -136,14 +147,14 @@ impl Bench {
     }
 
     /// Reprend la tâche inachevée, ou en commence une nouvelle.
-    fn launch(&self) -> Child {
+    fn launch(&self, connections: u32) -> Child {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_auro"));
         cmd.arg("--db").arg(&self.db);
         match self.unfinished() {
             Some(task) => cmd.args(["resume", &task.id]),
             None => cmd.args(["get", &self.url, "-o"]).arg(&self.downloads),
         };
-        cmd.args(["-c", CONNECTIONS])
+        cmd.args(["-c", &connections.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(File::create(&self.log).unwrap())
@@ -217,6 +228,16 @@ impl Bench {
                 }
                 TaskState::Queued | TaskState::Active => {
                     let sum: u64 = segs.iter().map(|s| s.written).sum();
+                    let ranges: Vec<(u64, u64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+                    let initial = CONNECTION_CHOICES.iter().any(|&n| {
+                        initial_split(self.size, n, DEFAULT_MIN_SEGMENT_SIZE)
+                            .iter()
+                            .map(|s| (s.start, s.end))
+                            .eq(ranges.iter().copied())
+                    });
+                    if !segs.is_empty() && !initial {
+                        self.split_layouts += 1;
+                    }
                     assert_eq!(task.done_bytes, sum, "règle 3");
                     let Some(name) = task.file_name.as_deref() else {
                         assert!(segs.is_empty(), "segments sans préparation");
@@ -262,7 +283,7 @@ fn killed_downloads_resume_without_corruption() {
 
     // Débit par connexion tel qu'un téléchargement complet dure `seconds`.
     let chunk = 16 * 1024;
-    let per_connection = size as f64 / seconds / CONNECTIONS.parse::<f64>().unwrap();
+    let per_connection = size as f64 / seconds / CONNECTIONS;
     let pace = Pace {
         chunk,
         delay: Duration::from_secs_f64(chunk as f64 / per_connection.max(1.0)),
@@ -278,7 +299,8 @@ fn killed_downloads_resume_without_corruption() {
         if bench.unfinished().is_some_and(|t| t.done_bytes > 0) {
             resumed_with_progress += 1;
         }
-        let mut child = bench.launch();
+        let connections = CONNECTION_CHOICES[rng.below(4) as usize];
+        let mut child = bench.launch(connections);
         // Un lancement sur dix va jusqu'au bout.
         let kill_at = (cycle % 10 != 9).then(|| Duration::from_millis(rng.below(horizon_ms)));
         match wait_or_kill(&mut child, kill_at, timeout) {
@@ -294,7 +316,7 @@ fn killed_downloads_resume_without_corruption() {
 
     // Fin : la tâche en cours est reprise sans arrêt jusqu'au bout.
     if bench.unfinished().is_some() {
-        let mut child = bench.launch();
+        let mut child = bench.launch(4);
         match wait_or_kill(&mut child, None, timeout) {
             End::Exited(status) => assert!(status.success(), "{}", bench.log_tail()),
             End::Killed => unreachable!(),
@@ -304,7 +326,9 @@ fn killed_downloads_resume_without_corruption() {
     assert!(bench.unfinished().is_none());
     eprintln!(
         "{kills} arrêts brutaux, {resumed_with_progress} reprises avec des octets déjà \
-         enregistrés, {} fichiers terminés et vérifiés octet par octet",
+         enregistrés, {} arrêts sur un découpage redécoupé, {} fichiers terminés et \
+         vérifiés octet par octet",
+        bench.split_layouts,
         bench.verified.len()
     );
     assert!(!bench.verified.is_empty());

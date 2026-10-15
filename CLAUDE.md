@@ -25,7 +25,7 @@ téléchargement.
   préallocation et espace libre à écrire), `net` (préparation, requêtes de segments avec
   `If-Range`, noms de fichier, classement des erreurs ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
-  (exécution d'une tâche : relie `net`, `io` et `store` ; redécoupage dynamique et
+  (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
   connexions automatiques à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
@@ -72,10 +72,13 @@ AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
-- Prochaine étape : phase 1 (SPEC 9.3), redécoupage dynamique (F-02, SPEC 7.2) dans
-  `transfer` : une connexion libre coupe le plus gros segment actif, l'écrivain de ce
-  segment recule sa borne (`SegmentWriter::shrink_end`) ; puis le nombre de connexions
-  automatique (SPEC 7.3).
+- Redécoupage (SPEC 7.2) : la borne d'un segment en cours ne recule que par
+  `ProgressHandle::shrink_end`, avant l'enregistrement de la coupe (`save_split`). Jamais
+  l'inverse : la base ne doit pas promettre à un nouveau segment des octets que l'ancien
+  écrivain peut encore accepter.
+- Prochaine étape : phase 1 (SPEC 9.3), nombre de connexions automatique (SPEC 7.3) dans
+  `transfer` : départ à 4, ajout toutes les 2 s si le débit progresse d'au moins 10 %,
+  plafond 16 ; division par deux sur 429, 503 ou connexion refusée, plafond par hôte.
 
 ## Façon de travailler
 
