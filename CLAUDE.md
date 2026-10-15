@@ -47,9 +47,12 @@ cargo run -p auro-cli -- db migrate auro.db
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
-- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3). L'invariant de couverture
-  (SPEC 5.6, règle 2) est écrit dans `segmenter` ; reste à l'appliquer dans `store`, dans la
-  même transaction que chaque redécoupage, et au chargement.
+- Invariant de couverture (SPEC 5.6, règle 2) : calcul dans `segmenter`, application en
+  base dans `store::segments` (vérifié dans la transaction de chaque écriture, contrôle au
+  démarrage par `find_coverage_errors`). Ne jamais écrire dans `segments` sans passer par
+  ce module.
+- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3), module `io` (écriture
+  positionnée, `fdatasync` puis compteur `written_bytes`, SPEC 5.6 règle 1 et 7.5).
 
 ## Façon de travailler
 

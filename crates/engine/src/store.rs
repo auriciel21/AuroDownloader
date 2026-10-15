@@ -11,6 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 
+use crate::segmenter::CoverageError;
+
+pub mod segments;
+
 /// Une étape de migration du schéma.
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
@@ -46,6 +50,28 @@ pub enum StoreError {
 
     #[error("liste de migrations invalide : la migration {found} suit la version {previous}")]
     BadMigrationOrder { previous: i64, found: i64 },
+
+    #[error("tâche {task_id} introuvable")]
+    TaskNotFound { task_id: String },
+
+    #[error("segment {idx} de la tâche {task_id} introuvable")]
+    SegmentNotFound { task_id: String, idx: u32 },
+
+    #[error("la tâche {task_id} a déjà des segments")]
+    SegmentsAlreadyExist { task_id: String },
+
+    #[error("la tâche {task_id} a {count} segments mais aucune taille connue")]
+    SegmentsWithoutSize { task_id: String, count: usize },
+
+    #[error("segments de la tâche {task_id} incohérents : {error}")]
+    Coverage {
+        task_id: String,
+        #[source]
+        error: CoverageError,
+    },
+
+    #[error("valeur incohérente : {0}")]
+    BadValue(String),
 }
 
 /// Ouvre (ou crée) la base du moteur dans `path` et la met à jour.
