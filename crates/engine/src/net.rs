@@ -76,6 +76,9 @@ pub enum NetError {
     #[error("certificat refusé : {0}")]
     InvalidCertificate(#[source] reqwest::Error),
 
+    #[error("HTTPS indisponible : la vérification des certificats n'est pas initialisée")]
+    TlsUnavailable,
+
     #[error("serveur injoignable : {0}")]
     Unreachable(#[source] reqwest::Error),
 
@@ -92,7 +95,9 @@ pub enum NetError {
 impl NetError {
     fn from_reqwest(error: reqwest::Error) -> Self {
         let error = error.without_url();
-        if error.is_redirect() {
+        if has_cause::<NoTls>(&error) {
+            NetError::TlsUnavailable
+        } else if error.is_redirect() {
             NetError::Redirect(error)
         } else if is_certificate_error(&error) {
             NetError::InvalidCertificate(error)
@@ -117,6 +122,7 @@ impl NetError {
             | NetError::BadResponse(_) => Some("HTTP_STATUS"),
             NetError::Timeout(_) => Some("NET_TIMEOUT"),
             NetError::InvalidCertificate(_) => Some("TLS_INVALID_CERT"),
+            NetError::TlsUnavailable => Some("TLS_UNAVAILABLE"),
             NetError::Unreachable(_) => Some("NET_UNREACHABLE"),
             NetError::FileChanged => Some("FILE_CHANGED"),
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
@@ -152,6 +158,38 @@ impl NetError {
             _ => None,
         }
     }
+}
+
+/// HTTPS est-il utilisable ? Sous Android, `rustls-platform-verifier` doit d'abord être
+/// initialisé par l'application (JNI et `Context`), sans quoi il panique au premier
+/// certificat. Cette initialisation arrive avec l'application Android (SPEC §7.5, phase 4) :
+/// d'ici là, le moteur refuse HTTPS sous Android par une erreur.
+pub fn tls_available() -> bool {
+    !cfg!(target_os = "android")
+}
+
+/// Cause posée par la politique de redirection quand elle refuse HTTPS faute de TLS.
+#[derive(Debug)]
+struct NoTls;
+
+impl std::fmt::Display for NoTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTPS indisponible")
+    }
+}
+
+impl std::error::Error for NoTls {}
+
+/// Une erreur de type `T` figure-t-elle dans la chaîne des causes ?
+fn has_cause<T: std::error::Error + 'static>(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(e) = current {
+        if e.is::<T>() {
+            return true;
+        }
+        current = e.source();
+    }
+    false
 }
 
 /// Cherche un certificat refusé par `rustls` dans la chaîne des causes, y compris dans
@@ -265,6 +303,11 @@ impl Client {
         if roots.is_empty() {
             return Err(NetError::BadRootCertificates("aucun certificat"));
         }
+        // Sous Android, rustls-platform-verifier refuse aussi ces racines avant d'être
+        // initialisé (voir `tls_available`).
+        if !tls_available() {
+            return Err(NetError::TlsUnavailable);
+        }
         Self::build(CONNECT_TIMEOUT, READ_TIMEOUT, roots)
     }
 
@@ -283,6 +326,8 @@ impl Client {
                 // barrière, si cela changeait.
                 let scheme = attempt.url().scheme().to_owned();
                 attempt.error(format!("redirection vers le protocole {scheme}"))
+            } else if attempt.url().scheme() == "https" && !tls_available() {
+                attempt.error(NoTls)
             } else {
                 attempt.follow()
             }
@@ -491,6 +536,9 @@ impl Client {
         extra: &HeaderMap,
         range: Option<&str>,
     ) -> Result<Response, NetError> {
+        if url.scheme() == "https" && !tls_available() {
+            return Err(NetError::TlsUnavailable);
+        }
         let mut request = self
             .http
             .request(method, url.clone())

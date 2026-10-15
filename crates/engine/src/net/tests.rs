@@ -292,6 +292,10 @@ async fn silent_server_times_out() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "android",
+    ignore = "HTTPS indisponible sous Android (tls_available)"
+)]
 async fn untrusted_certificate_is_refused_without_retry() {
     let key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let cert = key.cert.der().clone();
@@ -384,6 +388,10 @@ mod segments {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "android",
+        ignore = "HTTPS indisponible sous Android (tls_available)"
+    )]
     async fn added_authority_is_trusted_and_nothing_else_changes() {
         let tls = TestTls::new();
         let data = content(10_000);
@@ -411,6 +419,42 @@ mod segments {
         let other = Client::with_extra_roots(TestTls::new().ca_pem.as_bytes()).unwrap();
         let err = other.probe(&server.url("/f"), &[]).await.unwrap_err();
         assert!(matches!(err, NetError::InvalidCertificate(_)), "{err:?}");
+    }
+
+    /// Sous Android, tant que TLS n'est pas initialisé, HTTPS est refusé par une erreur,
+    /// directement comme après une redirection, sans même joindre le serveur ; ailleurs,
+    /// les deux passent.
+    #[tokio::test]
+    async fn https_depends_on_tls_availability() {
+        let tls = TestTls::new();
+        let secure = serve_file_tls(Arc::new(Mutex::new(FileSite::new(1000))), None, &tls);
+        let target = secure.url("/f");
+        let redirect = serve(move |_| {
+            reply(
+                "302 Found",
+                &[("Location", target.as_str()), ("Content-Length", "0")],
+                b"",
+            )
+        });
+        let c = match Client::with_extra_roots(tls.ca_pem.as_bytes()) {
+            Ok(c) => c,
+            Err(NetError::TlsUnavailable) if !tls_available() => client(),
+            Err(e) => panic!("{e:?}"),
+        };
+        for url in [secure.url("/f"), redirect.url("/a")] {
+            let result = c.probe(&url, &[]).await;
+            if tls_available() {
+                assert_eq!(result.unwrap().total_bytes, Some(1000));
+            } else {
+                let err = result.unwrap_err();
+                assert!(matches!(err, NetError::TlsUnavailable), "{err:?}");
+                assert_eq!(err.error_code(), Some("TLS_UNAVAILABLE"));
+                assert!(!err.retryable());
+            }
+        }
+        if !tls_available() {
+            assert!(secure.requests().is_empty());
+        }
     }
 
     #[test]

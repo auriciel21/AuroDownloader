@@ -54,6 +54,8 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences("essai", MODE_PRIVATE);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
+        // Affichage bord à bord imposé dès Android 15 : rester hors des barres système.
+        layout.setFitsSystemWindows(true);
         Button pick = new Button(this);
         pick.setText("1. Choisir un emplacement et tester");
         pick.setOnClickListener(v -> {

@@ -15,7 +15,7 @@ BAT=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) EXE=".exe"; BAT=".bat" ;; esac
 
 rm -rf "$OUT" && mkdir -p "$OUT/classes" "$OUT/dex"
-javac --release 11 -classpath "$JAR" -d "$OUT/classes" \
+javac --release 11 -encoding UTF-8 -classpath "$JAR" -d "$OUT/classes" \
     "$HERE/src/org/aurodownloader/essai/MainActivity.java"
 "$TOOLS/d8$BAT" --min-api 26 --lib "$JAR" --output "$OUT/dex" \
     $(find "$OUT/classes" -name '*.class')

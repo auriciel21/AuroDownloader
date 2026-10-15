@@ -31,7 +31,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,7 +64,7 @@ fn env_u64(name: &str, default: u64) -> u64 {
 /// sont exacts ; ils sont convertis en secondes avec la fréquence du compteur de cycles,
 /// étalonnée une fois.
 #[cfg(windows)]
-fn cpu_time(child: &Child) -> Duration {
+fn cpu_time(child: &std::process::Child) -> Duration {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
 

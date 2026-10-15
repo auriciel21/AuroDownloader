@@ -97,10 +97,15 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
     `perf` de `.github/workflows/ci.yml`, pas encore exécuté faute de dépôt distant).
   - Banc de reprise en version longue (1 000 cycles sur 1 Gio) : lancé le 2026-10-15,
     sans résultat consigné.
-  - Essai Android (SPEC 7.5) : premier relevé fait sur le stockage interne. Reste le
-    sélecteur de stockage (`experiments/android-saf`). HTTPS sous Android demande
-    l'initialisation de `rustls-platform-verifier` ; en attendant, renvoyer une erreur au
-    lieu de paniquer.
+  - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
+    « Téléchargements ») validés sur un appareil. HTTPS y est refusé par `TLS_UNAVAILABLE`
+    (`net::tls_available`) tant que l'application n'initialise pas
+    `rustls-platform-verifier` (phase 4).
+- Compilation Android : NDK du SDK (`ndk/27.2.12479018`), cible `aarch64-linux-android`,
+  API 26 ; variables `CC_`, `AR_` et `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` vers
+  `aarch64-linux-android26-clang.cmd` et `llvm-ar.exe`. Tests du moteur sur l'appareil :
+  `cargo test --no-run`, `adb push` dans `/data/local/tmp`, `chmod 755`, lancer avec
+  `TMPDIR` dans `/data/local/tmp`.
 
 ## Façon de travailler
 

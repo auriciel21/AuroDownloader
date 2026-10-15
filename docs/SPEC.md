@@ -572,6 +572,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `NET_TIMEOUT` | oui | Délai dépassé |
 | `HTTP_STATUS` | selon le statut | Réessai pour 408, 429 et 5xx ; échec définitif pour 401, 403, 404 et 410 |
 | `TLS_INVALID_CERT` | non | Certificat refusé |
+| `TLS_UNAVAILABLE` | non | HTTPS impossible : la vérification des certificats n'est pas initialisée (sous Android, tant que l'application ne l'a pas fait, section 7.5) |
 | `RANGE_UNSUPPORTED` | non bloquant | Bascule en un seul flux, la reprise sera impossible |
 | `FILE_CHANGED` | non | Le fichier distant a changé ; la tâche attend la décision de l'utilisateur |
 | `DISK_FULL` | après libération | Plus d'espace ; la tâche reprend quand l'espace revient |
@@ -669,9 +670,14 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 - À la fin, le `.part` est vidé, fermé, puis renommé en nom final ; un fichier déjà présent sous ce nom n'est jamais écrasé.
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
 - Essai de phase 1, premier relevé (2026-10-15, Galaxy S25 Ultra, Android 16, moteur compilé avec le NDK pour l'API 26) :
-  - **Stockage interne de l'application** : 128 des 130 tests du moteur passent sur l'appareil. Une ISO de 756 Mio téléchargée en HTTP, tuée deux fois puis reprise, garde l'empreinte publiée.
-  - **HTTPS** : `rustls-platform-verifier` exige sous Android une initialisation par l'application (JNI et `Context`), et le moteur panique sans elle. C'est la cause des deux tests en échec. L'application devra faire cette initialisation au démarrage du moteur. D'ici là, le moteur doit renvoyer une erreur au lieu de paniquer.
-  - **Sélecteur de stockage** : l'outil d'essai est `experiments/android-saf` (écritures positionnées depuis plusieurs fils, vidage, reprise après la mort du processus) ; aucun résultat n'est encore relevé.
+  - **Stockage interne de l'application** : tous les tests du moteur passent sur l'appareil, sauf les deux tests HTTPS, ignorés sous Android. Une ISO de 756 Mio téléchargée en HTTP, tuée deux fois puis reprise, garde l'empreinte publiée.
+  - **HTTPS** : `rustls-platform-verifier` exige sous Android une initialisation par l'application (JNI et `Context`). Sans elle, il panique au premier certificat et refuse toute autorité ajoutée. Le moteur refuse donc HTTPS sous Android par l'erreur `TLS_UNAVAILABLE` (section 6.8), même après une redirection. L'application Android devra faire cette initialisation au démarrage du moteur (phase 4).
+  - **Sélecteur de stockage, dossier « Téléchargements »** (fournisseur `com.android.providers.downloads.documents`, outil `experiments/android-saf`) : tous les essais passent.
+    - Le descripteur obtenu en `"rw"` est un fichier ordinaire du stockage partagé, et `lseek` et `ftruncate` fonctionnent.
+    - 48 Mio écrits par `pwrite` depuis quatre fils, dans le désordre, à 675 Mio/s, puis `fdatasync` en 44 ms.
+    - La relecture est exacte, par `pread` comme par flux.
+    - Après la mort du processus, la permission persistante rouvre le fichier, dont le contenu est intact, et l'écriture des 16 Mio restants le complète. L'écriture positionnée par ce sélecteur est donc possible sur cet appareil.
+    - Restent à essayer : les autres fournisseurs (carte SD, stockage en ligne comme Google Drive) et d'autres appareils et versions d'Android (phase 4).
 
 ### 7.6 Limitation de débit
 
