@@ -11,4 +11,5 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 thiserror = "2.0.21"
 
 [dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 tempfile = "3.27.0"

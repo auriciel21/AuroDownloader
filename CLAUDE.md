@@ -20,7 +20,8 @@ téléchargement.
 ## Structure
 
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
-  fait), `segmenter`, `net`, `io` (à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
+  fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
+  écrire), `net`, `io` (à écrire). Phase 2 : `rpc` et `scheduler` (vides). En
   phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
   phase 2 avec l'application de bureau (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -46,8 +47,9 @@ cargo run -p auro-cli -- db migrate auro.db
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
-- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3). Commencer par l'invariant de
-  couverture des segments (SPEC 5.6, règle 2) et ses tests.
+- Prochaine étape : phase 1 de la feuille de route (SPEC 9.3). L'invariant de couverture
+  (SPEC 5.6, règle 2) est écrit dans `segmenter` ; reste à l'appliquer dans `store`, dans la
+  même transaction que chaque redécoupage, et au chargement.
 
 ## Façon de travailler
 
