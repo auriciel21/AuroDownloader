@@ -579,6 +579,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `DEST_PERMISSION` | non | Écriture refusée dans le dossier |
 | `DISK_IO` | non | Autre erreur de lecture, d'écriture ou de renommage sur le disque |
 | `CHECKSUM_MISMATCH` | non | L'empreinte du fichier final diffère de celle attendue |
+| `INTERNAL` | non | Erreur du moteur lui-même (base illisible, incohérence, panique d'une exécution) ; détail dans `error_detail`. La tâche ne repart qu'à la demande de l'utilisateur |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 
 ### 6.9 Portées des jetons
@@ -662,6 +663,8 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 5. Sans `ETag` ni `Last-Modified`, le moteur compare la taille et signale une validation faible ; une empreinte fournie par l'utilisateur reste alors la seule garantie.
 6. Une tâche sans plages, ou de taille inconnue, ne reprend pas en cours de route : elle repart du début.
 7. Si le `.part` a disparu alors que tous les segments sont terminés et que le fichier final existe avec la bonne taille, l'arrêt a eu lieu entre le renommage et l'enregistrement de la fin : la tâche est terminée sans nouveau téléchargement. Pour une tâche de taille inconnue, la présence du fichier final suffit.
+
+Le planificateur reprend ces tâches avant les autres de leur file. Un arrêt demandé du moteur (`engine.shutdown`) arrête chaque tâche en cours après son point de contrôle, puis la remet en `queued` (`active` → `paused` → `queued`), pour qu'elle reparte au démarrage suivant. Un arrêt brutal entre ces deux changements laisse la tâche en pause : aucune donnée n'est perdue, mais elle attend une reprise manuelle.
 
 ### 7.5 Écriture sur disque
 

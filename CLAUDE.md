@@ -29,9 +29,11 @@ téléchargement.
   ajoutées par `--ca-cert` ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
   (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
-  nombre de connexions automatique). Phase 2 : `rpc` et `scheduler` (vides). En
-  phase 1, la CLI appelle le moteur comme une bibliothèque ; l'API JSON-RPC arrive en
-  phase 2 avec l'application de bureau (SPEC 9.3).
+  nombre de connexions automatique). Phase 2 : `scheduler` (objet `Engine` : une boucle
+  unique reçoit les commandes par canal, démarre les tâches selon les files et
+  priorités, nouvelles tentatives, reprise au démarrage, événements), `rpc` (vide). La
+  CLI appelle encore le moteur comme une bibliothèque ; elle deviendra un client du
+  protocole (SPEC 9.3).
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
 - `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
@@ -101,7 +103,18 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - N-01 (SPEC 3) : la porte est le rapport des coûts processeur par octet auro / aria2, à
   nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
-- Prochaine étape : porte de la phase 1 (SPEC 9.3).
+- Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
+  JSON-RPC (`rpc`) : un message JSON par ligne sur socket Unix ou canal nommé Windows,
+  binaire séparé `aurod` (crate `crates/daemon`), couche JSON-RPC écrite avec
+  `serde_json` ; 3. CLI cliente du moteur ; 4. limites de débit (F-15) et espace disque
+  (F-18) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
+  application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
+  sans perte de données. Le banc de reprise sera adapté pour tuer `aurod` pendant que
+  plusieurs tâches tournent.
+- Changements d'état d'une tâche dans le moteur : par les commandes de `Engine`, que la
+  boucle du planificateur traite une à une ; ne pas appeler `change_state` à côté d'elle
+  pendant qu'elle tourne.
+- Porte de la phase 1 (SPEC 9.3), franchie le 2026-10-16 :
   - N-01 et débit : portes tenues sous Linux (WSL, relevé du 2026-10-16 dans
     `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows (relevé du 2026-10-16) : débit
     tenu ; processeur de la machine trop bruité sur un poste de travail ouvert, celui

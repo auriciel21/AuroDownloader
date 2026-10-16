@@ -7,7 +7,7 @@
 //! empêche le démarrage au lieu d'être modifiée.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 
@@ -26,6 +26,9 @@ pub struct Migration {
     /// Script SQL appliqué dans une transaction.
     pub sql: &'static str,
 }
+
+/// Attente maximale d'une écriture bloquée par celle d'une autre connexion.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Toutes les migrations connues de ce moteur, dans l'ordre.
 pub const MIGRATIONS: &[Migration] = &[Migration {
@@ -133,6 +136,9 @@ fn configure(conn: &Connection) -> Result<(), StoreError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // Chaque tâche en cours a sa connexion : une écriture attend que l'autre finisse,
+    // au lieu d'échouer aussitôt (SQLITE_BUSY).
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(())
 }
 
@@ -227,7 +233,7 @@ fn backup_before_upgrade(
 }
 
 /// Millisecondes Unix en UTC (SPEC §5.1).
-pub(crate) fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))

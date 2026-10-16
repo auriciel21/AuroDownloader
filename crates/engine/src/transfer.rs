@@ -215,7 +215,7 @@ pub async fn run(
     task_id: &str,
     opts: &Options,
     mut stop: watch::Receiver<bool>,
-    on_progress: &mut dyn FnMut(Progress),
+    on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Outcome, TransferError> {
     let task = load_task(conn, task_id)?;
     match task.state {
@@ -308,7 +308,7 @@ async fn execute(
     task_id: &str,
     opts: &Options,
     stop: &mut watch::Receiver<bool>,
-    on_progress: &mut dyn FnMut(Progress),
+    on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Step<PathBuf> {
     let mut task = load_task(conn, task_id)?;
     let source = primary_source(conn, task_id)?;
@@ -662,7 +662,7 @@ async fn pool(
     ctx: &Pool<'_>,
     todo: Vec<Segment>,
     stop: &mut watch::Receiver<bool>,
-    on_progress: &mut dyn FnMut(Progress),
+    on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Step<u64> {
     let mut todo: VecDeque<Segment> = todo.into();
     // Octets enregistrés de chaque segment ; ceux en cours sont lus sur leur suivi.

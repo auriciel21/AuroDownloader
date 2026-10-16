@@ -515,6 +515,66 @@ pub fn complete_task(
     Ok(())
 }
 
+/// La file `queue_id` existe-t-elle ?
+pub fn queue_exists(conn: &Connection, queue_id: &str) -> Result<bool, StoreError> {
+    Ok(conn
+        .query_row("SELECT 1 FROM queues WHERE id = ?1", [queue_id], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// Tâche qui peut partir, avec la limite de sa file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub task_id: String,
+    pub queue_id: String,
+    /// Tâches simultanées permises dans la file (F-14).
+    pub max_active: u32,
+    pub state: TaskState,
+}
+
+/// Tâches qui peuvent partir à `now` (millisecondes Unix), dans l'ordre où le planificateur
+/// les démarre : files dans leur ordre ; dans une file, d'abord les tâches `active`
+/// (interrompues par un arrêt du moteur, SPEC §7.4), puis par priorité décroissante et
+/// position. Une tâche `retry_wait` part quand sa date est passée (SPEC §7.8).
+pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.queue_id, q.max_active, t.state
+         FROM tasks t JOIN queues q ON q.id = t.queue_id
+         WHERE t.state IN ('queued', 'active')
+            OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1)
+         ORDER BY q.position, t.state = 'active' DESC, t.priority DESC, t.position, t.id",
+    )?;
+    let rows = stmt.query_map([now], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (task_id, queue_id, max_active, state) = row?;
+        let bad = |what: &str| StoreError::BadValue(format!("tâche {task_id} : {what}"));
+        Ok(Candidate {
+            max_active: u32::try_from(max_active).map_err(|_| bad("limite de file invalide"))?,
+            state: TaskState::from_sql(&state).ok_or_else(|| bad("état inconnu"))?,
+            task_id,
+            queue_id,
+        })
+    })
+    .collect()
+}
+
+/// Date de la prochaine nouvelle tentative (millisecondes Unix), s'il y en a une.
+pub fn next_retry_at(conn: &Connection) -> Result<Option<i64>, StoreError> {
+    Ok(conn.query_row(
+        "SELECT MIN(next_retry_at) FROM tasks WHERE state = 'retry_wait'",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
