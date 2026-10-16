@@ -10,6 +10,7 @@
 
 pub mod io;
 pub mod net;
+pub mod paths;
 pub mod rpc;
 pub mod scheduler;
 pub mod segmenter;

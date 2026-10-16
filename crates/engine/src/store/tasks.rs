@@ -103,7 +103,10 @@ impl PauseReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: String,
+    pub queue_id: String,
     pub state: TaskState,
+    /// La plus grande part la première (F-14).
+    pub priority: i64,
     pub display_name: String,
     pub dest_dir: String,
     /// Nom du fichier final ; `None` tant que la tâche n'est pas préparée.
@@ -201,7 +204,8 @@ pub fn create_task(
 }
 
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
-     done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections";
+     done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
+     queue_id, priority";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -217,6 +221,8 @@ struct RawTask {
     error_code: Option<String>,
     error_detail: Option<String>,
     max_connections: Option<i64>,
+    queue_id: String,
+    priority: i64,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -233,6 +239,8 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         error_code: row.get(9)?,
         error_detail: row.get(10)?,
         max_connections: row.get(11)?,
+        queue_id: row.get(12)?,
+        priority: row.get(13)?,
     })
 }
 
@@ -252,6 +260,8 @@ impl TryFrom<RawTask> for TaskRow {
                 .map(|c| u32::try_from(c).map_err(|_| bad("nombre de connexions invalide")))
                 .transpose()?,
             id: raw.id,
+            queue_id: raw.queue_id,
+            priority: raw.priority,
             display_name: raw.display_name,
             dest_dir: raw.dest_dir,
             file_name: raw.file_name,
@@ -564,6 +574,107 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
         })
     })
     .collect()
+}
+
+/// Filtre de [`find_tasks`] ; les champs vides ne filtrent rien.
+#[derive(Debug, Clone, Default)]
+pub struct TaskFilter {
+    pub queue_id: Option<String>,
+    pub states: Vec<TaskState>,
+    /// Tâches d'identifiant strictement plus grand (pagination ; les identifiants sont
+    /// des UUID v7, triés par date de création).
+    pub after: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// Tâches selon `filter`, par identifiant croissant (ordre de création).
+pub fn find_tasks(conn: &Connection, filter: &TaskFilter) -> Result<Vec<TaskRow>, StoreError> {
+    let states: Vec<&str> = filter.states.iter().map(|s| s.as_sql()).collect();
+    // Les états sont des constantes de ce module : aucun texte venu de l'extérieur.
+    let state_clause = if states.is_empty() {
+        String::new()
+    } else {
+        format!(" AND state IN ('{}')", states.join("','"))
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TASK_COLUMNS} FROM tasks
+         WHERE (?1 IS NULL OR queue_id = ?1) AND (?2 IS NULL OR id > ?2){state_clause}
+         ORDER BY id LIMIT ?3"
+    ))?;
+    let limit = filter.limit.map_or(-1, i64::from);
+    let rows = stmt.query_map(params![filter.queue_id, filter.after, limit], raw_task)?;
+    rows.map(|r| r?.try_into()).collect()
+}
+
+/// Une file de téléchargement (SPEC §5.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueRow {
+    pub id: String,
+    pub name: String,
+    pub position: i64,
+    pub max_active: u32,
+    pub speed_limit_bps: Option<u64>,
+}
+
+/// Toutes les files, dans leur ordre.
+pub fn list_queues(conn: &Connection) -> Result<Vec<QueueRow>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, position, max_active, speed_limit_bps FROM queues
+         ORDER BY position, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, Option<i64>>(4)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (id, name, position, max_active, limit) = row?;
+        Ok(QueueRow {
+            max_active: u32::try_from(max_active)
+                .map_err(|_| StoreError::BadValue(format!("file {id} : limite invalide")))?,
+            speed_limit_bps: to_u64(limit, "limite de débit")?,
+            id,
+            name,
+            position,
+        })
+    })
+    .collect()
+}
+
+/// Lit une file.
+pub fn load_queue(conn: &Connection, queue_id: &str) -> Result<Option<QueueRow>, StoreError> {
+    Ok(list_queues(conn)?.into_iter().find(|q| q.id == queue_id))
+}
+
+/// Crée une file en dernière position ; renvoie son identifiant. Échoue si le nom est
+/// déjà pris (`UNIQUE`).
+pub fn create_queue(conn: &Connection, name: &str, max_active: u32) -> Result<String, StoreError> {
+    let id = new_id();
+    conn.execute(
+        "INSERT INTO queues (id, name, position, max_active, created_at)
+         VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM queues), ?3, ?4)",
+        params![id, name, max_active, now_ms()],
+    )?;
+    Ok(id)
+}
+
+/// Change le nom ou la limite d'une file ; `false` si elle n'existe pas.
+pub fn update_queue(
+    conn: &Connection,
+    queue_id: &str,
+    name: Option<&str>,
+    max_active: Option<u32>,
+) -> Result<bool, StoreError> {
+    let updated = conn.execute(
+        "UPDATE queues SET name = COALESCE(?2, name), max_active = COALESCE(?3, max_active)
+         WHERE id = ?1",
+        params![queue_id, name, max_active],
+    )?;
+    Ok(updated > 0)
 }
 
 /// Date de la prochaine nouvelle tentative (millisecondes Unix), s'il y en a une.

@@ -31,9 +31,14 @@ téléchargement.
   (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
   nombre de connexions automatique). Phase 2 : `scheduler` (objet `Engine` : une boucle
   unique reçoit les commandes par canal, démarre les tâches selon les files et
-  priorités, nouvelles tentatives, reprise au démarrage, événements), `rpc` (vide). La
-  CLI appelle encore le moteur comme une bibliothèque ; elle deviendra un client du
-  protocole (SPEC 9.3).
+  priorités, nouvelles tentatives, reprise au démarrage, événements avec révision `rev`),
+  `rpc` (JSON-RPC un message par ligne : `methods`, `session` avec abonnements et
+  avancement regroupé, `local` pour le canal nommé Windows réservé au SID de
+  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut). La CLI
+  appelle encore le moteur comme une bibliothèque ; elle deviendra un client du protocole
+  (SPEC 9.3).
+- `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
+  sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
 - `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
@@ -50,6 +55,7 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- list
 cargo run -p auro-cli -- resume <id-de-tâche>
+cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
@@ -104,9 +110,8 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
 - Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
-  JSON-RPC (`rpc`) : un message JSON par ligne sur socket Unix ou canal nommé Windows,
-  binaire séparé `aurod` (crate `crates/daemon`), couche JSON-RPC écrite avec
-  `serde_json` ; 3. CLI cliente du moteur ; 4. limites de débit (F-15) et espace disque
+  JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
+  cliente du moteur ; 4. limites de débit (F-15) et espace disque
   (F-18) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
   application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
   sans perte de données. Le banc de reprise sera adapté pour tuer `aurod` pendant que

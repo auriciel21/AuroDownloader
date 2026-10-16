@@ -222,6 +222,7 @@ Les cookies sont rangés dans le coffre du système, jamais dans la base (sectio
 ### 4.6 Exécution et distribution
 
 - **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option.
+- **Moteur** : binaire `aurod` (crate `crates/daemon`), sans interface. L'application de bureau le lance s'il ne tourne pas ; `auro` est le client en ligne de commande.
 - **Sans interface** : l'option `--headless` lance le moteur seul, pour un NAS ou un serveur, avec une image Docker et une unité `systemd` utilisateur. L'interface web est servie par le moteur lui-même.
 - **Windows** : installateur signé et version portable.
 - **Linux** : AppImage et paquet `.deb` ; Flatpak à étudier, car son bac à sable complique la messagerie native avec le navigateur.
@@ -467,6 +468,12 @@ Le moteur parle JSON-RPC 2.0, quel que soit le client ou le transport : applicat
 
 Deux protections s'ajoutent pour toute écoute TCP : le moteur vérifie les en-têtes `Host` et `Origin` et refuse ceux qu'il ne reconnaît pas, ce qui bloque les attaques depuis une page web quelconque visant le port local ; et il n'accepte jamais de connexion sans jeton, même depuis `127.0.0.1`.
 
+Transport local, tel que mis en œuvre (phase 2) :
+- **Découpage des messages** : un message JSON par ligne, dans les deux sens, terminé par `\n`. Un message de plus de 1 Mio ferme la connexion. Le WebSocket portera les mêmes messages, un par trame.
+- **Windows** : canal nommé `\\.\pipe\aurodownloader-<utilisateur>`. Son descripteur de sécurité n'autorise que l'identifiant (SID) de l'utilisateur qui a lancé le moteur, sans droit hérité. Le canal refuse les clients distants. Un second moteur ne peut pas prendre le nom tant que le premier tourne.
+- **Linux** : socket `$XDG_RUNTIME_DIR/aurodownloader/aurod.sock`, ou `/tmp/aurodownloader-<utilisateur>/aurod.sock` sans `XDG_RUNTIME_DIR`. Le dossier est en `0700` et le socket en `0600`. Un socket laissé par un moteur arrêté brutalement est remplacé ; un socket qui répond empêche un second moteur de démarrer.
+- **Processus** : le binaire `aurod` sert ce point d'accès. Il s'arrête proprement sur Ctrl-C, sur SIGTERM ou par `engine.shutdown`.
+
 ### 6.3 Ouverture de session
 
 Le premier appel d'un client est `engine.hello`. Il annonce la plage de versions du protocole qu'il comprend ; le moteur répond avec la version retenue, ses capacités et le numéro de révision courant.
@@ -509,7 +516,7 @@ Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et 
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
 | `history.list` / `history.clear` | `query`, `before`, `limit` | Entrées d'historique |
 | `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages |
-| `events.subscribe` / `events.unsubscribe` | `topics[]`, `progressIntervalMs` | Abonnement actif |
+| `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
 | `sync.snapshot` | aucun | État complet et `rev` |
 
 ### 6.5 Notifications du moteur
@@ -525,7 +532,14 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `task.removed` | `taskId` |
 | `queue.updated` | File modifiée |
 | `engine.stats` | Débit global, toutes les secondes |
-| `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible) |
+| `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
+
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+
+État de la mise en œuvre (phase 2) :
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `queue.list`, `queue.create`, `queue.update`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. C'est le cas, dans `task.add`, de `fileName`, `speedLimitBps`, `checksum`, `headers`, `idempotencyKey` et de plusieurs sources. C'est aussi le cas de `speedLimitBps` et `scheduleId` pour les files.
+- **Résultat d'une action groupée** : `task.pause`, `task.resume` et `task.cancel` renvoient `taskIds[]`, les tâches acceptées, et `errors[]`, chaque refus avec `taskId`, `code` et `message`. Une tâche refusée n'empêche pas les autres.
 
 ### 6.6 Exemple d'échange
 
@@ -595,7 +609,8 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 
 - Les messages d'une même connexion arrivent dans l'ordre.
 - Les changements d'état ne sont jamais abandonnés ; seules les notifications `task.progress` peuvent être regroupées ou sautées si le client est lent.
-- La révision `rev` augmente de 1 à chaque changement d'état ; les notifications de progression portent la révision courante sans l'augmenter, si bien qu'en sauter une ne crée aucun trou. Un client qui constate un trou dans les révisions, ou qui se reconnecte, appelle `sync.snapshot` et repart de cet état complet.
+- La révision `rev` augmente de 1 à chaque changement d'état ; les notifications de progression portent la révision courante sans l'augmenter, si bien qu'en sauter une ne crée aucun trou. Un client qui constate un trou dans les révisions, ou qui se reconnecte, appelle `sync.snapshot` et repart de cet état complet. La révision repart de 0 à chaque démarrage du moteur.
+- Pour ne rien manquer, un client s'abonne d'abord, puis appelle `sync.snapshot`. Il ignore ensuite les notifications de révision inférieure ou égale à celle de l'instantané.
 - Le moteur ne suppose jamais qu'un client est présent : les téléchargements continuent sans interface ouverte.
 
 ## 7. Algorithmes clés

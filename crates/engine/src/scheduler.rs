@@ -15,6 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -24,8 +26,8 @@ use tokio::task::JoinSet;
 use crate::io::part_path;
 use crate::net::{self, Client, NetError};
 use crate::store::tasks::{
-    self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, load_task, next_retry_at,
-    runnable_tasks,
+    self, Change, NewTask, PauseReason, QueueRow, TaskFilter, TaskRow, TaskState, change_state,
+    load_task, next_retry_at, runnable_tasks,
 };
 use crate::store::{self, StoreError, now_ms};
 use crate::transfer::{self, Options, Outcome, Progress, TransferError};
@@ -48,21 +50,42 @@ pub struct Config {
     pub transfer: Options,
 }
 
-/// Ce qui arrive aux tâches, pour les interfaces (SPEC §6.5).
+/// Ce qui arrive aux tâches et aux files, pour les interfaces (SPEC §6.5).
+///
+/// `rev` est la révision du moteur (SPEC §6.10) : elle augmente de 1 à chaque changement
+/// (ajout, changement d'état, file modifiée) ; l'avancement porte la révision courante
+/// sans l'augmenter. Elle repart de 0 à chaque démarrage du moteur.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Added {
+        rev: u64,
         task_id: String,
     },
     StateChanged {
+        rev: u64,
         task_id: String,
         from: TaskState,
         to: TaskState,
+        pause_reason: Option<String>,
+        error_code: Option<String>,
+    },
+    QueueUpdated {
+        rev: u64,
+        queue_id: String,
     },
     Progress {
+        rev: u64,
         task_id: String,
         progress: Progress,
     },
+}
+
+/// État complet du moteur à une révision donnée (`sync.snapshot`, SPEC §6.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub rev: u64,
+    pub tasks: Vec<TaskRow>,
+    pub queues: Vec<QueueRow>,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -76,6 +99,9 @@ pub enum EngineError {
 
     #[error("file inconnue : {0}")]
     QueueNotFound(String),
+
+    #[error("demande invalide : {0}")]
+    BadRequest(String),
 
     #[error("la tâche {task_id} est dans l'état {state} : {action} impossible")]
     InvalidState {
@@ -125,6 +151,20 @@ enum Command {
         delete_files: bool,
         reply: Reply<()>,
     },
+    Get(String, Reply<TaskRow>),
+    List(TaskFilter, Reply<(Vec<TaskRow>, u64)>),
+    Snapshot(Reply<Snapshot>),
+    CreateQueue {
+        name: String,
+        max_active: u32,
+        reply: Reply<String>,
+    },
+    UpdateQueue {
+        queue_id: String,
+        name: Option<String>,
+        max_active: Option<u32>,
+        reply: Reply<QueueRow>,
+    },
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -135,6 +175,8 @@ pub struct Engine {
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
     default_queue: String,
+    rev: Arc<AtomicU64>,
+    stopped: watch::Receiver<bool>,
 }
 
 impl Engine {
@@ -146,10 +188,13 @@ impl Engine {
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let (stopped_tx, stopped) = watch::channel(false);
+        let rev = Arc::new(AtomicU64::new(0));
         let state = Scheduler {
             conn,
             config,
             events: events.clone(),
+            rev: Arc::clone(&rev),
             default_queue: default_queue.clone(),
             running: HashMap::new(),
             runs: JoinSet::new(),
@@ -157,17 +202,77 @@ impl Engine {
             broken: HashSet::new(),
             shutdown: None,
         };
-        tokio::spawn(state.run(inbox));
+        tokio::spawn(async move {
+            state.run(inbox).await;
+            let _ = stopped_tx.send(true);
+        });
         Ok(Engine {
             commands,
             events,
             default_queue,
+            rev,
+            stopped,
         })
     }
 
     /// Identifiant de la file par défaut.
     pub fn default_queue(&self) -> &str {
         &self.default_queue
+    }
+
+    /// Révision courante (SPEC §6.10).
+    pub fn rev(&self) -> u64 {
+        self.rev.load(Ordering::SeqCst)
+    }
+
+    /// Revient quand la boucle du moteur s'est arrêtée (`shutdown`, ou plus de poignée).
+    pub async fn stopped(&self) {
+        let mut stopped = self.stopped.clone();
+        let _ = stopped.wait_for(|s| *s).await;
+    }
+
+    /// Une tâche.
+    pub async fn get(&self, task_id: &str) -> Result<TaskRow, EngineError> {
+        let id = task_id.to_owned();
+        self.ask(|reply| Command::Get(id, reply)).await
+    }
+
+    /// Tâches selon `filter`, avec la révision à laquelle la liste a été lue.
+    pub async fn list(&self, filter: TaskFilter) -> Result<(Vec<TaskRow>, u64), EngineError> {
+        self.ask(|reply| Command::List(filter, reply)).await
+    }
+
+    /// Tâches et files, lues ensemble à une même révision.
+    pub async fn snapshot(&self) -> Result<Snapshot, EngineError> {
+        self.ask(Command::Snapshot).await
+    }
+
+    /// Crée une file ; renvoie son identifiant.
+    pub async fn create_queue(&self, name: &str, max_active: u32) -> Result<String, EngineError> {
+        let name = name.to_owned();
+        self.ask(|reply| Command::CreateQueue {
+            name,
+            max_active,
+            reply,
+        })
+        .await
+    }
+
+    /// Change le nom ou la limite d'une file.
+    pub async fn update_queue(
+        &self,
+        queue_id: &str,
+        name: Option<String>,
+        max_active: Option<u32>,
+    ) -> Result<QueueRow, EngineError> {
+        let queue_id = queue_id.to_owned();
+        self.ask(|reply| Command::UpdateQueue {
+            queue_id,
+            name,
+            max_active,
+            reply,
+        })
+        .await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -244,6 +349,8 @@ struct Scheduler {
     conn: Connection,
     config: Config,
     events: broadcast::Sender<Event>,
+    /// Révision, que seule cette boucle augmente ; partagée pour la lecture.
+    rev: Arc<AtomicU64>,
     default_queue: String,
     running: HashMap<String, Running>,
     runs: JoinSet<(String, Result<Outcome, TransferError>)>,
@@ -301,19 +408,31 @@ impl Scheduler {
         }
     }
 
-    fn emit(&self, event: Event) {
+    /// Annonce un changement, avec la révision suivante.
+    fn emit(&self, event: impl FnOnce(u64) -> Event) {
+        let rev = self.rev.fetch_add(1, Ordering::SeqCst) + 1;
         // Personne à l'écoute : rien à faire.
-        let _ = self.events.send(event);
+        let _ = self.events.send(event(rev));
     }
 
+    /// Annonce un changement d'état, avec la cause de pause ou le code d'erreur
+    /// enregistrés.
     fn changed(&self, task_id: &str, from: TaskState, to: TaskState) {
-        if from != to {
-            self.emit(Event::StateChanged {
-                task_id: task_id.to_owned(),
-                from,
-                to,
-            });
+        if from == to {
+            return;
         }
+        let (pause_reason, error_code) = match load_task(&self.conn, task_id) {
+            Ok(t) => (t.pause_reason, t.error_code),
+            Err(_) => (None, None),
+        };
+        self.emit(|rev| Event::StateChanged {
+            rev,
+            task_id: task_id.to_owned(),
+            from,
+            to,
+            pause_reason,
+            error_code,
+        });
     }
 
     /// Démarre les tâches prêtes, tant que leur file a de la place (F-14).
@@ -351,9 +470,10 @@ impl Scheduler {
         );
         self.changed(&task_id, from, TaskState::Active);
         let (config, events) = (self.config.clone(), self.events.clone());
+        let rev = Arc::clone(&self.rev);
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
-            let result = execute(&config, &id, stopped, events).await;
+            let result = execute(&config, &id, stopped, events, rev).await;
             (id, result)
         });
         self.run_ids.insert(handle.id(), task_id);
@@ -377,8 +497,103 @@ impl Scheduler {
             } => {
                 let _ = reply.send(self.cancel(&task_id, delete_files));
             }
+            Command::Get(task_id, reply) => {
+                let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
+            }
+            Command::List(filter, reply) => {
+                let rows = tasks::find_tasks(&self.conn, &filter);
+                let _ = reply.send(rows.map(|r| (r, self.current_rev())).map_err(Into::into));
+            }
+            Command::Snapshot(reply) => {
+                let _ = reply.send(self.snapshot());
+            }
+            Command::CreateQueue {
+                name,
+                max_active,
+                reply,
+            } => {
+                let _ = reply.send(self.create_queue(&name, max_active));
+            }
+            Command::UpdateQueue {
+                queue_id,
+                name,
+                max_active,
+                reply,
+            } => {
+                let _ = reply.send(self.update_queue(&queue_id, name.as_deref(), max_active));
+            }
             Command::Shutdown(done) => self.begin_shutdown(Some(done)),
         }
+    }
+
+    fn current_rev(&self) -> u64 {
+        self.rev.load(Ordering::SeqCst)
+    }
+
+    /// Lu dans la boucle, entre deux changements : tâches, files et révision concordent.
+    fn snapshot(&self) -> Result<Snapshot, EngineError> {
+        Ok(Snapshot {
+            rev: self.current_rev(),
+            tasks: tasks::find_tasks(&self.conn, &TaskFilter::default())?,
+            queues: tasks::list_queues(&self.conn)?,
+        })
+    }
+
+    fn check_queue_limit(max_active: u32) -> Result<(), EngineError> {
+        if max_active == 0 {
+            return Err(EngineError::BadRequest(
+                "une file accepte au moins une tâche à la fois".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn create_queue(&mut self, name: &str, max_active: u32) -> Result<String, EngineError> {
+        Self::check_queue_limit(max_active)?;
+        if name.trim().is_empty() {
+            return Err(EngineError::BadRequest("nom de file vide".into()));
+        }
+        if tasks::list_queues(&self.conn)?
+            .iter()
+            .any(|q| q.name == name)
+        {
+            return Err(EngineError::BadRequest(format!(
+                "la file {name} existe déjà"
+            )));
+        }
+        let queue_id = tasks::create_queue(&self.conn, name, max_active)?;
+        let id = queue_id.clone();
+        self.emit(|rev| Event::QueueUpdated { rev, queue_id: id });
+        Ok(queue_id)
+    }
+
+    fn update_queue(
+        &mut self,
+        queue_id: &str,
+        name: Option<&str>,
+        max_active: Option<u32>,
+    ) -> Result<QueueRow, EngineError> {
+        if let Some(limit) = max_active {
+            Self::check_queue_limit(limit)?;
+        }
+        if let Some(name) = name {
+            let taken = tasks::list_queues(&self.conn)?
+                .iter()
+                .any(|q| q.name == name && q.id != queue_id);
+            if name.trim().is_empty() || taken {
+                return Err(EngineError::BadRequest(format!(
+                    "nom de file refusé : {name}"
+                )));
+            }
+        }
+        if !tasks::update_queue(&self.conn, queue_id, name, max_active)? {
+            return Err(EngineError::QueueNotFound(queue_id.to_owned()));
+        }
+        let id = queue_id.to_owned();
+        self.emit(|rev| Event::QueueUpdated { rev, queue_id: id });
+        // Une limite relevée laisse partir des tâches au prochain tour de boucle.
+        tasks::load_queue(&self.conn, queue_id)?
+            .ok_or_else(|| EngineError::QueueNotFound(queue_id.to_owned()))
     }
 
     fn add(&mut self, task: AddTask) -> Result<String, EngineError> {
@@ -398,9 +613,8 @@ impl Scheduler {
                 max_connections: task.max_connections,
             },
         )?;
-        self.emit(Event::Added {
-            task_id: task_id.clone(),
-        });
+        let id = task_id.clone();
+        self.emit(|rev| Event::Added { rev, task_id: id });
         if task.start_paused {
             self.set_state(&task_id, &user_pause())?;
         }
@@ -577,10 +791,12 @@ async fn execute(
     task_id: &str,
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
+    rev: Arc<AtomicU64>,
 ) -> Result<Outcome, TransferError> {
     let mut conn = store::open(&config.db_path)?;
     let mut on_progress = |progress: Progress| {
         let _ = events.send(Event::Progress {
+            rev: rev.load(Ordering::SeqCst),
             task_id: task_id.to_owned(),
             progress,
         });

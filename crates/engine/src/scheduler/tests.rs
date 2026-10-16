@@ -393,3 +393,134 @@ async fn bad_requests_are_refused() {
     ));
     engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn each_change_raises_the_revision_by_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let start = engine.rev();
+    let id = engine
+        .add(add(&server.url("/rev.bin"), dir.path()))
+        .await
+        .unwrap();
+    let mut revs = Vec::new();
+    timeout(WAIT, async {
+        loop {
+            match events.recv().await.unwrap() {
+                Event::Progress { rev, .. } => {
+                    // L'avancement porte la révision courante, sans l'augmenter.
+                    assert!(rev <= start + revs.len() as u64);
+                }
+                Event::Added { rev, .. } | Event::QueueUpdated { rev, .. } => revs.push(rev),
+                Event::StateChanged { rev, to, .. } => {
+                    revs.push(rev);
+                    if to == TaskState::Completed {
+                        return;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let expected: Vec<u64> = (start + 1..=start + revs.len() as u64).collect();
+    assert_eq!(revs, expected, "aucun trou, aucun doublon");
+
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.rev, *revs.last().unwrap());
+    let done = snapshot.tasks.iter().find(|t| t.id == id).unwrap();
+    assert_eq!(done.state, TaskState::Completed);
+    assert_eq!(snapshot.queues.len(), 1);
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn state_changes_carry_the_pause_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let paused = AddTask {
+        start_paused: true,
+        ..add(&server.url("/q.bin"), dir.path())
+    };
+    let id = engine.add(paused).await.unwrap();
+    let reason = timeout(WAIT, async {
+        loop {
+            if let Ok(Event::StateChanged {
+                task_id,
+                to: TaskState::Paused,
+                pause_reason,
+                ..
+            }) = events.recv().await
+            {
+                if task_id == id {
+                    return pause_reason;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("user"));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn queues_are_created_listed_and_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = slow_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let slow = engine.create_queue("lente", 1).await.unwrap();
+    assert!(matches!(
+        engine.create_queue("lente", 1).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    assert!(matches!(
+        engine.create_queue("vide", 0).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    let a = AddTask {
+        queue_id: Some(slow.clone()),
+        ..add(&server.url("/qa.bin"), dir.path())
+    };
+    let b = AddTask {
+        queue_id: Some(slow.clone()),
+        ..add(&server.url("/qb.bin"), dir.path())
+    };
+    let (a, b) = (engine.add(a).await.unwrap(), engine.add(b).await.unwrap());
+    // Une seule à la fois dans la file lente ; relever la limite laisse partir l'autre.
+    wait_state(&mut events, &a, TaskState::Active).await;
+    let (queued, _) = engine
+        .list(TaskFilter {
+            queue_id: Some(slow.clone()),
+            states: vec![TaskState::Queued],
+            ..TaskFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued.iter().map(|t| &t.id).collect::<Vec<_>>(), [&b]);
+    let updated = engine
+        .update_queue(&slow, Some("rapide".into()), Some(2))
+        .await
+        .unwrap();
+    assert_eq!((updated.name.as_str(), updated.max_active), ("rapide", 2));
+    wait_state(&mut events, &b, TaskState::Active).await;
+    assert!(matches!(
+        engine.update_queue("inconnue", None, Some(2)).await,
+        Err(EngineError::QueueNotFound(_))
+    ));
+    let names: Vec<String> = engine
+        .snapshot()
+        .await
+        .unwrap()
+        .queues
+        .into_iter()
+        .map(|q| q.name)
+        .collect();
+    assert_eq!(names, [DEFAULT_QUEUE, "rapide"]);
+    engine.shutdown().await;
+}
