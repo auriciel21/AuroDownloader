@@ -44,8 +44,7 @@ Même machine, même `aurod` d'essai, mêmes tâches, outils alternés :
   par l'utilisateur ;
 - code : lignes écrites, langages, réutilisation du code Rust du projet.
 
-Linux (WebKitGTK pour Tauri, paquets Qt) : à mesurer à part ; il faut installer des
-paquets de développement dans WSL (`sudo`).
+Linux : mesuré à part, dans une distribution WSL d'essai (section « Linux, WSLg »).
 
 ## Résultats du 2026-11-06 (Windows 11)
 
@@ -81,9 +80,56 @@ transmettre l'avancement pendant que la fenêtre est repliée, puis fait recharg
 complet à son retour, le coût replié tombe à 0,39 % (un passage de 20 s). Ce
 rechargement à la réouverture n'a pas été essayé à la main (clic sur l'icône).
 
-**Non mesuré :** Linux (WebKitGTK pour Tauri, paquets Qt 6), Windows 10 (WebView2 à
-installer s'il manque), essai réel avec NVDA, déploiement Qt trié (seuls les modules et
-le style utilisés).
+**Non mesuré :** Windows 10 (WebView2 à installer s'il manque), essai réel avec NVDA,
+déploiement Qt trié (seuls les modules et le style utilisés).
+
+## Résultats du 2026-11-06 (Linux, WSLg)
+
+Même machine, distribution d'essai Ubuntu 24.04 sous WSL 2 avec WSLg (affichage par
+XWayland, sans accélération graphique : OpenGL en logiciel, llvmpipe, pour les deux).
+Qt 6.10.2 officiel (Ubuntu 24.04 ne fournit que Qt 6.4, et le prototype demande 6.8),
+WebKitGTK 2.52.6 de la distribution. Mêmes sources, compilées sans modification. Même
+`aurod` d'essai (socket Unix), mêmes tâches. Processeur : `utime` + `stime` de tous les
+processus de l'application, en part d'un cœur ; mémoire : USS (pages privées) cumulée.
+Fenêtre fermée par `WM_DELETE_WINDOW` (WSLg n'a pas de zone de notification : l'application
+reste en mémoire, sans icône). Applications alternées, 5 passages de 30 s, médianes.
+
+| Mesure | Qt Quick | Tauri | Tauri sans composition |
+| --- | --- | --- | --- |
+| Démarrage jusqu'à la première image avec les tâches | 369 ms | 1 391 ms | 1 193 ms |
+| Processus | 1 | 3 (principal, rendu, réseau) | 3 |
+| Mémoire USS, fenêtre visible | 177,8 Mio | 309,3 Mio | 168,8 Mio |
+| Processeur, fenêtre visible | 0,07 % | 12,8 % | 2,0 % |
+| Processeur, fenêtre fermée, avancement suspendu | 0,03 % | 0,17 % | 0,13 % |
+| Arbre d'accessibilité AT-SPI (ce que lit Orca) | 0 sans nom sur 47 ; 11 lignes sur 100 | 0 sans nom sur 402 ; 100 lignes sur 100 | — |
+
+« Sans composition » : `WEBKIT_DISABLE_COMPOSITING_MODE=1`. Par défaut, WebKitGTK compose
+la page en OpenGL ; sans accélération, cet OpenGL tourne en logiciel et le processus de
+rendu prend 10 à 12 % d'un cœur. Sans composition, la page est dessinée directement par
+le processeur, ce qui coûte bien moins pour une liste mise à jour toutes les 500 ms ; la
+mémoire tombe au niveau de Qt. `WEBKIT_DISABLE_DMABUF_RENDERER=1` donne un résultat
+voisin (3,5 %, un passage). Sur un poste Linux avec accélération graphique, le mode par
+défaut n'a pas été mesuré.
+
+**Constats.**
+
+- Les deux s'affichent correctement (captures vérifiées) et parlent au moteur par le
+  socket Unix sans changement de code : `auro_engine::rpc::local` sert tel quel sous Linux.
+- Sans bus D-Bus de session, Tauri reste bloqué avant d'ouvrir sa fenêtre (cause non
+  établie ; l'icône de la zone de notification et l'accessibilité passent par D-Bus) ; Qt
+  démarre. Un bureau Linux a toujours ce bus, mais l'application
+  devra le vérifier plutôt que se bloquer.
+- Zone de notification : ni GNOME sans extension ni WSLg n'en ont. Fermer la fenêtre ne doit
+  la replier que si une icône existe (Qt : `QSystemTrayIcon::isSystemTrayAvailable` ; Tauri
+  ne le dit pas, il faudra le déterminer par D-Bus, `org.kde.StatusNotifierWatcher`).
+- Distribution : Tauri dépend du WebKitGTK du système (paquet `.deb` ou `.rpm`, ou
+  AppImage et Flatpak qui l'embarquent) ; Qt 6.8 et plus n'est pas dans Ubuntu 24.04 LTS,
+  l'application devrait embarquer son Qt.
+- Accessibilité : nom de ligne mieux composé par Qt (« gros.bin, Paused, 0 B of ? ») ; Tauri
+  concatène les textes de la ligne, à régler par un `aria-label`.
+
+**Non mesuré sous Linux :** poste natif avec accélération graphique, Wayland natif, essai
+réel avec Orca, menu de la zone de notification (KDE).
 
 **Défaut du moteur trouvé pendant ces essais :** deux tâches du même nom préparées en
 même temps partageaient un `.part`. Corrigé à part (SPEC §7.1, commit
