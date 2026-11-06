@@ -517,3 +517,58 @@ s'appliquent pas au mode automatique.
   (0,82 à 0,93). L'écart n'apparaît qu'avec seize connexions bridées, où chaque
   connexion reçoit peu à la fois : piste à examiner (taille des lectures TLS, nombre de
   réveils par connexion).
+
+## 2026-11-06, cinquième relevé : Linux (WSL 2), d'où vient l'écart en HTTPS
+
+Même poste : processeur Intel Core i7-3930K (2011 ; AES-NI et PCLMUL, ni AVX2 ni MOVBE).
+Examen du cas où la porte manquait (HTTPS bridé à 16 connexions, 1,01 à 1,03).
+
+**Écarté :**
+- Suite TLS : la même pour les deux outils, TLS 1.3 AES-256-GCM (38 connexions relevées
+  sur une copie d'essai du serveur de test).
+- Bibliothèque de chiffrement : déchiffrer 512 Mio en enregistrements de 16 Kio coûte
+  0,48 à 0,55 s avec GnuTLS 3.6.13 (aria2) et 0,50 à 0,60 s avec aws-lc (auro), copie
+  comprise, en passages alternés.
+- Appels système : auro en fait moins (32 900 lectures de 16 406 octets, un enregistrement
+  TLS chacune, contre 71 200 lectures pour aria2 ; 1 230 `pwrite64` contre 32 770 `write`
+  et autant de `lseek`).
+
+**Profil échantillonné** (samply, 4 kHz, temps processeur du processus, 512 Mio) :
+
+| Poste | auro | aria2 |
+| --- | --- | --- |
+| Déchiffrement (AES-CTR et GHASH) | 0,63 s | 0,63 s |
+| Écriture vers le système (noyau compris) | 0,61 s, plus 0,13 s de vidage | 0,53 s, plus 0,03 s de `lseek` |
+| Réception (noyau compris) | 0,20 s | 0,22 s |
+| Copies mémoire | 0,21 s | 0,15 s |
+| Amorçage de l'aléa d'aws-lc | 0,07 s | |
+| Ouvertures et fermetures de fichiers | | 0,13 s |
+| rustls, hyper, tokio, code d'auro (exclusif) | quelques ms chacun | |
+| **Total échantillonné** | **2,19 s** | **2,15 s** |
+
+**Deux coûts propres à auro :**
+- **Amorçage de l'aléa d'aws-lc : 56 à 60 ms de processeur, une fois par processus**
+  (trois mesures isolées), au premier tirage aléatoire, donc à la première connexion
+  TLS. aws-lc y collecte de l'entropie par la gigue du processeur (`jent_*`, compilé
+  sans optimisation). Compilé avec `AWS_LC_SYS_NO_JITTER_ENTROPY=1`, le premier tirage
+  ne coûte plus rien (0,0 ms) : aws-lc s'amorce alors sur l'entropie du système. Ce coût
+  n'existe qu'en HTTPS ; dans `aurod`, il ne se paie qu'au démarrage du moteur, mais le
+  banc lance un processus par téléchargement.
+- **Une copie de plus qu'aria2 :** chaque morceau reçu est recopié dans le tampon
+  d'écriture de 256 Kio (`SegmentWriter::write`, 0,10 s pour 512 Mio).
+
+**A/B** (A : code actuel ; B : même code compilé sans l'entropie de gigue), ordre
+A B A B, cinq passages chacun, porte de N-01 (processus et vidage, auro / aria2) :
+
+| Scénario | A | B | A | B |
+| --- | --- | --- | --- | --- |
+| HTTPS sans bridage, 4 connexions | 1,01 | 0,85 | 0,88 | 0,81 |
+| HTTPS bridé, 16 connexions | 0,93 | 0,90 | 0,91 | 0,93 |
+
+**Lecture :**
+- Ce jour-là, le code actuel passe la porte à 16 connexions (0,91 et 0,93) : aria2 y a
+  coûté 1,84 à 1,92 s, contre 1,66 à 1,72 s lors des relevés précédents, pour un auro
+  inchangé (1,77 à 1,81 s). Le rapport suit donc encore les variations d'aria2, de
+  l'ordre de ±5 %.
+- L'effet de l'entropie (environ 3 % du temps d'auro en HTTPS) se voit à la mesure
+  isolée, pas dans ce bruit.
