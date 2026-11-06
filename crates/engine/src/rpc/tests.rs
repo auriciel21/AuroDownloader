@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 use super::serve;
 use crate::net::Client;
-use crate::scheduler::{Config, Engine};
+use crate::scheduler::{Config, DISK_RECHECK, Engine};
 use crate::testing::{FileSite, Server, serve_file};
 use crate::transfer::Options;
 
@@ -30,6 +30,7 @@ fn engine(dir: &Path) -> Engine {
             checkpoint_every: Duration::from_millis(20),
             ..Options::default()
         },
+        disk_recheck: DISK_RECHECK,
     })
     .unwrap()
 }
@@ -393,6 +394,7 @@ async fn unsupported_or_invalid_additions_are_refused() {
         (json!({"destDir": "relatif"}), "DEST_NOT_WRITABLE"),
         (json!({"queueId": "inconnue"}), "QUEUE_NOT_FOUND"),
         (json!({"maxConnections": 0}), "INVALID_PARAMS"),
+        (json!({"speedLimitBps": 0}), "INVALID_PARAMS"),
         (json!({"sources": []}), "INVALID_PARAMS"),
     ];
     for (extra, code) in cases {
@@ -437,6 +439,95 @@ async fn queues_are_managed_and_announced() {
             .await,
         "INVALID_PARAMS"
     );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn speed_limits_are_read_changed_and_announced() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let none = json!({"downloadBps": null, "uploadBps": null});
+    assert_eq!(c.result("limits.get", json!({})).await, none);
+    let set = c
+        .result("limits.set", json!({"downloadBps": 1_000_000}))
+        .await;
+    assert_eq!(set["downloadBps"], 1_000_000);
+    // Paramètre absent : limite inchangée ; `null` : retirée.
+    let same = c.result("limits.set", json!({})).await;
+    assert_eq!(same["downloadBps"], 1_000_000);
+    assert_eq!(
+        c.result("limits.set", json!({"downloadBps": null})).await,
+        none
+    );
+    for (params, code) in [
+        (json!({"uploadBps": 5}), "CAPABILITY_MISSING"),
+        (json!({"downloadBps": 0}), "INVALID_PARAMS"),
+        (json!({"downloadBps": "vite"}), "INVALID_PARAMS"),
+    ] {
+        assert_eq!(
+            c.error_code("limits.set", params.clone()).await,
+            code,
+            "{params}"
+        );
+    }
+
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": "http://127.0.0.1:1/f"}],
+                   "destDir": dir_text(dir.path()), "startPaused": true,
+                   "speedLimitBps": 2000}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["speedLimitBps"], 2000);
+    let updated = c
+        .result("task.update", json!({"taskId": id, "speedLimitBps": 4000}))
+        .await;
+    assert_eq!(updated["speedLimitBps"], 4000);
+    let note = c.notification("task.updated", |_| true).await;
+    assert_eq!(note["taskId"], json!(id));
+    assert_eq!(note["speedLimitBps"], 4000);
+    let lifted = c
+        .result("task.update", json!({"taskId": id, "speedLimitBps": null}))
+        .await;
+    assert!(lifted["speedLimitBps"].is_null());
+    let note = c.notification("task.updated", |_| true).await;
+    assert!(note.as_object().unwrap().contains_key("speedLimitBps"));
+    assert_eq!(
+        c.error_code("task.update", json!({"taskId": id, "maxConnections": 2}))
+            .await,
+        "CAPABILITY_MISSING"
+    );
+    assert_eq!(
+        c.error_code("task.update", json!({"taskId": "x", "speedLimitBps": 1}))
+            .await,
+        "TASK_NOT_FOUND"
+    );
+
+    let queue = c
+        .result(
+            "queue.create",
+            json!({"name": "nuit", "speedLimitBps": 3000}),
+        )
+        .await;
+    assert_eq!(queue["speedLimitBps"], 3000);
+    let queue_id = queue["queueId"].clone();
+    let changed = c
+        .result("queue.update", json!({"queueId": queue_id, "maxActive": 1}))
+        .await;
+    assert_eq!(changed["speedLimitBps"], 3000, "inchangée si absente");
+    let lifted = c
+        .result(
+            "queue.update",
+            json!({"queueId": queue_id, "speedLimitBps": null}),
+        )
+        .await;
+    assert!(lifted["speedLimitBps"].is_null());
     engine.shutdown().await;
 }
 
@@ -522,6 +613,7 @@ fn engine_at(dir: &Path, db: &str) -> Engine {
         db_path: dir.join(db),
         client: Client::new().unwrap(),
         transfer: Options::default(),
+        disk_recheck: DISK_RECHECK,
     })
     .unwrap()
 }

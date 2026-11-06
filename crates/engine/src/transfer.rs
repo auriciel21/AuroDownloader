@@ -7,10 +7,13 @@
 //! compteurs vidés sur disque (règle 1) à la fin de chaque segment et à chaque point de
 //! contrôle.
 //!
-//! Pas encore : redécoupage dynamique (F-02) — une connexion libre prend un segment
-//! `pending`, sinon s'arrête ; nombre de connexions automatique (SPEC §7.3) ; plusieurs
-//! sources (§7.7) ; limitation de débit (§7.6). Une tâche en `retry_wait` est relancée par
-//! l'appelant (le planificateur, en phase 2).
+//! Chaque lecture réseau passe par les seaux de débit de l'exécution (`limit`, SPEC §7.6).
+//! L'espace disque (F-18) est contrôlé avant le départ, puis à chaque point de contrôle :
+//! s'il manque, la tâche s'arrête proprement en pause `disk_full`, comme sur un disque
+//! plein constaté à l'écriture.
+//!
+//! Pas encore : plusieurs sources (§7.7). Une tâche en `retry_wait` est relancée par
+//! l'appelant (le planificateur).
 
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, VecDeque};
@@ -28,6 +31,7 @@ use crate::io::{
     self, DEFAULT_WRITE_BUFFER, IoError, PartFile, ProgressHandle, SegmentWriter, SyncedProgress,
     segments_beyond,
 };
+use crate::limit::Throttle;
 use crate::net::{Client, NetError, RangeRequest, headers};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
@@ -57,6 +61,9 @@ pub const MAX_FAILURES: u32 = 10;
 pub const RETRY_BASE: Duration = Duration::from_secs(2);
 pub const RETRY_CAP: Duration = Duration::from_secs(5 * 60);
 
+/// Place que le moteur laisse toujours libre sur le disque de destination (SPEC §7.10).
+pub const KEEP_FREE: u64 = 64 * 1024 * 1024;
+
 /// Réglages d'une exécution.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -69,8 +76,15 @@ pub struct Options {
     pub measure_every: Duration,
     pub min_segment: u64,
     pub buffer: usize,
-    /// Intervalle des points de contrôle (SPEC §7.10 : 2 s).
+    /// Intervalle des points de contrôle (SPEC §7.10 : 2 s) ; l'espace libre se contrôle
+    /// au même rythme.
     pub checkpoint_every: Duration,
+    /// Seaux de débit de l'exécution (SPEC §7.6) ; vide : aucune limite.
+    pub throttle: Throttle,
+    /// Mesure de la place libre d'un volume ; les tests la remplacent.
+    pub free_space: fn(&Path) -> std::io::Result<u64>,
+    /// Place à laisser libre sur le disque ([`KEEP_FREE`]).
+    pub keep_free: u64,
 }
 
 impl Default for Options {
@@ -83,7 +97,38 @@ impl Default for Options {
             min_segment: DEFAULT_MIN_SEGMENT_SIZE,
             buffer: DEFAULT_WRITE_BUFFER,
             checkpoint_every: Duration::from_secs(2),
+            throttle: Throttle::default(),
+            free_space: io::free_space,
+            keep_free: KEEP_FREE,
         }
+    }
+}
+
+impl Options {
+    /// Place manquante pour écrire encore `needed` octets dans `dir` en laissant
+    /// `keep_free` libres ; `None` si elle suffit, ou si la mesure est impossible (un
+    /// disque vraiment plein arrêtera la tâche proprement à l'écriture).
+    fn short_of_space(&self, dir: &Path, needed: u64) -> Option<Failure> {
+        let free = (self.free_space)(dir).ok()?;
+        (free < needed.saturating_add(self.keep_free)).then_some(Failure::NoSpace {
+            needed,
+            free,
+            keep: self.keep_free,
+        })
+    }
+
+    /// La tâche, arrêtée faute de place, peut-elle repartir ? Même règle qu'au départ :
+    /// la place encore à prendre pour finir, plus la réserve.
+    pub fn space_for(&self, task: &TaskRow) -> bool {
+        let Some(name) = &task.file_name else {
+            return self.short_of_space(Path::new(&task.dest_dir), 0).is_none();
+        };
+        let dest = Path::new(&task.dest_dir).join(name);
+        let needed = task
+            .total_bytes
+            .map_or(0, |total| io::space_needed(&io::part_path(&dest), total));
+        self.short_of_space(Path::new(&task.dest_dir), needed)
+            .is_none()
     }
 }
 
@@ -144,6 +189,13 @@ enum Failure {
     Io(IoError),
     /// Le serveur a fermé le flux avant la fin, sans erreur.
     Truncated,
+    /// Pas assez de place pour écrire encore `needed` octets en laissant `keep` libres
+    /// (F-18).
+    NoSpace {
+        needed: u64,
+        free: u64,
+        keep: u64,
+    },
 }
 
 impl Failure {
@@ -157,22 +209,40 @@ impl Failure {
                 _ => "DISK_IO",
             },
             Failure::Truncated => "NET_UNREACHABLE",
+            Failure::NoSpace { .. } => "DISK_FULL",
         }
     }
 
     fn retryable(&self) -> bool {
         match self {
             Failure::Net(e) => e.retryable(),
-            Failure::Io(_) => false,
+            Failure::Io(_) | Failure::NoSpace { .. } => false,
             Failure::Truncated => true,
         }
     }
 
+    /// Le disque manque de place : la tâche attend en pause qu'il s'en libère.
+    fn disk_full(&self) -> bool {
+        match self {
+            Failure::Io(e) => e.io_kind() == Some(std::io::ErrorKind::StorageFull),
+            Failure::NoSpace { .. } => true,
+            _ => false,
+        }
+    }
+
     fn detail(&self) -> String {
+        let mib = |n: u64| format!("{:.1} Mio", n as f64 / (1024.0 * 1024.0));
         match self {
             Failure::Net(e) => e.to_string(),
             Failure::Io(e) => e.to_string(),
             Failure::Truncated => "le serveur a fermé la connexion avant la fin".into(),
+            Failure::NoSpace { needed, free, keep } => format!(
+                "espace disque insuffisant : {} encore à écrire et {} à laisser libres, \
+                 {} libres",
+                mib(*needed),
+                mib(*keep),
+                mib(*free)
+            ),
         }
     }
 }
@@ -263,7 +333,7 @@ fn record_failure(
             change_state(conn, task_id, &pause(PauseReason::FileChanged))?;
             Outcome::FileChanged
         }
-        Failure::Io(e) if e.io_kind() == Some(std::io::ErrorKind::StorageFull) => {
+        f if f.disk_full() => {
             change_state(conn, task_id, &pause(PauseReason::DiskFull))?;
             Outcome::DiskFull
         }
@@ -376,6 +446,13 @@ async fn execute(
         },
     };
 
+    // Espace libre (SPEC §7.1, étape 5, et F-18) : de quoi finir, plus la réserve.
+    let dir = Path::new(&task.dest_dir);
+    let needed = total.map_or(0, |total| io::space_needed(part.path(), total));
+    if let Some(f) = opts.short_of_space(dir, needed) {
+        return fail(f);
+    }
+
     let ranged = source.accepts_ranges == Some(true);
     let fetch = match total {
         Some(total) if ranged => Fetch::Ranges {
@@ -402,6 +479,7 @@ async fn execute(
         plan,
         host: host_of(&source.url),
         opts,
+        dir,
         part: Arc::clone(&part),
         persist: total.is_some(),
     };
@@ -641,6 +719,8 @@ struct Pool<'a> {
     /// Hôte de la source, pour le plafond appris d'un serveur qui résiste.
     host: Option<String>,
     opts: &'a Options,
+    /// Dossier de destination, dont l'espace libre est contrôlé.
+    dir: &'a Path,
     part: Arc<PartFile>,
     /// Taille connue : les compteurs sont enregistrés en base.
     persist: bool,
@@ -683,6 +763,8 @@ async fn pool(
     let start = Instant::now();
     let mut checkpoint = interval_at(start + ctx.opts.checkpoint_every, ctx.opts.checkpoint_every);
     checkpoint.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut space = interval_at(start + ctx.opts.checkpoint_every, ctx.opts.checkpoint_every);
+    space.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut display = interval_at(start, Duration::from_millis(500));
     display.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let (mut width, mut auto) = match &ctx.plan {
@@ -718,6 +800,7 @@ async fn pool(
                 ctx.fetch.clone(),
                 segment.start,
                 writer,
+                ctx.opts.throttle.clone(),
                 halt_rx.clone(),
             ));
         }
@@ -789,6 +872,15 @@ async fn pool(
                         }
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
+                }
+            }
+            // Le disque se remplit (un autre programme, une autre tâche) : arrêt propre
+            // avant que la réserve ne soit prise (F-18).
+            _ = space.tick(), if failure.is_none() && !user_stop => {
+                let (dir, opts) = (ctx.dir.to_owned(), ctx.opts.clone());
+                let short = tokio::task::spawn_blocking(move || opts.short_of_space(&dir, 0)).await?;
+                if let Some(f) = short {
+                    first_failure(f, &mut failure);
                 }
             }
             _ = measure.tick(),
@@ -904,9 +996,19 @@ async fn connection(
     fetch: Fetch,
     start: u64,
     mut writer: SegmentWriter,
+    throttle: Throttle,
     mut halt: watch::Receiver<bool>,
 ) -> ConnEnd {
-    let result = pump(&client, &url, &fetch, start, &mut writer, &mut halt).await;
+    let result = pump(
+        &client,
+        &url,
+        &fetch,
+        start,
+        &mut writer,
+        &throttle,
+        &mut halt,
+    )
+    .await;
     let idx = writer.idx();
     let progress = tokio::task::spawn_blocking(move || writer.finish())
         .await
@@ -919,13 +1021,15 @@ async fn connection(
 }
 
 /// Reçoit les octets du segment jusqu'à sa fin ou jusqu'à `halt`. Une réponse plus courte
-/// que demandé est suivie d'une nouvelle requête pour le reste.
+/// que demandé est suivie d'une nouvelle requête pour le reste. Chaque lecture attend
+/// que les seaux de débit le permettent, puis les paie (SPEC §7.6).
 async fn pump(
     client: &Client,
     url: &str,
     fetch: &Fetch,
     start: u64,
     writer: &mut SegmentWriter,
+    throttle: &Throttle,
     halt: &mut watch::Receiver<bool>,
 ) -> Result<(), Failure> {
     while writer.remaining() > 0 {
@@ -955,9 +1059,13 @@ async fn pump(
             let chunk = tokio::select! {
                 biased;
                 _ = halted(halt) => return Ok(()),
-                chunk = body.chunk() => chunk.map_err(Failure::Net)?,
+                chunk = async {
+                    throttle.ready().await;
+                    body.chunk().await
+                } => chunk.map_err(Failure::Net)?,
             };
             let Some(chunk) = chunk else { break };
+            throttle.pay(chunk.len());
             writer.write(&chunk).map_err(Failure::Io)?;
             if writer.remaining() == 0 {
                 return Ok(());

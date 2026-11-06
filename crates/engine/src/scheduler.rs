@@ -10,8 +10,15 @@
 //! sienne. Les changements d'état passent tous par `store::tasks` (SPEC §5.5) et sont
 //! annoncés par des [`Event`].
 //!
-//! Pas encore traités : limites de débit (F-15), espace disque (F-18), plages horaires
-//! (F-16), révision `rev` et protocole JSON-RPC (module `rpc`).
+//! Limites de débit (F-15, SPEC §7.6) : la boucle tient un seau global, un par file et un
+//! par tâche en cours ; chaque exécution reçoit les trois. Changer une limite change le
+//! débit du seau, que les connexions en cours suivent aussitôt.
+//!
+//! Espace disque (F-18) : une tâche arrêtée faute de place (pause `disk_full`) repart
+//! d'elle-même quand la place revient ; la boucle le vérifie toutes les
+//! [`DISK_RECHECK`].
+//!
+//! Pas encore traitées : plages horaires (F-16).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,14 +29,16 @@ use std::time::Duration;
 use rusqlite::Connection;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 use crate::io::part_path;
+use crate::limit::{Bucket, Throttle};
 use crate::net::{self, Client, NetError};
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, QueueRow, TaskFilter, TaskRow, TaskState, change_state,
     load_task, next_retry_at, runnable_tasks,
 };
-use crate::store::{self, StoreError, now_ms};
+use crate::store::{self, StoreError, now_ms, settings};
 use crate::transfer::{self, Options, Outcome, Progress, TransferError};
 
 #[cfg(test)]
@@ -37,6 +46,10 @@ mod tests;
 
 /// Nom de la file créée au premier démarrage.
 pub const DEFAULT_QUEUE: &str = "default";
+
+/// Intervalle de vérification de la place libre pour les tâches en pause `disk_full`
+/// (SPEC §7.10).
+pub const DISK_RECHECK: Duration = Duration::from_secs(30);
 
 /// Taille du tampon des événements ; un abonné trop lent perd les plus anciens.
 const EVENT_BUFFER: usize = 4096;
@@ -47,7 +60,32 @@ pub struct Config {
     /// Base SQLite du moteur, créée si besoin.
     pub db_path: PathBuf,
     pub client: Client,
+    /// Réglages des exécutions ; la place libre se mesure par `transfer.free_space`.
     pub transfer: Options,
+    /// [`DISK_RECHECK`], sauf dans les tests.
+    pub disk_recheck: Duration,
+}
+
+/// Champs modifiés d'une tâche (`task.update`) ; `None` : inchangé.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskUpdate {
+    /// `Some(None)` : retire la limite.
+    pub speed_limit_bps: Option<Option<u64>>,
+}
+
+impl TaskUpdate {
+    fn is_empty(&self) -> bool {
+        self.speed_limit_bps.is_none()
+    }
+}
+
+/// Champs modifiés d'une file (`queue.update`) ; `None` : inchangé.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueChange {
+    pub name: Option<String>,
+    pub max_active: Option<u32>,
+    /// `Some(None)` : retire la limite.
+    pub speed_limit_bps: Option<Option<u64>>,
 }
 
 /// Ce qui arrive aux tâches et aux files, pour les interfaces (SPEC §6.5).
@@ -68,6 +106,12 @@ pub enum Event {
         to: TaskState,
         pause_reason: Option<String>,
         error_code: Option<String>,
+    },
+    /// Réglage d'une tâche modifié, sans changement d'état.
+    TaskUpdated {
+        rev: u64,
+        task_id: String,
+        update: TaskUpdate,
     },
     QueueUpdated {
         rev: u64,
@@ -136,6 +180,8 @@ pub struct AddTask {
     pub queue_id: Option<String>,
     /// `None` : nombre de connexions automatique (SPEC §7.3).
     pub max_connections: Option<u32>,
+    /// Limite de débit de la tâche, en octets par seconde ; `None` : aucune.
+    pub speed_limit_bps: Option<u64>,
     /// Ajoutée en pause (cause `user`), sans partir.
     pub start_paused: bool,
 }
@@ -154,17 +200,24 @@ enum Command {
     Get(String, Reply<TaskRow>),
     List(TaskFilter, Reply<(Vec<TaskRow>, u64)>),
     Snapshot(Reply<Snapshot>),
+    UpdateTask {
+        task_id: String,
+        update: TaskUpdate,
+        reply: Reply<TaskRow>,
+    },
     CreateQueue {
         name: String,
         max_active: u32,
+        speed_limit_bps: Option<u64>,
         reply: Reply<String>,
     },
     UpdateQueue {
         queue_id: String,
-        name: Option<String>,
-        max_active: Option<u32>,
+        change: QueueChange,
         reply: Reply<QueueRow>,
     },
+    DownloadLimit(Reply<Option<u64>>),
+    SetDownloadLimit(Option<u64>, Reply<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -186,6 +239,7 @@ impl Engine {
     pub fn start(config: Config) -> Result<Engine, EngineError> {
         let conn = store::open(&config.db_path)?;
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
+        let download_limit = settings::download_limit(&conn)?;
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
@@ -196,6 +250,7 @@ impl Engine {
             events.clone(),
             Arc::clone(&rev),
             default_queue.clone(),
+            download_limit,
         );
         tokio::spawn(async move {
             state.run(inbox).await;
@@ -243,31 +298,64 @@ impl Engine {
     }
 
     /// Crée une file ; renvoie son identifiant.
-    pub async fn create_queue(&self, name: &str, max_active: u32) -> Result<String, EngineError> {
+    pub async fn create_queue(
+        &self,
+        name: &str,
+        max_active: u32,
+        speed_limit_bps: Option<u64>,
+    ) -> Result<String, EngineError> {
         let name = name.to_owned();
         self.ask(|reply| Command::CreateQueue {
             name,
             max_active,
+            speed_limit_bps,
             reply,
         })
         .await
     }
 
-    /// Change le nom ou la limite d'une file.
+    /// Change le nom, le nombre de tâches simultanées ou la limite de débit d'une file ;
+    /// une nouvelle limite s'applique aussitôt à ses tâches en cours.
     pub async fn update_queue(
         &self,
         queue_id: &str,
-        name: Option<String>,
-        max_active: Option<u32>,
+        change: QueueChange,
     ) -> Result<QueueRow, EngineError> {
         let queue_id = queue_id.to_owned();
         self.ask(|reply| Command::UpdateQueue {
             queue_id,
-            name,
-            max_active,
+            change,
             reply,
         })
         .await
+    }
+
+    /// Change les réglages d'une tâche ; une nouvelle limite de débit s'applique aussitôt
+    /// si elle tourne. Renvoie la tâche modifiée.
+    pub async fn update_task(
+        &self,
+        task_id: &str,
+        update: TaskUpdate,
+    ) -> Result<TaskRow, EngineError> {
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::UpdateTask {
+            task_id,
+            update,
+            reply,
+        })
+        .await
+    }
+
+    /// Limite de débit globale, en octets par seconde ; `None` : aucune.
+    pub async fn download_limit(&self) -> Result<Option<u64>, EngineError> {
+        self.ask(Command::DownloadLimit).await
+    }
+
+    /// Change la limite de débit globale ; enregistrée, elle vaut aussi aux démarrages
+    /// suivants, et s'applique aussitôt aux tâches en cours.
+    pub async fn set_download_limit(&self, limit: Option<u64>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetDownloadLimit(limit, reply))
+            .await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -356,6 +444,16 @@ struct Scheduler {
     broken: HashSet<String>,
     /// Arrêt demandé : à prévenir quand la dernière exécution est finie.
     shutdown: Option<oneshot::Sender<()>>,
+    limits: Limits,
+    /// Prochaine vérification de la place libre pour les tâches en pause `disk_full`.
+    next_disk_check: Instant,
+}
+
+/// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
+struct Limits {
+    global: Arc<Bucket>,
+    queues: HashMap<String, Arc<Bucket>>,
+    tasks: HashMap<String, Arc<Bucket>>,
 }
 
 impl Scheduler {
@@ -365,6 +463,7 @@ impl Scheduler {
         events: broadcast::Sender<Event>,
         rev: Arc<AtomicU64>,
         default_queue: String,
+        download_limit: Option<u64>,
     ) -> Self {
         Scheduler {
             conn,
@@ -377,12 +476,19 @@ impl Scheduler {
             run_ids: HashMap::new(),
             broken: HashSet::new(),
             shutdown: None,
+            limits: Limits {
+                global: Bucket::new(download_limit),
+                queues: HashMap::new(),
+                tasks: HashMap::new(),
+            },
+            next_disk_check: Instant::now(),
         }
     }
 
     async fn run(mut self, mut inbox: mpsc::Receiver<Command>) {
         loop {
             if self.shutdown.is_none() {
+                self.recheck_disk();
                 self.start_runnable();
             } else if self.running.is_empty() {
                 break;
@@ -412,15 +518,44 @@ impl Scheduler {
         }
     }
 
-    /// Délai jusqu'à la prochaine nouvelle tentative, au plus une minute.
+    /// Délai jusqu'à la prochaine nouvelle tentative ou vérification de la place libre,
+    /// au plus une minute.
     fn next_wake(&self) -> Duration {
-        let cap = Duration::from_secs(60);
+        let cap = Duration::from_secs(60).min(
+            self.next_disk_check
+                .saturating_duration_since(Instant::now()),
+        );
         match next_retry_at(&self.conn) {
             Ok(Some(at)) => {
                 Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
                     .min(cap)
             }
             _ => cap,
+        }
+    }
+
+    /// Remet en file les tâches arrêtées faute de place quand la place revient (F-18) :
+    /// celle qu'il leur reste à prendre, plus la réserve. Au plus une fois par
+    /// `disk_recheck`.
+    fn recheck_disk(&mut self) {
+        let now = Instant::now();
+        if now < self.next_disk_check {
+            return;
+        }
+        self.next_disk_check = now + self.config.disk_recheck;
+        let filter = TaskFilter {
+            states: vec![TaskState::Paused],
+            ..TaskFilter::default()
+        };
+        let Ok(paused) = tasks::find_tasks(&self.conn, &filter) else {
+            return;
+        };
+        for task in paused {
+            if task.pause_reason.as_deref() == Some(PauseReason::DiskFull.as_sql())
+                && self.config.transfer.space_for(&task)
+            {
+                let _ = self.set_state(&task.id, &Change::to(TaskState::Queued));
+            }
         }
     }
 
@@ -484,6 +619,7 @@ impl Scheduler {
             self.broken.insert(task_id);
             return;
         }
+        let throttle = self.throttle_for(&task_id, &queue_id);
         let (stop, stopped) = watch::channel(false);
         self.running.insert(
             task_id.clone(),
@@ -494,7 +630,9 @@ impl Scheduler {
             },
         );
         self.changed(&task_id, from, TaskState::Active);
-        let (config, events) = (self.config.clone(), self.events.clone());
+        let mut config = self.config.clone();
+        config.transfer.throttle = throttle;
+        let events = self.events.clone();
         let rev = Arc::clone(&self.rev);
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
@@ -502,6 +640,39 @@ impl Scheduler {
             (id, result)
         });
         self.run_ids.insert(handle.id(), task_id);
+    }
+
+    /// Seaux d'une exécution : global, de sa file, et le sien, gardé pour qu'une nouvelle
+    /// limite de la tâche s'applique en cours de route.
+    fn throttle_for(&mut self, task_id: &str, queue_id: &str) -> Throttle {
+        let task_limit = load_task(&self.conn, task_id)
+            .ok()
+            .and_then(|t| t.speed_limit_bps);
+        let task = Bucket::new(task_limit);
+        self.limits
+            .tasks
+            .insert(task_id.to_owned(), Arc::clone(&task));
+        Throttle::new([
+            Arc::clone(&self.limits.global),
+            self.queue_bucket(queue_id),
+            task,
+        ])
+    }
+
+    /// Seau d'une file, créé à sa première tâche avec la limite enregistrée.
+    fn queue_bucket(&mut self, queue_id: &str) -> Arc<Bucket> {
+        if let Some(bucket) = self.limits.queues.get(queue_id) {
+            return Arc::clone(bucket);
+        }
+        let limit = tasks::load_queue(&self.conn, queue_id)
+            .ok()
+            .flatten()
+            .and_then(|q| q.speed_limit_bps);
+        let bucket = Bucket::new(limit);
+        self.limits
+            .queues
+            .insert(queue_id.to_owned(), Arc::clone(&bucket));
+        bucket
     }
 
     fn handle(&mut self, command: Command) {
@@ -532,20 +703,33 @@ impl Scheduler {
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
             }
+            Command::UpdateTask {
+                task_id,
+                update,
+                reply,
+            } => {
+                let _ = reply.send(self.update_task(&task_id, update));
+            }
             Command::CreateQueue {
                 name,
                 max_active,
+                speed_limit_bps,
                 reply,
             } => {
-                let _ = reply.send(self.create_queue(&name, max_active));
+                let _ = reply.send(self.create_queue(&name, max_active, speed_limit_bps));
             }
             Command::UpdateQueue {
                 queue_id,
-                name,
-                max_active,
+                change,
                 reply,
             } => {
-                let _ = reply.send(self.update_queue(&queue_id, name.as_deref(), max_active));
+                let _ = reply.send(self.update_queue(&queue_id, change));
+            }
+            Command::DownloadLimit(reply) => {
+                let _ = reply.send(settings::download_limit(&self.conn).map_err(Into::into));
+            }
+            Command::SetDownloadLimit(limit, reply) => {
+                let _ = reply.send(self.set_download_limit(limit));
             }
             Command::Shutdown(done) => self.begin_shutdown(Some(done)),
         }
@@ -573,8 +757,50 @@ impl Scheduler {
         Ok(())
     }
 
-    fn create_queue(&mut self, name: &str, max_active: u32) -> Result<String, EngineError> {
+    fn check_speed_limit(limit: Option<u64>) -> Result<(), EngineError> {
+        if limit == Some(0) {
+            return Err(EngineError::BadRequest(
+                "une limite de débit est d'au moins un octet par seconde".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_download_limit(&mut self, limit: Option<u64>) -> Result<(), EngineError> {
+        Self::check_speed_limit(limit)?;
+        settings::set_download_limit(&self.conn, limit)?;
+        self.limits.global.set_rate(limit);
+        Ok(())
+    }
+
+    fn update_task(&mut self, task_id: &str, update: TaskUpdate) -> Result<TaskRow, EngineError> {
+        if let Some(limit) = update.speed_limit_bps {
+            Self::check_speed_limit(limit)?;
+            tasks::set_task_speed_limit(&self.conn, task_id, limit)?;
+            if let Some(bucket) = self.limits.tasks.get(task_id) {
+                bucket.set_rate(limit);
+            }
+        }
+        let task = load_task(&self.conn, task_id)?;
+        if !update.is_empty() {
+            let id = task_id.to_owned();
+            self.emit(|rev| Event::TaskUpdated {
+                rev,
+                task_id: id,
+                update,
+            });
+        }
+        Ok(task)
+    }
+
+    fn create_queue(
+        &mut self,
+        name: &str,
+        max_active: u32,
+        speed_limit_bps: Option<u64>,
+    ) -> Result<String, EngineError> {
         Self::check_queue_limit(max_active)?;
+        Self::check_speed_limit(speed_limit_bps)?;
         if name.trim().is_empty() {
             return Err(EngineError::BadRequest("nom de file vide".into()));
         }
@@ -586,7 +812,7 @@ impl Scheduler {
                 "la file {name} existe déjà"
             )));
         }
-        let queue_id = tasks::create_queue(&self.conn, name, max_active)?;
+        let queue_id = tasks::create_queue(&self.conn, name, max_active, speed_limit_bps)?;
         let id = queue_id.clone();
         self.emit(|rev| Event::QueueUpdated { rev, queue_id: id });
         Ok(queue_id)
@@ -595,13 +821,15 @@ impl Scheduler {
     fn update_queue(
         &mut self,
         queue_id: &str,
-        name: Option<&str>,
-        max_active: Option<u32>,
+        change: QueueChange,
     ) -> Result<QueueRow, EngineError> {
-        if let Some(limit) = max_active {
+        if let Some(limit) = change.max_active {
             Self::check_queue_limit(limit)?;
         }
-        if let Some(name) = name {
+        if let Some(limit) = change.speed_limit_bps {
+            Self::check_speed_limit(limit)?;
+        }
+        if let Some(name) = change.name.as_deref() {
             let taken = tasks::list_queues(&self.conn)?
                 .iter()
                 .any(|q| q.name == name && q.id != queue_id);
@@ -611,8 +839,20 @@ impl Scheduler {
                 )));
             }
         }
-        if !tasks::update_queue(&self.conn, queue_id, name, max_active)? {
+        let updated = tasks::update_queue(
+            &self.conn,
+            queue_id,
+            change.name.as_deref(),
+            change.max_active,
+            change.speed_limit_bps,
+        )?;
+        if !updated {
             return Err(EngineError::QueueNotFound(queue_id.to_owned()));
+        }
+        if let (Some(limit), Some(bucket)) =
+            (change.speed_limit_bps, self.limits.queues.get(queue_id))
+        {
+            bucket.set_rate(limit);
         }
         let id = queue_id.to_owned();
         self.emit(|rev| Event::QueueUpdated { rev, queue_id: id });
@@ -623,6 +863,7 @@ impl Scheduler {
 
     fn add(&mut self, task: AddTask) -> Result<String, EngineError> {
         net::check_url(&task.url)?;
+        Self::check_speed_limit(task.speed_limit_bps)?;
         let queue_id = task.queue_id.unwrap_or_else(|| self.default_queue.clone());
         if !tasks::queue_exists(&self.conn, &queue_id)? {
             return Err(EngineError::QueueNotFound(queue_id));
@@ -636,6 +877,7 @@ impl Scheduler {
                 display_name: &display_name,
                 dest_dir: &task.dest_dir,
                 max_connections: task.max_connections,
+                speed_limit_bps: task.speed_limit_bps,
             },
         )?;
         let id = task_id.clone();
@@ -736,6 +978,7 @@ impl Scheduler {
     /// pendant qu'elle tournait.
     fn finished(&mut self, task_id: &str, result: Result<Outcome, TransferError>) {
         let then = self.running.remove(task_id).map_or(Then::Keep, |r| r.then);
+        self.limits.tasks.remove(task_id);
         if let Err(e) = &result {
             self.record_internal_error(task_id, e);
         }
@@ -783,6 +1026,7 @@ impl Scheduler {
             return;
         };
         self.running.remove(&task_id);
+        self.limits.tasks.remove(&task_id);
         self.record_internal_error(&task_id, &TransferError::Join(error));
         if let Ok(task) = load_task(&self.conn, &task_id) {
             self.changed(&task_id, TaskState::Active, task.state);

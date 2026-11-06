@@ -14,20 +14,32 @@
 //! Les vidages d'un même fichier sont groupés ([`SyncGate`]) : un seul à la fois, partagé
 //! par tous ceux qui l'ont demandé pendant le précédent.
 //!
-//! Pas encore traités : la préallocation d'espace (F-10, en option), la vérification de
-//! l'espace libre (F-18) et le stockage Android par le sélecteur du système (SPEC §7.5).
+//! L'espace disque (F-18) se mesure par [`free_space`] et [`space_needed`] (module
+//! `space`).
+//!
+//! Pas encore traités : la préallocation d'espace (F-10, en option) et le stockage Android
+//! par le sélecteur du système (SPEC §7.5).
 
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
 
+mod space;
+pub use space::{allocated, free_space, space_needed};
+
 /// Taille par défaut du tampon d'un écrivain : 256 Kio (SPEC §7.10).
 pub const DEFAULT_WRITE_BUFFER: usize = 256 * 1024;
+
+/// Durée au-delà de laquelle un écrivain écrit son tampon, même incomplet (SPEC §7.5) :
+/// sur une connexion lente ou bridée, les octets reçus ne restent pas des secondes en
+/// mémoire, hors des points de contrôle et de l'avancement affiché.
+pub const MAX_HOLD: Duration = Duration::from_millis(500);
 
 /// Erreurs du module d'écriture.
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +282,7 @@ impl PartFile {
             issued: Arc::new(AtomicU64::new(segment.written)),
             buf: Vec::with_capacity(buffer),
             capacity: buffer.max(1),
+            held_since: None,
         }
     }
 
@@ -437,8 +450,9 @@ impl ProgressHandle {
 
 /// Écrivain d'un segment, propre à une connexion.
 ///
-/// Les octets reçus passent par un tampon, écrit à sa position dès qu'il est plein. Un
-/// écrivain abandonné sans [`finish`](Self::finish) perd son tampon, jamais compté.
+/// Les octets reçus passent par un tampon, écrit à sa position dès qu'il est plein, ou
+/// quand il garde des octets depuis plus de [`MAX_HOLD`]. Un écrivain abandonné sans
+/// [`finish`](Self::finish) perd son tampon, jamais compté.
 #[derive(Debug)]
 pub struct SegmentWriter {
     file: Arc<File>,
@@ -451,6 +465,8 @@ pub struct SegmentWriter {
     issued: Arc<AtomicU64>,
     buf: Vec<u8>,
     capacity: usize,
+    /// Arrivée des plus anciens octets du tampon ; `None` s'il est vide.
+    held_since: Option<Instant>,
 }
 
 impl SegmentWriter {
@@ -483,7 +499,8 @@ impl SegmentWriter {
 
     /// Accepte au plus [`remaining`](Self::remaining) octets de `data` et renvoie leur
     /// nombre : au-delà de la fin du segment, les octets du serveur sont ignorés. Le
-    /// tampon est écrit quand il est plein ou que le segment est complet.
+    /// tampon est écrit quand il est plein, qu'il garde des octets depuis plus de
+    /// [`MAX_HOLD`], ou que le segment est complet.
     pub fn write(&mut self, data: &[u8]) -> Result<usize, IoError> {
         let (n, complete) = {
             let mut b = lock(&self.bounds);
@@ -493,7 +510,8 @@ impl SegmentWriter {
             (n, b.accepted == b.end - self.start + 1)
         };
         self.buf.extend_from_slice(&data[..n]);
-        if self.buf.len() >= self.capacity || complete {
+        let held = *self.held_since.get_or_insert_with(Instant::now);
+        if self.buf.len() >= self.capacity || complete || held.elapsed() >= MAX_HOLD {
             self.flush()?;
         }
         Ok(n)
@@ -511,6 +529,7 @@ impl SegmentWriter {
         self.issued
             .store(issued + self.buf.len() as u64, Ordering::Release);
         self.buf.clear();
+        self.held_since = None;
         Ok(())
     }
 
@@ -568,6 +587,23 @@ mod tests {
             written,
             state: SegmentState::Active,
         }
+    }
+
+    #[test]
+    fn a_buffer_held_too_long_is_written_before_it_is_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = PartFile::create(&dest_in(&dir)).unwrap();
+        let mut writer = part.writer(&segment(0, 0, 1 << 20, 0), 256 * 1024);
+        let progress = writer.progress();
+        writer.write(&pattern(0, 1000)).unwrap();
+        assert_eq!(progress.handed_over(), 0, "en tampon");
+        std::thread::sleep(MAX_HOLD + Duration::from_millis(50));
+        writer.write(&pattern(1000, 1000)).unwrap();
+        assert_eq!(progress.handed_over(), 2000, "écrit, tampon pas plein");
+        writer.write(&pattern(2000, 1000)).unwrap();
+        assert_eq!(progress.handed_over(), 2000, "le délai repart de zéro");
+        let synced = writer.finish().unwrap();
+        assert_eq!(synced.written(), 3000);
     }
 
     fn dest_in(dir: &tempfile::TempDir) -> PathBuf {

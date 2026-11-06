@@ -23,6 +23,7 @@ fn config(dir: &Path) -> Config {
             checkpoint_every: Duration::from_millis(20),
             ..Options::default()
         },
+        disk_recheck: DISK_RECHECK,
     }
 }
 
@@ -171,6 +172,7 @@ async fn higher_priority_starts_first() {
             display_name: name,
             dest_dir: dir.path().to_str().unwrap(),
             max_connections: None,
+            speed_limit_bps: None,
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
     }
@@ -336,6 +338,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         display_name: "crash.bin",
         dest_dir: dir.path().to_str().unwrap(),
         max_connections: None,
+        speed_limit_bps: None,
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
     change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
@@ -413,7 +416,9 @@ async fn each_change_raises_the_revision_by_one() {
                     // L'avancement porte la révision courante, sans l'augmenter.
                     assert!(rev <= start + revs.len() as u64);
                 }
-                Event::Added { rev, .. } | Event::QueueUpdated { rev, .. } => revs.push(rev),
+                Event::Added { rev, .. }
+                | Event::QueueUpdated { rev, .. }
+                | Event::TaskUpdated { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
                     if to == TaskState::Completed {
@@ -474,13 +479,13 @@ async fn queues_are_created_listed_and_updated() {
     let server = slow_site(SIZE);
     let engine = Engine::start(config(dir.path())).unwrap();
     let mut events = engine.subscribe();
-    let slow = engine.create_queue("lente", 1).await.unwrap();
+    let slow = engine.create_queue("lente", 1, None).await.unwrap();
     assert!(matches!(
-        engine.create_queue("lente", 1).await,
+        engine.create_queue("lente", 1, None).await,
         Err(EngineError::BadRequest(_))
     ));
     assert!(matches!(
-        engine.create_queue("vide", 0).await,
+        engine.create_queue("vide", 0, None).await,
         Err(EngineError::BadRequest(_))
     ));
     let a = AddTask {
@@ -504,13 +509,28 @@ async fn queues_are_created_listed_and_updated() {
         .unwrap();
     assert_eq!(queued.iter().map(|t| &t.id).collect::<Vec<_>>(), [&b]);
     let updated = engine
-        .update_queue(&slow, Some("rapide".into()), Some(2))
+        .update_queue(
+            &slow,
+            QueueChange {
+                name: Some("rapide".into()),
+                max_active: Some(2),
+                ..QueueChange::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!((updated.name.as_str(), updated.max_active), ("rapide", 2));
     wait_state(&mut events, &b, TaskState::Active).await;
     assert!(matches!(
-        engine.update_queue("inconnue", None, Some(2)).await,
+        engine
+            .update_queue(
+                "inconnue",
+                QueueChange {
+                    max_active: Some(2),
+                    ..QueueChange::default()
+                }
+            )
+            .await,
         Err(EngineError::QueueNotFound(_))
     ));
     let names: Vec<String> = engine
@@ -525,6 +545,149 @@ async fn queues_are_created_listed_and_updated() {
     engine.shutdown().await;
 }
 
+/// Vrai si la tâche est terminée après `during`.
+async fn completed_after(dir: &Path, id: &str, during: Duration) -> bool {
+    tokio::time::sleep(during).await;
+    task(dir, id).state == TaskState::Completed
+}
+
+#[tokio::test]
+async fn the_global_limit_applies_on_the_fly_and_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(1024 * 1024);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    engine.set_download_limit(Some(100_000)).await.unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/global.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    // 1 Mio à 100 ko/s : une dizaine de secondes.
+    assert!(!completed_after(dir.path(), &id, Duration::from_secs(1)).await);
+    engine.set_download_limit(None).await.unwrap();
+    let start = Instant::now();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "limite levée trop tard"
+    );
+    assert_eq!(engine.download_limit().await.unwrap(), None);
+    assert!(matches!(
+        engine.set_download_limit(Some(0)).await,
+        Err(EngineError::BadRequest(_))
+    ));
+
+    // Enregistrée : elle vaut encore au démarrage suivant.
+    engine.set_download_limit(Some(123_456)).await.unwrap();
+    engine.shutdown().await;
+    let engine = Engine::start(config(dir.path())).unwrap();
+    assert_eq!(engine.download_limit().await.unwrap(), Some(123_456));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn task_and_queue_limits_change_on_the_fly() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(1024 * 1024);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let queue = engine
+        .create_queue("bridée", 3, Some(100_000))
+        .await
+        .unwrap();
+    let limited = AddTask {
+        queue_id: Some(queue.clone()),
+        speed_limit_bps: Some(50_000),
+        ..add(&server.url("/bride.bin"), dir.path())
+    };
+    let id = engine.add(limited).await.unwrap();
+    assert_eq!(task(dir.path(), &id).speed_limit_bps, Some(50_000));
+    wait_state(&mut events, &id, TaskState::Active).await;
+    assert!(!completed_after(dir.path(), &id, Duration::from_millis(500)).await);
+
+    // Limite de la tâche retirée : celle de la file tient encore.
+    let lifted = TaskUpdate {
+        speed_limit_bps: Some(None),
+    };
+    let row = engine.update_task(&id, lifted.clone()).await.unwrap();
+    assert_eq!(row.speed_limit_bps, None);
+    let announced = timeout(WAIT, async {
+        loop {
+            if let Ok(Event::TaskUpdated {
+                task_id, update, ..
+            }) = events.recv().await
+            {
+                if task_id == id {
+                    return update;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(announced, lifted);
+    assert!(!completed_after(dir.path(), &id, Duration::from_millis(500)).await);
+
+    // Limite de la file retirée : plus rien ne retient la tâche.
+    let free = QueueChange {
+        speed_limit_bps: Some(None),
+        ..QueueChange::default()
+    };
+    let queue_row = engine.update_queue(&queue, free).await.unwrap();
+    assert_eq!(queue_row.speed_limit_bps, None);
+    let start = Instant::now();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "limite levée trop tard"
+    );
+
+    let zero = TaskUpdate {
+        speed_limit_bps: Some(Some(0)),
+    };
+    assert!(matches!(
+        engine.update_task(&id, zero).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    assert!(matches!(
+        engine.update_task("inconnue", lifted).await,
+        Err(EngineError::Store(StoreError::TaskNotFound { .. }))
+    ));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_task_short_of_space_starts_again_when_space_returns() {
+    static FREE: AtomicU64 = AtomicU64::new(0);
+    fn free(_: &Path) -> std::io::Result<u64> {
+        Ok(FREE.load(Ordering::SeqCst))
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let mut config = config(dir.path());
+    config.transfer.free_space = free;
+    config.disk_recheck = Duration::from_millis(50);
+    let engine = Engine::start(config).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/place.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+    let paused = task(dir.path(), &id);
+    assert_eq!(paused.pause_reason.as_deref(), Some("disk_full"));
+    assert_eq!(paused.error_code.as_deref(), Some("DISK_FULL"));
+    // Plusieurs vérifications passent sans place : la tâche attend.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(task(dir.path(), &id).state, TaskState::Paused);
+
+    FREE.store(u64::MAX, Ordering::SeqCst);
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(dir.path(), "place.bin", SIZE);
+    engine.shutdown().await;
+}
+
 /// Une annonce et un instantané de même révision décrivent le même état (SPEC §6.10) :
 /// quand la boucle annonce une tâche `active`, la base le dit déjà, avant même que
 /// l'exécution n'ait commencé. Sans cela, un client qui suit le protocole (instantané,
@@ -536,7 +699,7 @@ async fn an_announced_state_is_already_recorded() {
     let conn = store::open(&config.db_path).unwrap();
     let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
     let (events, mut announced) = broadcast::channel(16);
-    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue);
+    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue, None);
     let id = scheduler
         .add(add("http://127.0.0.1:1/f", dir.path()))
         .unwrap();

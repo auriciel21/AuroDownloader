@@ -5,9 +5,10 @@
 //! est dans [`local`] ; l'authentification y repose sur les droits du système (SPEC §6.2).
 //!
 //! Méthodes prises en charge : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`,
-//! `task.list`, `task.pause`, `task.resume`, `task.cancel`, `queue.list`, `queue.create`,
-//! `queue.update`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`. Les autres
-//! méthodes de la SPEC §6.4 répondent « méthode inconnue » jusqu'à leur arrivée.
+//! `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.update` (limite de débit
+//! seulement), `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`,
+//! `events.subscribe`, `events.unsubscribe`, `sync.snapshot`. Les autres méthodes de la
+//! SPEC §6.4 répondent « méthode inconnue » jusqu'à leur arrivée.
 
 use serde_json::{Value, json};
 
@@ -125,6 +126,7 @@ pub fn task_json(t: &TaskRow) -> Value {
         "totalBytes": t.total_bytes,
         "doneBytes": t.done_bytes,
         "maxConnections": t.max_connections,
+        "speedLimitBps": t.speed_limit_bps,
         "pauseReason": t.pause_reason,
         "errorCode": t.error_code,
         "errorDetail": t.error_detail,

@@ -23,8 +23,8 @@ téléchargement.
 
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
-  écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final ;
-  préallocation et espace libre à écrire), `net` (préparation, requêtes de segments avec
+  écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final,
+  espace libre et place occupée ; préallocation à écrire), `net` (préparation, requêtes de segments avec
   `If-Range`, noms de fichier, classement des erreurs, autorités de certification
   ajoutées par `--ca-cert` ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
@@ -34,7 +34,10 @@ téléchargement.
   priorités, nouvelles tentatives, reprise au démarrage, événements avec révision `rev`),
   `rpc` (JSON-RPC un message par ligne : `methods`, `session` avec abonnements et
   avancement regroupé, `local` pour le canal nommé Windows réservé au SID de
-  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut).
+  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut), `limit`
+  (seaux de jetons des limites de débit ; le planificateur tient le global, ceux des
+  files et ceux des tâches en cours), `store::settings` (réglages, dont la limite
+  globale).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -70,6 +73,9 @@ AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
 # Banc de reprise du moteur autonome (aurod tué pendant que plusieurs tâches tournent ;
 # la version courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_daemon -- --nocapture
+# Disque vraiment plein (Linux, WSL) : tmpfs de 8 Mio monté sans root, puis le test ignoré :
+D=$(mktemp -d); unshare -rm sh -c "mount -t tmpfs -o size=8m tmpfs $D && \
+  AURO_FULL_DISK_DIR=$D cargo test -p auro-engine --lib -- --ignored really_full"
 # Banc de performance face à aria2, HTTP et HTTPS (ignoré par défaut ; aria2c installé
 # par winget ; sous Linux, travail `perf` de la CI, lancé à la main ou chaque lundi) :
 AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870912 \
@@ -126,10 +132,17 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
   JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
   cliente du moteur (fait : commandes, démarrage d'`aurod`, mode `direct`, banc de reprise
-  sur `aurod`) ; 4. limites de débit (F-15) et espace disque
-  (F-18) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
+  sur `aurod`) ; 4. limites de débit (F-15) et espace disque (F-18) (faits : SPEC 7.6
+  et 7.6 bis, commande `auro limit`) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
   application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
   sans perte de données.
+- Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
+  `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
+  `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
+  jamais en le remplaçant : les connexions en cours gardent le leur.
+- Espace disque (SPEC 7.6 bis) : un manque de place, mesuré ou constaté à l'écriture,
+  finit en pause `disk_full` par `record_failure`, jamais en échec ; le planificateur
+  relance ces tâches quand la place revient.
 - Changements d'état d'une tâche dans le moteur : par les commandes de `Engine`, que la
   boucle du planificateur traite une à une ; ne pas appeler `change_state` à côté d'elle
   pendant qu'elle tourne.

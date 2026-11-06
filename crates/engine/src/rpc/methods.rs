@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::session::{Ctx, Topics};
 use super::{PROTOCOL_VERSIONS, RpcError, negotiate, queue_json, task_json};
-use crate::scheduler::{AddTask, EngineError};
+use crate::scheduler::{AddTask, EngineError, QueueChange, TaskUpdate};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -59,6 +59,19 @@ impl Params {
                     .ok_or_else(|| Self::wrong(name, "entier positif"))
             })
             .transpose()
+    }
+
+    /// Limite de débit : absente, inchangée (`None`) ; `null`, retirée (`Some(None)`) ;
+    /// sinon un entier strictement positif, en octets par seconde.
+    fn limit(&self, name: &str) -> Result<Option<Option<u64>>, RpcError> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(Value::Null) => Ok(Some(None)),
+            Some(v) => match v.as_u64() {
+                Some(n) if n > 0 => Ok(Some(Some(n))),
+                _ => Err(Self::wrong(name, "entier strictement positif ou null")),
+            },
+        }
     }
 
     fn bool(&self, name: &str) -> Result<bool, RpcError> {
@@ -120,6 +133,17 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(task_json(&task))
         }
         "task.list" => task_list(ctx, &p).await,
+        "task.update" => {
+            p.refuse(&["maxConnections", "destDir", "fileName", "checksum"])?;
+            let update = TaskUpdate {
+                speed_limit_bps: p.limit("speedLimitBps")?,
+            };
+            let task = ctx
+                .engine
+                .update_task(&p.required_str("taskId")?, update)
+                .await?;
+            Ok(task_json(&task))
+        }
         "task.pause" => for_each(ctx, &p, Action::Pause).await,
         "task.resume" => for_each(ctx, &p, Action::Resume).await,
         "task.cancel" => {
@@ -131,20 +155,32 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(json!({"items": queues.iter().map(queue_json).collect::<Vec<_>>()}))
         }
         "queue.create" => {
-            p.refuse(&["speedLimitBps", "scheduleId"])?;
+            p.refuse(&["scheduleId"])?;
             let name = p.required_str("name")?;
             let max_active = p.u32("maxActive")?.unwrap_or(3);
-            let id = ctx.engine.create_queue(&name, max_active).await?;
+            let limit = p.limit("speedLimitBps")?.flatten();
+            let id = ctx.engine.create_queue(&name, max_active, limit).await?;
             queue_by_id(ctx, &id).await
         }
         "queue.update" => {
-            p.refuse(&["speedLimitBps", "scheduleId"])?;
+            p.refuse(&["scheduleId"])?;
             let id = p.required_str("queueId")?;
-            let queue = ctx
-                .engine
-                .update_queue(&id, p.str("name")?, p.u32("maxActive")?)
-                .await?;
+            let change = QueueChange {
+                name: p.str("name")?,
+                max_active: p.u32("maxActive")?,
+                speed_limit_bps: p.limit("speedLimitBps")?,
+            };
+            let queue = ctx.engine.update_queue(&id, change).await?;
             Ok(queue_json(&queue))
+        }
+        "limits.get" => limits(ctx).await,
+        "limits.set" => {
+            // Débit montant : pour les torrents, pas encore pris en charge.
+            p.refuse(&["uploadBps"])?;
+            if let Some(limit) = p.limit("downloadBps")? {
+                ctx.engine.set_download_limit(limit).await?;
+            }
+            limits(ctx).await
         }
         "events.subscribe" => subscribe(ctx, &p),
         "events.unsubscribe" => {
@@ -195,14 +231,14 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     }))
 }
 
+/// Limites globales (`limits.get`) ; le débit montant n'est pas encore limité.
+async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
+    let download = ctx.engine.download_limit().await?;
+    Ok(json!({"downloadBps": download, "uploadBps": null}))
+}
+
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&[
-        "fileName",
-        "speedLimitBps",
-        "checksum",
-        "headers",
-        "idempotencyKey",
-    ])?;
+    p.refuse(&["fileName", "checksum", "headers", "idempotencyKey"])?;
     let sources = p
         .get("sources")
         .and_then(Value::as_array)
@@ -241,6 +277,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             dest_dir,
             queue_id: p.str("queueId")?,
             max_connections,
+            speed_limit_bps: p.limit("speedLimitBps")?.flatten(),
             start_paused: p.bool("startPaused")?,
         })
         .await?;

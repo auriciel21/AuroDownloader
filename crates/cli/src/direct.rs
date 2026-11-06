@@ -45,6 +45,7 @@ pub fn get(
             display_name: &display_name,
             dest_dir: dir_text,
             max_connections: connections,
+            speed_limit_bps: None,
         },
     )?;
     println!("Tâche {task_id}");

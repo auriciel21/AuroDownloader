@@ -5,10 +5,11 @@
 //! La référence est `docs/SPEC.md` (architecture : section 4).
 //!
 //! Phase 1 (SPEC §9.3) : `store`, `segmenter`, `net`, `io` et `transfer`. Phase 2 :
-//! `scheduler` (files, nouvelles tentatives, reprise au démarrage ; objet `Engine`), puis
-//! `rpc`. Torrent, média, post-traitement et plugins arriveront avec leurs phases.
+//! `scheduler` (files, nouvelles tentatives, reprise au démarrage ; objet `Engine`),
+//! `rpc`, `limit` (limites de débit). Torrent, média, post-traitement et plugins arriveront avec leurs phases.
 
 pub mod io;
+pub mod limit;
 pub mod net;
 pub mod paths;
 pub mod rpc;

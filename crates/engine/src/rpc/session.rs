@@ -273,6 +273,18 @@ async fn describe(
                 )
             })
         }
+        Event::TaskUpdated {
+            rev,
+            task_id,
+            update,
+        } if topics.tasks => {
+            // Seulement les champs modifiés (SPEC §6.5).
+            let mut params = json!({"rev": rev, "taskId": task_id});
+            if let Some(limit) = update.speed_limit_bps {
+                params["speedLimitBps"] = json!(limit);
+            }
+            Some(notification("task.updated", params))
+        }
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
             let snapshot = engine.snapshot().await.ok()?;
             let queue = snapshot.queues.iter().find(|q| q.id == queue_id)?;

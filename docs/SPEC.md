@@ -534,11 +534,20 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
-Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `queue.list`, `queue.create`, `queue.update`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
-- **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. C'est le cas, dans `task.add`, de `fileName`, `speedLimitBps`, `checksum`, `headers`, `idempotencyKey` et de plusieurs sources. C'est aussi le cas de `speedLimitBps` et `scheduleId` pour les files.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
+  - dans `task.add` : `fileName`, `checksum`, `headers`, `idempotencyKey` et plusieurs sources ;
+  - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
+  - pour les files : `scheduleId` ;
+  - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
+- **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
+  - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
+  - Une nouvelle limite s'applique aussitôt aux tâches en cours (section 7.6).
+  - `task.update` annonce `task.updated`, avec `taskId` et les seuls champs modifiés.
+  - Un changement de la limite globale n'est pas annoncé : aucune notification n'est prévue pour lui.
 - **Résultat d'une action groupée** : `task.pause`, `task.resume` et `task.cancel` renvoient `taskIds[]`, les tâches acceptées, et `errors[]`, chaque refus avec `taskId`, `code` et `message`. Une tâche refusée n'empêche pas les autres.
 
 ### 6.6 Exemple d'échange
@@ -575,6 +584,8 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32021 | `DEST_NOT_WRITABLE` | Dossier de destination inaccessible en écriture |
 | -32022 | `INSUFFICIENT_SPACE` | Espace disque insuffisant pour la taille annoncée |
 | -32030 | `CAPABILITY_MISSING` | Fonction non disponible dans ce moteur (torrent, vidéo) |
+
+`INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
 
 ### 6.8 Codes d'erreur d'une tâche
 
@@ -623,7 +634,7 @@ Les mécanismes ci-dessous décident de la vitesse et de la fiabilité du moteur
 2. Une réponse `206` avec `Content-Range` prouve que `Range` est accepté, et donne la taille totale. Une réponse `200` signifie que le serveur l'ignore : tâche en un seul flux (F-04). Une réponse `416` avec `Content-Range: bytes */0` désigne un fichier vide. Un corps compressé (`Content-Encoding` autre que `identity`) rend la taille inconnue : un seul flux. Chaque requête de segment vérifie de toute façon son `206`. Une redirection n'est suivie que vers HTTP ou HTTPS, dix fois au plus ; sinon la tâche échoue avec `HTTP_STATUS`, sans nouvelle tentative.
 3. Le moteur mémorise `ETag`, `Last-Modified` et la taille dans `sources`, pour valider la reprise.
 4. Les requêtes par plage demandent `Accept-Encoding: identity`, car une compression ferait dérailler les décalages d'octets.
-5. Il crée le fichier `.part`, vérifie l'espace libre (F-18) et découpe la plage `[0, taille − 1]` en segments initiaux.
+5. Il crée le fichier `.part`, vérifie l'espace libre (F-18, section 7.6 bis) et découpe la plage `[0, taille − 1]` en segments initiaux.
 
 ### 7.2 Segmentation dynamique
 
@@ -684,6 +695,8 @@ Le planificateur reprend ces tâches avant les autres de leur file. Un arrêt de
 ### 7.5 Écriture sur disque
 
 - Chaque connexion écrit à sa position dans le fichier (écriture positionnée), avec un tampon de 256 Kio à 1 Mio, sans verrou partagé entre segments.
+  - Le tampon est écrit dès qu'il est plein, ou quand il garde des octets depuis plus de 500 ms.
+  - Sans ce délai, une connexion lente ou bridée (section 7.6) garderait des secondes d'octets en mémoire : les points de contrôle ne les enregistreraient pas, et l'avancement affiché avancerait par sauts.
 - Le moteur vide les données sur disque (`fdatasync`) à la fin de chaque segment et à chaque point de contrôle, avant d'enregistrer les compteurs (règle 1 de la section 5.6). Les vidages d'un même fichier sont groupés : un seul à la fois. Une demande faite pendant un vidage en cours attend le suivant, qui couvre toutes les demandes en attente, car un vidage commencé avant la demande ne suffit pas. Des vidages simultanés du même fichier multiplient le temps système et l'attente disque sous Linux (`docs/MESURES.md`, relevé du 2026-10-16). Au point de contrôle, les compteurs sont relevés avant le vidage : les octets écrits pendant le vidage attendent le point suivant. Un compteur enregistré ne recule jamais, sauf à la reprise (section 7.4, étape 1).
 - À la fin, le `.part` est vidé, fermé, puis renommé en nom final ; un fichier déjà présent sous ce nom n'est jamais écrasé.
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
@@ -704,6 +717,30 @@ Le planificateur reprend ces tâches avant les autres de leur file. Un arrêt de
 ### 7.6 Limitation de débit
 
 Trois seaux de jetons s'emboîtent : global, par file, par tâche. Avant chaque lecture réseau, une connexion demande des octets aux trois, et attend le plus restrictif. Les seaux se rechargent toutes les 10 ms. Le changement d'une limite agit immédiatement, sans couper les connexions (F-15).
+
+Précisions de mise en œuvre (module `limit`) :
+- **Lecture puis paiement.** Le client HTTP rend les octets par morceaux, dont la taille ne se choisit pas. La connexion attend donc qu'aucun de ses seaux ne soit en dette, lit un morceau, puis le paie aux trois seaux. Un seau peut ainsi passer en dette d'un morceau par connexion, et la lecture suivante attend qu'elle soit remboursée. Le débit moyen est tenu.
+- **Rechargement.** Il se calcule en continu, selon le temps écoulé depuis le dernier passage : c'est la limite d'un rechargement toutes les 10 ms, sans minuterie.
+- **Réserve.** Un seau inemployé accumule au plus 100 ms de son débit. La minuterie de Windows avance par pas d'environ 15 ms ; avec une réserve plus courte, un réveil en retard ferait perdre du débit.
+- **Changement de limite.** Il réveille les connexions qui attendent. Une dette reste due, sauf si la limite disparaît.
+- **Coût.** Un seau sans limite ne coûte qu'une lecture atomique par morceau.
+- **Où vivent les seaux.** Le planificateur tient le seau global, un seau par file et un par tâche en cours ; chaque exécution reçoit les trois. Le mode `direct` de la CLI n'en a aucun.
+- **Où vivent les limites.** La limite globale est enregistrée dans `settings` (clé `limits.downloadBps`) ; celles des files et des tâches, dans leur colonne `speed_limit_bps`. Une limite vaut au moins 1 octet par seconde ; `null` la retire.
+
+### 7.6 bis Espace disque (F-18)
+
+- **Avant le départ.** Le moteur vérifie qu'il reste de quoi finir le fichier, plus une réserve de 64 Mio laissée libre (section 7.1, étape 5). Pour une tâche de taille inconnue, seule la réserve compte.
+  - La place qu'il reste à prendre est la taille totale moins la place que le `.part` occupe déjà. Sous Unix, on compte ses blocs, car un fichier creux occupe moins que sa longueur ; ailleurs, sa longueur.
+  - Sans préallocation, cette estimation est prudente sous Windows et optimiste sous Linux. Le contrôle à l'écriture reste donc nécessaire.
+- **Pendant le téléchargement.** À chaque point de contrôle, le moteur vérifie que la réserve est encore libre. C'est le cas d'un autre programme, ou d'une autre tâche, qui remplit le disque.
+- **À l'écriture.** Une écriture qui échoue faute de place (`ENOSPC`, `ERROR_DISK_FULL`) a le même effet.
+- **Arrêt.** Dans tous ces cas, la tâche s'arrête comme sur une pause : chaque connexion vide ce qu'elle a écrit, et les compteurs sont enregistrés (section 5.6, règle 1). La tâche passe en pause, cause `disk_full`, code `DISK_FULL`, avec en détail la place nécessaire et la place libre.
+- **Reprise.** Toutes les 30 s, le planificateur vérifie la place pour les tâches en pause `disk_full`. Quand il y a de quoi finir plus la réserve, il les remet en file.
+- **Mesure impossible.** Si la place libre ne peut pas être mesurée, le moteur part quand même : un disque vraiment plein arrêtera la tâche proprement à l'écriture.
+- **Essais.**
+  - Un vrai disque plein est essayé sous Linux sur un `tmpfs` de 8 Mio, monté sans droits d'administrateur dans un espace de noms utilisateur. C'est le test ignoré `a_really_full_disk_loses_nothing`, lancé avec `AURO_FULL_DISK_DIR`.
+  - Le 2026-11-06, l'écriture a échoué après 6 176 768 octets enregistrés. Chaque octet compté en base était exact sur disque, et la tâche a fini après libération de la place.
+  - Sous Windows, le manque de place est simulé (mesure remplacée par les tests) ; l'échec réel d'écriture n'y est pas essayé.
 
 ### 7.7 Multi-miroirs
 
@@ -731,6 +768,10 @@ En flux unique, l'empreinte se calcule au fil de l'eau. Pour un fichier segment�
 | Délai de reprise (base / plafond) | 2 s / 5 min | oui |
 | Échecs avant abandon | 10 | oui |
 | Tampon d'écriture | 256 Kio à 1 Mio | non |
+| Durée maximale d'octets en tampon | 500 ms | non |
+| Réserve d'un seau de débit inemployé | 100 ms de son débit | non |
+| Place laissée libre sur le disque de destination | 64 Mio | non |
+| Vérification de la place pour les tâches en pause `disk_full` | 30 s | non |
 
 ## 8. Sécurité, vie privée et cadre légal
 

@@ -14,6 +14,7 @@ use rusqlite::{Connection, params};
 use crate::segmenter::CoverageError;
 
 pub mod segments;
+pub mod settings;
 pub mod tasks;
 
 /// Une étape de migration du schéma.

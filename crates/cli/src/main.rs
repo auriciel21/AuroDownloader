@@ -3,7 +3,7 @@
 //! La CLI est un client du moteur `aurod`, qu'elle joint par le protocole JSON-RPC sur le
 //! point d'accès local (SPEC §6) et qu'elle démarre s'il ne tourne pas. Commandes : `add`,
 //! `get` (ajoute et suit jusqu'à la fin), `list`, `pause`, `resume`, `cancel`, `watch`,
-//! `queue`, `engine`. Sans moteur : `probe` prépare une tâche sans rien télécharger
+//! `limit` (limites de débit), `queue`, `engine`. Sans moteur : `probe` prépare une tâche sans rien télécharger
 //! (SPEC §7.1), `db migrate` crée ou met à jour une base, et `direct` exécute une tâche
 //! avec la bibliothèque du moteur (bancs, dépannage).
 
@@ -21,6 +21,7 @@ mod display;
 mod remote;
 
 use client::{Rpc, Target};
+use display::Limit;
 use remote::AddOptions;
 
 #[derive(Parser)]
@@ -65,6 +66,9 @@ enum Command {
         /// File (nom ou identifiant)
         #[arg(short = 'q', long)]
         queue: Option<String>,
+        /// Limite de débit de chaque tâche (500K, 2M…)
+        #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+        limit: Option<Limit>,
         /// Ajouter en pause
         #[arg(long)]
         paused: bool,
@@ -82,6 +86,9 @@ enum Command {
         /// File (nom ou identifiant)
         #[arg(short = 'q', long)]
         queue: Option<String>,
+        /// Limite de débit de la tâche (500K, 2M…)
+        #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+        limit: Option<Limit>,
     },
     /// Liste les tâches
     List {
@@ -112,6 +119,19 @@ enum Command {
     },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
+    /// Limite de débit, globale par défaut, ou d'une tâche ou d'une file ; sans débit,
+    /// l'affiche. Elle s'applique aussitôt aux téléchargements en cours.
+    Limit {
+        /// Débit par seconde (800000, 500K, 2M, 1.5G) ou « none » pour la retirer
+        #[arg(value_name = "DÉBIT", value_parser = display::parse_limit)]
+        rate: Option<Limit>,
+        /// Tâche dont changer la limite
+        #[arg(short = 't', long, conflicts_with = "queue")]
+        task: Option<String>,
+        /// File (nom ou identifiant) dont changer la limite
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+    },
     /// Files de téléchargement
     Queue {
         #[command(subcommand)]
@@ -152,6 +172,9 @@ enum QueueAction {
         /// Tâches simultanées (3 par défaut)
         #[arg(long)]
         max_active: Option<u32>,
+        /// Limite de débit de toute la file (500K, 2M…)
+        #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+        limit: Option<Limit>,
     },
     /// Modifie une file (nom ou identifiant)
     Update {
@@ -160,6 +183,9 @@ enum QueueAction {
         name: Option<String>,
         #[arg(long)]
         max_active: Option<u32>,
+        /// Limite de débit de toute la file (500K, 2M…, ou « none »)
+        #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+        limit: Option<Limit>,
     },
 }
 
@@ -249,11 +275,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             dir,
             connections,
             queue,
+            limit,
         } => {
             let opts = AddOptions {
                 dir: &dir,
                 connections,
                 queue: queue.as_deref(),
+                limit: limit.and_then(|l| l.0),
                 paused: false,
             };
             remote::get(target, &url, &opts).await
@@ -267,12 +295,14 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     dir,
                     connections,
                     queue,
+                    limit,
                     paused,
                 } => {
                     let opts = AddOptions {
                         dir: &dir,
                         connections,
                         queue: queue.as_deref(),
+                        limit: limit.and_then(|l| l.0),
                         paused,
                     };
                     remote::add(&mut rpc, &urls, &opts).await
@@ -294,16 +324,37 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     remote::act(&mut rpc, "task.cancel", &task_ids, extra).await
                 }
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
+                Command::Limit { rate, task, queue } => {
+                    let to = match (task.as_deref(), queue.as_deref()) {
+                        (Some(t), _) => remote::LimitOf::Task(t),
+                        (None, Some(q)) => remote::LimitOf::Queue(q),
+                        (None, None) => remote::LimitOf::Global,
+                    };
+                    remote::limit(&mut rpc, to, rate).await
+                }
                 Command::Queue { action } => match action {
                     QueueAction::List => remote::queues(&mut rpc).await,
-                    QueueAction::Create { name, max_active } => {
-                        remote::queue_create(&mut rpc, &name, max_active).await
+                    QueueAction::Create {
+                        name,
+                        max_active,
+                        limit,
+                    } => {
+                        let limit = limit.and_then(|l| l.0);
+                        remote::queue_create(&mut rpc, &name, max_active, limit).await
                     }
                     QueueAction::Update {
                         queue,
                         name,
                         max_active,
-                    } => remote::queue_update(&mut rpc, &queue, name.as_deref(), max_active).await,
+                        limit,
+                    } => {
+                        let change = remote::QueueEdit {
+                            name: name.as_deref(),
+                            max_active,
+                            limit,
+                        };
+                        remote::queue_update(&mut rpc, &queue, &change).await
+                    }
                 },
                 _ => unreachable!("commandes sans moteur traitées dans main"),
             }

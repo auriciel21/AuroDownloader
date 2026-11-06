@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use auro_engine::net::Client;
 use auro_engine::paths;
 use auro_engine::rpc::local;
-use auro_engine::scheduler::{Config, Engine};
+use auro_engine::scheduler::{Config, DISK_RECHECK, Engine};
 use auro_engine::transfer::Options;
 use clap::Parser;
 
@@ -66,6 +66,7 @@ async fn run(db: PathBuf, endpoint: String, client: Client) -> Result<()> {
         db_path: db.clone(),
         client,
         transfer: Options::default(),
+        disk_recheck: DISK_RECHECK,
     })
     .with_context(|| format!("impossible de démarrer le moteur sur {}", db.display()))?;
     let mut listening = tokio::spawn({

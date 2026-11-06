@@ -267,3 +267,51 @@ vérification du certificat), commit 1937ef7, antivirus actif. 512 Mio, médiane
 - **Méthode :** pour un relevé Windows avec le processeur de la machine, il faut une
   machine au repos (applications fermées), avec et sans exclusion de l'antivirus
   (SPEC §9.1). La porte reste mesurée sous Linux.
+
+## 2026-11-06 : Linux (WSL 2), étape 4 de la phase 2 (limites de débit, espace disque)
+
+Même machine et mêmes outils que le relevé Linux du 2026-10-16 (aria2 1.35.0, curl
+7.68.0). 512 Mio, médiane de 5. Le code mesuré ajoute à chaque lecture réseau le
+passage par les seaux de débit (vides dans le mode `direct` du banc). Il ajoute aussi
+un contrôle de la place libre toutes les 2 s, et l'écriture d'un tampon gardé plus de
+500 ms.
+
+**Premier passage, porte vérifiée (`AURO_PERF_ENFORCE=1`) :** une porte manquée.
+Dans « HTTPS, 8 Mio/s par connexion », à 16 connexions, le processeur coûte 1,08 fois
+celui d'aria2 (porte : 1,0). Dans les autres scénarios à nombre de connexions égal, le
+processeur coûte 0,57 à 0,97 fois celui d'aria2 et le débit vaut 0,96 à 1,28 fois le
+sien.
+
+**Comparaison A/B, pour savoir si l'étape 4 en est la cause :** trois passages à la
+suite, dans les mêmes conditions :
+- ec15393, le commit d'avant l'étape 4 ;
+- puis le code de l'étape 4 ;
+- puis ec15393 de nouveau.
+
+Scénario « HTTPS, 8 Mio/s par connexion », 16 connexions :
+
+| Passage | Code | Processeur machine par octet auro / aria2 | Processeur du processus auro (s) | Processeur du processus aria2 (s) |
+| --- | --- | --- | --- | --- |
+| porte vérifiée | étape 4 | 1,08 | 1,95 | 1,71 |
+| A/B 1 | ec15393 | 0,83 | 1,94 | 1,86 |
+| A/B 2 | étape 4 | 1,47 | 1,89 | 1,87 |
+| A/B 3 | ec15393 | 1,32 | 1,94 | 1,75 |
+
+**Lecture :**
+- **Pas de coût mesurable de l'étape 4.** Le processeur du processus auro reste le même
+  avec ou sans elle (1,89 à 1,95 s, contre 1,94 s). Dans les autres scénarios aussi,
+  les écarts entre les deux versions restent dans ceux d'une version d'un passage à
+  l'autre.
+- **La porte N-01 n'est pas reproductible sur ce poste.** L'ancien code passe la porte
+  au premier passage (0,83) et la manque au troisième (1,32). La mesure de la porte est
+  le processeur de toute la machine virtuelle, qui varie de ±30 % d'un passage à
+  l'autre. Celui d'aria2, par exemple, passe de 2,25 s à 1,60 s pour le même
+  téléchargement. Le relevé du 2026-10-16 (0,62 dans ce scénario) était donc un passage
+  favorable, non une marge acquise.
+- **Débit :** en HTTPS sans bridage, auro descend une fois à 0,93 fois aria2 (porte
+  0,95) avec le code de l'étape 4, contre 1,20 et 1,06 pour l'ancien code. Son temps
+  processeur n'a pas changé (1,25 à 1,30 s, contre 1,31 et 1,32 s). L'ancien code
+  varie lui-même de 146 à 119 Mio/s d'un passage à l'autre.
+- **Ce qu'il reste à décider :** la méthode de la porte (plus de mesures, rapport par
+  passage alterné, machine Linux native ou intégration continue). Avant cela, la porte
+  N-01 ne peut pas départager deux versions sur ce poste.

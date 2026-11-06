@@ -43,7 +43,11 @@ struct Case {
 }
 
 fn new_case(url: &str) -> Case {
-    let dir = tempfile::tempdir().unwrap();
+    new_case_in(url, tempfile::tempdir().unwrap())
+}
+
+/// Tâche dont la destination est `dir`.
+fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
     let mut conn = open_in_memory().unwrap();
     let queue = ensure_queue(&conn, "default").unwrap();
     let (task_id, _) = create_task(
@@ -54,6 +58,7 @@ fn new_case(url: &str) -> Case {
             display_name: &display_name_for(url),
             dest_dir: dir.path().to_str().unwrap(),
             max_connections: None,
+            speed_limit_bps: None,
         },
     )
     .unwrap();
@@ -62,11 +67,15 @@ fn new_case(url: &str) -> Case {
 
 impl Case {
     async fn run_with(&mut self, stop: watch::Receiver<bool>) -> Outcome {
+        self.run_opts(&opts(), stop).await
+    }
+
+    async fn run_opts(&mut self, opts: &Options, stop: watch::Receiver<bool>) -> Outcome {
         run(
             &mut self.conn,
             &client(),
             &self.task_id,
-            &opts(),
+            opts,
             stop,
             &mut |_| {},
         )
@@ -640,5 +649,163 @@ mod auto {
             ),
             "{outcome:?}"
         );
+    }
+}
+
+/// Limites de débit (SPEC §7.6) et espace disque (F-18).
+mod limits_and_space {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::limit::{Bucket, Throttle};
+    use crate::testing::{Pace, same_as_served, serve_file_paced};
+
+    fn no_stop() -> watch::Receiver<bool> {
+        watch::channel(false).1
+    }
+
+    #[tokio::test]
+    async fn a_speed_limit_holds_the_rate() {
+        let len = 1_500_000;
+        let (_, server) = site(content(len));
+        let mut case = new_case(&server.url("/lent.bin"));
+        let opts = Options {
+            throttle: Throttle::new([Bucket::new(Some(500_000))]),
+            ..opts()
+        };
+        let start = std::time::Instant::now();
+        let outcome = case.run_opts(&opts, no_stop()).await;
+        let elapsed = start.elapsed();
+        assert_completed(&case, &outcome, "lent.bin", &content(len));
+        // Trois secondes à ce débit, moins ce que chaque connexion lit d'avance.
+        assert!(elapsed >= Duration::from_secs(2), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn missing_space_pauses_the_task_before_it_starts() {
+        fn almost_full(_: &Path) -> std::io::Result<u64> {
+            Ok(1024)
+        }
+        let (_, server) = site(content(SIZE));
+        let mut case = new_case(&server.url("/plein.bin"));
+        let opts = Options {
+            free_space: almost_full,
+            ..opts()
+        };
+        assert_eq!(case.run_opts(&opts, no_stop()).await, Outcome::DiskFull);
+        let task = case.task();
+        assert_eq!(task.state, TaskState::Paused);
+        assert_eq!(task.pause_reason.as_deref(), Some("disk_full"));
+        assert_eq!(task.error_code.as_deref(), Some("DISK_FULL"));
+        assert!(
+            task.error_detail
+                .as_deref()
+                .is_some_and(|d| d.contains("espace disque insuffisant")),
+            "{:?}",
+            task.error_detail
+        );
+        // Aucun segment demandé : seule la préparation a eu lieu.
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|r| r.header("range").is_none_or(|v| v == "bytes=0-0")),
+            "segments demandés malgré le manque de place"
+        );
+
+        // La place revient : la tâche repart et finit.
+        requeue(&mut case.conn, &case.task_id).unwrap();
+        let outcome = case.run().await;
+        assert_completed(&case, &outcome, "plein.bin", &content(SIZE));
+    }
+
+    #[tokio::test]
+    async fn a_disk_filling_up_stops_the_running_task_cleanly() {
+        static FREE: AtomicU64 = AtomicU64::new(u64::MAX);
+        fn free(_: &Path) -> std::io::Result<u64> {
+            Ok(FREE.load(Ordering::SeqCst))
+        }
+        let len: usize = 4 * 1024 * 1024;
+        let pace = Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(20),
+        };
+        let site = Arc::new(Mutex::new(FileSite::new(len as u64)));
+        let server = serve_file_paced(site, Some(pace));
+        let mut case = new_case(&server.url("/rempli.bin"));
+        let opts = Options {
+            free_space: free,
+            keep_free: 1000,
+            ..opts()
+        };
+        let (outcome, ()) = tokio::join!(case.run_opts(&opts, no_stop()), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            FREE.store(0, Ordering::SeqCst);
+        });
+        assert_eq!(outcome, Outcome::DiskFull);
+        assert_eq!(case.task().pause_reason.as_deref(), Some("disk_full"));
+
+        // Rien de perdu : chaque octet compté en base est sur disque, exact.
+        let part = case.part("rempli.bin");
+        let segments = crate::store::segments::load_segments(&case.conn, &case.task_id).unwrap();
+        let written: u64 = segments.iter().map(|s| s.written).sum();
+        assert!(written > 0 && written < len as u64, "{written} octets");
+        for s in &segments {
+            same_as_served(&part, s.start, s.written).unwrap();
+        }
+
+        FREE.store(u64::MAX, Ordering::SeqCst);
+        requeue(&mut case.conn, &case.task_id).unwrap();
+        let outcome = case.run_opts(&opts, no_stop()).await;
+        assert_completed(&case, &outcome, "rempli.bin", &content(len));
+    }
+
+    /// Disque vraiment plein : l'écriture échoue (`ENOSPC`), sans contrôle préalable de
+    /// la place. Demande un petit volume dédié, désigné par `AURO_FULL_DISK_DIR` ; sous
+    /// Linux, un `tmpfs` de 8 Mio monté sans droits d'administrateur :
+    /// `unshare -rm sh -c 'mount -t tmpfs -o size=8m tmpfs "$D" && AURO_FULL_DISK_DIR="$D"
+    /// cargo test -p auro-engine --lib -- --ignored really_full'`.
+    #[tokio::test]
+    #[ignore = "demande un petit volume dédié (AURO_FULL_DISK_DIR)"]
+    async fn a_really_full_disk_loses_nothing() {
+        fn plenty(_: &Path) -> std::io::Result<u64> {
+            Ok(u64::MAX)
+        }
+        let volume = PathBuf::from(
+            std::env::var("AURO_FULL_DISK_DIR").expect("AURO_FULL_DISK_DIR : petit volume dédié"),
+        );
+        // Un fichier de remplissage, que l'on supprimera pour libérer la place ; le
+        // téléchargement dépasse d'un mébioctet la place qu'il laisse.
+        let filler = volume.join("remplissage");
+        std::fs::write(&filler, vec![0u8; 2 * 1024 * 1024]).unwrap();
+        let free = crate::io::free_space(&volume).unwrap();
+        let len = usize::try_from(free).unwrap() + 1024 * 1024;
+        let (_, server) = site(content(len));
+        let mut case = new_case_in(
+            &server.url("/trop.bin"),
+            tempfile::tempdir_in(&volume).unwrap(),
+        );
+        let opts = Options {
+            free_space: plenty,
+            keep_free: 0,
+            ..opts()
+        };
+        assert_eq!(case.run_opts(&opts, no_stop()).await, Outcome::DiskFull);
+        let task = case.task();
+        assert_eq!(task.pause_reason.as_deref(), Some("disk_full"));
+        assert_eq!(task.error_code.as_deref(), Some("DISK_FULL"));
+        let part = case.part("trop.bin");
+        let segments = crate::store::segments::load_segments(&case.conn, &case.task_id).unwrap();
+        for s in &segments {
+            same_as_served(&part, s.start, s.written).unwrap();
+        }
+        let written: u64 = segments.iter().map(|s| s.written).sum();
+        eprintln!("disque plein après {written} octets enregistrés sur {len}");
+
+        std::fs::remove_file(&filler).unwrap();
+        requeue(&mut case.conn, &case.task_id).unwrap();
+        let outcome = case.run_opts(&opts, no_stop()).await;
+        assert_completed(&case, &outcome, "trop.bin", &content(len));
     }
 }

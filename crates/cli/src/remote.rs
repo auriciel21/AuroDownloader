@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::client::{EngineRefused, Rpc, Target};
-use crate::display::{Line, Status, size};
+use crate::display::{self, Limit, Line, Status, size};
 
 /// Dossier de destination en chemin absolu, qui doit exister.
 fn dest_dir(dir: &Path) -> Result<String> {
@@ -37,6 +37,8 @@ pub struct AddOptions<'a> {
     pub dir: &'a Path,
     pub connections: Option<u32>,
     pub queue: Option<&'a str>,
+    /// Limite de débit de la tâche, en octets par seconde.
+    pub limit: Option<u64>,
     pub paused: bool,
 }
 
@@ -48,6 +50,9 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
     });
     if let Some(c) = opts.connections {
         params["maxConnections"] = json!(c);
+    }
+    if let Some(l) = opts.limit {
+        params["speedLimitBps"] = json!(l);
     }
     if let Some(queue) = opts.queue {
         params["queueId"] = json!(queue_id(rpc, queue).await?);
@@ -103,7 +108,11 @@ fn report(task: &Value) -> Result<()> {
                 Ok(())
             }
             Some("file_changed") => bail!("le fichier distant a changé : tâche en pause"),
-            Some("disk_full") => bail!("disque plein : tâche en pause"),
+            Some("disk_full") => bail!(
+                "tâche en pause, faute de place ; elle repartira d'elle-même quand la place \
+                 reviendra : {}",
+                detail(task)
+            ),
             other => bail!("tâche en pause ({})", other.unwrap_or("?")),
         },
         "failed" => bail!("échec : {}", detail(task)),
@@ -181,49 +190,120 @@ pub async fn watch(rpc: &mut Rpc, ids: &[String]) -> Result<()> {
     follow.run(rpc, false).await
 }
 
+/// Une file, sur une ligne.
+fn queue_line(q: &Value) -> String {
+    format!(
+        "{}  {:<20} {} tâche(s) à la fois, limite {}",
+        q["queueId"].as_str().unwrap_or_default(),
+        q["name"].as_str().unwrap_or_default(),
+        q["maxActive"],
+        display::limit(q["speedLimitBps"].as_u64())
+    )
+}
+
 pub async fn queues(rpc: &mut Rpc) -> Result<()> {
     let list = rpc.call("queue.list", json!({})).await?;
     for q in list["items"].as_array().into_iter().flatten() {
-        println!(
-            "{}  {:<20} {} tâche(s) à la fois",
-            q["queueId"].as_str().unwrap_or_default(),
-            q["name"].as_str().unwrap_or_default(),
-            q["maxActive"]
-        );
+        println!("{}", queue_line(q));
     }
     Ok(())
 }
 
-pub async fn queue_create(rpc: &mut Rpc, name: &str, max_active: Option<u32>) -> Result<()> {
+pub async fn queue_create(
+    rpc: &mut Rpc,
+    name: &str,
+    max_active: Option<u32>,
+    limit: Option<u64>,
+) -> Result<()> {
     let mut params = json!({"name": name});
     if let Some(m) = max_active {
         params["maxActive"] = json!(m);
     }
+    if let Some(l) = limit {
+        params["speedLimitBps"] = json!(l);
+    }
     let q = rpc.call("queue.create", params).await?;
-    println!("{}  {}", q["queueId"].as_str().unwrap_or_default(), name);
+    println!("{}", queue_line(&q));
     Ok(())
 }
 
-pub async fn queue_update(
-    rpc: &mut Rpc,
-    queue: &str,
-    name: Option<&str>,
-    max_active: Option<u32>,
-) -> Result<()> {
+/// Modification d'une file ; `None` : inchangé.
+pub struct QueueEdit<'a> {
+    pub name: Option<&'a str>,
+    pub max_active: Option<u32>,
+    pub limit: Option<Limit>,
+}
+
+pub async fn queue_update(rpc: &mut Rpc, queue: &str, edit: &QueueEdit<'_>) -> Result<()> {
     let mut params = json!({"queueId": queue_id(rpc, queue).await?});
-    if let Some(n) = name {
+    if let Some(n) = edit.name {
         params["name"] = json!(n);
     }
-    if let Some(m) = max_active {
+    if let Some(m) = edit.max_active {
         params["maxActive"] = json!(m);
     }
+    if let Some(Limit(l)) = edit.limit {
+        params["speedLimitBps"] = json!(l);
+    }
     let q = rpc.call("queue.update", params).await?;
-    println!(
-        "{}  {}  {} tâche(s) à la fois",
-        q["queueId"].as_str().unwrap_or_default(),
-        q["name"].as_str().unwrap_or_default(),
-        q["maxActive"]
-    );
+    println!("{}", queue_line(&q));
+    Ok(())
+}
+
+/// Ce dont `auro limit` lit ou change la limite.
+pub enum LimitOf<'a> {
+    Global,
+    Task(&'a str),
+    Queue(&'a str),
+}
+
+/// Affiche une limite de débit ; avec `rate`, la change d'abord (`Limit(None)` la retire).
+pub async fn limit(rpc: &mut Rpc, of: LimitOf<'_>, rate: Option<Limit>) -> Result<()> {
+    let (what, bps) = match of {
+        LimitOf::Global => {
+            let limits = match rate {
+                Some(Limit(l)) => rpc.call("limits.set", json!({"downloadBps": l})).await?,
+                None => rpc.call("limits.get", json!({})).await?,
+            };
+            ("globale".to_owned(), limits["downloadBps"].as_u64())
+        }
+        LimitOf::Task(id) => {
+            let task = match rate {
+                Some(Limit(l)) => {
+                    let params = json!({"taskId": id, "speedLimitBps": l});
+                    rpc.call("task.update", params).await?
+                }
+                None => rpc.call("task.get", json!({"taskId": id})).await?,
+            };
+            let name = task["displayName"].as_str().unwrap_or(id);
+            (
+                format!("de la tâche {name}"),
+                task["speedLimitBps"].as_u64(),
+            )
+        }
+        LimitOf::Queue(queue) => {
+            let id = queue_id(rpc, queue).await?;
+            let q = match rate {
+                Some(Limit(l)) => {
+                    let params = json!({"queueId": id, "speedLimitBps": l});
+                    rpc.call("queue.update", params).await?
+                }
+                None => {
+                    let list = rpc.call("queue.list", json!({})).await?;
+                    list["items"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|q| q["queueId"] == id.as_str())
+                        .cloned()
+                        .with_context(|| format!("file inconnue : {queue}"))?
+                }
+            };
+            let name = q["name"].as_str().unwrap_or(queue);
+            (format!("de la file {name}"), q["speedLimitBps"].as_u64())
+        }
+    };
+    println!("Limite {what} : {}", display::limit(bps));
     Ok(())
 }
 

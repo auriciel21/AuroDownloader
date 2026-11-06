@@ -116,6 +116,8 @@ pub struct TaskRow {
     pub retry_count: u32,
     /// Connexions imposées ; `None` : nombre automatique (SPEC §7.3).
     pub max_connections: Option<u32>,
+    /// Limite de débit de la tâche, en octets par seconde (F-15).
+    pub speed_limit_bps: Option<u64>,
     pub pause_reason: Option<String>,
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
@@ -141,6 +143,32 @@ fn to_u64(value: Option<i64>, what: &str) -> Result<Option<u64>, StoreError> {
 fn to_i64(value: u64, what: &str) -> Result<i64, StoreError> {
     i64::try_from(value)
         .map_err(|_| StoreError::BadValue(format!("{what} {value} trop grand pour la base")))
+}
+
+/// Limite de débit à enregistrer : strictement positive, ou absente.
+fn limit_to_sql(limit: Option<u64>) -> Result<Option<i64>, StoreError> {
+    match limit {
+        Some(0) => Err(StoreError::BadValue("limite de débit nulle".into())),
+        limit => limit.map(|l| to_i64(l, "limite de débit")).transpose(),
+    }
+}
+
+/// Change la limite de débit d'une tâche ; `None` la retire.
+pub fn set_task_speed_limit(
+    conn: &Connection,
+    task_id: &str,
+    limit: Option<u64>,
+) -> Result<(), StoreError> {
+    let updated = conn.execute(
+        "UPDATE tasks SET speed_limit_bps = ?2, updated_at = ?3 WHERE id = ?1",
+        params![task_id, limit_to_sql(limit)?, now_ms()],
+    )?;
+    if updated == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// File nommée `name`, créée si elle n'existe pas ; renvoie son identifiant.
@@ -171,6 +199,8 @@ pub struct NewTask<'a> {
     pub dest_dir: &'a str,
     /// `None` : nombre de connexions automatique.
     pub max_connections: Option<u32>,
+    /// `None` : pas de limite propre à la tâche.
+    pub speed_limit_bps: Option<u64>,
 }
 
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
@@ -180,19 +210,21 @@ pub fn create_task(
 ) -> Result<(String, String), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (task_id, source_id, now) = (new_id(), new_id(), now_ms());
+    let limit = limit_to_sql(new.speed_limit_bps)?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
-                            max_connections, created_at, updated_at)
+                            max_connections, speed_limit_bps, created_at, updated_at)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?6, ?6)",
+                 ?3, ?4, ?5, ?7, ?6, ?6)",
         params![
             task_id,
             new.queue_id,
             new.display_name,
             new.dest_dir,
             new.max_connections,
-            now
+            now,
+            limit
         ],
     )?;
     tx.execute(
@@ -205,7 +237,7 @@ pub fn create_task(
 
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
-     queue_id, priority";
+     queue_id, priority, speed_limit_bps";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -223,6 +255,7 @@ struct RawTask {
     max_connections: Option<i64>,
     queue_id: String,
     priority: i64,
+    speed_limit_bps: Option<i64>,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -241,6 +274,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         max_connections: row.get(11)?,
         queue_id: row.get(12)?,
         priority: row.get(13)?,
+        speed_limit_bps: row.get(14)?,
     })
 }
 
@@ -259,6 +293,7 @@ impl TryFrom<RawTask> for TaskRow {
                 .max_connections
                 .map(|c| u32::try_from(c).map_err(|_| bad("nombre de connexions invalide")))
                 .transpose()?,
+            speed_limit_bps: to_u64(raw.speed_limit_bps, "limite de débit")?,
             id: raw.id,
             queue_id: raw.queue_id,
             priority: raw.priority,
@@ -652,27 +687,42 @@ pub fn load_queue(conn: &Connection, queue_id: &str) -> Result<Option<QueueRow>,
 
 /// Crée une file en dernière position ; renvoie son identifiant. Échoue si le nom est
 /// déjà pris (`UNIQUE`).
-pub fn create_queue(conn: &Connection, name: &str, max_active: u32) -> Result<String, StoreError> {
+pub fn create_queue(
+    conn: &Connection,
+    name: &str,
+    max_active: u32,
+    speed_limit_bps: Option<u64>,
+) -> Result<String, StoreError> {
     let id = new_id();
     conn.execute(
-        "INSERT INTO queues (id, name, position, max_active, created_at)
-         VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM queues), ?3, ?4)",
-        params![id, name, max_active, now_ms()],
+        "INSERT INTO queues (id, name, position, max_active, speed_limit_bps, created_at)
+         VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM queues), ?3, ?4, ?5)",
+        params![
+            id,
+            name,
+            max_active,
+            limit_to_sql(speed_limit_bps)?,
+            now_ms()
+        ],
     )?;
     Ok(id)
 }
 
-/// Change le nom ou la limite d'une file ; `false` si elle n'existe pas.
+/// Change le nom, le nombre de tâches simultanées ou la limite de débit d'une file
+/// (`Some(None)` retire la limite) ; `false` si elle n'existe pas.
 pub fn update_queue(
     conn: &Connection,
     queue_id: &str,
     name: Option<&str>,
     max_active: Option<u32>,
+    speed_limit_bps: Option<Option<u64>>,
 ) -> Result<bool, StoreError> {
+    let limit = speed_limit_bps.map(limit_to_sql).transpose()?;
     let updated = conn.execute(
-        "UPDATE queues SET name = COALESCE(?2, name), max_active = COALESCE(?3, max_active)
+        "UPDATE queues SET name = COALESCE(?2, name), max_active = COALESCE(?3, max_active),
+           speed_limit_bps = CASE WHEN ?4 THEN ?5 ELSE speed_limit_bps END
          WHERE id = ?1",
-        params![queue_id, name, max_active],
+        params![queue_id, name, max_active, limit.is_some(), limit.flatten()],
     )?;
     Ok(updated > 0)
 }
@@ -703,6 +753,7 @@ mod tests {
                 display_name: "f.iso",
                 dest_dir: "/dl",
                 max_connections: None,
+                speed_limit_bps: None,
             },
         )
         .unwrap()
@@ -710,6 +761,38 @@ mod tests {
 
     fn count(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn speed_limits_are_kept_changed_and_removed() {
+        let mut conn = open_in_memory().unwrap();
+        let (task, _) = new_http_task(&mut conn);
+        assert_eq!(load_task(&conn, &task).unwrap().speed_limit_bps, None);
+        set_task_speed_limit(&conn, &task, Some(500_000)).unwrap();
+        assert_eq!(
+            load_task(&conn, &task).unwrap().speed_limit_bps,
+            Some(500_000)
+        );
+        assert!(matches!(
+            set_task_speed_limit(&conn, &task, Some(0)),
+            Err(StoreError::BadValue(_))
+        ));
+        assert!(matches!(
+            set_task_speed_limit(&conn, "inconnue", None),
+            Err(StoreError::TaskNotFound { .. })
+        ));
+
+        let queue = create_queue(&conn, "lente", 2, Some(1_000)).unwrap();
+        let limit = |conn: &Connection| load_queue(conn, &queue).unwrap().unwrap().speed_limit_bps;
+        assert_eq!(limit(&conn), Some(1_000));
+        // Une modification sans limite la garde ; `Some(None)` la retire.
+        assert!(update_queue(&conn, &queue, Some("lente 2"), None, None).unwrap());
+        assert_eq!(limit(&conn), Some(1_000));
+        assert!(update_queue(&conn, &queue, None, None, Some(Some(2_000))).unwrap());
+        assert_eq!(limit(&conn), Some(2_000));
+        assert!(update_queue(&conn, &queue, None, None, Some(None)).unwrap());
+        assert_eq!(limit(&conn), None);
+        assert!(!update_queue(&conn, "inconnue", None, None, Some(None)).unwrap());
     }
 
     #[test]

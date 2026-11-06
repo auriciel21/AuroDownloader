@@ -19,6 +19,49 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
+/// Limite de débit donnée en ligne de commande : `Some(octets par seconde)`, ou `None`
+/// pour « aucune limite ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limit(pub Option<u64>);
+
+/// Lit un débit par seconde : « 800000 », « 500K », « 1.5M », « 2G » (unités binaires :
+/// Kio, Mio, Gio), ou « none » pour aucune limite.
+pub fn parse_limit(text: &str) -> Result<Limit, String> {
+    let text = text.trim();
+    if matches!(text.to_lowercase().as_str(), "none" | "aucune") {
+        return Ok(Limit(None));
+    }
+    let (number, factor) = match text.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => {
+            let factor = match c.to_ascii_uppercase() {
+                'K' => 1024.0,
+                'M' => 1024.0 * 1024.0,
+                'G' => 1024.0 * 1024.0 * 1024.0,
+                _ => return Err(format!("unité inconnue : {c} (K, M ou G)")),
+            };
+            (&text[..i], factor)
+        }
+        _ => (text, 1.0),
+    };
+    let value: f64 = number
+        .replace(',', ".")
+        .parse()
+        .map_err(|_| format!("débit illisible : {text} (exemples : 500K, 2M, none)"))?;
+    let bps = (value * factor).round();
+    if !bps.is_finite() || bps < 1.0 || bps > u64::MAX as f64 {
+        return Err(format!("débit hors limites : {text}"));
+    }
+    Ok(Limit(Some(bps as u64)))
+}
+
+/// Limite de débit lisible.
+pub fn limit(bps: Option<u64>) -> String {
+    match bps {
+        Some(bps) => format!("{}/s", size(bps)),
+        None => "aucune".into(),
+    }
+}
+
 /// Durée lisible : « 42 s », « 3 min 05 s », « 2 h 07 min ».
 pub fn duration(seconds: u64) -> String {
     match seconds {
@@ -132,5 +175,26 @@ impl Speed {
         }
         self.last = Some((now, received));
         self.bps as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_are_read_in_binary_units() {
+        assert_eq!(parse_limit("800000"), Ok(Limit(Some(800_000))));
+        assert_eq!(parse_limit("500K"), Ok(Limit(Some(512_000))));
+        assert_eq!(parse_limit("1.5m"), Ok(Limit(Some(1_572_864))));
+        assert_eq!(parse_limit("1,5M"), Ok(Limit(Some(1_572_864))));
+        assert_eq!(parse_limit("2G"), Ok(Limit(Some(2 << 30))));
+        assert_eq!(parse_limit("none"), Ok(Limit(None)));
+        assert_eq!(parse_limit("Aucune"), Ok(Limit(None)));
+        for bad in ["0", "0.1", "-5M", "vite", "5T", "", "M"] {
+            assert!(parse_limit(bad).is_err(), "{bad}");
+        }
+        assert_eq!(limit(Some(2 * 1024 * 1024)), "2.0 Mio/s");
+        assert_eq!(limit(None), "aucune");
     }
 }
