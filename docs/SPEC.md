@@ -636,6 +636,8 @@ Les mécanismes ci-dessous décident de la vitesse et de la fiabilité du moteur
 4. Les requêtes par plage demandent `Accept-Encoding: identity`, car une compression ferait dérailler les décalages d'octets.
 5. Il crée le fichier `.part`, vérifie l'espace libre (F-18, section 7.6 bis) et découpe la plage `[0, taille − 1]` en segments initiaux.
 
+Nom du fichier (depuis le 2026-11-06) : le moteur prend un nom libre dans le dossier de destination, puis crée aussitôt son `.part`, vide, avant d'enregistrer le nom. La création refuse un fichier existant ; si une autre tâche vient de prendre le même nom, il essaie le suivant (`nom (1).ext`, `nom (2).ext`…). Est libre un nom dont ni le fichier ni le `.part` n'existent, et qu'aucune autre tâche du dossier n'a enregistré, sauf les tâches terminées ou annulées. Sous Windows, la comparaison ignore la casse. Ainsi, deux tâches n'écrivent jamais dans le même `.part`, même préparées en même temps, ni quand le `.part` de l'une manque. Un arrêt brutal entre la création du `.part` et l'enregistrement du nom laisse un `.part` vide, que la tâche ne reprend pas : elle prendra un autre nom.
+
 ### 7.2 Segmentation dynamique
 
 Les segments initiaux sont au nombre de `N = min(connexions cibles, taille / taille minimale d'un segment)`. Ensuite, chaque connexion qui se libère reçoit du travail selon cette règle :

@@ -856,3 +856,115 @@ mod checkpoints {
         assert_eq!(saved_before_a_crash(u64::MAX).await, 0);
     }
 }
+
+/// Deux téléchargements du même nom ne partagent jamais un `.part` (SPEC §7.1, étape 3).
+mod names {
+    use super::*;
+    use crate::store::open;
+
+    fn add_task(conn: &mut Connection, url: &str, dir: &Path) -> String {
+        let queue = ensure_queue(conn, "default").unwrap();
+        let (task_id, _) = create_task(
+            conn,
+            &NewTask {
+                queue_id: &queue,
+                url,
+                display_name: &display_name_for(url),
+                dest_dir: dir.to_str().unwrap(),
+                max_connections: None,
+                speed_limit_bps: None,
+            },
+        )
+        .unwrap();
+        task_id
+    }
+
+    async fn run_task(conn: &mut Connection, task_id: &str) -> Outcome {
+        let (_, stop) = watch::channel(false);
+        run(conn, &client(), task_id, &opts(), stop, &mut |_| {})
+            .await
+            .unwrap()
+    }
+
+    /// Une tâche préparée dont le `.part` manque (perdu, ou arrêt avant sa création)
+    /// garde son nom : une nouvelle tâche du même nom en prend un autre, et chacune finit
+    /// avec son propre contenu.
+    #[tokio::test]
+    async fn a_name_recorded_without_its_part_file_stays_reserved() {
+        let (first, second) = (content(150_000), content(90_000));
+        let (_, server_a) = site(first.clone());
+        let (_, server_b) = site(second.clone());
+        let mut case = new_case(&server_a.url("/a.bin"));
+        let task_b = add_task(&mut case.conn, &server_b.url("/a.bin"), case.dir.path());
+        let source = primary_source(&case.conn, &task_b).unwrap();
+        let prep = Preparation {
+            source_id: &source.id,
+            accepts_ranges: true,
+            etag: None,
+            last_modified: None,
+            total_bytes: Some(second.len() as u64),
+            file_name: "a.bin",
+        };
+        let single = initial_split(second.len() as u64, 1, 1);
+        save_preparation(&mut case.conn, &task_b, &prep, &single).unwrap();
+
+        let path_a = case.dir.path().join("a (1).bin");
+        assert_eq!(case.run().await, Outcome::Completed(path_a.clone()));
+        assert_eq!(std::fs::read(&path_a).unwrap(), first);
+
+        let path_b = case.dir.path().join("a.bin");
+        let outcome = run_task(&mut case.conn, &task_b).await;
+        assert_eq!(outcome, Outcome::Completed(path_b.clone()));
+        assert_eq!(std::fs::read(&path_b).unwrap(), second);
+    }
+
+    /// Seize tâches du même nom, de contenus différents, préparées en même temps sur des
+    /// fils différents : chacune obtient son nom et finit avec son propre contenu.
+    #[test]
+    fn simultaneous_downloads_of_the_same_name_keep_their_own_files() {
+        const N: usize = 16;
+        let base = tempfile::tempdir().unwrap();
+        let dl = tempfile::tempdir().unwrap();
+        let db = base.path().join("auro.db");
+        let bodies: Vec<Vec<u8>> = (0..N).map(|i| content(40_000 + 7_000 * i)).collect();
+        let servers: Vec<_> = bodies.iter().map(|b| site(b.clone())).collect();
+        let mut conn = open(&db).unwrap();
+        let ids: Vec<String> = servers
+            .iter()
+            .map(|(_, s)| add_task(&mut conn, &s.url("/c.bin"), dl.path()))
+            .collect();
+        // Un fil et un environnement d'exécution par tâche, comme dans le moteur où
+        // plusieurs tâches se préparent en parallèle.
+        let start = std::sync::Barrier::new(N);
+        let outcomes: Vec<Outcome> = std::thread::scope(|s| {
+            let handles: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    let (db, start) = (&db, &start);
+                    s.spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        let mut conn = open(db).unwrap();
+                        start.wait();
+                        runtime.block_on(run_task(&mut conn, id))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut paths = HashSet::new();
+        for (i, outcome) in outcomes.into_iter().enumerate() {
+            let Outcome::Completed(path) = outcome else {
+                panic!("tâche {i} non terminée : {outcome:?}");
+            };
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bodies[i],
+                "contenu de {path:?}"
+            );
+            assert!(paths.insert(path.clone()), "{path:?} partagé");
+        }
+    }
+}

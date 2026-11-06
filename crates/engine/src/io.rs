@@ -102,13 +102,25 @@ pub fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Deux noms désignent-ils le même fichier ? Sous Windows, les noms ne tiennent pas compte
+/// de la casse.
+fn same_name(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.to_lowercase() == b.to_lowercase()
+    } else {
+        a == b
+    }
+}
+
 /// Nom libre dans `dir` pour un nouveau téléchargement : `name` si ni lui ni son `.part`
-/// n'existent, sinon `nom (1).ext`, `nom (2).ext`… Un fichier existant n'est jamais
-/// réutilisé ; [`PartFile::create`] et [`PartFile::finish`] le refusent de toute façon.
-pub fn available_name(dir: &Path, name: &str) -> String {
+/// n'existent et qu'aucune autre tâche ne l'a réservé (`reserved`), sinon `nom (1).ext`,
+/// `nom (2).ext`… Un fichier existant n'est jamais réutilisé ; [`PartFile::create`] et
+/// [`PartFile::finish`] le refusent de toute façon. Pour un nouveau téléchargement,
+/// passer par [`claim_name`], qui prend aussi le nom sur le disque.
+pub fn available_name(dir: &Path, name: &str, reserved: &[String]) -> String {
     let free = |n: &str| {
         let path = dir.join(n);
-        !path.exists() && !part_path(&path).exists()
+        !path.exists() && !part_path(&path).exists() && !reserved.iter().any(|r| same_name(r, n))
     };
     if free(name) {
         return name.to_owned();
@@ -129,6 +141,26 @@ pub fn available_name(dir: &Path, name: &str) -> String {
         })
         .find(|candidate| free(candidate))
         .expect("un nom libre finit par se trouver")
+}
+
+/// Choisit le nom d'un nouveau téléchargement et le prend aussitôt : son `.part` est créé
+/// (vide) avant que le nom ne soit enregistré (SPEC §7.1, étape 3). Deux tâches qui
+/// visent le même nom en même temps ne peuvent donc pas finir dans le même `.part` :
+/// la création échoue pour la seconde, qui passe au nom suivant. `reserved` : noms déjà
+/// enregistrés par d'autres tâches du même dossier, dont le `.part` peut manquer.
+pub fn claim_name(dir: &Path, name: &str, reserved: &[String]) -> Result<String, IoError> {
+    // Chaque échec laisse sur le disque le `.part` d'une autre tâche : le nom suivant
+    // l'évite. La borne ne sert qu'à ne jamais boucler sans fin.
+    let mut last = None;
+    for _ in 0..1000 {
+        let candidate = available_name(dir, name, reserved);
+        match PartFile::create(&dir.join(&candidate)) {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.io_kind() == Some(io::ErrorKind::AlreadyExists) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("au moins une tentative"))
 }
 
 /// Octets d'un segment dont la présence sur disque est prouvée : relevés avant un vidage
@@ -737,20 +769,64 @@ mod tests {
     #[test]
     fn available_name_avoids_files_and_downloads_in_progress() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(available_name(dir.path(), "a.iso"), "a.iso");
+        assert_eq!(available_name(dir.path(), "a.iso", &[]), "a.iso");
         std::fs::write(dir.path().join("a.iso"), b"").unwrap();
-        assert_eq!(available_name(dir.path(), "a.iso"), "a (1).iso");
+        assert_eq!(available_name(dir.path(), "a.iso", &[]), "a (1).iso");
         std::fs::write(dir.path().join("a (1).iso.part"), b"").unwrap();
-        assert_eq!(available_name(dir.path(), "a.iso"), "a (2).iso");
+        assert_eq!(available_name(dir.path(), "a.iso", &[]), "a (2).iso");
         std::fs::write(dir.path().join("LISEZMOI"), b"").unwrap();
-        assert_eq!(available_name(dir.path(), "LISEZMOI"), "LISEZMOI (1)");
+        assert_eq!(available_name(dir.path(), "LISEZMOI", &[]), "LISEZMOI (1)");
         let long = "é".repeat(125);
         std::fs::write(dir.path().join(&long), b"").unwrap();
-        let other = available_name(dir.path(), &long);
+        let other = available_name(dir.path(), &long, &[]);
         assert!(
             other.len() <= MAX_NAME_BYTES && other.ends_with(" (1)"),
             "{other}"
         );
+    }
+
+    /// Un nom enregistré par une autre tâche reste à elle, même sans fichier sur le
+    /// disque (`.part` pas encore créé, ou perdu).
+    #[test]
+    fn available_name_skips_names_reserved_by_other_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let reserved = vec!["b.iso".to_owned(), "b (1).iso".to_owned()];
+        assert_eq!(available_name(dir.path(), "b.iso", &reserved), "b (2).iso");
+        assert_eq!(available_name(dir.path(), "c.iso", &reserved), "c.iso");
+        let other_case = vec!["B.ISO".to_owned()];
+        let expected = if cfg!(windows) { "b (1).iso" } else { "b.iso" };
+        assert_eq!(available_name(dir.path(), "b.iso", &other_case), expected);
+    }
+
+    #[test]
+    fn claim_name_creates_the_part_file_before_returning() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = claim_name(dir.path(), "d.iso", &[]).unwrap();
+        assert_eq!(first, "d.iso");
+        assert!(dir.path().join("d.iso.part").exists());
+        // Le `.part` créé suffit à écarter le nom pour la tâche suivante.
+        assert_eq!(claim_name(dir.path(), "d.iso", &[]).unwrap(), "d (1).iso");
+    }
+
+    /// Des tâches qui visent le même nom en même temps obtiennent chacune le sien.
+    #[test]
+    fn simultaneous_claims_never_share_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Arc::new(std::sync::Barrier::new(16));
+        let names: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let (start, path) = (Arc::clone(&start), dir.path());
+                    s.spawn(move || {
+                        start.wait();
+                        claim_name(path, "e.iso", &[]).unwrap()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let distinct: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(distinct.len(), 16, "{names:?}");
     }
 
     #[test]

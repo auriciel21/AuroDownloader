@@ -364,6 +364,26 @@ pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, Sto
     })
 }
 
+/// Noms de fichier enregistrés par les autres tâches du dossier `dest_dir` qui peuvent
+/// encore écrire leur `.part` : toutes, sauf les terminées et les annulées. Un nouveau
+/// téléchargement ne doit prendre aucun de ces noms, même si leur `.part` manque sur le
+/// disque (SPEC §7.1, étape 3).
+pub fn reserved_names(
+    conn: &Connection,
+    dest_dir: &str,
+    except_task: &str,
+) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT file_name FROM tasks
+         WHERE dest_dir = ?1 AND id <> ?2 AND file_name IS NOT NULL
+           AND state NOT IN ('completed', 'cancelled')",
+    )?;
+    let names = stmt
+        .query_map(params![dest_dir, except_task], |r| r.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(names)
+}
+
 /// Résultat de la préparation (SPEC §7.1) à enregistrer.
 #[derive(Debug, Clone, Copy)]
 pub struct Preparation<'a> {

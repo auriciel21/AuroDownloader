@@ -41,7 +41,7 @@ use crate::store::segments::{
 };
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, TaskRow, TaskState, change_state, complete_task,
-    load_task, primary_source, save_preparation,
+    load_task, primary_source, reserved_names, save_preparation,
 };
 use crate::store::{StoreError, now_ms};
 
@@ -397,7 +397,13 @@ async fn execute(
             Ok(probe) => probe,
             Err(e) => return fail(Failure::Net(e)),
         };
-        let name = io::available_name(Path::new(&task.dest_dir), &probe.file_name);
+        // Le nom est pris sur le disque (`.part` créé) avant d'être enregistré : aucune
+        // autre tâche ne peut plus le choisir, ni ouvrir ce `.part` comme le sien.
+        let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
+        let name = match io::claim_name(Path::new(&task.dest_dir), &probe.file_name, &reserved) {
+            Ok(name) => name,
+            Err(e) => return fail(Failure::Io(e)),
+        };
         let connections = if probe.accepts_ranges {
             first_width(client, &source.url, &task, opts)
         } else {
