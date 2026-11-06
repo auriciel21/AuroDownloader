@@ -222,7 +222,7 @@ Les cookies sont rangés dans le coffre du système, jamais dans la base (sectio
 ### 4.6 Exécution et distribution
 
 - **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option.
-- **Moteur** : binaire `aurod` (crate `crates/daemon`), sans interface. L'application de bureau le lance s'il ne tourne pas ; `auro` est le client en ligne de commande.
+- **Moteur** : binaire `aurod` (crate `crates/daemon`), sans interface. L'application de bureau le lance s'il ne tourne pas ; `auro` est le client en ligne de commande, et le lance de même, détaché de la console, avec son journal (`aurod.log`) à côté de sa base. `auro direct` exécute une tâche avec la bibliothèque du moteur, sans `aurod`, pour les bancs et le dépannage.
 - **Sans interface** : l'option `--headless` lance le moteur seul, pour un NAS ou un serveur, avec une image Docker et une unité `systemd` utilisateur. L'interface web est servie par le moteur lui-même.
 - **Windows** : installateur signé et version portable.
 - **Linux** : AppImage et paquet `.deb` ; Flatpak à étudier, car son bac à sable complique la messagerie native avec le navigateur.

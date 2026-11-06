@@ -190,18 +190,13 @@ impl Engine {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
         let rev = Arc::new(AtomicU64::new(0));
-        let state = Scheduler {
+        let state = Scheduler::new(
             conn,
             config,
-            events: events.clone(),
-            rev: Arc::clone(&rev),
-            default_queue: default_queue.clone(),
-            running: HashMap::new(),
-            runs: JoinSet::new(),
-            run_ids: HashMap::new(),
-            broken: HashSet::new(),
-            shutdown: None,
-        };
+            events.clone(),
+            Arc::clone(&rev),
+            default_queue.clone(),
+        );
         tokio::spawn(async move {
             state.run(inbox).await;
             let _ = stopped_tx.send(true);
@@ -364,6 +359,27 @@ struct Scheduler {
 }
 
 impl Scheduler {
+    fn new(
+        conn: Connection,
+        config: Config,
+        events: broadcast::Sender<Event>,
+        rev: Arc<AtomicU64>,
+        default_queue: String,
+    ) -> Self {
+        Scheduler {
+            conn,
+            config,
+            events,
+            rev,
+            default_queue,
+            running: HashMap::new(),
+            runs: JoinSet::new(),
+            run_ids: HashMap::new(),
+            broken: HashSet::new(),
+            shutdown: None,
+        }
+    }
+
     async fn run(mut self, mut inbox: mpsc::Receiver<Command>) {
         loop {
             if self.shutdown.is_none() {
@@ -459,6 +475,15 @@ impl Scheduler {
     }
 
     fn launch(&mut self, task_id: String, queue_id: String, from: TaskState) {
+        // L'état `active` est enregistré ici, avant d'être annoncé : un instantané pris à
+        // la révision de l'annonce le montre déjà (SPEC §6.10). `transfer::run` accepte
+        // une tâche `active`.
+        if from != TaskState::Active
+            && change_state(&mut self.conn, &task_id, &Change::to(TaskState::Active)).is_err()
+        {
+            self.broken.insert(task_id);
+            return;
+        }
         let (stop, stopped) = watch::channel(false);
         self.running.insert(
             task_id.clone(),

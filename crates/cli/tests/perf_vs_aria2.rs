@@ -252,7 +252,7 @@ impl Tool {
         match self {
             Tool::Auro(connections) => {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_auro"));
-                cmd.arg("--db").arg(dir.join("auro.db"));
+                cmd.args(["direct", "--db"]).arg(dir.join("auro.db"));
                 if let Some(ca) = ca {
                     cmd.arg("--ca-cert").arg(ca);
                 }

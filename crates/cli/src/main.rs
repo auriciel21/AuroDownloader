@@ -1,31 +1,42 @@
-//! `auro` : ligne de commande d'AuroDownloader.
+//! `auro` : ligne de commande d'AuroDownloader (F-40).
 //!
-//! En phase 1, la CLI appelle le moteur comme une bibliothèque (SPEC §9.3). Commandes :
-//! `get` télécharge un fichier, `resume` reprend une tâche interrompue, `list` montre les
-//! tâches, `probe` prépare une tâche sans rien télécharger (SPEC §7.1), `db migrate` crée
-//! ou met à jour la base.
+//! La CLI est un client du moteur `aurod`, qu'elle joint par le protocole JSON-RPC sur le
+//! point d'accès local (SPEC §6) et qu'elle démarre s'il ne tourne pas. Commandes : `add`,
+//! `get` (ajoute et suit jusqu'à la fin), `list`, `pause`, `resume`, `cancel`, `watch`,
+//! `queue`, `engine`. Sans moteur : `probe` prépare une tâche sans rien télécharger
+//! (SPEC §7.1), `db migrate` crée ou met à jour une base, et `direct` exécute une tâche
+//! avec la bibliothèque du moteur (bancs, dépannage).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use auro_engine::net::Client;
-use auro_engine::store::tasks::{self, NewTask, TaskState};
-use auro_engine::transfer::{self, Options, Outcome, Progress};
+use auro_engine::paths;
 use clap::{Parser, Subcommand};
-use rusqlite::Connection;
-use tokio::sync::watch;
+use serde_json::json;
+
+mod client;
+mod direct;
+mod display;
+mod remote;
+
+use client::{Rpc, Target};
+use remote::AddOptions;
 
 #[derive(Parser)]
 #[command(name = "auro", version, about = "AuroDownloader : ligne de commande")]
 struct Cli {
-    /// Base de données du moteur
-    #[arg(long, global = true, default_value = "auro.db")]
-    db: PathBuf,
+    /// Point d'accès du moteur : canal nommé (Windows) ou socket (Unix)
+    #[arg(long, global = true, value_name = "NOM")]
+    endpoint: Option<String>,
 
-    /// Autorités de certification à ajouter à celles du système (fichier PEM) : serveur
-    /// interne, banc de test. La validation des certificats reste stricte.
+    /// Ne pas démarrer le moteur s'il ne tourne pas
+    #[arg(long, global = true)]
+    no_start: bool,
+
+    /// Autorités de certification à ajouter à celles du système (fichier PEM) : pour
+    /// `probe`, `direct` et le moteur démarré par cette commande. La validation des
+    /// certificats reste stricte.
     #[arg(long, global = true, value_name = "FICHIER")]
     ca_cert: Option<PathBuf>,
 
@@ -33,39 +44,137 @@ struct Cli {
     command: Command,
 }
 
+/// Connexions : de 1 à 32.
+fn connections() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=32)
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Télécharge un fichier (Ctrl-C met la tâche en pause)
+    /// Ajoute des téléchargements au moteur, sans attendre
+    Add {
+        /// Adresses HTTP ou HTTPS
+        #[arg(required = true)]
+        urls: Vec<String>,
+        /// Dossier de destination
+        #[arg(short = 'o', long, default_value = ".")]
+        dir: PathBuf,
+        /// Nombre de connexions (1 à 32 ; automatique sinon)
+        #[arg(short = 'c', long, value_parser = connections())]
+        connections: Option<u32>,
+        /// File (nom ou identifiant)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+        /// Ajouter en pause
+        #[arg(long)]
+        paused: bool,
+    },
+    /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
-        /// Adresse HTTP ou HTTPS du fichier
+        /// Adresse HTTP ou HTTPS
         url: String,
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
         dir: PathBuf,
-        /// Nombre de connexions (1 à 32)
-        #[arg(short = 'c', long, value_parser = clap::value_parser!(u32).range(1..=32))]
+        /// Nombre de connexions (1 à 32 ; automatique sinon)
+        #[arg(short = 'c', long, value_parser = connections())]
         connections: Option<u32>,
-    },
-    /// Reprend une tâche en pause, en échec ou interrompue
-    Resume {
-        /// Identifiant de la tâche (voir `auro list`)
-        task_id: String,
-        /// Nombre de connexions (1 à 32)
-        #[arg(short = 'c', long, value_parser = clap::value_parser!(u32).range(1..=32))]
-        connections: Option<u32>,
+        /// File (nom ou identifiant)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
     },
     /// Liste les tâches
-    List,
+    List {
+        /// États à montrer (queued, active, paused, retry_wait, completed, failed…)
+        #[arg(short = 's', long = "state")]
+        states: Vec<String>,
+        /// File (nom ou identifiant)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+    },
+    /// Met des tâches en pause
+    Pause {
+        #[arg(required = true)]
+        task_ids: Vec<String>,
+    },
+    /// Remet en file des tâches en pause ou en échec
+    Resume {
+        #[arg(required = true)]
+        task_ids: Vec<String>,
+    },
+    /// Annule des tâches
+    Cancel {
+        #[arg(required = true)]
+        task_ids: Vec<String>,
+        /// Supprimer aussi les fichiers partiels
+        #[arg(long)]
+        delete_files: bool,
+    },
+    /// Suit l'avancement des tâches (toutes celles en cours par défaut)
+    Watch { task_ids: Vec<String> },
+    /// Files de téléchargement
+    Queue {
+        #[command(subcommand)]
+        action: QueueAction,
+    },
+    /// Moteur : démarrage, état, arrêt
+    Engine {
+        #[command(subcommand)]
+        action: EngineAction,
+    },
     /// Interroge un serveur : taille, plages acceptées, validateurs et nom du fichier
     Probe {
         /// Adresse HTTP ou HTTPS du fichier
         url: String,
     },
-    /// Gestion de la base de données du moteur
+    /// Gestion d'une base de données du moteur
     Db {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Sans moteur : exécute une tâche avec la bibliothèque (bancs, dépannage)
+    Direct {
+        /// Base de données utilisée directement (jamais celle d'un moteur en marche)
+        #[arg(long, default_value = "auro.db")]
+        db: PathBuf,
+        #[command(subcommand)]
+        action: DirectAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum QueueAction {
+    /// Liste les files
+    List,
+    /// Crée une file
+    Create {
+        name: String,
+        /// Tâches simultanées (3 par défaut)
+        #[arg(long)]
+        max_active: Option<u32>,
+    },
+    /// Modifie une file (nom ou identifiant)
+    Update {
+        queue: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        max_active: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum EngineAction {
+    /// Démarre le moteur s'il ne tourne pas
+    Start {
+        /// Base du moteur (par défaut, dans le dossier de données de l'utilisateur)
+        #[arg(long, value_name = "FICHIER")]
+        db: Option<PathBuf>,
+    },
+    /// Indique si le moteur tourne, et l'état de ses tâches
+    Status,
+    /// Arrête le moteur ; les tâches en cours repartiront au prochain démarrage
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -77,37 +186,173 @@ enum DbAction {
     },
 }
 
+#[derive(Subcommand)]
+enum DirectAction {
+    /// Télécharge un fichier (Ctrl-C met la tâche en pause)
+    Get {
+        url: String,
+        #[arg(short = 'o', long, default_value = ".")]
+        dir: PathBuf,
+        #[arg(short = 'c', long, value_parser = connections())]
+        connections: Option<u32>,
+    },
+    /// Reprend une tâche en pause, en échec ou interrompue
+    Resume {
+        task_id: String,
+        #[arg(short = 'c', long, value_parser = connections())]
+        connections: Option<u32>,
+    },
+    /// Liste les tâches de la base
+    List,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let target = Target {
+        endpoint: cli.endpoint.clone().unwrap_or_else(paths::endpoint),
+        autostart: !cli.no_start,
+        ca_cert: cli.ca_cert.clone(),
+    };
     match cli.command {
+        Command::Probe { url } => probe(&url, cli.ca_cert.as_deref()),
         Command::Db {
             action: DbAction::Migrate { path },
         } => {
-            let conn = open_db(&path)?;
+            let conn = direct::open_db(&path)?;
             let version = auro_engine::store::current_version(&conn)?;
             println!("Base prête : {} (schéma version {version})", path.display());
+            Ok(())
         }
-        Command::Probe { url } => probe(&url, cli.ca_cert.as_deref())?,
+        Command::Direct { db, action } => {
+            let client = http_client(cli.ca_cert.as_deref())?;
+            match action {
+                DirectAction::Get {
+                    url,
+                    dir,
+                    connections,
+                } => direct::get(&db, &url, &dir, connections, client),
+                DirectAction::Resume {
+                    task_id,
+                    connections,
+                } => direct::resume(&db, &task_id, connections, client),
+                DirectAction::List => direct::list(&db),
+            }
+        }
+        command => runtime()?.block_on(engine_command(command, &target)),
+    }
+}
+
+async fn engine_command(command: Command, target: &Target) -> Result<()> {
+    match command {
         Command::Get {
             url,
             dir,
             connections,
-        } => get(&cli.db, &url, &dir, connections, cli.ca_cert.as_deref())?,
-        Command::Resume {
-            task_id,
-            connections,
-        } => resume(&cli.db, &task_id, connections, cli.ca_cert.as_deref())?,
-        Command::List => list(&cli.db)?,
+            queue,
+        } => {
+            let opts = AddOptions {
+                dir: &dir,
+                connections,
+                queue: queue.as_deref(),
+                paused: false,
+            };
+            remote::get(target, &url, &opts).await
+        }
+        Command::Engine { action } => engine(action, target).await,
+        command => {
+            let mut rpc = client::connect(target).await?;
+            match command {
+                Command::Add {
+                    urls,
+                    dir,
+                    connections,
+                    queue,
+                    paused,
+                } => {
+                    let opts = AddOptions {
+                        dir: &dir,
+                        connections,
+                        queue: queue.as_deref(),
+                        paused,
+                    };
+                    remote::add(&mut rpc, &urls, &opts).await
+                }
+                Command::List { states, queue } => {
+                    remote::list(&mut rpc, &states, queue.as_deref()).await
+                }
+                Command::Pause { task_ids } => {
+                    remote::act(&mut rpc, "task.pause", &task_ids, json!({})).await
+                }
+                Command::Resume { task_ids } => {
+                    remote::act(&mut rpc, "task.resume", &task_ids, json!({})).await
+                }
+                Command::Cancel {
+                    task_ids,
+                    delete_files,
+                } => {
+                    let extra = json!({"deleteFiles": delete_files});
+                    remote::act(&mut rpc, "task.cancel", &task_ids, extra).await
+                }
+                Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
+                Command::Queue { action } => match action {
+                    QueueAction::List => remote::queues(&mut rpc).await,
+                    QueueAction::Create { name, max_active } => {
+                        remote::queue_create(&mut rpc, &name, max_active).await
+                    }
+                    QueueAction::Update {
+                        queue,
+                        name,
+                        max_active,
+                    } => remote::queue_update(&mut rpc, &queue, name.as_deref(), max_active).await,
+                },
+                _ => unreachable!("commandes sans moteur traitées dans main"),
+            }
+        }
     }
-    Ok(())
 }
 
-fn open_db(path: &Path) -> Result<Connection> {
-    auro_engine::store::open(path)
-        .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))
+async fn engine(action: EngineAction, target: &Target) -> Result<()> {
+    let endpoint = &target.endpoint;
+    match action {
+        EngineAction::Start { db } => {
+            if Rpc::connect(endpoint).await.is_ok() {
+                println!("Le moteur tourne déjà sur {endpoint}.");
+                return Ok(());
+            }
+            client::start_daemon(endpoint, db.as_deref(), target.ca_cert.as_deref())?;
+            client::wait_for(endpoint).await?;
+            println!("Moteur démarré sur {endpoint}.");
+            Ok(())
+        }
+        EngineAction::Status => match Rpc::connect(endpoint).await {
+            Ok(mut rpc) => remote::status(&mut rpc, endpoint).await,
+            Err(_) => {
+                println!("Aucun moteur sur {endpoint}.");
+                Ok(())
+            }
+        },
+        EngineAction::Stop => {
+            let Ok(mut rpc) = Rpc::connect(endpoint).await else {
+                println!("Aucun moteur sur {endpoint}.");
+                return Ok(());
+            };
+            rpc.call("engine.shutdown", json!({"graceful": true}))
+                .await?;
+            // Le moteur ferme la connexion quand il a tout enregistré.
+            let _ = rpc.notification().await;
+            println!("Moteur arrêté.");
+            Ok(())
+        }
+    }
 }
 
-fn client(ca: Option<&Path>) -> Result<Client> {
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?)
+}
+
+fn http_client(ca: Option<&Path>) -> Result<Client> {
     Ok(match ca {
         None => Client::new()?,
         Some(path) => {
@@ -118,188 +363,9 @@ fn client(ca: Option<&Path>) -> Result<Client> {
     })
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    Ok(tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?)
-}
-
-fn get(
-    db: &Path,
-    url: &str,
-    dir: &Path,
-    connections: Option<u32>,
-    ca: Option<&Path>,
-) -> Result<()> {
-    auro_engine::net::check_url(url)?;
-    let dir = std::path::absolute(dir)?;
-    if !dir.is_dir() {
-        bail!("le dossier {} n'existe pas", dir.display());
-    }
-    let dir_text = dir
-        .to_str()
-        .context("le chemin du dossier n'est pas en UTF-8")?;
-    let mut conn = open_db(db)?;
-    let queue = tasks::ensure_queue(&conn, "default")?;
-    let display_name = transfer::display_name_for(url);
-    let (task_id, _) = tasks::create_task(
-        &mut conn,
-        &NewTask {
-            queue_id: &queue,
-            url,
-            display_name: &display_name,
-            dest_dir: dir_text,
-            max_connections: connections,
-        },
-    )?;
-    println!("Tâche {task_id}");
-    execute(&mut conn, &task_id, connections, ca)
-}
-
-fn resume(db: &Path, task_id: &str, connections: Option<u32>, ca: Option<&Path>) -> Result<()> {
-    let mut conn = open_db(db)?;
-    let task = tasks::load_task(&conn, task_id)?;
-    match task.state {
-        TaskState::Paused if task.pause_reason.as_deref() == Some("file_changed") => bail!(
-            "le fichier distant a changé depuis le début du téléchargement ; repartir de \
-             zéro n'est pas encore possible (F-13)"
-        ),
-        TaskState::Paused | TaskState::Failed => transfer::requeue(&mut conn, task_id)?,
-        _ => {}
-    }
-    execute(&mut conn, task_id, connections, ca)
-}
-
-fn execute(
-    conn: &mut Connection,
-    task_id: &str,
-    connections: Option<u32>,
-    ca: Option<&Path>,
-) -> Result<()> {
-    let runtime = runtime()?;
-    let client = client(ca)?;
-    // Sans -c : le nombre enregistré dans la tâche, sinon automatique (SPEC §7.3).
-    let opts = Options {
-        connections,
-        ..Options::default()
-    };
-    let (stop_tx, stop) = watch::channel(false);
-    let mut display = Display::new();
-    let outcome = runtime.block_on(async {
-        tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                let _ = stop_tx.send(true);
-            }
-        });
-        transfer::run(conn, &client, task_id, &opts, stop, &mut |p| {
-            display.show(p)
-        })
-        .await
-    })?;
-    eprintln!();
-    match outcome {
-        Outcome::Completed(path) => println!("Terminé : {}", path.display()),
-        Outcome::Paused => println!("En pause. Pour reprendre : auro resume {task_id}"),
-        Outcome::FileChanged => {
-            bail!("le fichier distant a changé : tâche en pause [FILE_CHANGED]")
-        }
-        Outcome::DiskFull => bail!("disque plein : tâche en pause [DISK_FULL]"),
-        Outcome::RetryLater { code, detail, .. } => {
-            bail!("{detail} [{code}] ; nouvelle tentative possible : auro resume {task_id}")
-        }
-        Outcome::Failed { code, detail } => bail!("{detail} [{code}]"),
-    }
-    Ok(())
-}
-
-/// Ligne d'avancement, réécrite sur place.
-struct Display {
-    last: Option<(Instant, u64)>,
-    speed: f64,
-}
-
-impl Display {
-    fn new() -> Self {
-        Display {
-            last: None,
-            speed: 0.0,
-        }
-    }
-
-    fn show(&mut self, p: Progress) {
-        let now = Instant::now();
-        if let Some((at, bytes)) = self.last {
-            let elapsed = now.duration_since(at).as_secs_f64();
-            if elapsed > 0.0 {
-                let instant = p.received.saturating_sub(bytes) as f64 / elapsed;
-                self.speed = if self.speed == 0.0 {
-                    instant
-                } else {
-                    0.7 * self.speed + 0.3 * instant
-                };
-            }
-        }
-        self.last = Some((now, p.received));
-        let done = match p.total {
-            Some(total) if total > 0 => format!(
-                "{:5.1} %  {} / {}",
-                p.received as f64 * 100.0 / total as f64,
-                size(p.received),
-                size(total)
-            ),
-            _ => size(p.received),
-        };
-        eprint!(
-            "\r{done}  {}/s  {} connexion(s)        ",
-            size(self.speed as u64),
-            p.connections
-        );
-        let _ = std::io::stderr().flush();
-    }
-}
-
-fn size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["o", "Kio", "Mio", "Gio", "Tio"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} o")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-fn list(db: &Path) -> Result<()> {
-    let conn = open_db(db)?;
-    for t in tasks::list_tasks(&conn)? {
-        let amount = match t.total_bytes {
-            Some(total) => format!("{} / {}", size(t.done_bytes), size(total)),
-            None => size(t.done_bytes),
-        };
-        let note = t
-            .pause_reason
-            .as_deref()
-            .or(t.error_code.as_deref())
-            .map(|n| format!(" ({n})"))
-            .unwrap_or_default();
-        println!(
-            "{}  {:<26} {:>22}  {}",
-            t.id,
-            format!("{}{note}", t.state.as_sql()),
-            amount,
-            t.display_name
-        );
-    }
-    Ok(())
-}
-
 fn probe(url: &str, ca: Option<&Path>) -> Result<()> {
     let runtime = runtime()?;
-    let client = client(ca)?;
+    let client = http_client(ca)?;
     let probe = match runtime.block_on(client.probe(url, &[])) {
         Ok(probe) => probe,
         Err(error) => {

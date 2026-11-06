@@ -112,7 +112,9 @@ dependencies = [
  "clap",
  "libc",
  "rusqlite",
+ "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "windows-sys 0.61.2",
 ]

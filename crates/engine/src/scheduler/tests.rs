@@ -524,3 +524,40 @@ async fn queues_are_created_listed_and_updated() {
     assert_eq!(names, [DEFAULT_QUEUE, "rapide"]);
     engine.shutdown().await;
 }
+
+/// Une annonce et un instantané de même révision décrivent le même état (SPEC §6.10) :
+/// quand la boucle annonce une tâche `active`, la base le dit déjà, avant même que
+/// l'exécution n'ait commencé. Sans cela, un client qui suit le protocole (instantané,
+/// puis notifications plus récentes) voyait la tâche rester « en file ».
+#[tokio::test]
+async fn an_announced_state_is_already_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let conn = store::open(&config.db_path).unwrap();
+    let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
+    let (events, mut announced) = broadcast::channel(16);
+    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue);
+    let id = scheduler
+        .add(add("http://127.0.0.1:1/f", dir.path()))
+        .unwrap();
+
+    // Démarre la tâche sans rendre la main : l'exécution lancée n'a pas encore tourné.
+    scheduler.start_runnable();
+    let mut active_announced = false;
+    while let Ok(event) = announced.try_recv() {
+        if let Event::StateChanged {
+            to: TaskState::Active,
+            ..
+        } = event
+        {
+            active_announced = true;
+        }
+    }
+    assert!(active_announced);
+    assert_eq!(
+        load_task(&scheduler.conn, &id).unwrap().state,
+        TaskState::Active,
+        "annoncée active, encore en file en base"
+    );
+    scheduler.begin_shutdown(None);
+}

@@ -34,13 +34,17 @@ téléchargement.
   priorités, nouvelles tentatives, reprise au démarrage, événements avec révision `rev`),
   `rpc` (JSON-RPC un message par ligne : `methods`, `session` avec abonnements et
   avancement regroupé, `local` pour le canal nommé Windows réservé au SID de
-  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut). La CLI
-  appelle encore le moteur comme une bibliothèque ; elle deviendra un client du protocole
-  (SPEC 9.3).
+  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
-- `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande.
+- `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande, cliente d'`aurod`
+  (`client` : connexion, appels, démarrage détaché d'`aurod` ; `remote` : commandes ;
+  `display`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
+  deux bancs l'utilisent, pour mesurer le transfert seul.
+- Essais manuels de la CLI : toujours sur un point d'accès et une base d'essai
+  (`--endpoint`, `engine start --db`), jamais sur le moteur réel de l'utilisateur ; finir
+  par `engine stop` et vérifier qu'aucun `aurod` d'essai ne reste.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 
@@ -52,9 +56,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p auro-cli -- db migrate auro.db
 cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
+# Client du moteur ; `aurod` démarre de lui-même s'il ne tourne pas (base et point
+# d'accès par défaut de l'utilisateur). Pour un essai isolé : --endpoint et
+# `engine start --db`, puis `engine stop`.
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
-cargo run -p auro-cli -- list
-cargo run -p auro-cli -- resume <id-de-tâche>
+cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; engine stop
+# Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
+cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
@@ -111,7 +119,8 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
 - Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
   JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
-  cliente du moteur ; 4. limites de débit (F-15) et espace disque
+  cliente du moteur (3a fait : commandes, démarrage d'`aurod`, mode `direct` ; 3b à faire :
+  banc de reprise sur `aurod`) ; 4. limites de débit (F-15) et espace disque
   (F-18) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
   application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
   sans perte de données. Le banc de reprise sera adapté pour tuer `aurod` pendant que

@@ -151,7 +151,7 @@ impl Bench {
     /// Reprend la tâche inachevée, ou en commence une nouvelle.
     fn launch(&self, connections: Option<u32>) -> Child {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_auro"));
-        cmd.arg("--db").arg(&self.db);
+        cmd.args(["direct", "--db"]).arg(&self.db);
         match self.unfinished() {
             Some(task) => cmd.args(["resume", &task.id]),
             None => cmd.args(["get", &self.url, "-o"]).arg(&self.downloads),
