@@ -1,7 +1,7 @@
 //! La liaison face au vrai protocole du moteur, servi en mémoire (`rpc::serve`) : les
 //! tests coupent la connexion à volonté, comme un `aurod` qui s'arrête.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -111,7 +111,7 @@ struct Served {
     engine: Engine,
     sessions: Mutex<Vec<JoinHandle<()>>>,
     /// Nombre de connexions à refuser avant d'accepter.
-    refuse: AtomicUsize,
+    refuse: Mutex<usize>,
 }
 
 impl Served {
@@ -119,7 +119,7 @@ impl Served {
         Arc::new(Served {
             engine,
             sessions: Mutex::new(Vec::new()),
-            refuse: AtomicUsize::new(0),
+            refuse: Mutex::new(0),
         })
     }
 
@@ -128,11 +128,13 @@ impl Served {
         Box::new(move || {
             let served = Arc::clone(&served);
             Box::pin(async move {
-                if served
-                    .refuse
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
-                {
+                let refused = {
+                    let mut left = served.refuse.lock().unwrap();
+                    let refuse = *left > 0;
+                    *left = left.saturating_sub(1);
+                    refuse
+                };
+                if refused {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionRefused,
                         "connexion refusée par le test",
@@ -216,7 +218,7 @@ async fn a_lost_engine_is_reported_then_reached_again() {
     sink.wait_up(1).await;
 
     // Les trois prochaines tentatives échouent : la perte reste visible un moment.
-    served.refuse.store(3, Ordering::SeqCst);
+    *served.refuse.lock().unwrap() = 3;
     served.cut();
     sink.wait_down(1).await;
     let refused = bridge.call("task.list", json!({})).await.unwrap_err();
