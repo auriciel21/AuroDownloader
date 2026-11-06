@@ -6,14 +6,29 @@
 //! Chaque scénario télécharge le même fichier avec `auro` et avec `aria2c`, à nombre de
 //! connexions égal, dans un dossier neuf. La mesure va jusqu'au fichier sur disque : le
 //! banc vide lui-même le fichier après chaque outil, car auro le fait déjà (règle 1) et
-//! les autres non. Le temps processeur est celui de toute la machine pendant la mesure,
-//! moins celui du banc et de son serveur : il compte aussi ce que le système fait hors du
-//! processus de l'outil (écriture différée, antivirus). Le temps du seul processus figure
-//! dans le journal, pour comparaison. Faire tourner le banc sur une machine au repos. Le résultat est un tableau : débit, rapport des
-//! débits auro / aria2 (la porte de la phase 1 demande au moins 0,95), rapport des coûts
-//! processeur par octet auro / aria2 (porte de N-01 : au plus 1,0), et part d'un cœur que
-//! coûterait un débit de 1 Gbit/s (objectif indicatif de N-01 : moins de 15 %, sur la
-//! machine de référence). Un « ⚠ » marque un rapport hors porte. Les portes ne
+//! les autres non.
+//!
+//! Deux temps processeur sont relevés (SPEC §3, N-01, et §9.1) :
+//! - celui du processus de l'outil, qui fait la porte ;
+//! - celui de toute la machine pendant la mesure, moins celui du banc et de son serveur,
+//!   à titre indicatif. Il compte aussi ce que le système fait hors du processus
+//!   (écriture différée, antivirus), mais il varie de ±30 % d'un passage à l'autre sur
+//!   une machine virtuelle de poste de travail (`docs/MESURES.md`, 2026-11-06).
+//!
+//! Le temps du processus avantage les outils qui ne vident pas leurs données : le
+//! système le fait pour eux, hors de leur processus, alors qu'auro paie ses vidages
+//! (règle 1). Une porte tenue sur cette mesure reste donc significative.
+//!
+//! Chaque grandeur retient sa médiane sur les passages, que le banc alterne entre les
+//! outils. Faire tourner le banc sur une machine au repos. Le résultat est un tableau :
+//! - débit, et rapport des débits auro / aria2 (la porte de la phase 1 demande au moins
+//!   0,95) ;
+//! - rapport des coûts processeur par octet auro / aria2, du processus (porte de N-01 : au
+//!   plus 1,0) et de la machine (indicatif) ;
+//! - part d'un cœur que coûterait au processus un débit de 1 Gbit/s (objectif indicatif de
+//!   N-01 : moins de 15 %, sur la machine de référence).
+//!
+//! Un « ⚠ » marque un rapport hors porte. Les portes ne
 //! s'appliquent qu'à nombre de connexions égal, pas au mode automatique, et ne font échouer
 //! le banc qu'avec `AURO_PERF_ENFORCE=1` : c'est le cas sous Linux en intégration
 //! continue, où se mesure la porte (SPEC §9.1). Ailleurs, le tableau sert à décider.
@@ -47,7 +62,8 @@ const MIB: u64 = 1024 * 1024;
 
 /// Porte de débit de la phase 1 : auro au moins à 95 % d'aria2 (SPEC §9.1).
 const GATE_SPEED: f64 = 0.95;
-/// Porte de N-01 : coût processeur par octet au plus égal à celui d'aria2 (SPEC §3).
+/// Porte de N-01 : coût processeur du processus par octet au plus égal à celui d'aria2
+/// (SPEC §3).
 const GATE_CPU: f64 = 1.0;
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -203,9 +219,9 @@ fn flush_to_disk(path: &Path) {
 struct Measure {
     /// Du lancement jusqu'au fichier sur disque.
     wall: Duration,
-    /// Temps processeur de la machine pendant la mesure, moins celui du banc.
+    /// Temps processeur de la machine pendant la mesure, moins celui du banc (indicatif).
     cpu: Duration,
-    /// Temps processeur du seul processus de l'outil, pour comparaison.
+    /// Temps processeur du seul processus de l'outil : la mesure de la porte de N-01.
     process_cpu: Duration,
     bytes: u64,
 }
@@ -215,14 +231,20 @@ impl Measure {
         self.bytes as f64 / MIB as f64 / self.wall.as_secs_f64()
     }
 
-    /// Temps processeur par octet, en secondes.
+    /// Temps processeur de la machine par octet, en secondes (indicatif).
     fn cpu_per_byte(&self) -> f64 {
         self.cpu.as_secs_f64() / self.bytes as f64
     }
 
-    /// Part d'un cœur que coûterait 1 Gbit/s (125 Mo/s) au même coût par octet.
+    /// Temps processeur du processus par octet, en secondes (porte de N-01).
+    fn process_cpu_per_byte(&self) -> f64 {
+        self.process_cpu.as_secs_f64() / self.bytes as f64
+    }
+
+    /// Part d'un cœur que coûterait au processus 1 Gbit/s (125 Mo/s), au même coût par
+    /// octet.
     fn core_at_gbit(&self) -> f64 {
-        self.cpu_per_byte() * 125e6 * 100.0
+        self.process_cpu_per_byte() * 125e6 * 100.0
     }
 }
 
@@ -409,9 +431,20 @@ fn same_as_served(path: &Path, len: u64) -> bool {
     true
 }
 
-fn median(mut values: Vec<Measure>) -> Measure {
-    values.sort_by_key(|m| m.wall);
-    values[values.len() / 2]
+/// Médiane de chaque grandeur, prise séparément : le passage médian en durée n'est pas
+/// forcément celui du temps processeur médian.
+fn median(values: Vec<Measure>) -> Measure {
+    fn mid(mut v: Vec<Duration>) -> Duration {
+        v.sort();
+        v[v.len() / 2]
+    }
+    Measure {
+        wall: mid(values.iter().map(|m| m.wall).collect()),
+        cpu: mid(values.iter().map(|m| m.cpu).collect()),
+        process_cpu: mid(values.iter().map(|m| m.process_cpu).collect()),
+        // Le banc vérifie que chaque passage a reçu le fichier entier.
+        bytes: values[0].bytes,
+    }
 }
 
 struct Row {
@@ -480,19 +513,21 @@ fn report(rows: &[Row]) -> Vec<String> {
     let mut missed = Vec::new();
     eprintln!();
     eprintln!(
-        "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet \
-         auro / aria2 | Cœur à 1 Gbit/s |\n| --- | --- | --- | --- | --- | --- |"
+        "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus \
+         par octet auro / aria2 | Processeur machine par octet auro / aria2 (indicatif) | \
+         Cœur à 1 Gbit/s (processus) |\n| --- | --- | --- | --- | --- | --- | --- |"
     );
     for row in rows {
-        let (speed, cpu) = match (row.tool, reference(rows, row)) {
+        let (speed, cpu, machine) = match (row.tool, reference(rows, row)) {
             (Tool::Auro(connections), Some(aria2)) => {
                 let speed = row.measure.mib_per_s() / aria2.mib_per_s();
-                let cpu = row.measure.cpu_per_byte() / aria2.cpu_per_byte();
+                let cpu = row.measure.process_cpu_per_byte() / aria2.process_cpu_per_byte();
+                let machine = row.measure.cpu_per_byte() / aria2.cpu_per_byte();
                 let (speed_ok, cpu_ok) = (speed >= GATE_SPEED, cpu <= GATE_CPU);
                 if connections.is_some() && !(speed_ok && cpu_ok) {
                     missed.push(format!(
-                        "{}, {} : débit {speed:.2} (porte {GATE_SPEED}), processeur \
-                         {cpu:.2} (porte {GATE_CPU})",
+                        "{}, {} : débit {speed:.2} (porte {GATE_SPEED}), processeur du \
+                         processus {cpu:.2} (porte {GATE_CPU})",
                         row.scenario,
                         row.tool.label()
                     ));
@@ -500,12 +535,13 @@ fn report(rows: &[Row]) -> Vec<String> {
                 (
                     format!("{speed:.2}{}", mark(speed_ok)),
                     format!("{cpu:.2}{}", mark(cpu_ok)),
+                    format!("{machine:.2}"),
                 )
             }
-            _ => (String::new(), String::new()),
+            _ => (String::new(), String::new(), String::new()),
         };
         eprintln!(
-            "| {} | {} | {:.1} | {speed} | {cpu} | {:.1} % |",
+            "| {} | {} | {:.1} | {speed} | {cpu} | {machine} | {:.1} % |",
             row.scenario,
             row.tool.label(),
             row.measure.mib_per_s(),

@@ -312,6 +312,45 @@ Scénario « HTTPS, 8 Mio/s par connexion », 16 connexions :
   0,95) avec le code de l'étape 4, contre 1,20 et 1,06 pour l'ancien code. Son temps
   processeur n'a pas changé (1,25 à 1,30 s, contre 1,31 et 1,32 s). L'ancien code
   varie lui-même de 146 à 119 Mio/s d'un passage à l'autre.
-- **Ce qu'il reste à décider :** la méthode de la porte (plus de mesures, rapport par
-  passage alterné, machine Linux native ou intégration continue). Avant cela, la porte
-  N-01 ne peut pas départager deux versions sur ce poste.
+- **Décision (2026-11-06) :** le temps processeur de toute la machine n'est plus un
+  critère bloquant. Il varie de ±30 % d'un passage à l'autre, même binaire compris.
+  - La porte de N-01 porte désormais sur le temps processeur du processus : rapport par
+    octet auro / aria2 au plus égal à 1,0, médiane de chaque grandeur.
+  - Le temps de la machine reste relevé, à titre indicatif.
+  - Une validation périodique sur une machine Linux native ou en intégration continue
+    dédiée est prévue (SPEC §3 et §9.1).
+  - Sur les quatre passages de ce relevé, le rapport des temps du processus vaut, à 16
+    connexions en HTTPS bridé : 1,14 et 1,01 avec le code de l'étape 4 ; 1,04 et 1,11
+    avec l'ancien code. La porte est à refaire avec le banc révisé (médiane de chaque
+    grandeur).
+
+**Banc révisé (porte sur le processus, médiane de chaque grandeur), code de l'étape 4,
+porte vérifiée :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus par octet auro / aria2 | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s (processus) |
+| --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 112,3 | 0,78 ⚠ | 0,87 | 0,70 | 15,1 % |
+| local, sans bridage | aria2c -x 4 | 144,4 | | | | 17,3 % |
+| local HTTPS, sans bridage | auro -c 4 | 140,8 | 1,20 | 0,91 | 0,90 | 30,8 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 117,4 | | | | 33,9 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 98,5 | 1,56 | 1,08 ⚠ | 0,98 | 21,7 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 63,1 | 1,00 | 1,14 | 1,03 | 22,9 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 63,3 | | | | 20,0 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 99,7 | 1,45 | 0,99 | 0,73 | 40,6 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 66,0 | 0,96 | 0,98 | 0,90 | 40,3 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 69,0 | | | | 41,0 % |
+
+**Lecture :**
+- **Deux portes manquées :**
+  - débit en HTTP sans bridage (0,78) : auro y va de 112 à 146 Mio/s selon les passages
+    du jour, aria2 de 121 à 144 ;
+  - processeur du processus en HTTP bridé à 16 connexions (1,08).
+- **Sur le temps du processus, auro est à parité avec aria2 à 16 connexions, pas en
+  dessous.** Sur les cinq passages du jour, le rapport vaut 0,90 à 1,15 à 16
+  connexions, ancien et nouveau code confondus. À 4 connexions sans bridage, il vaut
+  0,70 à 0,97.
+- **Les marges du 2026-10-16 (0,62 à 0,83) venaient de la mesure de toute la machine.**
+  Elle compte pour aria2 le vidage que le banc fait à sa place.
+- **La porte de N-01 à 1,0 tombe donc dans le bruit de la mesure à 16 connexions.**
+  Pour la tenir avec une marge, il faudrait réduire le coût par connexion d'auro, à
+  examiner au profileur.

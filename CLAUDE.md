@@ -121,14 +121,21 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - Temps processeur sous Windows : par cycles (`QueryProcessCycleTime`), jamais par
   `GetProcessTimes`, qui échantillonne et compte mal les processus d'entrées-sorties.
 - Banc de performance équitable (SPEC 9.1) : chaque mesure va jusqu'au fichier sur
-  disque (le banc le vide après chaque outil) ; le temps processeur est celui de la
-  machine moins celui du banc. Ne rien faire tourner d'autre pendant une campagne.
+  disque (le banc le vide après chaque outil) ; médiane de chaque grandeur, outils
+  alternés. Ne rien faire tourner d'autre pendant une campagne.
 - WSL : `wsl -d Ubuntu -- bash -lc '…'` développe les `$` trop tôt ; passer par un script
   (`wsl -d Ubuntu -- bash /mnt/c/…/script.sh`). Clone de travail : `~/AuroDownloader`
   (système de fichiers Linux, jamais `/mnt/c` pour mesurer).
-- N-01 (SPEC 3) : la porte est le rapport des coûts processeur par octet auro / aria2, à
-  nombre de connexions égal ; les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la
-  machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
+- N-01 (SPEC 3), décision du 2026-11-06 :
+  - la porte est le rapport des temps processeur du processus par octet auro / aria2, à
+    nombre de connexions égal ;
+  - le temps de toute la machine n'est qu'indicatif : ±30 % d'un passage à l'autre sous
+    WSL ;
+  - les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la machine de référence
+    nommée dans le relevé ;
+  - mesurer en HTTP et en HTTPS ;
+  - une validation sur Linux natif ou en intégration continue dédiée reste à mettre en
+    place.
 - Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
   JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
   cliente du moteur (fait : commandes, démarrage d'`aurod`, mode `direct`, banc de reprise
