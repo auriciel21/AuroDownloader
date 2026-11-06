@@ -8,26 +8,25 @@
 //! banc vide lui-même le fichier après chaque outil, car auro le fait déjà (règle 1) et
 //! les autres non.
 //!
-//! Deux temps processeur sont relevés (SPEC §3, N-01, et §9.1) :
-//! - celui du processus de l'outil, qui fait la porte ;
+//! Trois temps processeur sont relevés (SPEC §3, N-01, et §9.1) :
+//! - celui du processus de l'outil, plus celui que le banc passe ensuite à vider sur
+//!   disque ce que l'outil a laissé en mémoire : il fait la porte. auro paie ses vidages
+//!   dans son processus (règle 1), les autres outils les laissent au système ; compter
+//!   le vidage pour tous les compare à armes égales (décision du 2026-11-06). Cela ne
+//!   rattrape pas ce que le système a déjà écrit de lui-même pendant le téléchargement,
+//!   ce qui avantage encore un peu les outils qui ne vident rien ;
+//! - celui du seul processus de l'outil, à titre indicatif ;
 //! - celui de toute la machine pendant la mesure, moins celui du banc et de son serveur,
 //!   à titre indicatif. Il compte aussi ce que le système fait hors du processus
 //!   (écriture différée, antivirus), mais il varie de ±30 % d'un passage à l'autre sur
 //!   une machine virtuelle de poste de travail (`docs/MESURES.md`, 2026-11-06).
 //!
-//! Le temps du processus avantage les outils qui ne vident pas leurs données : le
-//! système le fait pour eux, hors de leur processus, alors qu'auro paie ses vidages
-//! (règle 1). Une porte tenue sur cette mesure reste donc significative. Une colonne
-//! indicative y ajoute le temps que le banc passe à vider ce que l'outil a laissé en
-//! mémoire : il s'en approche à armes égales, sans rattraper ce que le système a déjà écrit
-//! de lui-même pendant le téléchargement.
-//!
 //! Chaque grandeur retient sa médiane sur les passages, que le banc alterne entre les
 //! outils. Faire tourner le banc sur une machine au repos. Le résultat est un tableau :
 //! - débit, et rapport des débits auro / aria2 (la porte de la phase 1 demande au moins
 //!   0,95) ;
-//! - rapport des coûts processeur par octet auro / aria2, du processus (porte de N-01 : au
-//!   plus 1,0) et de la machine (indicatif) ;
+//! - rapport des coûts processeur par octet auro / aria2 : processus et vidage (porte de
+//!   N-01 : au plus 1,0), processus seul et machine (indicatifs) ;
 //! - part d'un cœur que coûterait au processus un débit de 1 Gbit/s (objectif indicatif de
 //!   N-01 : moins de 15 %, sur la machine de référence).
 //!
@@ -70,8 +69,8 @@ const MIB: u64 = 1024 * 1024;
 
 /// Porte de débit de la phase 1 : auro au moins à 95 % d'aria2 (SPEC §9.1).
 const GATE_SPEED: f64 = 0.95;
-/// Porte de N-01 : coût processeur du processus par octet au plus égal à celui d'aria2
-/// (SPEC §3).
+/// Porte de N-01 : coût processeur par octet du processus et du vidage laissé au banc au
+/// plus égal à celui d'aria2 (SPEC §3).
 const GATE_CPU: f64 = 1.0;
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -229,10 +228,11 @@ struct Measure {
     wall: Duration,
     /// Temps processeur de la machine pendant la mesure, moins celui du banc (indicatif).
     cpu: Duration,
-    /// Temps processeur du seul processus de l'outil : la mesure de la porte de N-01.
+    /// Temps processeur du seul processus de l'outil (indicatif).
     process_cpu: Duration,
     /// Temps du processus, plus celui que le banc a passé à vider sur disque ce que
-    /// l'outil a laissé en mémoire (indicatif) : auro paie ses vidages, les autres non.
+    /// l'outil a laissé en mémoire : la mesure de la porte de N-01. auro paie ses vidages,
+    /// les autres non.
     with_flush: Duration,
     bytes: u64,
 }
@@ -247,12 +247,12 @@ impl Measure {
         self.cpu.as_secs_f64() / self.bytes as f64
     }
 
-    /// Temps processeur du processus par octet, en secondes (porte de N-01).
+    /// Temps processeur du processus par octet, en secondes (indicatif).
     fn process_cpu_per_byte(&self) -> f64 {
         self.process_cpu.as_secs_f64() / self.bytes as f64
     }
 
-    /// Temps du processus et du vidage laissé au banc, par octet (indicatif).
+    /// Temps du processus et du vidage laissé au banc, par octet (porte de N-01).
     fn with_flush_per_byte(&self) -> f64 {
         self.with_flush.as_secs_f64() / self.bytes as f64
     }
@@ -547,38 +547,38 @@ fn report(rows: &[Row]) -> Vec<String> {
     let mut missed = Vec::new();
     eprintln!();
     eprintln!(
-        "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus \
-         par octet auro / aria2 | Processus et vidage laissé au banc, auro / aria2 (indicatif) \
-         | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s \
-         (processus) |\n| --- | --- | --- | --- | --- | --- | --- | --- |"
+        "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet, \
+         processus et vidage laissé au banc, auro / aria2 | Processus seul, auro / aria2 \
+         (indicatif) | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 \
+         Gbit/s (processus) |\n| --- | --- | --- | --- | --- | --- | --- | --- |"
     );
     for row in rows {
-        let (speed, cpu, flushed, machine) = match (row.tool, reference(rows, row)) {
+        let (speed, flushed, process, machine) = match (row.tool, reference(rows, row)) {
             (Tool::Auro(connections), Some(aria2)) => {
                 let speed = row.measure.mib_per_s() / aria2.mib_per_s();
-                let cpu = row.measure.process_cpu_per_byte() / aria2.process_cpu_per_byte();
                 let flushed = row.measure.with_flush_per_byte() / aria2.with_flush_per_byte();
+                let process = row.measure.process_cpu_per_byte() / aria2.process_cpu_per_byte();
                 let machine = row.measure.cpu_per_byte() / aria2.cpu_per_byte();
-                let (speed_ok, cpu_ok) = (speed >= GATE_SPEED, cpu <= GATE_CPU);
+                let (speed_ok, cpu_ok) = (speed >= GATE_SPEED, flushed <= GATE_CPU);
                 if connections.is_some() && !(speed_ok && cpu_ok) {
                     missed.push(format!(
                         "{}, {} : débit {speed:.2} (porte {GATE_SPEED}), processeur du \
-                         processus {cpu:.2} (porte {GATE_CPU})",
+                         processus et du vidage {flushed:.2} (porte {GATE_CPU})",
                         row.scenario,
                         row.tool.label()
                     ));
                 }
                 (
                     format!("{speed:.2}{}", mark(speed_ok)),
-                    format!("{cpu:.2}{}", mark(cpu_ok)),
-                    format!("{flushed:.2}"),
+                    format!("{flushed:.2}{}", mark(cpu_ok)),
+                    format!("{process:.2}"),
                     format!("{machine:.2}"),
                 )
             }
             _ => Default::default(),
         };
         eprintln!(
-            "| {} | {} | {:.1} | {speed} | {cpu} | {flushed} | {machine} | {:.1} % |",
+            "| {} | {} | {:.1} | {speed} | {flushed} | {process} | {machine} | {:.1} % |",
             row.scenario,
             row.tool.label(),
             row.measure.mib_per_s(),

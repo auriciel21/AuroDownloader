@@ -127,8 +127,10 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   (`wsl -d Ubuntu -- bash /mnt/c/…/script.sh`). Clone de travail : `~/AuroDownloader`
   (système de fichiers Linux, jamais `/mnt/c` pour mesurer).
 - N-01 (SPEC 3), décision du 2026-11-06 :
-  - la porte est le rapport des temps processeur du processus par octet auro / aria2, à
-    nombre de connexions égal ;
+  - la porte est le rapport par octet auro / aria2 du temps processeur du processus plus
+    celui du vidage sur disque laissé au banc, à nombre de connexions égal (le vidage
+    compte pour tous : auro paie le sien, règle 1) ; le processus seul n'est
+    qu'indicatif (parité 0,93 à 1,07 à 16 connexions, dans le bruit) ;
   - le temps de toute la machine n'est qu'indicatif : ±30 % d'un passage à l'autre sous
     WSL ;
   - les 15 % d'un cœur ne sont qu'un objectif indicatif, sur la machine de référence

@@ -481,3 +481,39 @@ brutaux, 10 arrêts demandés, 26 fichiers vérifiés. Disque vraiment plein (tm
   avec ou sans seuil, soit 0,86 à 1,03 en comptant pour les deux le vidage sur disque.
   L'écart restant correspond au vidage qu'auro paie lui-même (règle 1). La tenir à 1,0
   sur chaque passage n'est pas affaire d'optimisation par connexion (relevé précédent).
+
+## 2026-11-06, quatrième relevé : Linux (WSL 2), nouvelle porte de N-01
+
+Même poste. La porte de N-01 porte désormais sur le temps du processus plus celui du
+vidage sur disque laissé au banc, par octet, auro / aria2, seuil 1,0 (SPEC §3 et §9.1).
+Le processus seul devient indicatif. 512 Mio, cinq passages, porte bloquante
+(`AURO_PERF_ENFORCE=1`).
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet, processus et vidage laissé au banc, auro / aria2 | Processus seul, auro / aria2 (indicatif) | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s (processus) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 108,1 | 1,12 | 0,76 | 0,82 | 0,81 | 14,9 % |
+| local, sans bridage | aria2c -x 4 | 96,6 | | | | | 18,2 % |
+| local HTTPS, sans bridage | auro -c 4 | 122,4 | 1,22 | 0,93 | 0,97 | 0,97 | 36,5 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 100,0 | | | | | 37,5 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 105,4 | 1,49 | 0,92 | 0,99 | 0,94 | 21,7 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 72,8 | 1,03 | 0,91 | 0,98 | 1,22 | 21,6 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 70,6 | | | | | 22,0 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 110,3 | 1,38 | 1,03 ⚠ | 1,07 | 1,35 | 41,4 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 72,1 | 0,90 | 1,01 | 1,05 | 1,12 | 40,5 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 80,0 | | | | | 38,6 % |
+
+Le banc échoue : porte manquée en HTTPS bridé à 16 connexions (1,03). Les portes ne
+s'appliquent pas au mode automatique.
+
+**Lecture :**
+- **En HTTP, la nouvelle porte passe nettement** : 0,76 sans bridage, 0,92 à
+  16 connexions. Sur les relevés précédents du même code, à 16 connexions : 0,89 à 0,94.
+- **En HTTPS à 16 connexions, elle ne passe pas, de peu mais à chaque fois** : 1,02
+  (troisième relevé), 1,03 et 1,01 (passages A de l'A/B), 1,03 ici. Ce n'est plus du
+  bruit autour de 1,0 : auro y coûte 1 à 3 % de plus qu'aria2, vidage compris. En
+  HTTPS, le vidage pèse peu (0,06 s sur 1,7 s pour aria2) ; l'écart vient du chiffrement
+  et de la lecture, pas de l'écriture.
+- Sans bridage en HTTPS (quatre connexions, lectures pleines), auro reste en dessous
+  (0,82 à 0,93). L'écart n'apparaît qu'avec seize connexions bridées, où chaque
+  connexion reçoit peu à la fois : piste à examiner (taille des lectures TLS, nombre de
+  réveils par connexion).
