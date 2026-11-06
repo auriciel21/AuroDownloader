@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AuroDownloader</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="main.js"></script>
+</head>
+<body>
+  <header>
+    <form id="add-form">
+      <label for="urls" class="visually-hidden" data-i18n="Adresses à télécharger">Adresses à télécharger</label>
+      <textarea id="urls" rows="1" spellcheck="false" autocomplete="off"
+        data-i18n-placeholder="Adresses à télécharger, une par ligne"></textarea>
+      <button type="submit" id="add" data-i18n="Ajouter" data-i18n-label="Ajouter les téléchargements">Ajouter</button>
+    </form>
+    <div class="options">
+      <span data-i18n="Dossier :">Dossier :</span>
+      <span id="dest" class="path"></span>
+      <button type="button" id="dest-change" data-i18n="Changer…" data-i18n-label="Changer le dossier de destination">Changer…</button>
+      <label class="check"><input type="checkbox" id="paused"> <span data-i18n="Ajouter en pause">Ajouter en pause</span></label>
+    </div>
+  </header>
+
+  <div id="banner" role="status" hidden></div>
+  <div id="error" role="alert" hidden>
+    <span id="error-text"></span>
+    <button type="button" id="error-close" data-i18n="Fermer" data-i18n-label="Fermer le message">Fermer</button>
+  </div>
+
+  <nav id="filters" data-i18n-label="Filtres" aria-label="Filtres"></nav>
+
+  <main>
+    <ul id="tasks" data-i18n-label="Téléchargements" aria-label="Téléchargements"></ul>
+    <p id="empty" hidden data-i18n="Aucun téléchargement ici.">Aucun téléchargement ici.</p>
+  </main>
+
+  <footer>
+    <span id="summary"></span>
+    <label class="limit">
+      <span data-i18n="Limite de débit globale">Limite de débit globale</span>
+      <select id="limit"></select>
+    </label>
+    <button type="button" id="settings-open" data-i18n="Préférences">Préférences</button>
+  </footer>
+
+  <div id="announce" class="visually-hidden" aria-live="polite"></div>
+
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title" data-i18n="Préférences">Préférences</h2>
+      <label class="field">
+        <span data-i18n="Langue">Langue</span>
+        <select id="pref-lang">
+          <option value="" data-i18n="Langue du système">Langue du système</option>
+          <option value="fr" lang="fr">Français</option>
+          <option value="en" lang="en">English</option>
+        </select>
+      </label>
+      <div class="field">
+        <span data-i18n="Dossier des nouveaux téléchargements">Dossier des nouveaux téléchargements</span>
+        <span class="row"><span id="pref-dest" class="path"></span>
+          <button type="button" id="pref-dest-change" data-i18n="Changer…" data-i18n-label="Changer le dossier de destination">Changer…</button></span>
+      </div>
+      <label class="check"><input type="checkbox" id="pref-tray">
+        <span data-i18n="Fermer la fenêtre la replie dans la zone de notification">Fermer la fenêtre la replie dans la zone de notification</span></label>
+      <p id="pref-no-tray" class="note" hidden
+        data-i18n="Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent."></p>
+      <label class="check"><input type="checkbox" id="pref-autostart">
+        <span data-i18n="Démarrer avec la session, dans la zone de notification">Démarrer avec la session, dans la zone de notification</span></label>
+      <p id="about" class="note"></p>
+      <div class="buttons">
+        <button type="button" id="stop-engine" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
+        <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="row">
+    <li class="task">
+      <div class="line">
+        <span class="name"></span>
+        <span class="buttons">
+          <button type="button" class="toggle"></button>
+          <button type="button" class="cancel"></button>
+          <button type="button" class="open" hidden></button>
+          <button type="button" class="reveal" hidden></button>
+        </span>
+      </div>
+      <progress max="1" value="0"></progress>
+      <div class="detail"></div>
+    </li>
+  </template>
+</body>
+</html>

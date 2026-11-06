@@ -34,7 +34,8 @@ téléchargement.
   priorités, nouvelles tentatives, reprise au démarrage, événements avec révision `rev`),
   `rpc` (JSON-RPC un message par ligne : `methods`, `session` avec abonnements et
   avancement regroupé, `local` pour le canal nommé Windows réservé au SID de
-  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut), `limit`
+  l'utilisateur ou le socket Unix), `paths` (base et point d'accès par défaut), `launch`
+  (démarrage détaché d'`aurod` par ses clients, CLI et bureau), `limit`
   (seaux de jetons des limites de débit ; le planificateur tient le global, ceux des
   files et ceux des tâches en cours), `store::settings` (réglages, dont la limite
   globale).
@@ -42,12 +43,26 @@ téléchargement.
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
 - `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande, cliente d'`aurod`
-  (`client` : connexion, appels, démarrage détaché d'`aurod` ; `remote` : commandes ;
+  (`client` : connexion, appels, démarrage d'`aurod` par `launch` ; `remote` : commandes ;
   `display`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
   deux bancs l'utilisent, pour mesurer le transfert seul.
 - Essais manuels de la CLI : toujours sur un point d'accès et une base d'essai
   (`--endpoint`, `engine start --db`), jamais sur le moteur réel de l'utilisateur ; finir
   par `engine stop` et vérifier qu'aucun `aurod` d'essai ne reste.
+- `apps/desktop` (`auro-desktop`, binaire `aurodownloader`) : application de bureau Tauri 2
+  (SPEC 4.3), espace de travail Cargo à part (Tauri demande WebKitGTK 4.1, absent de
+  l'Ubuntu 20.04 de WSL). `bridge` : liaison avec le moteur (démarrage d'`aurod`, session,
+  abonnement, reconnexion, avancement suspendu fenêtre cachée), sans dépendre de Tauri ;
+  `prefs` : préférences de l'interface (JSON, aucun secret) ; `files` : ouverture d'un
+  fichier terminé, jamais d'un exécutable (SPEC 8.1).
+- `ui` : la page web de l'application, destinée aussi à l'interface distante (F-39).
+  `src/model.js` (instantané, notifications et révisions, SPEC 6.10), `src/i18n.js`
+  (français source, anglais), `src/host.js` (services de l'hôte), `src/main.js`
+  (affichage) ; tests `node --test` dans `tests/`.
+- Essais manuels de l'application : `--endpoint`, `--db` et `--prefs` d'essai (elle lance
+  `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
+  toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
+  `engine stop` sur ce point d'accès.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
@@ -83,6 +98,13 @@ D=$(mktemp -d); unshare -rm sh -c "mount -t tmpfs -o size=8m tmpfs $D && \
 # par winget ; sous Linux, travail `perf` de la CI, lancé à la main ou chaque lundi) :
 AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870912 \
   AURO_PERF_RUNS=5 cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture
+# Application de bureau (dans apps/desktop ; aurod cherché à côté, sinon AURO_DAEMON) :
+cargo fmt ; cargo clippy --all-targets -- -D warnings ; cargo test
+AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai> \
+  --db <essai.db> --prefs <essai.json>
+# Page : tests sans navigateur (Node 18 et plus ; installé dans la distribution WSL
+# d'essai Ubuntu-24.04) :
+node --test ui/tests/
 ```
 
 ## Règles du projet
@@ -147,8 +169,10 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
   cliente du moteur (fait : commandes, démarrage d'`aurod`, mode `direct`, banc de reprise
   sur `aurod`) ; 4. limites de débit (F-15) et espace disque (F-18) (faits : SPEC 7.6
-  et 7.6 bis, commande `auro limit`) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
-  application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
+  et 7.6 bis, commande `auro limit`) ; 5. prototypes Qt Quick et Tauri comparés (faits,
+  `experiments/desktop/README.md`), Tauri choisi le 2026-11-06, application de bureau
+  (`apps/desktop`, `ui`, en cours ; essai NVDA par l'utilisateur à faire) ; 6. plages
+  horaires (F-16). Porte : utilisation quotidienne
   sans perte de données.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

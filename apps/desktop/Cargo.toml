@@ -1,0 +1,44 @@
+[package]
+name = "auro-desktop"
+description = "Application de bureau d'AuroDownloader (SPEC §4.3, F-36)"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+# Hors de l'espace de travail du moteur : Tauri demande WebKitGTK 4.1 sous Linux et de
+# longues compilations, que ni `cargo test --workspace` ni la CI du moteur ne doivent payer.
+[workspace]
+
+[[bin]]
+name = "aurodownloader"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+auro-engine = { path = "../../crates/engine" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Langue du système, pour le menu de l'icône avant que la page ne soit chargée.
+sys-locale = "0.3"
+tauri ={ version = "2.12.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+
+# Présence d'une zone de notification (`org.kde.StatusNotifierWatcher` sur le bus de session).
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[dev-dependencies]
+auro-engine = { path = "../../crates/engine", features = ["testing"] }
+tempfile = "3.27.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

@@ -14,3 +14,7 @@
 
 # Prototypes de bureau : schémas générés par Tauri
 /experiments/desktop/tauri/gen/
+
+# Application de bureau : schémas générés par Tauri
+/apps/desktop/gen/
+/apps/desktop/target/

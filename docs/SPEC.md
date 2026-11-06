@@ -195,7 +195,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 | Base de données | SQLite via `rusqlite` | Embarquée, transactionnelle, adaptée à la reprise |
 | Torrent | Bibliothèque Rust ou `libtorrent`, derrière une interface interne | À trancher par un prototype ; l'interface permet d'en changer |
 | Vidéo | yt-dlp et ffmpeg en processus externes | Extracteurs maintenus par d'autres, licences séparées, mises à jour indépendantes (F-25) |
-| Interface de bureau | Qt Quick ou Tauri, à départager par un prototype comparé | Qt Quick : natif et léger. Tauri : interface web, code réutilisable pour l'interface distante |
+| Interface de bureau | Tauri 2 (choisi le 2026-11-06, après deux prototypes comparés sous Windows et Linux : `experiments/desktop/README.md`) | Une seule page web pour le bureau et l'interface distante (F-39), servie par l'hôte de chacune ; client du moteur en Rust, repris du moteur. Qt Quick était plus léger (mémoire, processeur fenêtre ouverte, démarrage), mais aurait demandé une seconde interface |
 | Interface Android | Kotlin avec Jetpack Compose, moteur chargé comme bibliothèque native | Partage, services et stockage sont des API Android natives |
 | Extension | WebExtension (Chrome, Edge, Firefox) et programme relais natif | Seule voie propre vers le moteur local |
 | Plugins | WebAssembly | Bac à sable, plusieurs langages possibles |

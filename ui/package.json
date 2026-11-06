@@ -1,0 +1,9 @@
+{
+  "name": "auro-ui",
+  "private": true,
+  "description": "Page de l'application de bureau et de l'interface web distante ; tests : node --test tests/",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

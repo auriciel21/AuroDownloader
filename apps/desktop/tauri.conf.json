@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AuroDownloader",
+  "version": "0.1.0",
+  "identifier": "org.aurodownloader.desktop",
+  "build": {
+    "frontendDist": "../../ui/src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "AuroDownloader",
+        "width": 960,
+        "height": 640,
+        "minWidth": 520,
+        "minHeight": 380,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}

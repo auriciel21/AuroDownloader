@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Fenêtre principale : événements du moteur et commandes de l'application. Dialogues, ouverture de fichiers et démarrage avec la session passent par les commandes Rust, qui vérifient leurs arguments.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
