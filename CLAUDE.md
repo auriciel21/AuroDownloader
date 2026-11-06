@@ -67,6 +67,9 @@ cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête propreme
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
+# Banc de reprise du moteur autonome (aurod tué pendant que plusieurs tâches tournent ;
+# la version courte tourne avec cargo test) :
+AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_daemon -- --nocapture
 # Banc de performance face à aria2, HTTP et HTTPS (ignoré par défaut ; aria2c installé
 # par winget ; sous Linux, travail `perf` de la CI, lancé à la main ou chaque lundi) :
 AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870912 \
@@ -97,6 +100,9 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
+  Toute modification de `scheduler`, `rpc` ou du daemon passe aussi celui d'`aurod`
+  (`crates/daemon/tests/crash_daemon.rs`). Leurs contrôles communs sont dans
+  `testing::Checker`.
 - Vidages du `.part` : toujours par le `SyncGate` du fichier (`PartFile::checkpoint`,
   `SegmentWriter::finish`), jamais par un `sync_data` direct pendant que des écrivains
   tournent : des vidages simultanés du même fichier coûtent très cher sous Linux.
@@ -119,12 +125,11 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
   machine de référence nommée dans le relevé. Mesurer en HTTP et en HTTPS.
 - Phase 2, plan validé (2026-10-16) : 1. planificateur (`scheduler`, fait) ; 2. protocole
   JSON-RPC (`rpc`) et binaire `aurod` (faits ; méthodes servies : SPEC 6.5) ; 3. CLI
-  cliente du moteur (3a fait : commandes, démarrage d'`aurod`, mode `direct` ; 3b à faire :
-  banc de reprise sur `aurod`) ; 4. limites de débit (F-15) et espace disque
+  cliente du moteur (fait : commandes, démarrage d'`aurod`, mode `direct`, banc de reprise
+  sur `aurod`) ; 4. limites de débit (F-15) et espace disque
   (F-18) ; 5. prototypes Qt Quick et Tauri comparés, choix de l'utilisateur, puis
   application de bureau ; 6. plages horaires (F-16). Porte : utilisation quotidienne
-  sans perte de données. Le banc de reprise sera adapté pour tuer `aurod` pendant que
-  plusieurs tâches tournent.
+  sans perte de données.
 - Changements d'état d'une tâche dans le moteur : par les commandes de `Engine`, que la
   boucle du planificateur traite une à une ; ne pas appeler `change_state` à côté d'elle
   pendant qu'elle tourne.

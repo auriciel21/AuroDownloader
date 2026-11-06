@@ -444,6 +444,139 @@ fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send
     }
 }
 
+/// Compare `len` octets de `file` à partir de `offset` avec le contenu servi.
+pub fn same_as_served(file: &std::path::Path, offset: u64, len: u64) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom};
+    const BLOCK: u64 = 1 << 20;
+    let mut f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0; BLOCK as usize];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(BLOCK) as usize;
+        f.read_exact(&mut buf[..n])
+            .map_err(|e| format!("lecture à {} : {e}", offset + done))?;
+        if buf[..n] != content_range(offset + done, n)[..] {
+            return Err(format!(
+                "octets différents entre {} et {}",
+                offset + done,
+                offset + done + n as u64
+            ));
+        }
+        done += n as u64;
+    }
+    Ok(())
+}
+
+/// Contrôle d'une base et de ses téléchargements après un arrêt brutal (SPEC §5.6), pour
+/// les bancs de reprise. Tous les fichiers servis ont la taille `size` et le contenu
+/// [`content`].
+pub struct Checker {
+    pub db: std::path::PathBuf,
+    pub downloads: std::path::PathBuf,
+    pub size: u64,
+    /// Tâches terminées dont le fichier a été comparé puis supprimé.
+    pub verified: std::collections::HashSet<String>,
+    /// Constats d'un découpage qui n'est aucun découpage initial : redécoupé (F-02).
+    pub split_layouts: usize,
+}
+
+/// Découpages initiaux possibles (connexions imposées ou 4 au départ en automatique).
+const INITIAL_WIDTHS: [u32; 4] = [1, 2, 4, 8];
+
+impl Checker {
+    pub fn new(db: std::path::PathBuf, downloads: std::path::PathBuf, size: u64) -> Self {
+        Checker {
+            db,
+            downloads,
+            size,
+            verified: Default::default(),
+            split_layouts: 0,
+        }
+    }
+
+    /// Règles de la SPEC §5.6 : les octets déclarés écrits sont dans le `.part`, à leur
+    /// place (règle 1) ; les segments couvrent le fichier (règle 2) ; `done_bytes` est leur
+    /// somme (règle 3) ; une tâche terminée a son historique et plus de segments
+    /// (règle 4). Chaque fichier terminé est comparé octet par octet, puis supprimé.
+    /// `explain` complète le message d'un état inattendu (journal du programme tué).
+    pub fn check(&mut self, explain: &dyn Fn() -> String) {
+        use crate::io::part_path;
+        use crate::segmenter::{DEFAULT_MIN_SEGMENT_SIZE, initial_split};
+        use crate::store::{self, segments, tasks};
+
+        let conn = store::open(&self.db).unwrap();
+        let broken = segments::find_coverage_errors(&conn).unwrap();
+        assert!(broken.is_empty(), "règle 2 : {broken:?}");
+
+        for task in tasks::list_tasks(&conn).unwrap() {
+            let segs = segments::load_segments(&conn, &task.id).unwrap();
+            match task.state {
+                tasks::TaskState::Completed => {
+                    assert!(segs.is_empty(), "règle 4 : segments restants");
+                    let history: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM history WHERE task_id = ?1",
+                            [&task.id],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(history, 1, "règle 4 : historique");
+                    if self.verified.contains(&task.id) {
+                        continue;
+                    }
+                    let name = task.file_name.as_deref().expect("nom du fichier");
+                    let path = self.downloads.join(name);
+                    let len = std::fs::metadata(&path)
+                        .unwrap_or_else(|e| panic!("fichier terminé absent : {e}"))
+                        .len();
+                    assert_eq!(len, self.size, "taille du fichier final");
+                    assert_eq!(task.done_bytes, self.size);
+                    if let Err(e) = same_as_served(&path, 0, len) {
+                        panic!("fichier final corrompu : {e}");
+                    }
+                    assert!(!part_path(&path).exists(), ".part restant");
+                    std::fs::remove_file(&path).unwrap();
+                    self.verified.insert(task.id.clone());
+                }
+                tasks::TaskState::Queued | tasks::TaskState::Active => {
+                    let sum: u64 = segs.iter().map(|s| s.written).sum();
+                    let ranges: Vec<(u64, u64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+                    let initial = INITIAL_WIDTHS.iter().any(|&n| {
+                        initial_split(self.size, n, DEFAULT_MIN_SEGMENT_SIZE)
+                            .iter()
+                            .map(|s| (s.start, s.end))
+                            .eq(ranges.iter().copied())
+                    });
+                    if !segs.is_empty() && !initial {
+                        self.split_layouts += 1;
+                    }
+                    assert_eq!(task.done_bytes, sum, "règle 3");
+                    let Some(name) = task.file_name.as_deref() else {
+                        assert!(segs.is_empty(), "segments sans préparation");
+                        continue;
+                    };
+                    let part = part_path(&self.downloads.join(name));
+                    for s in segs.iter().filter(|s| s.written > 0) {
+                        if let Err(e) = same_as_served(&part, s.start, s.written) {
+                            panic!(
+                                "règle 1 : segment {} ({}-{}, {} octets annoncés) : {e}",
+                                s.idx, s.start, s.end, s.written
+                            );
+                        }
+                    }
+                }
+                other => panic!(
+                    "état inattendu {other:?} : {:?} {:?}\n{}",
+                    task.error_code,
+                    task.error_detail,
+                    explain()
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -126,6 +126,8 @@ dependencies = [
  "anyhow",
  "auro-engine",
  "clap",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

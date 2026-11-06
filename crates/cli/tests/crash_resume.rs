@@ -24,22 +24,18 @@
 //! `AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
 //!  cargo test --release -p auro-cli --test crash_resume -- --nocapture`
 
-use std::collections::HashSet;
 use std::fs::File;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use auro_engine::io::part_path;
-use auro_engine::segmenter::{DEFAULT_MIN_SEGMENT_SIZE, initial_split};
 use auro_engine::store::{
-    self, segments,
+    self,
     tasks::{self, TaskRow, TaskState},
 };
-use auro_engine::testing::{FileSite, Pace, content_range, serve_file_paced};
+use auro_engine::testing::{Checker, FileSite, Pace, serve_file_paced};
 
 const MIB: u64 = 1024 * 1024;
 /// Connexions de référence pour régler le débit ; chaque lancement en tire un nombre parmi
@@ -47,8 +43,6 @@ const MIB: u64 = 1024 * 1024;
 /// le départ coupe les segments en cours (redécoupage dynamique, F-02).
 const CONNECTIONS: f64 = 4.0;
 const CONNECTION_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
-/// Découpages initiaux possibles : 4 connexions au départ en mode automatique.
-const INITIAL_WIDTHS: [u32; 4] = [1, 2, 4, 8];
 
 /// Générateur pseudo-aléatoire xorshift64* : reproductible à partir de sa graine.
 struct Rng(u64);
@@ -109,15 +103,9 @@ fn wait_or_kill(child: &mut Child, kill_at: Option<Duration>, timeout: Duration)
 
 struct Bench {
     _dir: tempfile::TempDir,
-    db: PathBuf,
-    downloads: PathBuf,
     log: PathBuf,
     url: String,
-    size: u64,
-    /// Tâches terminées dont le fichier a été comparé puis supprimé.
-    verified: HashSet<String>,
-    /// Arrêts survenus sur un découpage qui n'est aucun découpage initial : redécoupé.
-    split_layouts: usize,
+    checker: Checker,
 }
 
 impl Bench {
@@ -126,24 +114,17 @@ impl Bench {
         let downloads = dir.path().join("dl");
         std::fs::create_dir(&downloads).unwrap();
         Bench {
-            db: dir.path().join("auro.db"),
+            checker: Checker::new(dir.path().join("auro.db"), downloads, size),
             log: dir.path().join("auro.log"),
-            downloads,
             _dir: dir,
             url,
-            size,
-            verified: HashSet::new(),
-            split_layouts: 0,
         }
     }
 
-    fn tasks(&self) -> Vec<TaskRow> {
-        let conn = store::open(&self.db).unwrap();
-        tasks::list_tasks(&conn).unwrap()
-    }
-
     fn unfinished(&self) -> Option<TaskRow> {
-        self.tasks()
+        let conn = store::open(&self.checker.db).unwrap();
+        tasks::list_tasks(&conn)
+            .unwrap()
             .into_iter()
             .find(|t| t.state != TaskState::Completed)
     }
@@ -151,10 +132,12 @@ impl Bench {
     /// Reprend la tâche inachevée, ou en commence une nouvelle.
     fn launch(&self, connections: Option<u32>) -> Child {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_auro"));
-        cmd.args(["direct", "--db"]).arg(&self.db);
+        cmd.args(["direct", "--db"]).arg(&self.checker.db);
         match self.unfinished() {
             Some(task) => cmd.args(["resume", &task.id]),
-            None => cmd.args(["get", &self.url, "-o"]).arg(&self.downloads),
+            None => cmd
+                .args(["get", &self.url, "-o"])
+                .arg(&self.checker.downloads),
         };
         if let Some(n) = connections {
             cmd.args(["-c", &n.to_string()]);
@@ -172,99 +155,9 @@ impl Bench {
         lines[lines.len().saturating_sub(5)..].join("\n")
     }
 
-    /// Compare `len` octets de `file` à partir de `offset` avec le contenu servi.
-    fn same_as_served(file: &Path, offset: u64, len: u64) -> Result<(), String> {
-        let mut f = File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(offset)).unwrap();
-        let mut buf = vec![0; MIB as usize];
-        let mut done = 0;
-        while done < len {
-            let n = (len - done).min(MIB) as usize;
-            f.read_exact(&mut buf[..n])
-                .map_err(|e| format!("lecture à {} : {e}", offset + done))?;
-            if buf[..n] != content_range(offset + done, n)[..] {
-                return Err(format!(
-                    "octets différents entre {} et {}",
-                    offset + done,
-                    offset + done + n as u64
-                ));
-            }
-            done += n as u64;
-        }
-        Ok(())
-    }
-
-    /// Règles de la SPEC §5.6 après un arrêt ; compare et supprime les fichiers terminés.
     fn check(&mut self) {
-        let conn = store::open(&self.db).unwrap();
-        let broken = segments::find_coverage_errors(&conn).unwrap();
-        assert!(broken.is_empty(), "règle 2 : {broken:?}");
-
-        for task in tasks::list_tasks(&conn).unwrap() {
-            let segs = segments::load_segments(&conn, &task.id).unwrap();
-            match task.state {
-                TaskState::Completed => {
-                    assert!(segs.is_empty(), "règle 4 : segments restants");
-                    let history: i64 = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM history WHERE task_id = ?1",
-                            [&task.id],
-                            |r| r.get(0),
-                        )
-                        .unwrap();
-                    assert_eq!(history, 1, "règle 4 : historique");
-                    if self.verified.contains(&task.id) {
-                        continue;
-                    }
-                    let name = task.file_name.as_deref().expect("nom du fichier");
-                    let path = self.downloads.join(name);
-                    let len = std::fs::metadata(&path)
-                        .unwrap_or_else(|e| panic!("fichier terminé absent : {e}"))
-                        .len();
-                    assert_eq!(len, self.size, "taille du fichier final");
-                    assert_eq!(task.done_bytes, self.size);
-                    if let Err(e) = Self::same_as_served(&path, 0, len) {
-                        panic!("fichier final corrompu : {e}");
-                    }
-                    assert!(!part_path(&path).exists(), ".part restant");
-                    std::fs::remove_file(&path).unwrap();
-                    self.verified.insert(task.id.clone());
-                }
-                TaskState::Queued | TaskState::Active => {
-                    let sum: u64 = segs.iter().map(|s| s.written).sum();
-                    let ranges: Vec<(u64, u64)> = segs.iter().map(|s| (s.start, s.end)).collect();
-                    let initial = INITIAL_WIDTHS.iter().any(|&n| {
-                        initial_split(self.size, n, DEFAULT_MIN_SEGMENT_SIZE)
-                            .iter()
-                            .map(|s| (s.start, s.end))
-                            .eq(ranges.iter().copied())
-                    });
-                    if !segs.is_empty() && !initial {
-                        self.split_layouts += 1;
-                    }
-                    assert_eq!(task.done_bytes, sum, "règle 3");
-                    let Some(name) = task.file_name.as_deref() else {
-                        assert!(segs.is_empty(), "segments sans préparation");
-                        continue;
-                    };
-                    let part = part_path(&self.downloads.join(name));
-                    for s in segs.iter().filter(|s| s.written > 0) {
-                        if let Err(e) = Self::same_as_served(&part, s.start, s.written) {
-                            panic!(
-                                "règle 1 : segment {} ({}-{}, {} octets annoncés) : {e}",
-                                s.idx, s.start, s.end, s.written
-                            );
-                        }
-                    }
-                }
-                other => panic!(
-                    "état inattendu {other:?} : {:?} {:?}\n{}",
-                    task.error_code,
-                    task.error_detail,
-                    self.log_tail()
-                ),
-            }
-        }
+        let log = self.log_tail();
+        self.checker.check(&|| log.clone());
     }
 }
 
@@ -332,8 +225,8 @@ fn killed_downloads_resume_without_corruption() {
         "{kills} arrêts brutaux, {resumed_with_progress} reprises avec des octets déjà \
          enregistrés, {} arrêts sur un découpage redécoupé, {} fichiers terminés et \
          vérifiés octet par octet",
-        bench.split_layouts,
-        bench.verified.len()
+        bench.checker.split_layouts,
+        bench.checker.verified.len()
     );
-    assert!(!bench.verified.is_empty());
+    assert!(!bench.checker.verified.is_empty());
 }
