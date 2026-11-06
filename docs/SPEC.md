@@ -795,6 +795,8 @@ Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ai
 | Mise à jour compromise | Faux installateur, faux yt-dlp | Mises à jour signées ; yt-dlp téléchargé depuis la source du projet avec contrôle de l'empreinte qu'elle publie |
 | Exposition de l'adresse IP en torrent | Les pairs voient l'adresse de l'utilisateur | Option de liaison à une interface réseau précise (VPN) ; arrêt du torrent si cette interface disparaît |
 
+Aléa cryptographique : TLS repose sur l'aléa du système (`getrandom` sous Linux et Android, le générateur du système sous Windows), sur lequel s'amorce aws-lc, le fournisseur cryptographique de rustls. Depuis le 2026-11-06, aws-lc est compilé sans sa source d'appoint, l'entropie de gigue du processeur (`AWS_LC_SYS_NO_JITTER_ENTROPY=1`, dans `.cargo/config.toml`). Cette source coûtait 56 à 60 ms de processeur au premier tirage de chaque processus (`docs/MESURES.md`). Elle sert surtout aux certifications FIPS, que le projet ne vise pas. L'aléa du système est celui qu'utilisent par défaut OpenSSL, GnuTLS et ring.
+
 ### 8.2 Vie privée
 
 - Aucune télémétrie, aucun compte, aucune requête vers un serveur du projet en dehors de la vérification de mises à jour, désactivable.

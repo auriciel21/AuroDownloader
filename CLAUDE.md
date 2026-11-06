@@ -93,6 +93,8 @@ AURO_ARIA2=$LOCALAPPDATA/Microsoft/WinGet/Links/aria2c.exe AURO_PERF_SIZE=536870
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
+- Aléa : aws-lc est compilé sans entropie de gigue (`AWS_LC_SYS_NO_JITTER_ENTROPY`,
+  `.cargo/config.toml`, SPEC 8.1) ; il s'amorce sur l'aléa du système.
 - Invariant de couverture (SPEC 5.6, règle 2) : calcul dans `segmenter`, application en
   base dans `store::segments` (vérifié dans la transaction de chaque écriture, contrôle au
   démarrage par `find_coverage_errors`). Ne jamais écrire dans `segments` sans passer par

@@ -1,0 +1,9 @@
+# Réglages communs à toutes les compilations du dépôt (Windows, Linux, Android, CI).
+
+[env]
+# aws-lc (fournisseur cryptographique de rustls) s'amorce sur l'aléa du système
+# (getrandom, l'aléa de Windows) sans y ajouter l'entropie de gigue du processeur :
+# celle-ci coûte 56 à 60 ms de processeur au premier tirage de chaque processus, pour une
+# source d'appoint utile surtout aux certifications FIPS (SPEC §8.1, docs/MESURES.md,
+# 2026-11-06, cinquième relevé).
+AWS_LC_SYS_NO_JITTER_ENTROPY = "1"

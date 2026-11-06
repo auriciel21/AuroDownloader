@@ -572,3 +572,37 @@ A B A B, cinq passages chacun, porte de N-01 (processus et vidage, auro / aria2)
   l'ordre de ±5 %.
 - L'effet de l'entropie (environ 3 % du temps d'auro en HTTPS) se voit à la mesure
   isolée, pas dans ce bruit.
+
+## 2026-11-06, sixième relevé : Linux (WSL 2), aws-lc sans entropie de gigue
+
+Même poste. aws-lc est désormais compilé avec `AWS_LC_SYS_NO_JITTER_ENTROPY=1`
+(`.cargo/config.toml`, SPEC §8.1). 512 Mio, cinq passages, porte bloquante.
+
+**Vérification directe du changement :** aucun symbole `jent_entropy` dans `auro` ni
+`aurod` (Linux), ni dans la bibliothèque aws-lc compilée pour Windows et pour Android
+(aarch64, API 26), qui gardent `RAND_bytes`. La même recherche trouve bien ces symboles
+dans un ancien objet compilé avec l'entropie de gigue. Mesure isolée du premier tirage
+aléatoire (cinquième relevé) : 56 à 60 ms avant, 0,0 ms après.
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur par octet, processus et vidage laissé au banc, auro / aria2 | Processus seul, auro / aria2 (indicatif) | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s (processus) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 163,5 | 1,23 | 0,76 | 0,81 | 0,85 | 15,0 % |
+| local, sans bridage | aria2c -x 4 | 133,2 | | | | | 18,5 % |
+| local HTTPS, sans bridage | auro -c 4 | 149,9 | 1,55 | 0,87 | 0,90 | 0,80 | 32,2 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 96,5 | | | | | 35,7 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 106,3 | 1,43 | 0,93 | 1,02 | 1,12 | 22,6 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 72,7 | 0,98 | 0,98 | 1,07 | 1,01 | 23,8 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 74,5 | | | | | 22,1 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 111,4 | 1,52 | 0,86 | 0,90 | 0,70 | 39,2 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 71,2 | 0,97 | 0,91 | 0,95 | 0,81 | 41,5 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 73,1 | | | | | 43,5 % |
+
+Le banc passe : toutes les portes tenues à nombre de connexions égal.
+
+**Lecture :**
+- En HTTPS bridé à 16 connexions, auro coûte 1,68 s, contre 1,73 à 1,84 s dans les
+  relevés précédents : c'est l'ordre de grandeur attendu (environ 0,06 s). aria2 y coûte
+  1,87 s, dans le haut de sa plage (1,65 à 1,92 s) : le rapport de 0,86 profite aussi de
+  ce passage lent d'aria2. Le gain se prouve par la mesure isolée, pas par ce rapport.
+- Reste propre à auro : la copie vers le tampon d'écriture (0,10 s pour 512 Mio), à
+  traiter dans un chantier séparé de `io`.
