@@ -24,10 +24,6 @@ auro-engine = { path = "../engine", features = ["testing"] }
 tempfile = "3.27.0"
 
 # Temps processeur des outils comparés par le banc de performance.
-# Lancer `aurod` sans lui transmettre les poignées d'entrée et de sortie de la CLI.
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"] }
-
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

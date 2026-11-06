@@ -117,6 +117,15 @@ pub enum Event {
         rev: u64,
         queue_id: String,
     },
+    /// Préparation enregistrée par une exécution (SPEC §7.1) : nom du fichier retenu et
+    /// taille annoncée, que ni l'ajout ni le passage à `active` ne connaissent. Annoncée à
+    /// chaque exécution, après sa préparation.
+    Prepared {
+        rev: u64,
+        task_id: String,
+        file_name: Option<String>,
+        total_bytes: Option<u64>,
+    },
     Progress {
         rev: u64,
         task_id: String,
@@ -243,6 +252,7 @@ impl Engine {
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
+        let (prepared_tx, prepared) = mpsc::unbounded_channel();
         let rev = Arc::new(AtomicU64::new(0));
         let state = Scheduler::new(
             conn,
@@ -251,9 +261,10 @@ impl Engine {
             Arc::clone(&rev),
             default_queue.clone(),
             download_limit,
+            prepared_tx,
         );
         tokio::spawn(async move {
-            state.run(inbox).await;
+            state.run(inbox, prepared).await;
             let _ = stopped_tx.send(true);
         });
         Ok(Engine {
@@ -447,6 +458,9 @@ struct Scheduler {
     limits: Limits,
     /// Prochaine vérification de la place libre pour les tâches en pause `disk_full`.
     next_disk_check: Instant,
+    /// Les exécutions y signalent leur préparation enregistrée ; la boucle l'annonce
+    /// (`Event::Prepared`), car elle seule augmente la révision.
+    prepared: mpsc::UnboundedSender<String>,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -464,6 +478,7 @@ impl Scheduler {
         rev: Arc<AtomicU64>,
         default_queue: String,
         download_limit: Option<u64>,
+        prepared: mpsc::UnboundedSender<String>,
     ) -> Self {
         Scheduler {
             conn,
@@ -482,10 +497,15 @@ impl Scheduler {
                 tasks: HashMap::new(),
             },
             next_disk_check: Instant::now(),
+            prepared,
         }
     }
 
-    async fn run(mut self, mut inbox: mpsc::Receiver<Command>) {
+    async fn run(
+        mut self,
+        mut inbox: mpsc::Receiver<Command>,
+        mut prepared: mpsc::UnboundedReceiver<String>,
+    ) {
         loop {
             if self.shutdown.is_none() {
                 self.recheck_disk();
@@ -510,6 +530,7 @@ impl Scheduler {
                         Err(e) => self.forget_panicked(e),
                     }
                 }
+                Some(task_id) = prepared.recv() => self.announce_prepared(&task_id),
                 _ = tokio::time::sleep(wake), if self.shutdown.is_none() => {}
             }
         }
@@ -564,6 +585,20 @@ impl Scheduler {
         let rev = self.rev.fetch_add(1, Ordering::SeqCst) + 1;
         // Personne à l'écoute : rien à faire.
         let _ = self.events.send(event(rev));
+    }
+
+    /// Annonce le nom et la taille qu'une exécution vient d'enregistrer. Peut arriver après
+    /// la fin de l'exécution : l'annonce reste due, le nom servant à ouvrir le fichier.
+    fn announce_prepared(&self, task_id: &str) {
+        let Ok(task) = load_task(&self.conn, task_id) else {
+            return;
+        };
+        self.emit(|rev| Event::Prepared {
+            rev,
+            task_id: task.id,
+            file_name: task.file_name,
+            total_bytes: task.total_bytes,
+        });
     }
 
     /// Annonce un changement d'état, avec la cause de pause ou le code d'erreur
@@ -634,9 +669,10 @@ impl Scheduler {
         config.transfer.throttle = throttle;
         let events = self.events.clone();
         let rev = Arc::clone(&self.rev);
+        let prepared = self.prepared.clone();
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
-            let result = execute(&config, &id, stopped, events, rev).await;
+            let result = execute(&config, &id, stopped, events, rev, prepared).await;
             (id, result)
         });
         self.run_ids.insert(handle.id(), task_id);
@@ -1061,9 +1097,16 @@ async fn execute(
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
     rev: Arc<AtomicU64>,
+    prepared: mpsc::UnboundedSender<String>,
 ) -> Result<Outcome, TransferError> {
     let mut conn = store::open(&config.db_path)?;
+    // `transfer::run` enregistre la préparation avant le premier avancement : celui-ci
+    // la signale à la boucle.
+    let mut first = true;
     let mut on_progress = |progress: Progress| {
+        if std::mem::take(&mut first) {
+            let _ = prepared.send(task_id.to_owned());
+        }
         let _ = events.send(Event::Progress {
             rev: rev.load(Ordering::SeqCst),
             task_id: task_id.to_owned(),

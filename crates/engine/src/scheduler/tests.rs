@@ -114,6 +114,58 @@ async fn added_tasks_run_and_complete() {
 }
 
 #[tokio::test]
+async fn each_run_announces_the_name_and_size_it_prepared() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let first = engine
+        .add(add(&server.url("/nom.bin"), dir.path()))
+        .await
+        .unwrap();
+    let second = engine
+        .add(add(&server.url("/nom.bin"), dir.path()))
+        .await
+        .unwrap();
+    let mut prepared = HashMap::new();
+    let mut completed = HashSet::new();
+    timeout(WAIT, async {
+        // L'annonce peut suivre la fin d'une exécution rapide : attendre les deux.
+        while prepared.len() < 2 || completed.len() < 2 {
+            match events.recv().await {
+                Ok(Event::Prepared {
+                    task_id,
+                    file_name,
+                    total_bytes,
+                    ..
+                }) => {
+                    prepared.insert(task_id, (file_name, total_bytes));
+                }
+                Ok(Event::StateChanged {
+                    task_id,
+                    to: TaskState::Completed,
+                    ..
+                }) => {
+                    completed.insert(task_id);
+                }
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+    })
+    .await
+    .expect("deux préparations annoncées");
+    for id in [&first, &second] {
+        let row = task(dir.path(), id);
+        assert_eq!(prepared[id], (row.file_name.clone(), Some(SIZE as u64)));
+    }
+    let mut names: Vec<_> = prepared.values().map(|(n, _)| n.clone().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["nom (1).bin", "nom.bin"]);
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_queue_never_runs_more_tasks_than_its_limit() {
     let dir = tempfile::tempdir().unwrap();
     let server = slow_site(SIZE);
@@ -418,7 +470,8 @@ async fn each_change_raises_the_revision_by_one() {
                 }
                 Event::Added { rev, .. }
                 | Event::QueueUpdated { rev, .. }
-                | Event::TaskUpdated { rev, .. } => revs.push(rev),
+                | Event::TaskUpdated { rev, .. }
+                | Event::Prepared { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
                     if to == TaskState::Completed {
@@ -699,7 +752,8 @@ async fn an_announced_state_is_already_recorded() {
     let conn = store::open(&config.db_path).unwrap();
     let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
     let (events, mut announced) = broadcast::channel(16);
-    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue, None);
+    let (prepared, _) = mpsc::unbounded_channel();
+    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue, None, prepared);
     let id = scheduler
         .add(add("http://127.0.0.1:1/f", dir.path()))
         .unwrap();

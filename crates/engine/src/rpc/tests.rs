@@ -257,6 +257,43 @@ async fn an_added_task_is_followed_to_completion() {
 }
 
 #[tokio::test]
+async fn the_file_name_chosen_at_preparation_is_announced() {
+    // Deux tâches du même nom dans le même dossier : chacune annonce le sien, celui qu'un
+    // client doit ouvrir une fois la tâche terminée.
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(256 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let added = c
+            .result(
+                "task.add",
+                json!({"sources": [{"url": server.url("/meme.bin")}], "destDir": dir_text(dir.path())}),
+            )
+            .await;
+        ids.push(added["taskId"].as_str().unwrap().to_owned());
+    }
+    let mut names = Vec::new();
+    for id in &ids {
+        let note = c
+            .notification("task.updated", |p| p["taskId"] == id.as_str())
+            .await;
+        assert_eq!(note["totalBytes"], 256 * 1024);
+        assert_eq!(note["displayName"], note["fileName"]);
+        let task = c.result("task.get", json!({"taskId": id})).await;
+        assert_eq!(note["fileName"], task["fileName"], "le nom enregistré");
+        names.push(note["fileName"].as_str().unwrap().to_owned());
+    }
+    names.sort();
+    assert_eq!(names, ["meme (1).bin", "meme.bin"]);
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn progress_is_batched_with_the_current_revision() {
     let dir = tempfile::tempdir().unwrap();
     let pace = crate::testing::Pace {

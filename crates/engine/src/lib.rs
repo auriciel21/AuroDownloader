@@ -6,9 +6,11 @@
 //!
 //! Phase 1 (SPEC §9.3) : `store`, `segmenter`, `net`, `io` et `transfer`. Phase 2 :
 //! `scheduler` (files, nouvelles tentatives, reprise au démarrage ; objet `Engine`),
-//! `rpc`, `limit` (limites de débit). Torrent, média, post-traitement et plugins arriveront avec leurs phases.
+//! `rpc`, `limit` (limites de débit), `launch` (démarrage d'`aurod` par ses clients).
+//! Torrent, média, post-traitement et plugins arriveront avec leurs phases.
 
 pub mod io;
+pub mod launch;
 pub mod limit;
 pub mod net;
 pub mod paths;

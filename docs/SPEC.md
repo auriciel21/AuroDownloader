@@ -548,6 +548,11 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une nouvelle limite s'applique aussitôt aux tâches en cours (section 7.6).
   - `task.update` annonce `task.updated`, avec `taskId` et les seuls champs modifiés.
   - Un changement de la limite globale n'est pas annoncé : aucune notification n'est prévue pour lui.
+- **Nom et taille d'une tâche** (depuis le 2026-11-07) : `task.added` les ignore encore,
+  la préparation les apprend (section 7.1). Après chaque préparation, le moteur annonce
+  `task.updated` avec `fileName`, `displayName` et `totalBytes`, et une nouvelle révision.
+  L'annonce peut suivre la fin d'une tâche rapide. Un client qui ouvre le fichier d'une
+  tâche prend ce `fileName`, qui peut différer du nom de l'adresse (« nom (1).bin »).
 - **Résultat d'une action groupée** : `task.pause`, `task.resume` et `task.cancel` renvoient `taskIds[]`, les tâches acceptées, et `errors[]`, chaque refus avec `taskId`, `code` et `message`. Une tâche refusée n'empêche pas les autres.
 
 ### 6.6 Exemple d'échange

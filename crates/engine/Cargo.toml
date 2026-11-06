@@ -42,6 +42,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Security_Authorization",
     # Espace libre d'un volume (`io::free_space`).
     "Win32_Storage_FileSystem",
+    # Lancer `aurod` sans lui transmettre les poignées d'entrée et de sortie (`launch`).
+    "Win32_System_Console",
     "Win32_System_Threading",
 ] }
 

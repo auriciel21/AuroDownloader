@@ -21,7 +21,7 @@ const OUTGOING: usize = 256;
 /// Sujets d'un abonnement (`events.subscribe`).
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Topics {
-    /// `task.added`, `task.stateChanged`.
+    /// `task.added`, `task.stateChanged`, `task.updated`.
     pub tasks: bool,
     /// `queue.updated`.
     pub queues: bool,
@@ -284,6 +284,24 @@ async fn describe(
                 params["speedLimitBps"] = json!(limit);
             }
             Some(notification("task.updated", params))
+        }
+        Event::Prepared {
+            rev,
+            task_id,
+            file_name,
+            total_bytes,
+        } if topics.tasks => {
+            // Le nom du fichier sert aussi de nom affiché depuis la préparation.
+            Some(notification(
+                "task.updated",
+                json!({
+                    "rev": rev,
+                    "taskId": task_id,
+                    "fileName": file_name,
+                    "displayName": file_name,
+                    "totalBytes": total_bytes,
+                }),
+            ))
         }
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
             let snapshot = engine.snapshot().await.ok()?;
