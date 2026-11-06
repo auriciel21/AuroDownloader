@@ -479,6 +479,9 @@ pub struct Checker {
     pub verified: std::collections::HashSet<String>,
     /// Constats d'un découpage qui n'est aucun découpage initial : redécoupé (F-02).
     pub split_layouts: usize,
+    /// Arrêts entre le renommage du `.part` et l'enregistrement de la fin : la reprise
+    /// termine la tâche (SPEC §7.4).
+    pub renamed_unrecorded: usize,
 }
 
 /// Découpages initiaux possibles (connexions imposées ou 4 au départ en automatique).
@@ -492,6 +495,7 @@ impl Checker {
             size,
             verified: Default::default(),
             split_layouts: 0,
+            renamed_unrecorded: 0,
         }
     }
 
@@ -556,7 +560,24 @@ impl Checker {
                         assert!(segs.is_empty(), "segments sans préparation");
                         continue;
                     };
-                    let part = part_path(&self.downloads.join(name));
+                    let dest = self.downloads.join(name);
+                    let part = part_path(&dest);
+                    // Arrêt entre le renommage et l'enregistrement de la fin : tous les
+                    // segments sont finis et le fichier final est complet, exact.
+                    let all_done = segs
+                        .iter()
+                        .all(|s| s.state == crate::segmenter::SegmentState::Done);
+                    if all_done && !segs.is_empty() && !part.exists() {
+                        let len = std::fs::metadata(&dest)
+                            .unwrap_or_else(|e| panic!("ni .part ni fichier final : {e}"))
+                            .len();
+                        assert_eq!(len, self.size, "taille du fichier renommé");
+                        if let Err(e) = same_as_served(&dest, 0, len) {
+                            panic!("fichier renommé corrompu : {e}");
+                        }
+                        self.renamed_unrecorded += 1;
+                        continue;
+                    }
                     for s in segs.iter().filter(|s| s.written > 0) {
                         if let Err(e) = same_as_served(&part, s.start, s.written) {
                             panic!(

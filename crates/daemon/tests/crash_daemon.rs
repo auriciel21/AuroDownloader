@@ -275,10 +275,12 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
     bench.check();
     eprintln!(
         "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} tâches ajoutées, \
-         {} arrêts sur un découpage redécoupé, {} fichiers terminés et vérifiés octet par \
-         octet (dossier {})",
+         {} arrêts sur un découpage redécoupé, {} arrêts entre le renommage et \
+         l'enregistrement de la fin, {} fichiers terminés et vérifiés octet par octet \
+         (dossier {})",
         bench.added,
         bench.checker.split_layouts,
+        bench.checker.renamed_unrecorded,
         bench.checker.verified.len(),
         bench.dir().display()
     );

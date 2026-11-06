@@ -354,3 +354,130 @@ porte vérifiée :**
 - **La porte de N-01 à 1,0 tombe donc dans le bruit de la mesure à 16 connexions.**
   Pour la tenir avec une marge, il faudrait réduire le coût par connexion d'auro, à
   examiner au profileur.
+
+## 2026-11-06, second relevé : Linux (WSL 2), examen du coût d'auro
+
+Même poste, 512 Mio par téléchargement, code de l'étape 4 (22748d4). Le banc gagne deux
+réglages pour profiler (`AURO_PERF_ONLY`, `AURO_PERF_WRAP`) et une colonne indicative :
+le temps du processus plus celui que le banc passe à vider ce que l'outil a laissé en
+mémoire. Le profileur par échantillons (samply, perf) demande
+`perf_event_paranoid` ≤ 1, donc `sudo` : non fait. L'examen passe par `strace` et par le
+partage temps utilisateur / temps système.
+
+**HTTP bridé à 16 connexions, un passage sous `strace -c -f` par outil :**
+
+| Appel système | auro -c 16 | aria2c -x 16 |
+| --- | --- | --- |
+| lectures réseau (`recvfrom`) | 8 222 (64 Kio en moyenne) | 32 951 (16 Kio) |
+| écritures disque | 2 233 `pwrite64` (256 Kio) | 32 953 `write` et 32 952 `lseek` |
+| `epoll_wait` | 1 042 | 2 072 |
+| `fdatasync` | 4 | 0 |
+
+Temps utilisateur / système sur trois passages : auro 0,16 à 0,24 s / 0,65 à 0,82 s ;
+aria2 0,22 à 0,39 s / 0,62 à 0,78 s. Vider soi-même 512 Mio coûte 0,04 à 0,09 s de
+temps système au processus qui le fait (`dd conv=fdatasync` contre `dd`, cinq passages).
+
+**Banc complet, cinq passages, porte non bloquante :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus par octet auro / aria2 | Processus et vidage laissé au banc, auro / aria2 (indicatif) | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s (processus) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 124,0 | 0,83 ⚠ | 0,77 | 0,71 | 0,86 | 14,3 % |
+| local, sans bridage | aria2c -x 4 | 150,1 | | | | | 18,6 % |
+| local HTTPS, sans bridage | auro -c 4 | 105,5 | 0,88 ⚠ | 0,91 | 0,87 | 0,86 | 31,6 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 120,0 | | | | | 34,8 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 92,3 | 1,26 | 0,90 | 0,84 | 0,73 | 22,1 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 67,3 | 0,92 | 0,94 | 0,88 | 0,78 | 23,2 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 73,3 | | | | | 24,6 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 94,7 | 1,31 | 0,97 | 0,93 | 1,14 | 40,2 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 63,9 | 0,89 | 1,03 | 0,99 | 1,33 | 42,8 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 72,1 | | | | | 41,4 % |
+
+**Sans bridage, d'où vient la durée :** chronométré à part, le processus aria2 dure 0,8 à
+1,0 s, puis le banc passe environ 2,8 s à vider le fichier (total 3,7 s). Le processus
+auro dure 2,8 à 4,6 s, son vidage compris. Sous `strace -T`, auro reçoit les 512 Mio en
+1,4 s, avant son premier point de contrôle (2 s), puis vide tout le fichier en une fois
+(un `fdatasync` de 2,4 à 2,8 s). Aucune écriture n'est bloquée pendant ce vidage
+(`pwrite64` : médiane 0,3 ms, 99e centile 1,7 ms).
+
+**Essai : points de contrôle toutes les 250 ms au lieu de 2 s** (copie modifiée, hors
+dépôt), scénarios sans bridage, versions alternées A B A B, cinq passages chacune :
+
+| Version | HTTP : auro (Mio/s), auro / aria2 | HTTPS : auro (Mio/s), auro / aria2 | Processeur du processus, HTTP / HTTPS |
+| --- | --- | --- | --- |
+| A, 2 s | 131,3 ; 1,02 | 104,5 ; 0,81 | 0,82 / 0,89 |
+| B, 250 ms | 136,3 ; 0,89 | 160,4 ; 1,34 | 0,81 / 0,89 |
+| A, 2 s | 152,9 ; 1,22 | 100,0 ; 0,80 | 0,73 / 0,91 |
+| B, 250 ms | 205,1 ; 1,61 | 181,3 ; 1,47 | 0,76 / 0,93 |
+
+**Lecture :**
+- **Aucun surcoût d'auro par connexion n'apparaît.** auro fait quatre fois moins d'appels
+  système qu'aria2 et passe moins de temps en mode utilisateur. Les deux outils passent
+  75 à 80 % de leur temps dans le noyau (copies réseau et disque). La différence restante
+  est le vidage qu'auro paie lui-même (règle 1) : 0,84 et 0,93 à 16 connexions, une fois
+  ce vidage compté pour les deux.
+- **Porte N-01 tenue dans ce relevé** (0,77 à 0,97 à nombre de connexions égal), après
+  0,90 à 1,15 sur les passages précédents du jour. À 16 connexions, la mesure reste à
+  ±10 % d'un passage à l'autre.
+- **Sans bridage, le débit mesure surtout le disque virtuel** (environ 180 Mio/s), pas
+  le réseau ni le processeur. auro reçoit plus vite que le disque n'écrit, mais ne
+  commence à vider qu'au premier point de contrôle.
+- **Commencer à vider plus tôt recouvre le disque et le réseau.** Avec des points de
+  contrôle toutes les 250 ms, auro passe de 100 à 105 Mio/s à 160 à 181 Mio/s en HTTPS,
+  sans coût processeur mesurable. En HTTP, le bruit est plus fort (0,89 à 1,61). Un
+  intervalle fixe de 250 ms viderait cependant quatre fois par seconde même un
+  téléchargement lent. Proposition soumise : un point de contrôle aussi après un volume
+  reçu (par exemple 32 Mio), en plus des 2 s (SPEC §7.5).
+
+## 2026-11-06, troisième relevé : Linux (WSL 2), point de contrôle par volume
+
+Même poste. Un point de contrôle a lieu aussi dès que les connexions ont remis 32 Mio au
+système depuis le précédent (SPEC §7.5). 512 Mio, cinq passages, porte non bloquante.
+
+**Banc complet :**
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus par octet auro / aria2 | Processus et vidage laissé au banc, auro / aria2 (indicatif) | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s (processus) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 119,0 | 1,31 | 0,91 | 0,81 | 0,83 | 16,1 % |
+| local, sans bridage | aria2c -x 4 | 90,9 | | | | | 17,8 % |
+| local HTTPS, sans bridage | auro -c 4 | 107,4 | 1,26 | 0,86 | 0,82 | 0,82 | 30,8 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 85,5 | | | | | 35,8 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 114,6 | 1,59 | 0,97 | 0,89 | 0,91 | 21,1 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 67,1 | 0,93 | 0,94 | 0,86 | 1,05 | 20,4 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 72,0 | | | | | 21,7 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 111,6 | 1,50 | 1,06 ⚠ | 1,02 | 0,85 | 43,4 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 72,3 | 0,97 | 1,02 | 0,99 | 0,87 | 41,9 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 74,3 | | | | | 41,1 % |
+
+**A/B à 16 connexions, bridé** : A avec le seuil, B sans (même code, seuil infini),
+ordre A B A B, cinq passages chacun. Temps du processus auro en secondes, rapport à aria2
+entre parenthèses :
+
+| Scénario | A | B | A | B |
+| --- | --- | --- | --- | --- |
+| HTTP : débit auro (Mio/s) | 107,2 | 98,3 | 114,4 | 99,4 |
+| HTTP : processeur | 0,92 (1,01) | 0,92 (1,05) | 0,95 (1,00) | 0,88 (0,93) |
+| HTTPS : débit auro (Mio/s) | 111,8 | 97,4 | 111,3 | 97,7 |
+| HTTPS : processeur | 1,82 (1,07) | 1,84 (1,02) | 1,73 (1,05) | 1,74 (0,99) |
+
+**Bancs de reprise :** `crash_resume`, 300 cycles sur 64 Mio : un premier passage
+échoue sur un arrêt tombé entre le renommage du `.part` et l'enregistrement de la fin,
+état que le moteur termine à la reprise (SPEC §7.4, étape 7) mais que le contrôle commun
+(`testing::Checker`) refusait. Le contrôle l'accepte désormais, si tous les segments sont
+finis et le fichier final complet et exact, et le compte. Second passage : 204 arrêts
+brutaux, 171 reprises avec des octets enregistrés, 64 arrêts sur un découpage redécoupé,
+96 fichiers vérifiés (graine 1793969166062811701). `crash_daemon`, 50 cycles : 40 arrêts
+brutaux, 10 arrêts demandés, 26 fichiers vérifiés. Disque vraiment plein (tmpfs de
+8 Mio) : 5 963 776 octets enregistrés, exacts, puis la tâche finit.
+
+**Lecture :**
+- **Sans bridage, auro dépasse aria2** (1,26 à 1,31), parce qu'il écrit sur disque
+  pendant la réception. aria2 était lent ce jour-là (86 à 91 Mio/s, contre 120 à 150
+  dans les relevés précédents) : le rapport est flatteur, mais le gain d'auro est réel,
+  de 100 à 105 Mio/s à 107 à 119 Mio/s en HTTPS.
+- **À 16 connexions bridées, le débit gagne 10 à 15 %** (107 à 114 Mio/s contre 97 à
+  99), sans coût processeur mesurable : le temps du processus est le même avec ou sans
+  le seuil.
+- **La porte N-01 à 16 connexions reste à parité** : 0,93 à 1,07 selon les passages,
+  avec ou sans seuil, soit 0,86 à 1,03 en comptant pour les deux le vidage sur disque.
+  L'écart restant correspond au vidage qu'auro paie lui-même (règle 1). La tenir à 1,0
+  sur chaque passage n'est pas affaire d'optimisation par connexion (relevé précédent).

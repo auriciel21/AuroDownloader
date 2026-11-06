@@ -14,6 +14,11 @@
 //! Les vidages d'un même fichier sont groupés ([`SyncGate`]) : un seul à la fois, partagé
 //! par tous ceux qui l'ont demandé pendant le précédent.
 //!
+//! Le fichier compte les octets remis au système depuis le dernier point de contrôle
+//! ([`PartFile::checkpoint_after`]) : passé un seuil, il prévient la boucle de
+//! coordination, qui avance le point suivant. Le disque écrit ainsi pendant la réception,
+//! au lieu de tout recevoir avant le premier vidage (SPEC §7.5).
+//!
 //! L'espace disque (F-18) se mesure par [`free_space`] et [`space_needed`] (module
 //! `space`).
 //!
@@ -211,11 +216,44 @@ impl SyncGate {
     }
 }
 
+/// Octets remis au système depuis le dernier point de contrôle, et seuil au-delà duquel
+/// la boucle de coordination en demande un sans attendre son intervalle (SPEC §7.5).
+#[derive(Debug)]
+struct Volume {
+    since: AtomicU64,
+    /// `u64::MAX` : aucun seuil.
+    threshold: AtomicU64,
+    reached: tokio::sync::Notify,
+}
+
+impl Default for Volume {
+    fn default() -> Self {
+        Volume {
+            since: AtomicU64::new(0),
+            threshold: AtomicU64::new(u64::MAX),
+            reached: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl Volume {
+    /// Compte `n` octets remis au système ; prévient une fois, au franchissement du seuil.
+    fn add(&self, n: u64) {
+        let before = self.since.fetch_add(n, Ordering::Relaxed);
+        let threshold = self.threshold.load(Ordering::Relaxed);
+        if before < threshold && before.saturating_add(n) >= threshold {
+            // Sans attente en cours, la permission est gardée pour la prochaine.
+            self.reached.notify_one();
+        }
+    }
+}
+
 /// Fichier `.part` d'une tâche, partagé par ses écrivains de segments.
 #[derive(Debug)]
 pub struct PartFile {
     file: Arc<File>,
     gate: Arc<SyncGate>,
+    volume: Arc<Volume>,
     part: PathBuf,
     dest: PathBuf,
 }
@@ -252,9 +290,29 @@ impl PartFile {
         Self {
             file: Arc::new(file),
             gate: Arc::default(),
+            volume: Arc::default(),
             part,
             dest: dest.to_owned(),
         }
+    }
+
+    /// Seuil du point de contrôle par volume : [`volume_reached`](Self::volume_reached)
+    /// revient quand les écrivains ont remis `bytes` octets au système depuis le dernier
+    /// point de contrôle. Sans appel, aucun seuil.
+    pub fn checkpoint_after(&self, bytes: u64) {
+        self.volume.threshold.store(bytes.max(1), Ordering::Relaxed);
+    }
+
+    /// Octets remis au système depuis le dernier point de contrôle.
+    pub fn unsynced(&self) -> u64 {
+        self.volume.since.load(Ordering::Relaxed)
+    }
+
+    /// Revient quand le seuil de [`checkpoint_after`](Self::checkpoint_after) a été
+    /// franchi. Un franchissement survenu sans attente en cours est gardé ; il peut donc
+    /// dater d'avant un point de contrôle : vérifier [`unsynced`](Self::unsynced).
+    pub async fn volume_reached(&self) {
+        self.volume.reached.notified().await;
     }
 
     /// Chemin du `.part`.
@@ -272,6 +330,7 @@ impl PartFile {
         SegmentWriter {
             file: Arc::clone(&self.file),
             gate: Arc::clone(&self.gate),
+            volume: Arc::clone(&self.volume),
             part: self.part.clone(),
             idx: segment.idx,
             start: segment.start,
@@ -289,8 +348,11 @@ impl PartFile {
     /// Point de contrôle (SPEC §7.5) : relève ce que chaque écrivain a remis au système,
     /// vide le fichier une fois (vidage groupé), puis renvoie ces relevés. Les écrivains
     /// continuent pendant ce temps ; ce qu'ils écrivent après le relevé attend le point
-    /// suivant.
+    /// suivant, et compte pour son seuil de volume.
     pub fn checkpoint(&self, progress: &[ProgressHandle]) -> Result<Vec<SyncedProgress>, IoError> {
+        // Remis à zéro avant le relevé : un octet compté ici pour le point suivant est
+        // peut-être déjà couvert par celui-ci, jamais l'inverse.
+        self.volume.since.store(0, Ordering::Relaxed);
         let mut snapshot = Vec::with_capacity(progress.len());
         for p in progress {
             if !Arc::ptr_eq(&p.file, &self.file) {
@@ -457,6 +519,7 @@ impl ProgressHandle {
 pub struct SegmentWriter {
     file: Arc<File>,
     gate: Arc<SyncGate>,
+    volume: Arc<Volume>,
     part: PathBuf,
     idx: u32,
     start: u64,
@@ -528,6 +591,7 @@ impl SegmentWriter {
         // Publié après l'écriture : un relevé ne compte que des octets déjà remis.
         self.issued
             .store(issued + self.buf.len() as u64, Ordering::Release);
+        self.volume.add(self.buf.len() as u64);
         self.buf.clear();
         self.held_since = None;
         Ok(())
@@ -604,6 +668,58 @@ mod tests {
         assert_eq!(progress.handed_over(), 2000, "le délai repart de zéro");
         let synced = writer.finish().unwrap();
         assert_eq!(synced.written(), 3000);
+    }
+
+    /// Le seuil de volume a-t-il été signalé (sans attendre plus de 20 ms) ?
+    async fn reached(part: &PartFile) -> bool {
+        tokio::time::timeout(Duration::from_millis(20), part.volume_reached())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn crossing_the_volume_threshold_calls_for_a_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = PartFile::create(&dest_in(&dir)).unwrap();
+        part.checkpoint_after(10_000);
+        let mut writer = part.writer(&segment(0, 0, 99_999, 0), 4096);
+        let progress = writer.progress();
+
+        writer.write(&pattern(0, 8192)).unwrap();
+        assert_eq!(part.unsynced(), 8192);
+        assert!(!reached(&part).await, "seuil pas encore atteint");
+        writer.write(&pattern(8192, 4096)).unwrap();
+        assert!(reached(&part).await, "seuil franchi");
+        assert!(!reached(&part).await, "un seul signal par franchissement");
+        writer.write(&pattern(12_288, 8192)).unwrap();
+        assert!(
+            !reached(&part).await,
+            "rien de plus avant le point de contrôle"
+        );
+
+        let synced = part.checkpoint(&[progress]).unwrap();
+        assert_eq!(synced[0].written(), 20_480);
+        assert_eq!(
+            part.unsynced(),
+            0,
+            "le point de contrôle remet le compte à zéro"
+        );
+        writer.write(&pattern(20_480, 12_288)).unwrap();
+        assert!(
+            reached(&part).await,
+            "nouveau franchissement après le point"
+        );
+        assert_eq!(writer.finish().unwrap().written(), 32_768);
+    }
+
+    #[tokio::test]
+    async fn without_a_threshold_nothing_is_signalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = PartFile::create(&dest_in(&dir)).unwrap();
+        let mut writer = part.writer(&segment(0, 0, 99_999, 0), 4096);
+        writer.write(&pattern(0, 100_000)).unwrap();
+        assert_eq!(part.unsynced(), 100_000);
+        assert!(!reached(&part).await);
     }
 
     fn dest_in(dir: &tempfile::TempDir) -> PathBuf {

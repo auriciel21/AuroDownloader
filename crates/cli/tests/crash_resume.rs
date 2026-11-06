@@ -223,9 +223,10 @@ fn killed_downloads_resume_without_corruption() {
     assert!(bench.unfinished().is_none());
     eprintln!(
         "{kills} arrêts brutaux, {resumed_with_progress} reprises avec des octets déjà \
-         enregistrés, {} arrêts sur un découpage redécoupé, {} fichiers terminés et \
-         vérifiés octet par octet",
+         enregistrés, {} arrêts sur un découpage redécoupé, {} arrêts entre le renommage \
+         et l'enregistrement de la fin, {} fichiers terminés et vérifiés octet par octet",
         bench.checker.split_layouts,
+        bench.checker.renamed_unrecorded,
         bench.checker.verified.len()
     );
     assert!(!bench.checker.verified.is_empty());

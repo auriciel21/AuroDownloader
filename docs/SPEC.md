@@ -698,6 +698,10 @@ Le planificateur reprend ces tâches avant les autres de leur file. Un arrêt de
   - Le tampon est écrit dès qu'il est plein, ou quand il garde des octets depuis plus de 500 ms.
   - Sans ce délai, une connexion lente ou bridée (section 7.6) garderait des secondes d'octets en mémoire : les points de contrôle ne les enregistreraient pas, et l'avancement affiché avancerait par sauts.
 - Le moteur vide les données sur disque (`fdatasync`) à la fin de chaque segment et à chaque point de contrôle, avant d'enregistrer les compteurs (règle 1 de la section 5.6). Les vidages d'un même fichier sont groupés : un seul à la fois. Une demande faite pendant un vidage en cours attend le suivant, qui couvre toutes les demandes en attente, car un vidage commencé avant la demande ne suffit pas. Des vidages simultanés du même fichier multiplient le temps système et l'attente disque sous Linux (`docs/MESURES.md`, relevé du 2026-10-16). Au point de contrôle, les compteurs sont relevés avant le vidage : les octets écrits pendant le vidage attendent le point suivant. Un compteur enregistré ne recule jamais, sauf à la reprise (section 7.4, étape 1).
+- Un point de contrôle a lieu toutes les 2 s, et aussi dès que les connexions ont remis 32 Mio au système depuis le précédent ; l'intervalle repart alors de lui.
+  - Sans ce seuil, un téléchargement rapide reçoit tout avant son premier vidage, puis attend que le disque écrive tout le fichier : la réception et l'écriture se suivent au lieu de se recouvrir. Mesuré sous WSL, 512 Mio arrivent en 1,4 s, puis le vidage final dure 2,8 s (`docs/MESURES.md`, 2026-11-06).
+  - Un téléchargement lent garde un vidage toutes les 2 s, pas plus.
+  - Après un arrêt brutal, il reste aussi moins à retélécharger.
 - À la fin, le `.part` est vidé, fermé, puis renommé en nom final ; un fichier déjà présent sous ce nom n'est jamais écrasé.
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
 - Essai de phase 1, premier relevé (2026-10-15, Galaxy S25 Ultra, Android 16, moteur compilé avec le NDK pour l'API 26) :
@@ -764,7 +768,7 @@ En flux unique, l'empreinte se calcule au fil de l'eau. Pour un fichier segment�
 | Taille minimale d'un segment | 1 Mio | oui |
 | Connexions au départ / plafond automatique | 4 / 16 | oui |
 | Fenêtre de mesure du débit | 2 s | non |
-| Point de contrôle de l'état | 2 s | non |
+| Point de contrôle de l'état | 2 s, ou 32 Mio reçus depuis le précédent | non |
 | Délai de reprise (base / plafond) | 2 s / 5 min | oui |
 | Échecs avant abandon | 10 | oui |
 | Tampon d'écriture | 256 Kio à 1 Mio | non |

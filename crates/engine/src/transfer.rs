@@ -64,6 +64,10 @@ pub const RETRY_CAP: Duration = Duration::from_secs(5 * 60);
 /// Place que le moteur laisse toujours libre sur le disque de destination (SPEC §7.10).
 pub const KEEP_FREE: u64 = 64 * 1024 * 1024;
 
+/// Volume reçu qui avance le point de contrôle suivant (SPEC §7.5 et §7.10) : un
+/// téléchargement rapide vide pendant qu'il reçoit, pas tout à la fin.
+pub const CHECKPOINT_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Réglages d'une exécution.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -79,6 +83,9 @@ pub struct Options {
     /// Intervalle des points de contrôle (SPEC §7.10 : 2 s) ; l'espace libre se contrôle
     /// au même rythme.
     pub checkpoint_every: Duration,
+    /// Octets remis au système qui avancent le point de contrôle suivant
+    /// ([`CHECKPOINT_BYTES`]).
+    pub checkpoint_bytes: u64,
     /// Seaux de débit de l'exécution (SPEC §7.6) ; vide : aucune limite.
     pub throttle: Throttle,
     /// Mesure de la place libre d'un volume ; les tests la remplacent.
@@ -97,6 +104,7 @@ impl Default for Options {
             min_segment: DEFAULT_MIN_SEGMENT_SIZE,
             buffer: DEFAULT_WRITE_BUFFER,
             checkpoint_every: Duration::from_secs(2),
+            checkpoint_bytes: CHECKPOINT_BYTES,
             throttle: Throttle::default(),
             free_space: io::free_space,
             keep_free: KEEP_FREE,
@@ -471,6 +479,7 @@ async fn execute(
     } else {
         Plan::Fixed(1)
     };
+    part.checkpoint_after(opts.checkpoint_bytes);
     let part = Arc::new(part);
     let ctx = Pool {
         client,
@@ -872,6 +881,14 @@ async fn pool(
                         }
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
+                }
+            }
+            // Assez d'octets reçus depuis le dernier point : le suivant tout de suite, puis
+            // l'intervalle repart de lui (SPEC §7.5). Un signal gardé d'avant un point déjà
+            // pris est ignoré.
+            _ = ctx.part.volume_reached(), if ctx.persist && !handles.is_empty() => {
+                if ctx.part.unsynced() >= ctx.opts.checkpoint_bytes {
+                    checkpoint.reset_immediately();
                 }
             }
             // Le disque se remplit (un autre programme, une autre tâche) : arrêt propre

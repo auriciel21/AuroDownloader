@@ -809,3 +809,50 @@ mod limits_and_space {
         assert_completed(&case, &outcome, "trop.bin", &content(len));
     }
 }
+
+/// Points de contrôle par volume (SPEC §7.5) : un téléchargement rapide enregistre ce
+/// qu'il reçoit sans attendre l'intervalle.
+mod checkpoints {
+    use super::*;
+    use crate::testing::{Pace, same_as_served, serve_file_paced};
+
+    /// Arrêt brutal, à 600 ms, d'un téléchargement qui en dure plus de 1 300 (4 Mio, 4
+    /// connexions à 800 Kio/s), points de contrôle par intervalle hors d'atteinte. Renvoie
+    /// les octets enregistrés, après avoir vérifié que chacun est sur disque, exact.
+    async fn saved_before_a_crash(checkpoint_bytes: u64) -> u64 {
+        let len: u64 = 4 * 1024 * 1024;
+        let pace = Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(20),
+        };
+        let server = serve_file_paced(Arc::new(Mutex::new(FileSite::new(len))), Some(pace));
+        let mut case = new_case(&server.url("/rapide.bin"));
+        let opts = Options {
+            checkpoint_every: Duration::from_secs(3600),
+            checkpoint_bytes,
+            ..opts()
+        };
+        let (_, stop) = watch::channel(false);
+        let run = case.run_opts(&opts, stop);
+        let crashed = tokio::time::timeout(Duration::from_millis(600), run).await;
+        assert!(crashed.is_err(), "téléchargement fini avant l'arrêt");
+
+        let part = case.part("rapide.bin");
+        let segments = crate::store::segments::load_segments(&case.conn, &case.task_id).unwrap();
+        for s in &segments {
+            same_as_served(&part, s.start, s.written).unwrap();
+        }
+        segments.iter().map(|s| s.written).sum()
+    }
+
+    #[tokio::test]
+    async fn a_fast_download_checkpoints_by_volume() {
+        let saved = saved_before_a_crash(256 * 1024).await;
+        assert!(saved >= 256 * 1024, "{saved} octets enregistrés");
+    }
+
+    #[tokio::test]
+    async fn without_a_volume_threshold_only_the_interval_checkpoints() {
+        assert_eq!(saved_before_a_crash(u64::MAX).await, 0);
+    }
+}

@@ -17,7 +17,10 @@
 //!
 //! Le temps du processus avantage les outils qui ne vident pas leurs données : le
 //! système le fait pour eux, hors de leur processus, alors qu'auro paie ses vidages
-//! (règle 1). Une porte tenue sur cette mesure reste donc significative.
+//! (règle 1). Une porte tenue sur cette mesure reste donc significative. Une colonne
+//! indicative y ajoute le temps que le banc passe à vider ce que l'outil a laissé en
+//! mémoire : il s'en approche à armes égales, sans rattraper ce que le système a déjà écrit
+//! de lui-même pendant le téléchargement.
 //!
 //! Chaque grandeur retient sa médiane sur les passages, que le banc alterne entre les
 //! outils. Faire tourner le banc sur une machine au repos. Le résultat est un tableau :
@@ -46,6 +49,11 @@
 //! outil et scénario, défaut 3 ; la médiane est retenue), `AURO_PERF_REAL_URL`,
 //! `AURO_PERF_LOGS` (dossier où garder la sortie d'erreurs de chaque lancement, pour
 //! examiner l'avancement affiché par auro), `AURO_PERF_ENFORCE`.
+//!
+//! Pour profiler : `AURO_PERF_ONLY` ne garde que les scénarios dont le nom contient ce
+//! texte, et `AURO_PERF_WRAP` lance chaque outil par ce programme, appelé avec le nom de
+//! l'outil puis la commande (`wrap auro_-c_16 auro direct …`), par exemple un script qui
+//! la passe à `strace -c` ou à un profileur. Les mesures ne valent alors plus rien.
 
 use std::fs::File;
 use std::io::Read;
@@ -223,6 +231,9 @@ struct Measure {
     cpu: Duration,
     /// Temps processeur du seul processus de l'outil : la mesure de la porte de N-01.
     process_cpu: Duration,
+    /// Temps du processus, plus celui que le banc a passé à vider sur disque ce que
+    /// l'outil a laissé en mémoire (indicatif) : auro paie ses vidages, les autres non.
+    with_flush: Duration,
     bytes: u64,
 }
 
@@ -239,6 +250,11 @@ impl Measure {
     /// Temps processeur du processus par octet, en secondes (porte de N-01).
     fn process_cpu_per_byte(&self) -> f64 {
         self.process_cpu.as_secs_f64() / self.bytes as f64
+    }
+
+    /// Temps du processus et du vidage laissé au banc, par octet (indicatif).
+    fn with_flush_per_byte(&self) -> f64 {
+        self.with_flush.as_secs_f64() / self.bytes as f64
     }
 
     /// Part d'un cœur que coûterait au processus 1 Gbit/s (125 Mo/s), au même coût par
@@ -347,6 +363,14 @@ impl Tool {
     ) -> (Measure, tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let mut cmd = self.command(url, dir.path(), name, ca);
+        if let Some(wrap) = std::env::var_os("AURO_PERF_WRAP") {
+            let mut wrapped = Command::new(wrap);
+            wrapped
+                .arg(self.label().replace(['(', ')'], "").replace(' ', "_"))
+                .arg(cmd.get_program())
+                .args(cmd.get_args());
+            cmd = wrapped;
+        }
         let discard = matches!(self, Tool::Curl(false));
         cmd.stdin(Stdio::null())
             .stdout(if discard {
@@ -368,9 +392,15 @@ impl Tool {
         // l'outil, comme s'il l'avait fait lui-même.
         let own = own_cpu() - own_before;
         let path = dir.path().join(name);
-        if !discard {
+        // Le serveur ne fait plus rien : le temps du banc pendant le vidage est celui du
+        // vidage, que l'outil a laissé à faire.
+        let flush_cpu = if discard {
+            Duration::ZERO
+        } else {
+            let before_flush = own_cpu();
             flush_to_disk(&path);
-        }
+            own_cpu() - before_flush
+        };
         let wall = start.elapsed();
         let cpu = (machine_cpu() - machine_before).saturating_sub(own);
         #[cfg(windows)]
@@ -396,6 +426,7 @@ impl Tool {
             wall,
             cpu,
             process_cpu,
+            with_flush: process_cpu + flush_cpu,
             bytes,
         };
         (measure, dir, path)
@@ -442,6 +473,7 @@ fn median(values: Vec<Measure>) -> Measure {
         wall: mid(values.iter().map(|m| m.wall).collect()),
         cpu: mid(values.iter().map(|m| m.cpu).collect()),
         process_cpu: mid(values.iter().map(|m| m.process_cpu).collect()),
+        with_flush: mid(values.iter().map(|m| m.with_flush).collect()),
         // Le banc vérifie que chaque passage a reçu le fichier entier.
         bytes: values[0].bytes,
     }
@@ -477,13 +509,15 @@ fn scenario(rows: &mut Vec<Row>, s: Scenario<'_>, runs: u64, check: &dyn Fn(&Pat
     for (tool, samples) in s.tools.iter().zip(samples) {
         let measure = median(samples);
         eprintln!(
-            "  {:<32} {:<18} {:>8.1} Mio/s  {:>6.2} s  cpu machine {:>5.2} s, processus {:>5.2} s",
+            "  {:<32} {:<18} {:>8.1} Mio/s  {:>6.2} s  cpu machine {:>5.2} s, processus {:>5.2} s, \
+             avec vidage {:>5.2} s",
             s.name,
             tool.label(),
             measure.mib_per_s(),
             measure.wall.as_secs_f64(),
             measure.cpu.as_secs_f64(),
-            measure.process_cpu.as_secs_f64()
+            measure.process_cpu.as_secs_f64(),
+            measure.with_flush.as_secs_f64()
         );
         rows.push(Row {
             scenario: s.name,
@@ -514,14 +548,16 @@ fn report(rows: &[Row]) -> Vec<String> {
     eprintln!();
     eprintln!(
         "| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processeur du processus \
-         par octet auro / aria2 | Processeur machine par octet auro / aria2 (indicatif) | \
-         Cœur à 1 Gbit/s (processus) |\n| --- | --- | --- | --- | --- | --- | --- |"
+         par octet auro / aria2 | Processus et vidage laissé au banc, auro / aria2 (indicatif) \
+         | Processeur machine par octet auro / aria2 (indicatif) | Cœur à 1 Gbit/s \
+         (processus) |\n| --- | --- | --- | --- | --- | --- | --- | --- |"
     );
     for row in rows {
-        let (speed, cpu, machine) = match (row.tool, reference(rows, row)) {
+        let (speed, cpu, flushed, machine) = match (row.tool, reference(rows, row)) {
             (Tool::Auro(connections), Some(aria2)) => {
                 let speed = row.measure.mib_per_s() / aria2.mib_per_s();
                 let cpu = row.measure.process_cpu_per_byte() / aria2.process_cpu_per_byte();
+                let flushed = row.measure.with_flush_per_byte() / aria2.with_flush_per_byte();
                 let machine = row.measure.cpu_per_byte() / aria2.cpu_per_byte();
                 let (speed_ok, cpu_ok) = (speed >= GATE_SPEED, cpu <= GATE_CPU);
                 if connections.is_some() && !(speed_ok && cpu_ok) {
@@ -535,13 +571,14 @@ fn report(rows: &[Row]) -> Vec<String> {
                 (
                     format!("{speed:.2}{}", mark(speed_ok)),
                     format!("{cpu:.2}{}", mark(cpu_ok)),
+                    format!("{flushed:.2}"),
                     format!("{machine:.2}"),
                 )
             }
-            _ => (String::new(), String::new(), String::new()),
+            _ => Default::default(),
         };
         eprintln!(
-            "| {} | {} | {:.1} | {speed} | {cpu} | {machine} | {:.1} % |",
+            "| {} | {} | {:.1} | {speed} | {cpu} | {flushed} | {machine} | {:.1} % |",
             row.scenario,
             row.tool.label(),
             row.measure.mib_per_s(),
@@ -610,7 +647,14 @@ fn throughput_and_cpu_against_aria2() {
             Some(&ca),
         ),
     ];
+    let only = std::env::var("AURO_PERF_ONLY").ok();
     for (name, server, tools, ca) in &servers {
+        if only
+            .as_ref()
+            .is_some_and(|only| !name.contains(only.as_str()))
+        {
+            continue;
+        }
         let url = server.url("/banc.bin");
         let s = Scenario {
             name,
