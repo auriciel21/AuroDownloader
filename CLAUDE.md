@@ -50,6 +50,9 @@ téléchargement.
   par `engine stop` et vérifier qu'aucun `aurod` d'essai ne reste.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
+- `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
+  Tauri (`tauri`, hors de l'espace de travail Cargo) de l'application de bureau, au
+  périmètre identique, et leurs mesures (`README.md`) ; ne font pas partie du produit.
 
 ## Commandes
 

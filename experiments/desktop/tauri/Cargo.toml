@@ -1,0 +1,23 @@
+[package]
+name = "auro-tauri"
+version = "0.1.0"
+description = "Prototype Tauri de l'application de bureau (experiments/desktop/README.md)"
+edition = "2024"
+publish = false
+
+# Hors de l'espace de travail du projet : ses dépendances ne pèsent pas sur la CI.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+auro-engine = { path = "../../../crates/engine" }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tokio = { version = "1", features = ["io-util", "sync", "macros"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

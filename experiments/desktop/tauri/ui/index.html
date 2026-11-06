@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AuroDownloader</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <form id="add-form">
+      <input id="url" type="url" required autocomplete="off" data-i18n-placeholder="Adresse à télécharger"
+             data-i18n-label="Adresse à télécharger">
+      <button id="add" type="submit" data-i18n="Ajouter" data-i18n-label="Ajouter le téléchargement"></button>
+    </form>
+  </header>
+  <main>
+    <p id="error" role="alert" hidden></p>
+    <ul id="tasks" data-i18n-label="Téléchargements"></ul>
+  </main>
+  <footer id="status" aria-live="polite"></footer>
+  <template id="row">
+    <li class="task">
+      <div class="info">
+        <strong class="name"></strong>
+        <progress max="1" value="0"></progress>
+        <span class="detail"></span>
+      </div>
+      <button type="button" class="toggle"></button>
+      <button type="button" class="cancel"></button>
+    </li>
+  </template>
+  <script src="app.js"></script>
+</body>
+</html>

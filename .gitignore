@@ -11,3 +11,6 @@
 
 # Essais Android construits
 /experiments/android-saf/build/
+
+# Prototypes de bureau : schémas générés par Tauri
+/experiments/desktop/tauri/gen/
