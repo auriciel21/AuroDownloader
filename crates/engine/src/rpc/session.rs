@@ -21,7 +21,7 @@ const OUTGOING: usize = 256;
 /// Sujets d'un abonnement (`events.subscribe`).
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Topics {
-    /// `task.added`, `task.stateChanged`, `task.updated`.
+    /// `task.added`, `task.stateChanged`, `task.updated`, `task.removed`.
     pub tasks: bool,
     /// `queue.updated`.
     pub queues: bool,
@@ -303,6 +303,10 @@ async fn describe(
                 }),
             ))
         }
+        Event::Removed { rev, task_id } if topics.tasks => Some(notification(
+            "task.removed",
+            json!({"rev": rev, "taskId": task_id}),
+        )),
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
             let snapshot = engine.snapshot().await.ok()?;
             let queue = snapshot.queues.iter().find(|q| q.id == queue_id)?;

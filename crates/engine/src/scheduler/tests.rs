@@ -165,6 +165,84 @@ async fn each_run_announces_the_name_and_size_it_prepared() {
     engine.shutdown().await;
 }
 
+/// Attend l'annonce du retrait de `task_id`.
+async fn wait_removed(events: &mut broadcast::Receiver<Event>, task_id: &str) {
+    let found = timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::Removed { task_id: t, .. }) if t == task_id => return,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+            }
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "retrait de {task_id} jamais annoncé");
+}
+
+#[tokio::test]
+async fn finished_tasks_are_removed_with_or_without_their_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, fast) = fast_site(SIZE);
+    let slow = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+
+    // Terminées : l'une garde son fichier, l'autre le perd.
+    let keep = engine
+        .add(add(&fast.url("/garde.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &keep, TaskState::Completed).await;
+    let gone = engine
+        .add(add(&fast.url("/jette.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &gone, TaskState::Completed).await;
+    engine.remove(&keep, false).await.unwrap();
+    wait_removed(&mut events, &keep).await;
+    assert_file(dir.path(), "garde.bin", SIZE);
+    engine.remove(&gone, true).await.unwrap();
+    wait_removed(&mut events, &gone).await;
+    assert!(!dir.path().join("jette.bin").exists());
+    for id in [&keep, &gone] {
+        assert!(matches!(
+            engine.get(id).await,
+            Err(EngineError::Store(StoreError::TaskNotFound { .. }))
+        ));
+    }
+
+    // En pause : refusée tant qu'elle n'est pas annulée ; annulée, son `.part` part avec.
+    let paused = engine
+        .add(add(&slow.url("/lente.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &paused, TaskState::Active).await;
+    engine.pause(&paused).await.unwrap();
+    wait_state(&mut events, &paused, TaskState::Paused).await;
+    let part = dir.path().join("lente.bin.part");
+    assert!(part.exists());
+    assert!(matches!(
+        engine.remove(&paused, true).await,
+        Err(EngineError::InvalidState { .. })
+    ));
+    assert!(part.exists(), "rien n'est supprimé d'une tâche refusée");
+    engine.cancel(&paused, false).await.unwrap();
+    wait_state(&mut events, &paused, TaskState::Cancelled).await;
+    assert!(part.exists());
+    engine.remove(&paused, true).await.unwrap();
+    wait_removed(&mut events, &paused).await;
+    assert!(!part.exists());
+    assert!(matches!(
+        engine.remove(&paused, true).await,
+        Err(EngineError::Store(StoreError::TaskNotFound { .. }))
+    ));
+
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(snapshot.tasks.is_empty(), "plus aucune tâche");
+    engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_queue_never_runs_more_tasks_than_its_limit() {
     let dir = tempfile::tempdir().unwrap();
@@ -471,7 +549,8 @@ async fn each_change_raises_the_revision_by_one() {
                 Event::Added { rev, .. }
                 | Event::QueueUpdated { rev, .. }
                 | Event::TaskUpdated { rev, .. }
-                | Event::Prepared { rev, .. } => revs.push(rev),
+                | Event::Prepared { rev, .. }
+                | Event::Removed { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
                     if to == TaskState::Completed {

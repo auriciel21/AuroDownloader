@@ -257,6 +257,69 @@ async fn an_added_task_is_followed_to_completion() {
 }
 
 #[tokio::test]
+async fn finished_tasks_are_removed_and_announced() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(64 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let done = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/fini.bin")}], "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let waiting = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/attente.bin")}], "destDir": dir_text(dir.path()),
+                   "startPaused": true}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == done.as_str() && p["to"] == "completed"
+    })
+    .await;
+
+    let result = c
+        .result(
+            "task.remove",
+            json!({"taskIds": [done, waiting, "inconnue"], "deleteFiles": false}),
+        )
+        .await;
+    assert_eq!(result["removed"], 1);
+    assert_eq!(result["taskIds"], json!([done]));
+    let codes: Vec<&str> = result["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["INVALID_STATE", "TASK_NOT_FOUND"]);
+    let removed = c.notification("task.removed", |_| true).await;
+    assert_eq!(removed["taskId"], done.as_str());
+    assert!(removed["rev"].is_u64());
+    assert!(dir.path().join("fini.bin").exists(), "fichier gardé");
+    assert_eq!(
+        c.error_code("task.get", json!({"taskId": done})).await,
+        "TASK_NOT_FOUND"
+    );
+    assert_eq!(
+        c.error_code("task.remove", json!({"taskIds": []})).await,
+        "INVALID_PARAMS"
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_file_name_chosen_at_preparation_is_announced() {
     // Deux tâches du même nom dans le même dossier : chacune annonce le sien, celui qu'un
     // client doit ouvrir une fois la tâche terminée.

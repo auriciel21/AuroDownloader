@@ -126,6 +126,11 @@ pub enum Event {
         file_name: Option<String>,
         total_bytes: Option<u64>,
     },
+    /// Tâche retirée (`task.remove`) : elle n'existe plus.
+    Removed {
+        rev: u64,
+        task_id: String,
+    },
     Progress {
         rev: u64,
         task_id: String,
@@ -202,6 +207,11 @@ enum Command {
     Pause(String, Reply<()>),
     Resume(String, Reply<()>),
     Cancel {
+        task_id: String,
+        delete_files: bool,
+        reply: Reply<()>,
+    },
+    Remove {
         task_id: String,
         delete_files: bool,
         reply: Reply<()>,
@@ -405,6 +415,19 @@ impl Engine {
     pub async fn cancel(&self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
         let task_id = task_id.to_owned();
         self.ask(|reply| Command::Cancel {
+            task_id,
+            delete_files,
+            reply,
+        })
+        .await
+    }
+
+    /// Retire une tâche finie (terminée, en échec ou annulée) ; avec `delete_files`,
+    /// supprime d'abord son fichier : le fichier final d'une tâche terminée, le `.part`
+    /// des autres.
+    pub async fn remove(&self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::Remove {
             task_id,
             delete_files,
             reply,
@@ -729,6 +752,13 @@ impl Scheduler {
             } => {
                 let _ = reply.send(self.cancel(&task_id, delete_files));
             }
+            Command::Remove {
+                task_id,
+                delete_files,
+                reply,
+            } => {
+                let _ = reply.send(self.remove(&task_id, delete_files));
+            }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
             }
@@ -995,6 +1025,30 @@ impl Scheduler {
         }
     }
 
+    /// Retire une tâche finie. Le fichier demandé est supprimé d'abord : si cela échoue, la
+    /// tâche reste, et l'utilisateur peut réessayer.
+    fn remove(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        let finished = matches!(
+            task.state,
+            TaskState::Completed | TaskState::Failed | TaskState::Cancelled
+        );
+        if !finished || self.running.contains_key(task_id) {
+            return Err(Self::invalid(&task, "retrait"));
+        }
+        if delete_files {
+            match task.state {
+                TaskState::Completed => delete_final(&task)?,
+                _ => delete_part(&task)?,
+            }
+        }
+        tasks::remove_task(&mut self.conn, task_id)?;
+        self.broken.remove(task_id);
+        let id = task_id.to_owned();
+        self.emit(|rev| Event::Removed { rev, task_id: id });
+        Ok(())
+    }
+
     fn begin_shutdown(&mut self, done: Option<oneshot::Sender<()>>) {
         for run in self.running.values_mut() {
             if run.then == Then::Keep && !*run.stop.borrow() {
@@ -1082,7 +1136,18 @@ fn delete_part(task: &TaskRow) -> Result<(), EngineError> {
     let Some(name) = &task.file_name else {
         return Ok(());
     };
-    let path = part_path(&Path::new(&task.dest_dir).join(name));
+    delete_file(part_path(&Path::new(&task.dest_dir).join(name)))
+}
+
+/// Supprime le fichier final d'une tâche terminée, s'il existe encore.
+fn delete_final(task: &TaskRow) -> Result<(), EngineError> {
+    let Some(name) = &task.file_name else {
+        return Ok(());
+    };
+    delete_file(Path::new(&task.dest_dir).join(name))
+}
+
+fn delete_file(path: PathBuf) -> Result<(), EngineError> {
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

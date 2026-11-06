@@ -152,8 +152,8 @@ pub async fn list(rpc: &mut Rpc, states: &[String], queue: Option<&str>) -> Resu
     Ok(())
 }
 
-/// `task.pause`, `task.resume` ou `task.cancel` sur plusieurs tâches ; échoue si l'une
-/// au moins est refusée, après avoir appliqué les autres.
+/// `task.pause`, `task.resume`, `task.cancel` ou `task.remove` sur plusieurs tâches ;
+/// échoue si l'une au moins est refusée, après avoir appliqué les autres.
 pub async fn act(rpc: &mut Rpc, method: &str, ids: &[String], extra: Value) -> Result<()> {
     let mut params = json!({"taskIds": ids});
     if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {

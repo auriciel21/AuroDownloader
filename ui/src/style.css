@@ -127,11 +127,19 @@ header {
 #error-text { flex: 1; }
 [hidden] { display: none !important; }
 
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 0;
+}
+
 #filters {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 8px 12px 0;
 }
 #filters button[aria-pressed="true"] {
   background: var(--accent);

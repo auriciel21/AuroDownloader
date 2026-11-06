@@ -30,7 +30,12 @@
     <button type="button" id="error-close" data-i18n="Fermer" data-i18n-label="Fermer le message">Fermer</button>
   </div>
 
-  <nav id="filters" data-i18n-label="Filtres" aria-label="Filtres"></nav>
+  <div class="toolbar">
+    <nav id="filters" data-i18n-label="Filtres" aria-label="Filtres"></nav>
+    <button type="button" id="clear-finished" hidden
+      data-i18n="Retirer les tâches finies"
+      data-i18n-label="Retirer de la liste les tâches terminées et annulées ; les fichiers téléchargés restent">Retirer les tâches finies</button>
+  </div>
 
   <main>
     <ul id="tasks" data-i18n-label="Téléchargements" aria-label="Téléchargements"></ul>
@@ -87,6 +92,7 @@
           <button type="button" class="cancel"></button>
           <button type="button" class="open" hidden></button>
           <button type="button" class="reveal" hidden></button>
+          <button type="button" class="remove" hidden></button>
         </span>
       </div>
       <progress max="1" value="0"></progress>

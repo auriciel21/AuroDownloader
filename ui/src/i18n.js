@@ -32,6 +32,11 @@ export const EN = {
   "Annuler": "Cancel",
   "Ouvrir": "Open",
   "Afficher dans le dossier": "Show in folder",
+  "Retirer": "Remove",
+  "Retirer {0} de la liste": "Remove {0} from the list",
+  "Retirer les tâches finies": "Remove finished tasks",
+  "Retirer de la liste les tâches terminées et annulées ; les fichiers téléchargés restent":
+    "Remove completed and cancelled tasks from the list; downloaded files stay",
   "Mettre en pause {0}": "Pause {0}",
   "Reprendre {0}": "Resume {0}",
   "Relancer {0}": "Retry {0}",

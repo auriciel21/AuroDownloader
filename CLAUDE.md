@@ -81,7 +81,7 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 # d'accès par défaut de l'utilisateur). Pour un essai isolé : --endpoint et
 # `engine start --db`, puis `engine stop`.
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
-cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; engine stop
+cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement

@@ -534,10 +534,10 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
-Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : `fileName`, `checksum`, `headers`, `idempotencyKey` et plusieurs sources ;
   - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
@@ -553,6 +553,17 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   `task.updated` avec `fileName`, `displayName` et `totalBytes`, et une nouvelle révision.
   L'annonce peut suivre la fin d'une tâche rapide. Un client qui ouvre le fichier d'une
   tâche prend ce `fileName`, qui peut différer du nom de l'adresse (« nom (1).bin »).
+- **Retrait** (`task.remove`, depuis le 2026-11-07) :
+  - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
+    sont refusées par `INVALID_STATE` et s'annulent d'abord ;
+  - la ligne `history` reste ; une tâche en échec ou annulée, qui n'en a pas encore, reçoit
+    la sienne au retrait, dans la même transaction (section 5.6, règle 4) ;
+  - avec `deleteFiles`, le fichier est supprimé avant la tâche : le fichier final d'une
+    tâche terminée, le `.part` des autres. Si la suppression échoue, la tâche reste ;
+  - chaque retrait est annoncé par `task.removed` (sujet `tasks`), avec une nouvelle
+    révision ;
+  - le résultat porte `removed`, le nombre de tâches retirées, en plus de `taskIds` et
+    `errors`, comme les autres actions groupées.
 - **Résultat d'une action groupée** : `task.pause`, `task.resume` et `task.cancel` renvoient `taskIds[]`, les tâches acceptées, et `errors[]`, chaque refus avec `taskId`, `code` et `message`. Une tâche refusée n'empêche pas les autres.
 
 ### 6.6 Exemple d'échange

@@ -2,7 +2,7 @@
 // globale, préférences. Toute action passe par le protocole du moteur (SPEC §6) ; la page
 // ne garde que ce qu'elle affiche.
 import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
-import { TaskStore, FILTERS, canPause, canResume, canCancel } from "./model.js";
+import { TaskStore, FILTERS, canPause, canResume, canCancel, canRemove } from "./model.js";
 import { tauriHost } from "./host.js";
 
 const host = tauriHost();
@@ -70,6 +70,9 @@ function renderFilters() {
     button.textContent = t(FILTER_LABELS[f], counts[f]);
     button.setAttribute("aria-pressed", String(f === filter));
   }
+  const clear = $("clear-finished");
+  clear.hidden = counts.completed + counts.cancelled === 0;
+  clear.disabled = !connected;
 }
 
 function taskName(task) {
@@ -102,8 +105,10 @@ function makeRow(taskId) {
     const method = canResume(state) ? "task.resume" : "task.pause";
     act(method, { taskIds: [taskId] });
   });
+  // Une tâche annulée ne reprend jamais : son fichier partiel ne servirait plus.
   row.querySelector(".cancel").addEventListener("click", () =>
-    act("task.cancel", { taskIds: [taskId], deleteFiles: false }));
+    act("task.cancel", { taskIds: [taskId], deleteFiles: true }));
+  row.querySelector(".remove").addEventListener("click", () => removeTasks([taskId]));
   row.querySelector(".open").addEventListener("click", () => withFile(taskId, host.openFile));
   row.querySelector(".reveal").addEventListener("click", () => withFile(taskId, host.revealFile));
   return row;
@@ -175,6 +180,22 @@ function renderRow(taskId) {
   reveal.textContent = t("Afficher dans le dossier");
   reveal.setAttribute("aria-label", t("Afficher {0} dans son dossier", name));
   reveal.hidden = !done;
+
+  const remove = row.querySelector(".remove");
+  remove.textContent = t("Retirer");
+  remove.setAttribute("aria-label", t("Retirer {0} de la liste", name));
+  remove.hidden = !canRemove(task.state);
+  remove.disabled = !connected;
+}
+
+/// Retire des tâches finies : un fichier téléchargé reste, un fichier partiel (échec,
+/// annulation) part avec sa tâche.
+async function removeTasks(ids) {
+  const done = ids.filter((id) => store.tasks.get(id)?.state === "completed");
+  const others = ids.filter((id) => !done.includes(id));
+  for (const [taskIds, deleteFiles] of [[done, false], [others, true]]) {
+    if (taskIds.length) await act("task.remove", { taskIds, deleteFiles });
+  }
 }
 
 function isExecutable(name) {
@@ -190,13 +211,22 @@ function renderList() {
     return rows.get(task.taskId);
   });
   const keep = new Set(wanted);
-  for (const child of [...list.children]) if (!keep.has(child)) child.remove();
+  // Une ligne qui s'en va avec le focus le confie à celle qui prend sa place.
+  const children = [...list.children];
+  const focused = children.findIndex((row) => row.contains(document.activeElement));
+  const losing = focused >= 0 && !keep.has(children[focused]);
+  for (const child of children) if (!keep.has(child)) child.remove();
   wanted.forEach((row, i) => {
     if (list.children[i] !== row) list.insertBefore(row, list.children[i] ?? null);
   });
   for (const id of rows.keys()) if (!store.tasks.has(id)) rows.delete(id);
   $("empty").hidden = wanted.length > 0;
   renderFilters();
+  if (losing) {
+    const next = wanted[Math.min(focused, wanted.length - 1)];
+    const target = next?.querySelector(".buttons button:not([hidden]):not(:disabled)");
+    (target ?? $("filters").querySelector('[aria-pressed="true"]'))?.focus();
+  }
 }
 
 function renderSummary() {
@@ -444,6 +474,12 @@ async function start() {
   $("dest-change").addEventListener("click", () => chooseFolder("dest-change"));
   $("pref-dest-change").addEventListener("click", () => chooseFolder("pref-dest-change"));
   $("error-close").addEventListener("click", () => showError(""));
+  $("clear-finished").addEventListener("click", () => {
+    const finished = [...store.tasks.values()]
+      .filter((task) => task.state === "completed" || task.state === "cancelled")
+      .map((task) => task.taskId);
+    removeTasks(finished);
+  });
   $("limit").addEventListener("change", changeLimit);
   $("settings-open").addEventListener("click", () => $("settings").showModal());
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));

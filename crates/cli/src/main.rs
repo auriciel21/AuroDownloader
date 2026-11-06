@@ -2,10 +2,10 @@
 //!
 //! La CLI est un client du moteur `aurod`, qu'elle joint par le protocole JSON-RPC sur le
 //! point d'accès local (SPEC §6) et qu'elle démarre s'il ne tourne pas. Commandes : `add`,
-//! `get` (ajoute et suit jusqu'à la fin), `list`, `pause`, `resume`, `cancel`, `watch`,
-//! `limit` (limites de débit), `queue`, `engine`. Sans moteur : `probe` prépare une tâche sans rien télécharger
-//! (SPEC §7.1), `db migrate` crée ou met à jour une base, et `direct` exécute une tâche
-//! avec la bibliothèque du moteur (bancs, dépannage).
+//! `get` (ajoute et suit jusqu'à la fin), `list`, `pause`, `resume`, `cancel`, `remove`,
+//! `watch`, `limit` (limites de débit), `queue`, `engine`. Sans moteur : `probe` prépare
+//! une tâche sans rien télécharger (SPEC §7.1), `db migrate` crée ou met à jour une base,
+//! et `direct` exécute une tâche avec la bibliothèque du moteur (bancs, dépannage).
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +114,15 @@ enum Command {
         #[arg(required = true)]
         task_ids: Vec<String>,
         /// Supprimer aussi les fichiers partiels
+        #[arg(long)]
+        delete_files: bool,
+    },
+    /// Retire de la liste des tâches finies (terminées, en échec ou annulées)
+    Remove {
+        #[arg(required = true)]
+        task_ids: Vec<String>,
+        /// Supprimer aussi le fichier : le fichier final d'une tâche terminée, le fichier
+        /// partiel des autres
         #[arg(long)]
         delete_files: bool,
     },
@@ -322,6 +331,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 } => {
                     let extra = json!({"deleteFiles": delete_files});
                     remote::act(&mut rpc, "task.cancel", &task_ids, extra).await
+                }
+                Command::Remove {
+                    task_ids,
+                    delete_files,
+                } => {
+                    let extra = json!({"deleteFiles": delete_files});
+                    remote::act(&mut rpc, "task.remove", &task_ids, extra).await
                 }
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
                 Command::Limit { rate, task, queue } => {

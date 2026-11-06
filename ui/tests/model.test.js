@@ -1,7 +1,7 @@
 // Révisions et état des tâches (SPEC §6.10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TaskStore, inFilter, canCancel, canPause, canResume } from "../src/model.js";
+import { TaskStore, inFilter, canCancel, canPause, canRemove, canResume } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
   taskId: id, state, fileName: `${id}.bin`, doneBytes: 0, totalBytes: 100, pauseReason: null, errorCode: null, ...extra,
@@ -99,6 +99,21 @@ test("un nouvel instantané après reconnexion repart de sa révision, même plu
   assert.ok(!store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "paused", to: "queued" }).resync);
 });
 
+test("une tâche retirée quitte la liste, dans l'ordre des révisions", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "completed"), task("b", "failed")]));
+  const removed = store.apply("task.removed", { rev: 2, taskId: "a" });
+  assert.ok(removed.list && !removed.resync);
+  assert.deepEqual([...store.tasks.keys()], ["b"]);
+  // Déjà absente (instantané plus récent) : sans effet, sans rechargement.
+  const again = store.apply("task.removed", { rev: 3, taskId: "a" });
+  assert.ok(!again.list && !again.resync);
+  assert.equal(store.rev, 3);
+  // Une révision sautée reste un trou.
+  assert.ok(store.apply("task.removed", { rev: 5, taskId: "b" }).resync);
+  assert.equal(store.tasks.size, 0);
+});
+
 test("filtres, ordre, compteurs et débit", () => {
   const store = new TaskStore();
   store.load(snapshot(1, [
@@ -119,4 +134,7 @@ test("actions permises par la table des états (SPEC §5.5)", () => {
   assert.ok(canResume("paused") && canResume("failed") && !canResume("completed"));
   // Une tâche en échec ne peut pas être annulée, seulement relancée.
   assert.ok(!canCancel("failed") && !canCancel("completed") && canCancel("paused"));
+  // Seules les tâches finies se retirent ; les autres s'annulent d'abord.
+  assert.ok(canRemove("completed") && canRemove("failed") && canRemove("cancelled"));
+  assert.ok(!canRemove("paused") && !canRemove("active") && !canRemove("queued"));
 });

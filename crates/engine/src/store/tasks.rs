@@ -580,6 +580,58 @@ pub fn complete_task(
     Ok(())
 }
 
+/// Retire une tâche finie (`completed`, `failed` ou `cancelled`) : sa ligne et, en
+/// cascade, ses sources, segments et en-têtes. La ligne `history` survit (SPEC §5.3) ;
+/// une tâche en échec ou annulée, qui n'en a pas encore, reçoit la sienne ici, dans la
+/// même transaction. Les fichiers ne sont pas touchés.
+pub fn remove_task(conn: &mut Connection, task_id: &str) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let task = load_task(&tx, task_id)?;
+    if !matches!(
+        task.state,
+        TaskState::Completed | TaskState::Failed | TaskState::Cancelled
+    ) {
+        return Err(StoreError::BadTransition {
+            task_id: task_id.to_owned(),
+            from: task.state.as_sql(),
+            to: "retirée",
+        });
+    }
+    let recorded: bool = tx
+        .query_row(
+            "SELECT 1 FROM history WHERE task_id = ?1",
+            [task_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !recorded {
+        let url: Option<String> = tx
+            .query_row(
+                "SELECT url FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        // Le nom d'hôte seulement : l'adresse complète peut porter un jeton (SPEC §8.2).
+        let host = url
+            .as_deref()
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned));
+        tx.execute(
+            "INSERT INTO history (id, task_id, display_name, final_path, total_bytes, source_host,
+                                  final_state, finished_at)
+             SELECT ?2, id, display_name, NULL, total_bytes, ?3, state,
+                    COALESCE(finished_at, ?4)
+             FROM tasks WHERE id = ?1",
+            params![task_id, new_id(), host, now_ms()],
+        )?;
+    }
+    tx.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// La file `queue_id` existe-t-elle ?
 pub fn queue_exists(conn: &Connection, queue_id: &str) -> Result<bool, StoreError> {
     Ok(conn
@@ -999,5 +1051,113 @@ mod tests {
             (path.as_str(), host.as_str(), state.as_str()),
             ("/dl/f.iso", "exemple.org", "completed")
         );
+    }
+
+    #[test]
+    fn only_finished_tasks_are_removed_and_their_history_stays() {
+        let mut conn = open_in_memory().unwrap();
+        let history = |conn: &Connection, id: &str| -> Vec<(String, Option<String>, String)> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT final_state, final_path, source_host FROM history WHERE task_id = ?1",
+                )
+                .unwrap();
+            stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+
+        // En file, en cours, en pause : refusées, rien ne change.
+        let (busy, _) = new_http_task(&mut conn);
+        for change in [
+            None,
+            Some(Change::to(TaskState::Active)),
+            Some(Change {
+                pause_reason: Some(PauseReason::User),
+                ..Change::to(TaskState::Paused)
+            }),
+        ] {
+            if let Some(change) = change {
+                change_state(&mut conn, &busy, &change).unwrap();
+            }
+            assert!(matches!(
+                remove_task(&mut conn, &busy),
+                Err(StoreError::BadTransition { .. })
+            ));
+            assert!(load_task(&conn, &busy).is_ok());
+        }
+        assert!(matches!(
+            remove_task(&mut conn, "inconnue"),
+            Err(StoreError::TaskNotFound { .. })
+        ));
+
+        // Terminée : sa ligne d'historique existe déjà, elle n'est pas doublée.
+        let (done, source_id) = new_http_task(&mut conn);
+        let prep = Preparation {
+            source_id: &source_id,
+            accepts_ranges: true,
+            etag: None,
+            last_modified: None,
+            total_bytes: Some(10),
+            file_name: "f.iso",
+        };
+        save_preparation(&mut conn, &done, &prep, &initial_split(10, 1, 1)).unwrap();
+        change_state(&mut conn, &done, &Change::to(TaskState::Active)).unwrap();
+        complete_task(&mut conn, &done, "/dl/f.iso", 10).unwrap();
+        remove_task(&mut conn, &done).unwrap();
+        assert!(matches!(
+            load_task(&conn, &done),
+            Err(StoreError::TaskNotFound { .. })
+        ));
+        assert_eq!(
+            history(&conn, &done),
+            [(
+                "completed".into(),
+                Some("/dl/f.iso".into()),
+                "exemple.org".into()
+            )]
+        );
+
+        // En échec, puis annulée : chacune reçoit sa ligne au retrait ; sources et
+        // segments partent avec la tâche.
+        for (to, error) in [
+            (TaskState::Failed, Some(("HTTP_STATUS", "404"))),
+            (TaskState::Cancelled, None),
+        ] {
+            let (id, source_id) = new_http_task(&mut conn);
+            let prep = Preparation {
+                source_id: &source_id,
+                accepts_ranges: true,
+                etag: None,
+                last_modified: None,
+                total_bytes: Some(10),
+                file_name: "g.iso",
+            };
+            save_preparation(&mut conn, &id, &prep, &initial_split(10, 2, 1)).unwrap();
+            change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+            change_state(
+                &mut conn,
+                &id,
+                &Change {
+                    error,
+                    ..Change::to(to)
+                },
+            )
+            .unwrap();
+            remove_task(&mut conn, &id).unwrap();
+            assert_eq!(
+                history(&conn, &id),
+                [(to.as_sql().into(), None, "exemple.org".into())]
+            );
+            let left = |table: &str| {
+                count(
+                    &conn,
+                    &format!("SELECT COUNT(*) FROM {table} WHERE task_id = '{id}'"),
+                )
+            };
+            assert_eq!((left("sources"), left("segments")), (0, 0));
+        }
+        assert!(load_task(&conn, &busy).is_ok(), "les autres restent");
     }
 }

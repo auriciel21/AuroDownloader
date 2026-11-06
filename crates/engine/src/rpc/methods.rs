@@ -150,6 +150,13 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let delete_files = p.bool("deleteFiles")?;
             for_each(ctx, &p, Action::Cancel { delete_files }).await
         }
+        "task.remove" => {
+            let delete_files = p.bool("deleteFiles")?;
+            let mut result = for_each(ctx, &p, Action::Remove { delete_files }).await?;
+            // SPEC §6.4 : le nombre de tâches retirées.
+            result["removed"] = json!(result["taskIds"].as_array().map_or(0, Vec::len));
+            Ok(result)
+        }
         "queue.list" => {
             let queues = ctx.engine.snapshot().await?.queues;
             Ok(json!({"items": queues.iter().map(queue_json).collect::<Vec<_>>()}))
@@ -318,6 +325,7 @@ enum Action {
     Pause,
     Resume,
     Cancel { delete_files: bool },
+    Remove { delete_files: bool },
 }
 
 /// Applique `action` à chaque tâche de `taskIds`. Les tâches refusées n'empêchent pas
@@ -329,6 +337,7 @@ async fn for_each(ctx: &Ctx, p: &Params, action: Action) -> Result<Value, RpcErr
             Action::Pause => ctx.engine.pause(&id).await,
             Action::Resume => ctx.engine.resume(&id).await,
             Action::Cancel { delete_files } => ctx.engine.cancel(&id, delete_files).await,
+            Action::Remove { delete_files } => ctx.engine.remove(&id, delete_files).await,
         };
         match result {
             Ok(()) => done.push(id),

@@ -34,6 +34,8 @@ export function inFilter(task, filter) {
 export const canPause = (state) => ["queued", "active", "retry_wait"].includes(state);
 export const canResume = (state) => ["paused", "failed"].includes(state);
 export const canCancel = (state) => ["queued", "active", "paused", "retry_wait", "seeding"].includes(state);
+// Retrait de la liste (`task.remove`) : tâches finies seulement.
+export const canRemove = (state) => ["completed", "failed", "cancelled"].includes(state);
 
 /// Ce qu'un changement demande à l'affichage.
 function outcome() {
@@ -116,6 +118,7 @@ export class TaskStore {
       case "task.added":
       case "task.stateChanged":
       case "task.updated":
+      case "task.removed":
       case "queue.updated":
         break;
       default:
@@ -164,6 +167,10 @@ export class TaskStore {
         result.changed.add(params.taskId);
         break;
       }
+      case "task.removed":
+        // Déjà absente : rien à redessiner, rien de perdu.
+        if (this.tasks.delete(params.taskId)) result.list = true;
+        break;
       case "queue.updated":
         this.queues.set(params.queue.queueId, params.queue);
         break;
