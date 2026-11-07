@@ -1,7 +1,7 @@
 // Révisions et état des tâches (SPEC §6.10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TaskStore, inFilter, canCancel, canPause, canRemove, canResume } from "../src/model.js";
+import { TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
   taskId: id, state, fileName: `${id}.bin`, doneBytes: 0, totalBytes: 100, pauseReason: null, errorCode: null, ...extra,
@@ -130,19 +130,74 @@ test("les limites globales viennent de l'instantané, puis de limits.updated", (
   assert.equal(store.limits, null);
 });
 
-test("filtres, ordre, compteurs et débit", () => {
+test("vues de l'arborescence, compteurs et débit", () => {
   const store = new TaskStore();
   store.load(snapshot(1, [
-    task("0001", "completed"), task("0002", "active"), task("0003", "cancelled"),
-    task("0004", "failed"), task("0005", "paused"), task("0006", "retry_wait"),
+    task("0001", "completed", { fileName: "film.mkv" }), task("0002", "active"), task("0003", "cancelled"),
+    task("0004", "failed", { fileName: null, displayName: "notes.PDF" }), task("0005", "paused"),
+    task("0006", "retry_wait", { queueId: "q" }),
   ]));
   store.apply("task.progress", { rev: 1, items: [{ taskId: "0002", bps: 300 }] });
-  assert.deepEqual(store.list("all").map((t) => t.taskId), ["0006", "0005", "0004", "0002", "0001"]);
-  assert.deepEqual(store.list("active").map((t) => t.taskId), ["0006", "0002"]);
-  assert.deepEqual(store.list("stopped").map((t) => t.taskId), ["0005", "0004"]);
-  assert.deepEqual(store.counts(), { all: 5, active: 2, stopped: 2, completed: 1, cancelled: 1 });
+  const ids = (view) => store.list(view).map((t) => t.taskId);
+  assert.deepEqual(ids("all"), ["0006", "0005", "0004", "0003", "0002", "0001"]);
+  assert.deepEqual(ids("incomplete"), ["0006", "0005", "0004", "0002"], "ni terminée ni annulée");
+  assert.deepEqual(ids("completed/video"), ["0001"]);
+  assert.deepEqual(ids("incomplete/documents"), ["0004"], "nom provisoire avant préparation");
+  assert.deepEqual(ids("queue:q"), ["0006"]);
+  const counts = store.counts();
+  assert.equal(counts.all, 6);
+  assert.equal(counts.incomplete, 4);
+  assert.equal(counts["completed/video"], 1);
+  assert.equal(counts["all/other"], 4);
+  assert.equal(counts["queue:q"], 1);
+  assert.equal(counts["completed/music"], undefined);
   assert.deepEqual(store.activity(), { active: 1, bps: 300 });
-  assert.ok(inFilter(task("x", "cancelled"), "cancelled"));
+  assert.ok(inView(task("x", "cancelled"), "all") && !inView(task("x", "cancelled"), "incomplete"));
+});
+
+test("type de fichier d'après l'extension", () => {
+  assert.equal(category("a.ZIP"), "compressed");
+  assert.equal(category("a.part1.rar"), "compressed");
+  assert.equal(category("a.r01"), "compressed");
+  assert.equal(category("a.7z.001"), "compressed");
+  assert.equal(category("Blender-3.2.msi"), "programs");
+  assert.equal(category("son.flac"), "music");
+  assert.equal(category("film.webm"), "video");
+  assert.equal(category("lisez-moi"), "other");
+  assert.equal(category(".bashrc"), "other");
+  assert.equal(category(""), "other");
+});
+
+test("tri par colonne, les plus récentes d'abord à égalité", () => {
+  const tasks = [
+    task("0001", "completed", { fileName: "b10.bin", totalBytes: 10, createdAt: 3 }),
+    task("0002", "active", { fileName: "b9.bin", totalBytes: 500, doneBytes: 250, bps: 7, etaS: 30, createdAt: 1 }),
+    task("0003", "paused", { fileName: "A.bin", totalBytes: null, createdAt: 2 }),
+    task("0004", "active", { fileName: "c.bin", totalBytes: 100, doneBytes: 50, bps: 7, etaS: 5, createdAt: 2 }),
+  ];
+  const ids = (...args) => sortTasks(tasks, ...args).map((t) => t.taskId);
+  assert.deepEqual(ids("name", false), ["0003", "0002", "0001", "0004"], "sans casse, nombres dans l'ordre");
+  assert.deepEqual(ids("size", true), ["0002", "0004", "0001", "0003"], "taille inconnue en dernier");
+  assert.deepEqual(ids("progress", true), ["0001", "0004", "0002", "0003"]);
+  assert.deepEqual(ids("rate", true), ["0004", "0002", "0003", "0001"]);
+  assert.deepEqual(ids("eta", false), ["0004", "0002", "0003", "0001"], "sans estimation à la fin");
+  assert.deepEqual(ids("state", false), ["0004", "0002", "0003", "0001"]);
+  assert.deepEqual(ids("added", true), ["0001", "0004", "0003", "0002"]);
+  assert.deepEqual(ids(), ids("added", true), "ordre par défaut");
+});
+
+test("la fin d'une tâche est datée à l'arrivée de la notification", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "active", { createdAt: 5 })]));
+  const result = store.apply("task.updated", { rev: 2, taskId: "a", fileName: "a.mp4", displayName: "a.mp4", totalBytes: 9 });
+  assert.ok(result.list, "le nom change la vue");
+  store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "active", to: "completed" }, 1234);
+  assert.equal(store.tasks.get("a").finishedAt, 1234);
+  store.apply("task.stateChanged", { rev: 4, taskId: "a", from: "completed", to: "queued" }, 2000);
+  assert.equal(store.tasks.get("a").finishedAt, null);
+  // Moteur antérieur : ni date d'ajout ni date de fin dans l'instantané.
+  store.load(snapshot(1, [{ taskId: "b", state: "queued" }]));
+  assert.equal(store.tasks.get("b").createdAt, null);
 });
 
 test("actions permises par la table des états (SPEC §5.5)", () => {

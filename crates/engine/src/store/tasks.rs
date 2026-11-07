@@ -121,6 +121,10 @@ pub struct TaskRow {
     pub pause_reason: Option<String>,
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
+    /// Création de la tâche, en millisecondes Unix.
+    pub created_at: i64,
+    /// Fin (terminée, en échec ou annulée), en millisecondes Unix ; `None` avant.
+    pub finished_at: Option<i64>,
 }
 
 /// Une source de téléchargement.
@@ -237,7 +241,7 @@ pub fn create_task(
 
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
-     queue_id, priority, speed_limit_bps";
+     queue_id, priority, speed_limit_bps, created_at, finished_at";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -256,6 +260,8 @@ struct RawTask {
     queue_id: String,
     priority: i64,
     speed_limit_bps: Option<i64>,
+    created_at: i64,
+    finished_at: Option<i64>,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -275,6 +281,8 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         queue_id: row.get(12)?,
         priority: row.get(13)?,
         speed_limit_bps: row.get(14)?,
+        created_at: row.get(15)?,
+        finished_at: row.get(16)?,
     })
 }
 
@@ -303,6 +311,8 @@ impl TryFrom<RawTask> for TaskRow {
             pause_reason: raw.pause_reason,
             error_code: raw.error_code,
             error_detail: raw.error_detail,
+            created_at: raw.created_at,
+            finished_at: raw.finished_at,
         })
     }
 }

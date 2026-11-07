@@ -554,6 +554,12 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   `task.updated` avec `fileName`, `displayName` et `totalBytes`, et une nouvelle révision.
   L'annonce peut suivre la fin d'une tâche rapide. Un client qui ouvre le fichier d'une
   tâche prend ce `fileName`, qui peut différer du nom de l'adresse (« nom (1).bin »).
+- **Dates d'une tâche** (depuis le 2026-11-07) : une tâche, telle que la décrivent
+  `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `createdAt` et
+  `finishedAt` (millisecondes Unix, section 5.1). `finishedAt` vaut `null` tant que la
+  tâche n'est pas terminée, en échec ou annulée, et redevient `null` quand elle repart.
+  `task.stateChanged` ne la porte pas : un client la date à la réception, et l'instantané
+  suivant donne celle du moteur.
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
     sont refusées par `INVALID_STATE` et s'annulent d'abord ;

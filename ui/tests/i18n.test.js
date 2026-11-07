@@ -13,7 +13,11 @@ test("chaque texte de la page a sa traduction anglaise", () => {
   // Textes passés à t("…") dans le code, et attributs data-i18n* de la page.
   for (const m of source("main.js").matchAll(/\bt\("((?:[^"\\]|\\.)*)"/g)) used.add(m[1]);
   for (const m of source("main.js").matchAll(/^\s+\w+: "([^"]*\{0\}[^"]*)",$/gm)) used.add(m[1]);
-  for (const m of source("index.html").matchAll(/data-i18n(?:-placeholder|-label)?="([^"]*)"/g)) used.add(m[1]);
+  for (const m of source("index.html").matchAll(/data-i18n(?:-placeholder|-label|-title)?="([^"]*)"/g)) used.add(m[1]);
+  // Tables de libellés de main.js (`const …_LABELS = { clé: "texte", … }`).
+  for (const block of source("main.js").matchAll(/const \w+_LABELS = \{([^}]*)\}/g)) {
+    for (const m of block[1].matchAll(/: "([^"]*)"/g)) used.add(m[1]);
+  }
   for (const text of [...Object.values(STATES), ...Object.values(PAUSE_REASONS), ...Object.values(ERRORS)]) used.add(text);
   const missing = [...used].filter((text) => !(text in EN));
   assert.deepEqual(missing, []);
@@ -21,8 +25,8 @@ test("chaque texte de la page a sa traduction anglaise", () => {
 });
 
 test("remplacement des paramètres", () => {
-  assert.equal(fr("{0} sur {1}", "1 o", "?"), "1 o sur ?");
-  assert.equal(en("{0} sur {1}", "1 B", "?"), "1 B of ?");
+  assert.equal(fr("{0} en échec : {1}", "a.bin", "délai"), "a.bin en échec : délai");
+  assert.equal(en("{0} en échec : {1}", "a.bin", "timeout"), "a.bin failed: timeout");
   assert.equal(en("texte inconnu {0}", 3), "texte inconnu 3");
 });
 

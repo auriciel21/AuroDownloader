@@ -12,8 +12,8 @@
       {
         "label": "main",
         "title": "AuroDownloader",
-        "width": 960,
-        "height": 640,
+        "width": 1120,
+        "height": 680,
         "minWidth": 520,
         "minHeight": 380,
         "visible": false

@@ -131,6 +131,8 @@ pub fn task_json(t: &TaskRow) -> Value {
         "errorCode": t.error_code,
         "errorDetail": t.error_detail,
         "retryCount": t.retry_count,
+        "createdAt": t.created_at,
+        "finishedAt": t.finished_at,
     })
 }
 

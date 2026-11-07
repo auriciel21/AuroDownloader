@@ -56,9 +56,11 @@ téléchargement.
   `prefs` : préférences de l'interface (JSON, aucun secret) ; `files` : ouverture d'un
   fichier terminé, jamais d'un exécutable (SPEC 8.1).
 - `ui` : la page web de l'application, destinée aussi à l'interface distante (F-39).
-  `src/model.js` (instantané, notifications et révisions, SPEC 6.10), `src/i18n.js`
-  (français source, anglais), `src/host.js` (services de l'hôte), `src/main.js`
-  (affichage) ; tests `node --test` dans `tests/`.
+  `src/model.js` (instantané, notifications et révisions, SPEC 6.10 ; vues de
+  l'arborescence, types de fichier, tri des colonnes), `src/i18n.js` (français source,
+  anglais), `src/host.js` (services de l'hôte), `src/main.js` (fenêtre principale :
+  barre d'outils, arborescence, tableau à sélection multiple, menu contextuel,
+  propriétés, options) ; tests `node --test` dans `tests/`.
 - Essais manuels de l'application : `--endpoint`, `--db` et `--prefs` d'essai (elle lance
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par

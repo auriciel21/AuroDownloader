@@ -9,20 +9,55 @@
   <script type="module" src="main.js"></script>
 </head>
 <body>
-  <header>
-    <form id="add-form">
-      <label for="urls" class="visually-hidden" data-i18n="Adresses à télécharger">Adresses à télécharger</label>
-      <textarea id="urls" rows="1" spellcheck="false" autocomplete="off"
-        data-i18n-placeholder="Adresses à télécharger, une par ligne"></textarea>
-      <button type="submit" id="add" data-i18n="Ajouter" data-i18n-label="Ajouter les téléchargements">Ajouter</button>
-    </form>
-    <div class="options">
-      <span data-i18n="Dossier :">Dossier :</span>
-      <span id="dest" class="path"></span>
-      <button type="button" id="dest-change" data-i18n="Changer…" data-i18n-label="Changer le dossier de destination">Changer…</button>
-      <label class="check"><input type="checkbox" id="paused"> <span data-i18n="Ajouter en pause">Ajouter en pause</span></label>
-    </div>
-  </header>
+  <!-- Pictogrammes, dessinés pour AuroDownloader ; appelés par <use href="#i-…">. -->
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-add" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v9M7.5 12h9"/></symbol>
+    <symbol id="i-resume" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+    <symbol id="i-resume-all" viewBox="0 0 24 24"><path d="M3.5 6l8 6-8 6zM12.5 6l8 6-8 6z"/></symbol>
+    <symbol id="i-pause-all" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/></symbol>
+    <symbol id="i-remove" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5M10 10.5v6M14 10.5v6"/></symbol>
+    <symbol id="i-clear" viewBox="0 0 24 24"><path d="M3.5 6.5h10M3.5 12h10M3.5 17.5h6M15.5 14.5l5 5M20.5 14.5l-5 5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/></symbol>
+    <symbol id="i-properties" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.5"/></symbol>
+    <symbol id="i-all" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></symbol>
+    <symbol id="i-incomplete" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-completed" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8 12.5l2.8 2.8L16.5 9"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.5 6.5h.5M4.5 12h.5M4.5 17.5h.5"/></symbol>
+    <symbol id="i-compressed" viewBox="0 0 24 24"><path d="M4 8l8-4 8 4v8.5l-8 4-8-4zM4 8l8 4 8-4M12 12v8.5"/></symbol>
+    <symbol id="i-documents" viewBox="0 0 24 24"><path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5M9.5 12.5h6M9.5 16h6"/></symbol>
+    <symbol id="i-images" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 16l5-5 4 4 3-3 5 5"/><circle cx="15.5" cy="9" r="1.3"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 17.5V6l10.5-2v11.5"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17" cy="15.5" r="2.5"/></symbol>
+    <symbol id="i-programs" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9h17M7 13l2.5 2L7 17M11.5 17h4"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></symbol>
+    <symbol id="i-other" viewBox="0 0 24 24"><path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  </svg>
+
+  <div class="toolbar" role="toolbar" data-i18n-label="Actions" aria-label="Actions">
+    <button type="button" id="tb-add" class="tool add" aria-keyshortcuts="Control+N">
+      <svg aria-hidden="true"><use href="#i-add"/></svg><span data-i18n="Ajouter">Ajouter</span></button>
+    <button type="button" id="tb-resume" class="tool resume">
+      <svg aria-hidden="true"><use href="#i-resume"/></svg><span data-i18n="Reprendre">Reprendre</span></button>
+    <button type="button" id="tb-pause" class="tool pause">
+      <svg aria-hidden="true"><use href="#i-pause"/></svg><span data-i18n="Arrêter">Arrêter</span></button>
+    <button type="button" id="tb-resume-all" class="tool resume">
+      <svg aria-hidden="true"><use href="#i-resume-all"/></svg><span data-i18n="Tout reprendre">Tout reprendre</span></button>
+    <button type="button" id="tb-pause-all" class="tool pause">
+      <svg aria-hidden="true"><use href="#i-pause-all"/></svg><span data-i18n="Tout arrêter">Tout arrêter</span></button>
+    <span class="separator" aria-hidden="true"></span>
+    <button type="button" id="tb-remove" class="tool remove" aria-keyshortcuts="Delete">
+      <svg aria-hidden="true"><use href="#i-remove"/></svg><span data-i18n="Supprimer">Supprimer</span></button>
+    <button type="button" id="tb-clear" class="tool"
+      data-i18n-title="Retirer de la liste les téléchargements terminés et annulés ; les fichiers restent sur le disque"
+      title="Retirer de la liste les téléchargements terminés et annulés ; les fichiers restent sur le disque">
+      <svg aria-hidden="true"><use href="#i-clear"/></svg><span data-i18n="Retirer les finis">Retirer les finis</span></button>
+    <span class="separator" aria-hidden="true"></span>
+    <button type="button" id="tb-properties" class="tool" aria-keyshortcuts="Enter">
+      <svg aria-hidden="true"><use href="#i-properties"/></svg><span data-i18n="Propriétés">Propriétés</span></button>
+    <button type="button" id="tb-settings" class="tool">
+      <svg aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="Options">Options</span></button>
+  </div>
 
   <div id="banner" role="status" hidden></div>
   <div id="error" role="alert" hidden>
@@ -30,90 +65,178 @@
     <button type="button" id="error-close" data-i18n="Fermer" data-i18n-label="Fermer le message">Fermer</button>
   </div>
 
-  <div class="toolbar">
-    <nav id="filters" data-i18n-label="Filtres" aria-label="Filtres"></nav>
-    <button type="button" id="clear-finished" hidden
-      data-i18n="Retirer les tâches finies"
-      data-i18n-label="Retirer de la liste les tâches terminées et annulées ; les fichiers téléchargés restent">Retirer les tâches finies</button>
+  <div class="panes">
+    <nav id="tree" data-i18n-label="Catégories" aria-label="Catégories">
+      <h2 class="tree-title" data-i18n="Catégories">Catégories</h2>
+      <ul id="tree-items"></ul>
+    </nav>
+    <main>
+      <table id="grid" role="grid" aria-multiselectable="true" data-i18n-label="Téléchargements" aria-label="Téléchargements">
+        <colgroup>
+          <col class="c-name"><col class="c-size"><col class="c-progress"><col class="c-state">
+          <col class="c-eta"><col class="c-rate"><col class="c-added">
+        </colgroup>
+        <thead><tr id="grid-head"></tr></thead>
+        <tbody id="tasks"></tbody>
+      </table>
+      <p id="empty" hidden data-i18n="Aucun téléchargement ici.">Aucun téléchargement ici.</p>
+    </main>
   </div>
-
-  <main>
-    <ul id="tasks" data-i18n-label="Téléchargements" aria-label="Téléchargements"></ul>
-    <p id="empty" hidden data-i18n="Aucun téléchargement ici.">Aucun téléchargement ici.</p>
-  </main>
 
   <footer>
     <span id="summary"></span>
+    <span id="selection-count"></span>
     <label class="limit">
       <span data-i18n="Limite de débit globale">Limite de débit globale</span>
       <select id="limit"></select>
     </label>
-    <button type="button" id="settings-open" data-i18n="Préférences">Préférences</button>
   </footer>
 
   <div id="announce" class="visually-hidden" aria-live="polite"></div>
 
-  <dialog id="settings" aria-labelledby="settings-title">
-    <form method="dialog">
-      <h2 id="settings-title" data-i18n="Préférences">Préférences</h2>
+  <div id="menu" role="menu" hidden tabindex="-1">
+    <button type="button" role="menuitem" data-command="open" data-i18n="Ouvrir">Ouvrir</button>
+    <button type="button" role="menuitem" data-command="reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
+    <div class="menu-separator" role="separator"></div>
+    <button type="button" role="menuitem" data-command="resume" data-i18n="Reprendre">Reprendre</button>
+    <button type="button" role="menuitem" data-command="pause" data-i18n="Arrêter">Arrêter</button>
+    <button type="button" role="menuitem" data-command="limit" data-i18n="Limiter le débit…">Limiter le débit…</button>
+    <div class="menu-separator" role="separator"></div>
+    <button type="button" role="menuitem" data-command="remove" data-i18n="Supprimer…">Supprimer…</button>
+    <div class="menu-separator" role="separator"></div>
+    <button type="button" role="menuitem" data-command="properties" data-i18n="Propriétés">Propriétés</button>
+  </div>
+
+  <dialog id="add-dialog" aria-labelledby="add-title">
+    <form method="dialog" id="add-form">
+      <h2 id="add-title" data-i18n="Ajouter des téléchargements">Ajouter des téléchargements</h2>
       <label class="field">
-        <span data-i18n="Langue">Langue</span>
-        <select id="pref-lang">
-          <option value="" data-i18n="Langue du système">Langue du système</option>
-          <option value="fr" lang="fr">Français</option>
-          <option value="en" lang="en">English</option>
-        </select>
+        <span data-i18n="Adresses, une par ligne">Adresses, une par ligne</span>
+        <textarea id="urls" rows="4" spellcheck="false" autocomplete="off"></textarea>
       </label>
       <div class="field">
-        <span data-i18n="Dossier des nouveaux téléchargements">Dossier des nouveaux téléchargements</span>
-        <span class="row"><span id="pref-dest" class="path"></span>
-          <button type="button" id="pref-dest-change" data-i18n="Changer…" data-i18n-label="Changer le dossier de destination">Changer…</button></span>
+        <span data-i18n="Enregistrer dans">Enregistrer dans</span>
+        <span class="row"><span id="dest" class="path"></span>
+          <button type="button" id="dest-change" data-i18n="Parcourir…" data-i18n-label="Changer le dossier de destination">Parcourir…</button></span>
       </div>
-      <label class="check"><input type="checkbox" id="pref-tray">
-        <span data-i18n="Fermer la fenêtre la replie dans la zone de notification">Fermer la fenêtre la replie dans la zone de notification</span></label>
-      <p id="pref-no-tray" class="note" hidden
-        data-i18n="Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent."></p>
-      <label class="check"><input type="checkbox" id="pref-autostart">
-        <span data-i18n="Démarrer avec la session, dans la zone de notification">Démarrer avec la session, dans la zone de notification</span></label>
-      <p id="about" class="note"></p>
       <div class="buttons">
-        <button type="button" id="stop-engine" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <span class="row">
+          <button value="later" id="add-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
+          <button value="start" id="add-start" class="primary" data-i18n="Démarrer">Démarrer</button>
+        </span>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="remove-dialog" aria-labelledby="remove-title" aria-describedby="remove-text">
+    <form method="dialog">
+      <h2 id="remove-title" data-i18n="Supprimer">Supprimer</h2>
+      <p id="remove-text"></p>
+      <label class="check" id="remove-files-label"><input type="checkbox" id="remove-files">
+        <span data-i18n="Supprimer aussi les fichiers terminés du disque">Supprimer aussi les fichiers terminés du disque</span></label>
+      <p class="note" id="remove-note" data-i18n="Les fichiers partiels des téléchargements inachevés sont toujours supprimés.">Les fichiers partiels des téléchargements inachevés sont toujours supprimés.</p>
+      <div class="buttons">
+        <button value="cancel" data-i18n="Annuler">Annuler</button>
+        <button value="confirm" class="danger" data-i18n="Supprimer">Supprimer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="details" class="wide" aria-labelledby="details-title">
+    <form method="dialog">
+      <h2 id="details-title"></h2>
+      <dl class="facts">
+        <div id="f-name"><dt data-i18n="Fichier">Fichier</dt><dd id="d-name" class="path"></dd></div>
+        <div id="f-dir"><dt data-i18n="Dossier">Dossier</dt><dd id="d-dir" class="path"></dd></div>
+        <div id="f-state"><dt data-i18n="Statut">Statut</dt><dd id="d-state"></dd></div>
+        <div id="f-size"><dt data-i18n="Taille">Taille</dt><dd id="d-size"></dd></div>
+        <div id="f-done"><dt data-i18n="Téléchargé">Téléchargé</dt><dd id="d-done"></dd></div>
+        <div id="f-rate"><dt data-i18n="Débit">Débit</dt><dd id="d-rate"></dd></div>
+        <div id="f-eta"><dt data-i18n="Temps restant">Temps restant</dt><dd id="d-eta"></dd></div>
+        <div id="f-connections"><dt data-i18n="Connexions">Connexions</dt><dd id="d-connections"></dd></div>
+        <div id="f-added"><dt data-i18n="Ajouté le">Ajouté le</dt><dd id="d-added"></dd></div>
+        <div id="f-finished"><dt data-i18n="Fini le">Fini le</dt><dd id="d-finished"></dd></div>
+      </dl>
+      <progress id="d-progress" max="1" value="0"></progress>
+      <div class="field limit-field" id="d-limit-field">
+        <label for="d-limit" data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</label>
+        <span class="row"><select id="d-limit"></select>
+          <button type="button" id="d-limit-apply" data-i18n="Appliquer">Appliquer</button></span>
+        <span class="note" data-i18n="La limite globale s'applique aussi : la plus basse l'emporte.">La limite globale s'applique aussi : la plus basse l'emporte.</span>
+      </div>
+      <div class="buttons">
+        <span class="row">
+          <button type="button" id="d-toggle"></button>
+          <button type="button" id="d-cancel" data-i18n="Annuler le téléchargement">Annuler le téléchargement</button>
+          <button type="button" id="d-open" data-i18n="Ouvrir">Ouvrir</button>
+          <button type="button" id="d-reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
+        </span>
         <button value="close" data-i18n="Fermer">Fermer</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="task-limit" aria-labelledby="task-limit-title">
-    <form method="dialog" id="task-limit-form">
-      <h2 id="task-limit-title"></h2>
-      <label class="field">
-        <span data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</span>
-        <select id="task-limit-value"></select>
-      </label>
-      <p class="note" data-i18n="La limite globale s'applique aussi : la plus basse l'emporte.">La limite globale s'applique aussi : la plus basse l'emporte.</p>
-      <div class="buttons">
-        <button value="cancel" data-i18n="Fermer">Fermer</button>
-        <button value="apply" id="task-limit-apply" data-i18n="Appliquer">Appliquer</button>
+  <dialog id="settings" class="wide" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title" data-i18n="Options">Options</h2>
+      <div class="tabs" role="tablist" data-i18n-label="Rubriques" aria-label="Rubriques">
+        <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true" data-i18n="Général">Général</button>
+        <button type="button" role="tab" id="tab-save" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
+        <button type="button" role="tab" id="tab-connection" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
+        <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
+        <label class="field">
+          <span data-i18n="Langue">Langue</span>
+          <select id="pref-lang">
+            <option value="" data-i18n="Langue du système">Langue du système</option>
+            <option value="fr" lang="fr">Français</option>
+            <option value="en" lang="en">English</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="pref-autostart">
+          <span data-i18n="Démarrer avec la session, dans la zone de notification">Démarrer avec la session, dans la zone de notification</span></label>
+        <label class="check"><input type="checkbox" id="pref-tray">
+          <span data-i18n="Fermer la fenêtre la replie dans la zone de notification">Fermer la fenêtre la replie dans la zone de notification</span></label>
+        <p id="pref-no-tray" class="note" hidden
+          data-i18n="Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent."></p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-save" aria-labelledby="tab-save" hidden>
+        <div class="field">
+          <span data-i18n="Dossier des nouveaux téléchargements">Dossier des nouveaux téléchargements</span>
+          <span class="row"><span id="pref-dest" class="path"></span>
+            <button type="button" id="pref-dest-change" data-i18n="Parcourir…" data-i18n-label="Changer le dossier de destination">Parcourir…</button></span>
+        </div>
+        <p class="note flush" data-i18n="Les fichiers en cours s'écrivent sous leur nom suivi de .part, dans ce même dossier, puis prennent leur nom à la fin.">Les fichiers en cours s'écrivent sous leur nom suivi de .part, dans ce même dossier, puis prennent leur nom à la fin.</p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-connection" aria-labelledby="tab-connection" hidden>
+        <label class="field">
+          <span data-i18n="Limite de débit globale">Limite de débit globale</span>
+          <select id="pref-limit"></select>
+        </label>
+        <p class="note flush" data-i18n="Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.">Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.</p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
+        <p id="about"></p>
+        <button type="button" id="stop-engine" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
+      </div>
+      <div class="buttons end">
+        <button value="close" data-i18n="Fermer">Fermer</button>
       </div>
     </form>
   </dialog>
 
   <template id="row">
-    <li class="task">
-      <div class="line">
-        <span class="name"></span>
-        <span class="buttons">
-          <button type="button" class="rate" hidden></button>
-          <button type="button" class="toggle"></button>
-          <button type="button" class="cancel"></button>
-          <button type="button" class="open" hidden></button>
-          <button type="button" class="reveal" hidden></button>
-          <button type="button" class="remove" hidden></button>
-        </span>
-      </div>
-      <progress max="1" value="0"></progress>
-      <div class="detail"></div>
-    </li>
+    <tr role="row" tabindex="-1" aria-selected="false">
+      <td role="gridcell" class="name"><svg class="kind" aria-hidden="true"><use/></svg><span class="text"></span></td>
+      <td role="gridcell" class="size num"></td>
+      <td role="gridcell" class="progress"><progress max="1" value="0"></progress><span class="pct num"></span></td>
+      <td role="gridcell" class="state"></td>
+      <td role="gridcell" class="eta num"></td>
+      <td role="gridcell" class="rate num"></td>
+      <td role="gridcell" class="added num"></td>
+    </tr>
   </template>
 </body>
 </html>

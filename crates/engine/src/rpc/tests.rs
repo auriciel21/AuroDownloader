@@ -249,6 +249,10 @@ async fn an_added_task_is_followed_to_completion() {
     let task = c.result("task.get", json!({"taskId": id})).await;
     assert_eq!(task["state"], "completed");
     assert_eq!(task["doneBytes"], 512 * 1024);
+    // Dates de la tâche, en millisecondes Unix : la fin suit la création.
+    let created = task["createdAt"].as_i64().expect("createdAt");
+    let finished = task["finishedAt"].as_i64().expect("finishedAt");
+    assert!(created > 1_700_000_000_000 && finished >= created, "{task}");
     assert_eq!(
         std::fs::metadata(dir.path().join("f.bin")).unwrap().len(),
         512 * 1024
