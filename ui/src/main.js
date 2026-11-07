@@ -93,6 +93,9 @@ function detailText(task) {
     if (eta) parts.push(t("reste {0}", eta));
     if (task.connections > 0) parts.push(t("{0} connexion(s)", task.connections));
   }
+  if (task.speedLimitBps && task.state !== "completed" && task.state !== "cancelled") {
+    parts.push(t("limite {0}", t("{0}/s", bytes(task.speedLimitBps, lang, t))));
+  }
   return parts.join(" · ");
 }
 
@@ -109,6 +112,7 @@ function makeRow(taskId) {
   row.querySelector(".cancel").addEventListener("click", () =>
     act("task.cancel", { taskIds: [taskId], deleteFiles: true }));
   row.querySelector(".remove").addEventListener("click", () => removeTasks([taskId]));
+  row.querySelector(".rate").addEventListener("click", () => openTaskLimit(taskId));
   row.querySelector(".open").addEventListener("click", () => withFile(taskId, host.openFile));
   row.querySelector(".reveal").addEventListener("click", () => withFile(taskId, host.revealFile));
   return row;
@@ -180,6 +184,13 @@ function renderRow(taskId) {
   reveal.textContent = t("Afficher dans le dossier");
   reveal.setAttribute("aria-label", t("Afficher {0} dans son dossier", name));
   reveal.hidden = !done;
+
+  // Limite propre à la tâche : tant qu'elle peut encore transférer.
+  const rate = row.querySelector(".rate");
+  rate.textContent = t("Débit…");
+  rate.setAttribute("aria-label", t("Limiter le débit de {0}", name));
+  rate.hidden = !(canPause(task.state) || canResume(task.state));
+  rate.disabled = !connected;
 
   const remove = row.querySelector(".remove");
   remove.textContent = t("Retirer");
@@ -278,6 +289,8 @@ async function resync() {
   if (mine !== syncing) return;
   const result = store.load(snapshot);
   renderAll();
+  if (store.limits) renderLimit();
+  else loadLimit();
   if (result.resync) resync();
 }
 
@@ -290,7 +303,6 @@ function onStatus(status) {
     banner.hidden = true;
     engineVersion = status.engine?.engine?.version ?? "";
     resync();
-    loadLimit();
   } else {
     banner.hidden = false;
     banner.textContent = status.state === "connecting"
@@ -326,6 +338,7 @@ function onEngine(event) {
           : t("{0} en échec : {1}", taskName(task), errorText(task.errorCode, t)));
       }
       schedule(result);
+      if (result.limits) renderLimit();
       break;
     }
   }
@@ -372,28 +385,34 @@ async function addUrls(event) {
   field.focus();
 }
 
-// ---------- Limite globale ----------
+// ---------- Limites de débit ----------
 
 const LIMITS = [0, 128 << 10, 512 << 10, 1 << 20, 2 << 20, 5 << 20, 10 << 20, 25 << 20, 50 << 20, 100 << 20];
-let globalLimit = null;
 
-function renderLimit() {
-  const select = $("limit");
+/// Remplit une liste de limites : « Aucune limite », les paliers, et la valeur courante
+/// si elle n'en est pas un.
+function fillLimits(select, current) {
   const values = new Set(LIMITS);
-  if (globalLimit) values.add(globalLimit);
+  if (current) values.add(current);
   select.replaceChildren(...[...values].sort((a, b) => a - b).map((v) => {
     const option = document.createElement("option");
     option.value = String(v);
     option.textContent = v ? t("{0}/s", bytes(v, lang, t)) : t("Aucune limite");
     return option;
   }));
-  select.value = String(globalLimit ?? 0);
-  select.disabled = !connected;
+  select.value = String(current ?? 0);
 }
 
+/// Limite globale : suivie par l'instantané et `limits.updated`.
+function renderLimit() {
+  fillLimits($("limit"), store.limits?.downloadBps ?? null);
+  $("limit").disabled = !connected;
+}
+
+/// Moteur antérieur au 2026-11-07, sans limites dans l'instantané : les demander.
 async function loadLimit() {
   try {
-    globalLimit = (await host.call("limits.get", {})).downloadBps ?? null;
+    store.limits = await host.call("limits.get", {});
   } catch {
     return;
   }
@@ -403,12 +422,40 @@ async function loadLimit() {
 async function changeLimit() {
   const value = Number($("limit").value);
   try {
-    const limits = await host.call("limits.set", { downloadBps: value > 0 ? value : null });
-    globalLimit = limits.downloadBps ?? null;
+    store.limits = await host.call("limits.set", { downloadBps: value > 0 ? value : null });
   } catch (e) {
     showError(refused(e));
   }
   renderLimit();
+}
+
+/// Tâche dont le dialogue de limite est ouvert.
+let limitTask = null;
+
+function openTaskLimit(taskId) {
+  const task = store.tasks.get(taskId);
+  if (!task) return;
+  limitTask = taskId;
+  $("task-limit-title").textContent = t("Débit de {0}", taskName(task));
+  fillLimits($("task-limit-value"), task.speedLimitBps ?? null);
+  const dialog = $("task-limit");
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
+async function closeTaskLimit() {
+  const id = limitTask;
+  limitTask = null;
+  if ($("task-limit").returnValue === "apply" && id) {
+    const value = Number($("task-limit-value").value);
+    try {
+      await host.call("task.update", { taskId: id, speedLimitBps: value > 0 ? value : null });
+    } catch (e) {
+      showError(refused(e));
+    }
+  }
+  // Le focus revient au bouton qui a ouvert le dialogue.
+  rows.get(id)?.querySelector(".rate:not([hidden])")?.focus();
 }
 
 // ---------- Préférences ----------
@@ -481,6 +528,7 @@ async function start() {
     removeTasks(finished);
   });
   $("limit").addEventListener("change", changeLimit);
+  $("task-limit").addEventListener("close", closeTaskLimit);
   $("settings-open").addEventListener("click", () => $("settings").showModal());
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));
   $("pref-tray").addEventListener("change", (e) => savePrefs({ closeToTray: e.target.checked }));

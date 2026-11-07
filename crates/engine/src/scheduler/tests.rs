@@ -550,7 +550,8 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::QueueUpdated { rev, .. }
                 | Event::TaskUpdated { rev, .. }
                 | Event::Prepared { rev, .. }
-                | Event::Removed { rev, .. } => revs.push(rev),
+                | Event::Removed { rev, .. }
+                | Event::LimitsChanged { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
                     if to == TaskState::Completed {

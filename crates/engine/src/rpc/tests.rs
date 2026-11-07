@@ -549,10 +549,21 @@ async fn speed_limits_are_read_changed_and_announced() {
     let mut c = TestClient::connect(&engine);
     let none = json!({"downloadBps": null, "uploadBps": null});
     assert_eq!(c.result("limits.get", json!({})).await, none);
+    assert_eq!(c.result("sync.snapshot", json!({})).await["limits"], none);
+    let sub = c
+        .result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
     let set = c
         .result("limits.set", json!({"downloadBps": 1_000_000}))
         .await;
     assert_eq!(set["downloadBps"], 1_000_000);
+    // Annoncée, avec la révision suivante ; l'instantané la porte.
+    let note = c.notification("limits.updated", |_| true).await;
+    assert_eq!(note["downloadBps"], 1_000_000);
+    assert_eq!(note["rev"], sub["rev"].as_u64().unwrap() + 1);
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["limits"]["downloadBps"], 1_000_000);
+    assert_eq!(snapshot["rev"], note["rev"]);
     // Paramètre absent : limite inchangée ; `null` : retirée.
     let same = c.result("limits.set", json!({})).await;
     assert_eq!(same["downloadBps"], 1_000_000);
@@ -560,6 +571,10 @@ async fn speed_limits_are_read_changed_and_announced() {
         c.result("limits.set", json!({"downloadBps": null})).await,
         none
     );
+    let note = c
+        .notification("limits.updated", |p| p["downloadBps"].is_null())
+        .await;
+    assert!(note["uploadBps"].is_null());
     for (params, code) in [
         (json!({"uploadBps": 5}), "CAPABILITY_MISSING"),
         (json!({"downloadBps": 0}), "INVALID_PARAMS"),

@@ -48,6 +48,8 @@ function outcome() {
     resync: false,
     /// Tâches terminées ou en échec, à annoncer : `{taskId, to}`.
     finished: [],
+    /// Les limites globales ont changé.
+    limits: false,
   };
 }
 
@@ -55,6 +57,7 @@ function merge(into, other) {
   for (const id of other.changed) into.changed.add(id);
   into.list ||= other.list;
   into.resync ||= other.resync;
+  into.limits ||= other.limits;
   into.finished.push(...other.finished);
 }
 
@@ -67,6 +70,8 @@ export class TaskStore {
   constructor() {
     this.tasks = new Map();
     this.queues = new Map();
+    /// Limites globales (`limits.get`) ; `null` avant le premier instantané.
+    this.limits = null;
     /// Révision de l'état chargé ; `null` tant qu'un instantané est attendu.
     this.rev = null;
     /// Notifications reçues en attendant l'instantané.
@@ -84,9 +89,12 @@ export class TaskStore {
   load(snapshot) {
     this.tasks = new Map(snapshot.tasks.map((t) => [t.taskId, fresh(t)]));
     this.queues = new Map(snapshot.queues.map((q) => [q.queueId, q]));
+    // Un moteur antérieur au 2026-11-07 ne les donne pas.
+    this.limits = snapshot.limits ?? null;
     this.rev = snapshot.rev;
     const result = outcome();
     result.list = true;
+    result.limits = true;
     for (const id of this.tasks.keys()) result.changed.add(id);
     const waiting = this.waiting;
     this.waiting = [];
@@ -120,6 +128,7 @@ export class TaskStore {
       case "task.updated":
       case "task.removed":
       case "queue.updated":
+      case "limits.updated":
         break;
       default:
         return result;
@@ -174,6 +183,12 @@ export class TaskStore {
       case "queue.updated":
         this.queues.set(params.queue.queueId, params.queue);
         break;
+      case "limits.updated": {
+        const { rev: _rev, ...limits } = params;
+        this.limits = limits;
+        result.limits = true;
+        break;
+      }
     }
     return result;
   }

@@ -131,6 +131,11 @@ pub enum Event {
         rev: u64,
         task_id: String,
     },
+    /// Limite de débit globale changée (`None` : retirée).
+    LimitsChanged {
+        rev: u64,
+        download_bps: Option<u64>,
+    },
     Progress {
         rev: u64,
         task_id: String,
@@ -144,6 +149,8 @@ pub struct Snapshot {
     pub rev: u64,
     pub tasks: Vec<TaskRow>,
     pub queues: Vec<QueueRow>,
+    /// Limite de débit globale (`None` : aucune).
+    pub download_limit: Option<u64>,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -811,6 +818,7 @@ impl Scheduler {
             rev: self.current_rev(),
             tasks: tasks::find_tasks(&self.conn, &TaskFilter::default())?,
             queues: tasks::list_queues(&self.conn)?,
+            download_limit: settings::download_limit(&self.conn)?,
         })
     }
 
@@ -836,6 +844,10 @@ impl Scheduler {
         Self::check_speed_limit(limit)?;
         settings::set_download_limit(&self.conn, limit)?;
         self.limits.global.set_rate(limit);
+        self.emit(|rev| Event::LimitsChanged {
+            rev,
+            download_bps: limit,
+        });
         Ok(())
     }
 

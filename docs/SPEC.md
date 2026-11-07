@@ -517,7 +517,7 @@ Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et 
 | `history.list` / `history.clear` | `query`, `before`, `limit` | Entrées d'historique |
 | `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages |
 | `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
-| `sync.snapshot` | aucun | État complet et `rev` |
+| `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`) et `rev` |
 
 ### 6.5 Notifications du moteur
 
@@ -531,10 +531,11 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `task.progress` | Lot de `{taskId, doneBytes, totalBytes, bps, connections, etaS}`, regroupé selon `progressIntervalMs` (500 ms par défaut) |
 | `task.removed` | `taskId` |
 | `queue.updated` | File modifiée |
+| `limits.updated` | Limites globales, comme `limits.get` (depuis le 2026-11-07) |
 | `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
-Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque. Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
 - **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
@@ -547,7 +548,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
   - Une nouvelle limite s'applique aussitôt aux tâches en cours (section 7.6).
   - `task.update` annonce `task.updated`, avec `taskId` et les seuls champs modifiés.
-  - Un changement de la limite globale n'est pas annoncé : aucune notification n'est prévue pour lui.
+  - Un changement de la limite globale est annoncé par `limits.updated`, sujet `queues`, avec une nouvelle révision (depuis le 2026-11-07 ; avant, rien ne l'annonçait). `sync.snapshot` porte les limites dans `limits`.
 - **Nom et taille d'une tâche** (depuis le 2026-11-07) : `task.added` les ignore encore,
   la préparation les apprend (section 7.1). Après chaque préparation, le moteur annonce
   `task.updated` avec `fileName`, `displayName` et `totalBytes`, et une nouvelle révision.

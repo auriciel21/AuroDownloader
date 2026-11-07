@@ -200,6 +200,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "rev": s.rev,
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
+                "limits": {"downloadBps": s.download_limit, "uploadBps": null},
             }))
         }
         _ => Err(RpcError::method_not_found(method)),

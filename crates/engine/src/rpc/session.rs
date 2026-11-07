@@ -1,7 +1,7 @@
 //! Une connexion d'un client : lecture des messages ligne par ligne, réponses dans
 //! l'ordre, notifications des événements auxquels il s'est abonné (SPEC §6.5, §6.10).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -23,7 +23,7 @@ const OUTGOING: usize = 256;
 pub(super) struct Topics {
     /// `task.added`, `task.stateChanged`, `task.updated`, `task.removed`.
     pub tasks: bool,
-    /// `queue.updated`.
+    /// `queue.updated`, `limits.updated`.
     pub queues: bool,
     /// `task.progress`, regroupé.
     pub progress: bool,
@@ -307,6 +307,10 @@ async fn describe(
             "task.removed",
             json!({"rev": rev, "taskId": task_id}),
         )),
+        Event::LimitsChanged { rev, download_bps } if topics.queues => Some(notification(
+            "limits.updated",
+            json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
+        )),
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
             let snapshot = engine.snapshot().await.ok()?;
             let queue = snapshot.queues.iter().find(|q| q.id == queue_id)?;
@@ -331,12 +335,63 @@ fn is_finished(state: TaskState) -> bool {
     !matches!(state, TaskState::Active | TaskState::Verifying)
 }
 
-/// Avancement regroupé par tâche entre deux envois (SPEC §6.5), et dernier relevé envoyé,
-/// pour le débit.
+/// Durée sur laquelle se mesure le débit annoncé. Les octets arrivent par à-coups (lectures
+/// de plusieurs centaines de Kio, seaux des limites de débit) : mesuré d'un envoi à
+/// l'autre, le débit alternait entre zéro et le double du vrai.
+const RATE_WINDOW: Duration = Duration::from_secs(6);
+
+/// Débit d'une tâche, mesuré entre les instants où ses octets ont augmenté : sur des
+/// arrivées par blocs réguliers, la mesure tombe juste, quel que soit le rapport entre les
+/// blocs et la fenêtre.
+#[derive(Default)]
+struct Rate {
+    /// Le relevé de départ, puis chaque relevé où les octets ont augmenté, sur
+    /// `RATE_WINDOW` au plus (le plus ancien est gardé comme point de départ).
+    changes: VecDeque<(Instant, u64)>,
+}
+
+impl Rate {
+    fn measure(&mut self, now: Instant, received: u64) -> u64 {
+        match self.changes.back() {
+            // Moins d'octets qu'avant : la tâche repart (fichier distant changé).
+            Some(&(_, last)) if received < last => {
+                self.changes.clear();
+                self.changes.push_back((now, received));
+            }
+            Some(&(_, last)) if received == last => {}
+            _ => self.changes.push_back((now, received)),
+        }
+        while self.changes.len() > 2 && now.duration_since(self.changes[1].0) >= RATE_WINDOW {
+            self.changes.pop_front();
+        }
+        let (Some(&(first_at, first)), Some(&(last_at, last))) =
+            (self.changes.front(), self.changes.back())
+        else {
+            return 0;
+        };
+        let intervals = self.changes.len() - 1;
+        // Rien de nouveau depuis toute une fenêtre : plus de débit.
+        if intervals == 0 || now.duration_since(last_at) >= RATE_WINDOW {
+            return 0;
+        }
+        // Tant que le prochain bloc n'est pas en retard sur l'écart moyen, la mesure va
+        // du premier au dernier bloc ; ensuite, elle décroît avec l'attente.
+        let span = last_at.duration_since(first_at);
+        let gap = span / intervals as u32;
+        let waited = now.duration_since(first_at).saturating_sub(gap);
+        let elapsed = span.max(waited).as_secs_f64();
+        if elapsed <= 0.0 {
+            return 0;
+        }
+        ((last - first) as f64 / elapsed) as u64
+    }
+}
+
+/// Avancement regroupé par tâche entre deux envois (SPEC §6.5), et débit de chacune.
 #[derive(Default)]
 struct ProgressBatch {
     latest: HashMap<String, Progress>,
-    sent: HashMap<String, (u64, Instant)>,
+    sent: HashMap<String, Rate>,
 }
 
 impl ProgressBatch {
@@ -346,21 +401,22 @@ impl ProgressBatch {
     }
 
     fn flush(&mut self, rev: u64) -> Option<Value> {
+        self.flush_at(rev, Instant::now())
+    }
+
+    fn flush_at(&mut self, rev: u64, now: Instant) -> Option<Value> {
         if self.latest.is_empty() {
             return None;
         }
-        let now = Instant::now();
         let mut items: Vec<Value> = Vec::with_capacity(self.latest.len());
         let mut latest: Vec<(String, Progress)> = self.latest.drain().collect();
         latest.sort_by(|a, b| a.0.cmp(&b.0));
         for (task_id, p) in latest {
-            let bps = match self.sent.get(&task_id) {
-                Some(&(before, at)) if now > at => {
-                    let elapsed = now.duration_since(at).as_secs_f64();
-                    (p.received.saturating_sub(before) as f64 / elapsed) as u64
-                }
-                _ => 0,
-            };
+            let bps = self
+                .sent
+                .entry(task_id.clone())
+                .or_default()
+                .measure(now, p.received);
             let eta = match (p.total, bps) {
                 (Some(total), bps) if bps > 0 => Some(total.saturating_sub(p.received) / bps),
                 _ => None,
@@ -373,11 +429,84 @@ impl ProgressBatch {
                 "connections": p.connections,
                 "etaS": eta,
             }));
-            self.sent.insert(task_id, (p.received, now));
         }
         Some(notification(
             "task.progress",
             json!({"rev": rev, "items": items}),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progress(received: u64) -> Progress {
+        Progress {
+            received,
+            total: Some(100 << 20),
+            connections: 1,
+        }
+    }
+
+    /// Débit annoncé pour `a` au relevé fait `ms` millisecondes après `t0`.
+    fn rate(batch: &mut ProgressBatch, t0: Instant, ms: u64, received: u64) -> u64 {
+        batch.latest.insert("a".into(), progress(received));
+        let message = batch.flush_at(1, t0 + Duration::from_millis(ms)).unwrap();
+        message["params"]["items"][0]["bps"].as_u64().unwrap()
+    }
+
+    /// Blocs de `chunk` octets arrivant toutes les `period_ms`, relevés toutes les 500 ms ;
+    /// renvoie le débit annoncé à chaque relevé.
+    fn bursts(chunk: u64, period_ms: u64, steps: u64) -> Vec<u64> {
+        let t0 = Instant::now();
+        let mut batch = ProgressBatch::default();
+        (0..=steps)
+            .map(|step| {
+                let ms = step * 500;
+                rate(&mut batch, t0, ms, (ms / period_ms) * chunk)
+            })
+            .collect()
+    }
+
+    fn assert_near(rates: &[u64], truth: f64, tolerance: f64) {
+        for &bps in rates {
+            let gap = (bps as f64 - truth).abs() / truth;
+            assert!(gap < tolerance, "{bps} o/s pour {truth} dans {rates:?}");
+        }
+    }
+
+    #[test]
+    fn bursty_arrivals_give_a_steady_rate() {
+        // 512 Kio par seconde, arrivés d'un bloc une fois sur deux envois.
+        let rates = bursts(512 << 10, 1000, 30);
+        assert_eq!(rates[0], 0, "un seul relevé : pas encore de débit");
+        assert_near(&rates[2..], 524_288.0, 0.02);
+        // Blocs qui ne tombent pas sur les envois : 512 Kio toutes les 1,7 s (une limite
+        // de 300 Kio/s). Jamais zéro, jamais le double : à quelques pour cent du vrai.
+        let rates = bursts(512 << 10, 1700, 40);
+        assert_near(&rates[8..], 524_288.0 / 1.7, 0.08);
+    }
+
+    #[test]
+    fn the_rate_decays_after_a_stop_and_restarts_with_the_task() {
+        let t0 = Instant::now();
+        let mut batch = ProgressBatch::default();
+        let mut received = 0;
+        for step in 0..=10u64 {
+            received += 100_000;
+            rate(&mut batch, t0, step * 500, received);
+        }
+        // Arrêt net à 5 s : le débit décroît, puis tombe à zéro une fois la fenêtre passée.
+        let after: Vec<u64> = (11..=24u64)
+            .map(|step| rate(&mut batch, t0, step * 500, received))
+            .collect();
+        assert!(after.windows(2).all(|w| w[1] <= w[0]), "{after:?}");
+        assert_eq!(*after.last().unwrap(), 0, "{after:?}");
+        // Moins d'octets qu'avant : mesure recommencée, sans débit négatif ni énorme.
+        assert_eq!(rate(&mut batch, t0, 12_500, 1_000), 0);
+        assert_eq!(rate(&mut batch, t0, 13_000, 51_000), 100_000);
+        batch.forget("a");
+        assert!(batch.sent.is_empty());
     }
 }

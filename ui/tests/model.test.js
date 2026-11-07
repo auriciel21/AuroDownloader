@@ -114,6 +114,22 @@ test("une tâche retirée quitte la liste, dans l'ordre des révisions", () => {
   assert.equal(store.tasks.size, 0);
 });
 
+test("les limites globales viennent de l'instantané, puis de limits.updated", () => {
+  const store = new TaskStore();
+  store.load({ ...snapshot(4, []), limits: { downloadBps: null, uploadBps: null } });
+  assert.deepEqual(store.limits, { downloadBps: null, uploadBps: null });
+  const changed = store.apply("limits.updated", { rev: 5, downloadBps: 2048, uploadBps: null });
+  assert.ok(changed.limits && !changed.resync);
+  assert.deepEqual(store.limits, { downloadBps: 2048, uploadBps: null });
+  // Déjà comprise dans un instantané plus récent : ignorée.
+  store.load({ ...snapshot(9, []), limits: { downloadBps: 4096, uploadBps: null } });
+  assert.ok(!store.apply("limits.updated", { rev: 9, downloadBps: 1, uploadBps: null }).limits);
+  assert.equal(store.limits.downloadBps, 4096);
+  // Moteur plus ancien : pas de limites dans l'instantané.
+  store.load(snapshot(1, []));
+  assert.equal(store.limits, null);
+});
+
 test("filtres, ordre, compteurs et débit", () => {
   const store = new TaskStore();
   store.load(snapshot(1, [

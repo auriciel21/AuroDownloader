@@ -218,4 +218,10 @@ dialog .row { display: flex; gap: 8px; align-items: center; }
 dialog .check { display: flex; margin-bottom: 8px; }
 dialog .note { color: var(--muted); font-size: 13px; margin: 0 0 10px 24px; }
 #about { margin-left: 0; margin-top: 12px; }
+#task-limit .note { margin-left: 0; }
+#task-limit-apply {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
 dialog .buttons { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
