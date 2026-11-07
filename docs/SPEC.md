@@ -843,6 +843,7 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
 - **Ouverture.** Une file sans planification, ou dont la planification est désactivée, télécharge à toute heure. Sinon, elle est ouverte pendant ses plages et fermée en dehors.
   - Une file fermée ne démarre rien : ni ses tâches en file, ni ses nouvelles tentatives, ni une tâche reprise à la main, qui attend la plage suivante.
   - Quand elle ferme, ses tâches en cours s'arrêtent après leur point de contrôle et retournent en file (`active` → `paused` → `queued`, comme à l'arrêt du moteur, section 7.4). Elles reprendront à la plage suivante, à partir de leurs octets enregistrés.
+  - Une tâche restée `active` après un arrêt brutal du moteur, dans une file fermée à son redémarrage, retourne de même en file (`paused`, cause `schedule`, puis `queued`).
   - Le moteur contrôle les plages toutes les 15 s : une file s'ouvre ou se ferme au plus 15 s après l'heure prévue.
 - **Protocole.** `schedule.list` et `sync.snapshot` décrivent chaque planification : `scheduleId`, `name`, `enabled`, `rules`, `open` (ses files peuvent télécharger ; toujours vrai si elle est désactivée) et `nextChangeAt` (prochain changement d'ouverture, millisecondes Unix, `null` s'il n'y en a pas).
   - `schedule.set` crée une planification (sans `scheduleId`) ou la remplace ; `enabled` vaut vrai s'il est absent. Des règles invalides sont refusées par `INVALID_PARAMS`, un identifiant inconnu par `SCHEDULE_NOT_FOUND`.
@@ -850,7 +851,7 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
   - `schedule.delete` la supprime ; ses files la perdent, ce qu'annonce `queue.updated`.
   - Chaque changement, et chaque ouverture ou fermeture, est annoncé par `schedule.updated` avec une nouvelle révision.
 - **Action de fin.** Quand une tâche d'une file planifiée se termine, et que la planification active de cette file a une action de fin, le moteur l'arme. Dès que la file n'a plus rien à télécharger (aucune tâche en file, en cours, en attente d'une nouvelle tentative, en vérification ou en finition ; les pauses ne comptent pas), il l'annonce par `engine.endAction`, avec l'heure prévue `at`, une minute plus tard.
-  - Pendant cette minute, `engine.cancelEndAction` l'annule ; elle tombe aussi d'elle-même si la file a de nouveau du travail. L'annulation est annoncée par `engine.endAction` avec `pending` à `null`.
+  - Pendant cette minute, `engine.cancelEndAction` l'annule ; elle tombe aussi d'elle-même si la file a de nouveau du travail, ou si sa planification ne la demande plus (désactivée, action changée, planification détachée). L'annulation est annoncée par `engine.endAction` avec `pending` à `null`.
   - À l'heure dite, le moteur exécute l'action, puis l'annonce de même ; si le système la refuse, `error` le dit.
   - Une seule action de fin à la fois. `sync.snapshot` porte celle qui est annoncée dans `endAction`.
   - Exécution : sous Windows, `SetSuspendState` pour la veille, `%SystemRoot%\System32\shutdown.exe /s /t 0` pour l'extinction ; sous Linux, `systemctl suspend` ou `systemctl poweroff`. Ailleurs (Android), l'action est refusée.

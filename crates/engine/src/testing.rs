@@ -70,8 +70,7 @@ pub struct Pace {
 pub struct Server {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,
-    /// Connexions servies en même temps : actuelles, et maximum atteint.
-    active: Arc<AtomicUsize>,
+    /// Nombre maximal de connexions servies en même temps.
     peak: Arc<AtomicUsize>,
 }
 
@@ -82,11 +81,6 @@ impl Server {
 
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
-    }
-
-    /// Connexions servies en ce moment.
-    pub fn active_connections(&self) -> usize {
-        self.active.load(Ordering::SeqCst)
     }
 
     /// Nombre maximal de connexions servies en même temps.
@@ -262,7 +256,6 @@ fn serve_with(
     Server {
         base,
         requests,
-        active,
         peak,
     }
 }

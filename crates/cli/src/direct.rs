@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use auro_engine::net::Client;
-use auro_engine::store::tasks::{self, NewTask, TaskState};
+use auro_engine::store::tasks::{self, NewTask, PauseReason, TaskState};
 use auro_engine::transfer::{self, Options, Outcome, Progress};
 use rusqlite::Connection;
 use tokio::sync::watch;
@@ -56,10 +56,14 @@ pub fn resume(db: &Path, task_id: &str, connections: Option<u32>, client: Client
     let mut conn = open_db(db)?;
     let task = tasks::load_task(&conn, task_id)?;
     match task.state {
-        TaskState::Paused if task.pause_reason.as_deref() == Some("file_changed") => bail!(
-            "le fichier distant a changé depuis le début du téléchargement ; repartir de \
-             zéro n'est pas encore possible (F-13)"
-        ),
+        TaskState::Paused
+            if task.pause_reason.as_deref() == Some(PauseReason::FileChanged.as_sql()) =>
+        {
+            bail!(
+                "le fichier distant a changé depuis le début du téléchargement ; repartir de \
+                 zéro n'est pas encore possible (F-13)"
+            )
+        }
         TaskState::Paused | TaskState::Failed => transfer::requeue(&mut conn, task_id)?,
         _ => {}
     }

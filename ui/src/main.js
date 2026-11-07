@@ -214,7 +214,10 @@ function renderTree() {
         queues.map((q) => viewButton(`queue:${q.queueId}`, "i-queue", queueName(q)))));
     }
     root.replaceChildren(...items);
-    if (focused) root.querySelector(`[data-view="${focused}"], [data-branch="${focused}"]`)?.focus();
+    if (focused) {
+      const key = CSS.escape(focused);
+      root.querySelector(`[data-view="${key}"], [data-branch="${key}"]`)?.focus();
+    }
   }
   // Vue disparue (file supprimée) : retour à tout, une fois l'état du moteur chargé.
   if (store.rev !== null && !root.querySelector(`[data-view="${CSS.escape(view)}"]`)) view = "all";
@@ -663,6 +666,8 @@ let detailsTimer = 0;
 async function refreshDetails() {
   const id = detailsTask;
   if (!id || !connected) return;
+  // Une tâche finie ne change plus : une seule lecture suffit.
+  if (detailsFull?.taskId === id && ["completed", "failed", "cancelled"].includes(store.tasks.get(id)?.state)) return;
   let full;
   try {
     full = await host.call("task.get", { taskId: id, include: ["segments", "sources"] });
@@ -772,13 +777,12 @@ function renderSegments(task) {
   }));
   const receiving = segments.filter((s) => s.receiving).length;
   map.setAttribute("aria-label", t("{0} segments, {1} en cours de réception", segments.length, receiving));
-  const body = $("d-segments").tBodies[0];
-  body.replaceChildren(...segments.map((s, i) => {
+  $("d-segments").tBodies[0].replaceChildren(...segments.map((s, i) => {
     const row = document.createElement("tr");
     const finished = s.doneBytes >= size(s);
-    const info = s.receiving ? t("Réception des données") : finished ? t("Terminé") : t("En attente");
+    const status = s.receiving ? t("Réception des données") : finished ? t("Terminé") : t("En attente");
     row.className = s.receiving ? "receiving" : finished ? "finished" : "";
-    for (const text of [String(i + 1), t("{0} sur {1}", bytes(s.doneBytes, lang, t), bytes(size(s), lang, t)), info]) {
+    for (const text of [String(i + 1), t("{0} sur {1}", bytes(s.doneBytes, lang, t), bytes(size(s), lang, t)), status]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
@@ -1009,8 +1013,11 @@ async function saveSchedule() {
     $("schedule-dialog").close();
     return;
   }
-  const { rules, error } = readSchedule();
-  if (error) return fail(error);
+  // Désactivée, les plages ne se modifient pas (champs grisés) : celles enregistrées
+  // restent si la saisie est incomplète, sinon on ne pourrait plus la désactiver.
+  const read = readSchedule();
+  const rules = read.error && !enabled ? existing.rules : read.rules;
+  if (!rules) return fail(read.error);
   try {
     const params = { name: queueName(queue), enabled, rules };
     if (existing) params.scheduleId = existing.scheduleId;
@@ -1092,8 +1099,7 @@ async function resync() {
   if (mine !== syncing) return;
   const result = store.load(snapshot);
   renderAll();
-  if (store.limits) renderLimit();
-  else loadLimit();
+  renderLimit();
   renderPlanning();
   removeCancelled();
   if (result.resync) resync();
@@ -1240,16 +1246,6 @@ function renderLimit() {
     fillLimits($(id), store.limits?.downloadBps ?? null);
     $(id).disabled = !connected;
   }
-}
-
-/// Moteur antérieur au 2026-11-07, sans limites dans l'instantané : les demander.
-async function loadLimit() {
-  try {
-    store.limits = await host.call("limits.get", {});
-  } catch {
-    return;
-  }
-  renderLimit();
 }
 
 async function changeLimit(event) {

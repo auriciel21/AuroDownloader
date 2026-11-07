@@ -87,11 +87,16 @@ impl Params {
         }
     }
 
-    fn bool(&self, name: &str) -> Result<bool, RpcError> {
+    /// Booléen ; `default` s'il est absent.
+    fn bool_or(&self, name: &str, default: bool) -> Result<bool, RpcError> {
         self.get(name)
             .map(|v| v.as_bool().ok_or_else(|| Self::wrong(name, "booléen")))
             .transpose()
-            .map(|b| b.unwrap_or(false))
+            .map(|b| b.unwrap_or(default))
+    }
+
+    fn bool(&self, name: &str) -> Result<bool, RpcError> {
+        self.bool_or(name, false)
     }
 
     fn strings(&self, name: &str) -> Result<Option<Vec<String>>, RpcError> {
@@ -168,7 +173,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(result)
         }
         "queue.list" => {
-            let queues = ctx.engine.snapshot().await?.queues;
+            let queues = ctx.engine.queues().await?;
             Ok(json!({"items": queues.iter().map(queue_json).collect::<Vec<_>>()}))
         }
         "queue.create" => {
@@ -176,6 +181,17 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let max_active = p.u32("maxActive")?.unwrap_or(3);
             let limit = p.limit("speedLimitBps")?.flatten();
             let schedule_id = p.nullable_str("scheduleId")?.flatten();
+            // Vérifiée avant : une planification inconnue ne laisse pas de file créée.
+            if let Some(id) = &schedule_id
+                && !ctx
+                    .engine
+                    .schedules()
+                    .await?
+                    .iter()
+                    .any(|v| &v.schedule.id == id)
+            {
+                return Err(EngineError::ScheduleNotFound(id.clone()).into());
+            }
             let id = ctx.engine.create_queue(&name, max_active, limit).await?;
             if let Some(schedule_id) = schedule_id {
                 let change = QueueChange {
@@ -231,18 +247,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .get("rules")
                 .ok_or_else(|| RpcError::invalid_params("rules manquant"))
                 .and_then(|v| Rules::from_json(v).map_err(RpcError::invalid_params))?;
-            let enabled = match p.get("enabled") {
-                None => true,
-                Some(v) => v
-                    .as_bool()
-                    .ok_or_else(|| RpcError::invalid_params("enabled : booléen attendu"))?,
-            };
             let view = ctx
                 .engine
                 .set_schedule(
                     p.str("scheduleId")?,
                     p.required_str("name")?,
-                    enabled,
+                    p.bool_or("enabled", true)?,
                     rules,
                 )
                 .await?;
@@ -464,7 +474,7 @@ async fn for_each(ctx: &Ctx, p: &Params, action: Action) -> Result<Value, RpcErr
 }
 
 async fn queue_by_id(ctx: &Ctx, queue_id: &str) -> Result<Value, RpcError> {
-    let queues = ctx.engine.snapshot().await?.queues;
+    let queues = ctx.engine.queues().await?;
     queues
         .iter()
         .find(|q| q.id == queue_id)

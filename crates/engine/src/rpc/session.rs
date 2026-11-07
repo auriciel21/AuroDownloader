@@ -26,7 +26,8 @@ const OUTGOING: usize = 256;
 pub(super) struct Topics {
     /// `task.added`, `task.stateChanged`, `task.updated`, `task.removed`.
     pub tasks: bool,
-    /// `queue.updated`, `limits.updated`.
+    /// `queue.updated`, `limits.updated`, `schedule.updated`, `schedule.removed`,
+    /// `engine.endAction`.
     pub queues: bool,
     /// `task.progress`, regroupé.
     pub progress: bool,
@@ -315,8 +316,8 @@ async fn describe(
             json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
         )),
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
-            let snapshot = engine.snapshot().await.ok()?;
-            let queue = snapshot.queues.iter().find(|q| q.id == queue_id)?;
+            let queues = engine.queues().await.ok()?;
+            let queue = queues.iter().find(|q| q.id == queue_id)?;
             Some(notification(
                 "queue.updated",
                 json!({"rev": rev, "queue": queue_json(queue)}),

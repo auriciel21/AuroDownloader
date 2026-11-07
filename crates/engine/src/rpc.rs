@@ -4,11 +4,9 @@
 //! lit et écrit un flux d'octets). Le transport local (socket Unix, canal nommé Windows)
 //! est dans [`local`] ; l'authentification y repose sur les droits du système (SPEC §6.2).
 //!
-//! Méthodes prises en charge : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`,
-//! `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.update` (limite de débit
-//! seulement), `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`,
-//! `events.subscribe`, `events.unsubscribe`, `sync.snapshot`. Les autres méthodes de la
-//! SPEC §6.4 répondent « méthode inconnue » jusqu'à leur arrivée.
+//! Méthodes prises en charge : la liste de la SPEC §6.5 (« Méthodes servies »), tenue à
+//! jour là plutôt qu'ici. Les autres méthodes de la SPEC §6.4 répondent « méthode
+//! inconnue » jusqu'à leur arrivée.
 
 use serde_json::{Value, json};
 

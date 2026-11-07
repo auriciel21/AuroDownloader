@@ -238,7 +238,9 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// `ETag` utilisable avec `If-Range` pour la reprise (SPEC §7.4, étape 3).
+    /// `ETag` utilisable avec `If-Range` pour la reprise (SPEC §7.4, étape 3). Le transfert
+    /// applique le même filtre à l'`ETag` enregistré de la source.
+    #[cfg(test)]
     pub fn strong_etag(&self) -> Option<&str> {
         self.etag.as_deref().filter(|e| headers::is_strong_etag(e))
     }

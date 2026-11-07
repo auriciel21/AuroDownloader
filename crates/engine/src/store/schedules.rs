@@ -1,16 +1,24 @@
 //! Planifications enregistrées (table `schedules`, SPEC §5.2 et §7.11). Les règles sont
 //! gardées en JSON, au format du protocole, et vérifiées à la lecture comme à l'écriture.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{StoreError, new_id};
 use crate::schedule::{Rules, Schedule};
 
-fn row(id: String, name: String, rules_json: &str, enabled: bool) -> Result<Schedule, StoreError> {
-    let value = serde_json::from_str(rules_json)
-        .map_err(|e| StoreError::BadValue(format!("planification {id} : {e}")))?;
-    let rules = Rules::from_json(&value)
-        .map_err(|e| StoreError::BadValue(format!("planification {id} : {e}")))?;
+const COLUMNS: &str = "id, name, rules_json, enabled";
+
+/// Ligne brute : identifiant, nom, règles en JSON, activée.
+type Raw = (String, String, String, bool);
+
+fn raw(r: &Row<'_>) -> rusqlite::Result<Raw> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+}
+
+fn schedule((id, name, rules_json, enabled): Raw) -> Result<Schedule, StoreError> {
+    let bad = |e: String| StoreError::BadValue(format!("planification {id} : {e}"));
+    let value = serde_json::from_str(&rules_json).map_err(|e| bad(e.to_string()))?;
+    let rules = Rules::from_json(&value).map_err(bad)?;
     Ok(Schedule {
         id,
         name,
@@ -21,41 +29,23 @@ fn row(id: String, name: String, rules_json: &str, enabled: bool) -> Result<Sche
 
 /// Toutes les planifications, par nom.
 pub fn list_schedules(conn: &Connection) -> Result<Vec<Schedule>, StoreError> {
-    let mut stmt =
-        conn.prepare("SELECT id, name, rules_json, enabled FROM schedules ORDER BY name, id")?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, bool>(3)?,
-        ))
-    })?;
-    rows.map(|r| {
-        let (id, name, rules, enabled) = r?;
-        row(id, name, &rules, enabled)
-    })
-    .collect()
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM schedules ORDER BY name, id"
+    ))?;
+    let rows = stmt.query_map([], raw)?;
+    rows.map(|r| schedule(r?)).collect()
 }
 
 /// Une planification, si elle existe.
 pub fn load_schedule(conn: &Connection, id: &str) -> Result<Option<Schedule>, StoreError> {
-    let raw = conn
-        .query_row(
-            "SELECT id, name, rules_json, enabled FROM schedules WHERE id = ?1",
-            [id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, bool>(3)?,
-                ))
-            },
-        )
-        .optional()?;
-    raw.map(|(id, name, rules, enabled)| row(id, name, &rules, enabled))
-        .transpose()
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM schedules WHERE id = ?1"),
+        [id],
+        raw,
+    )
+    .optional()?
+    .map(schedule)
+    .transpose()
 }
 
 /// Crée une planification (`id` absent) ou remplace celle qui existe ; renvoie son

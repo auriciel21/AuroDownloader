@@ -1078,6 +1078,98 @@ mod planning {
         engine.shutdown().await;
     }
 
+    static CHANGED_CALLS: Mutex<Vec<EndAction>> = Mutex::new(Vec::new());
+
+    fn record_changed(action: EndAction) -> std::io::Result<()> {
+        CHANGED_CALLS.lock().unwrap().push(action);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_announced_end_action_falls_when_its_schedule_no_longer_asks_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(SIZE);
+        let engine = Engine::start(planning_config(
+            dir.path(),
+            crate::schedule::local_now,
+            record_changed,
+        ))
+        .unwrap();
+        let mut events = engine.subscribe();
+        let rules = json!({
+            "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "00:00"}],
+            "onDone": "shutdown",
+        });
+        let view = attach(&engine, rules.clone()).await;
+        engine
+            .add(add(&server.url("/f.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert!(end_action(&mut events).await.0.is_some());
+
+        // « Ne rien faire » choisi pendant le décompte : l'annonce tombe, rien ne s'exécute.
+        let mut none = Rules::from_json(&rules).unwrap();
+        none.on_done = EndAction::None;
+        engine
+            .set_schedule(Some(view.schedule.id), "Essai".into(), true, none)
+            .await
+            .unwrap();
+        assert_eq!(end_action(&mut events).await, (None, None));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(CHANGED_CALLS.lock().unwrap().is_empty());
+        engine.shutdown().await;
+    }
+
+    static CLOSED_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn closed_clock(_: &Connection) -> LocalNow {
+        LocalNow {
+            utc_ms: CLOSED_CLOCK.load(Ordering::SeqCst),
+            offset_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_left_active_in_a_closed_queue_goes_back_to_waiting() {
+        CLOSED_CLOCK.store(monday(12, 0), Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let server = slow_site(1 << 20);
+        let make = || planning_config(dir.path(), closed_clock, crate::power::unplugged);
+        let engine = Engine::start(make()).unwrap();
+        attach(
+            &engine,
+            json!({"windows": [{"days": [1], "start": "13:00", "end": "14:00"}]}),
+        )
+        .await;
+        let id = engine
+            .add(add(&server.url("/g.bin"), dir.path()))
+            .await
+            .unwrap();
+        engine.shutdown().await;
+
+        // Arrêt brutal pendant le téléchargement : la tâche est restée `active` en base.
+        let mut conn = store::open(&dir.path().join("auro.db")).unwrap();
+        change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+        drop(conn);
+
+        // Redémarré hors de la plage : elle retourne en file, sans partir.
+        let engine = Engine::start(make()).unwrap();
+        let task = timeout(WAIT, async {
+            loop {
+                let task = engine.get(&id).await.unwrap();
+                if task.state != TaskState::Active {
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(task.state, TaskState::Queued);
+        assert!(server.requests().is_empty(), "rien ne doit partir");
+        engine.shutdown().await;
+    }
+
     #[tokio::test]
     async fn without_a_plugged_power_action_the_refusal_is_announced() {
         let dir = tempfile::tempdir().unwrap();

@@ -21,16 +21,28 @@ fn dest_dir(dir: &Path) -> Result<String> {
         .to_owned())
 }
 
+/// Une file, par son nom ou son identifiant ; sans `queue`, la file principale.
+async fn find_queue(rpc: &mut Rpc, queue: Option<&str>) -> Result<Value> {
+    let list = rpc.call("queue.list", json!({})).await?;
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    let found = match queue {
+        Some(q) => items
+            .into_iter()
+            .find(|i| i["name"] == q || i["queueId"] == q),
+        None => {
+            let main = items.iter().find(|i| i["name"] == "default").cloned();
+            main.or_else(|| items.into_iter().next())
+        }
+    };
+    found.with_context(|| format!("file inconnue : {}", queue.unwrap_or("principale")))
+}
+
 /// Identifiant d'une file donnée par son nom ou son identifiant.
 async fn queue_id(rpc: &mut Rpc, queue: &str) -> Result<String> {
-    let list = rpc.call("queue.list", json!({})).await?;
-    list["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|q| q["name"] == queue || q["queueId"] == queue)
-        .and_then(|q| q["queueId"].as_str().map(str::to_owned))
-        .with_context(|| format!("file inconnue : {queue}"))
+    find_queue(rpc, Some(queue)).await?["queueId"]
+        .as_str()
+        .map(str::to_owned)
+        .context("file sans identifiant")
 }
 
 pub struct AddOptions<'a> {
@@ -282,22 +294,13 @@ pub async fn limit(rpc: &mut Rpc, of: LimitOf<'_>, rate: Option<Limit>) -> Resul
             )
         }
         LimitOf::Queue(queue) => {
-            let id = queue_id(rpc, queue).await?;
+            let found = find_queue(rpc, Some(queue)).await?;
             let q = match rate {
                 Some(Limit(l)) => {
-                    let params = json!({"queueId": id, "speedLimitBps": l});
+                    let params = json!({"queueId": found["queueId"], "speedLimitBps": l});
                     rpc.call("queue.update", params).await?
                 }
-                None => {
-                    let list = rpc.call("queue.list", json!({})).await?;
-                    list["items"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|q| q["queueId"] == id.as_str())
-                        .cloned()
-                        .with_context(|| format!("file inconnue : {queue}"))?
-                }
+                None => found,
             };
             let name = q["name"].as_str().unwrap_or(queue);
             (format!("de la file {name}"), q["speedLimitBps"].as_u64())
@@ -305,22 +308,6 @@ pub async fn limit(rpc: &mut Rpc, of: LimitOf<'_>, rate: Option<Limit>) -> Resul
     };
     println!("Limite {what} : {}", display::limit(bps));
     Ok(())
-}
-
-/// File visée : par son nom ou son identifiant, sinon la file principale.
-async fn queue_or_default(rpc: &mut Rpc, queue: Option<&str>) -> Result<Value> {
-    let list = rpc.call("queue.list", json!({})).await?;
-    let items = list["items"].as_array().cloned().unwrap_or_default();
-    let found = match queue {
-        Some(q) => items
-            .into_iter()
-            .find(|i| i["name"] == q || i["queueId"] == q),
-        None => {
-            let main = items.iter().find(|i| i["name"] == "default").cloned();
-            main.or_else(|| items.into_iter().next())
-        }
-    };
-    found.with_context(|| format!("file inconnue : {}", queue.unwrap_or("principale")))
 }
 
 const DAY_NAMES: [&str; 7] = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
@@ -437,7 +424,7 @@ pub struct WindowSpec<'a> {
 
 /// Donne à une file une seule plage, en remplaçant sa planification.
 pub async fn schedule_set(rpc: &mut Rpc, queue: Option<&str>, spec: &WindowSpec<'_>) -> Result<()> {
-    let q = queue_or_default(rpc, queue).await?;
+    let q = find_queue(rpc, queue).await?;
     let queue_id = q["queueId"]
         .as_str()
         .context("file sans identifiant")?
@@ -470,7 +457,7 @@ pub async fn schedule_set(rpc: &mut Rpc, queue: Option<&str>, spec: &WindowSpec<
 
 /// Retire la planification d'une file, et la supprime si plus aucune file ne s'en sert.
 pub async fn schedule_clear(rpc: &mut Rpc, queue: Option<&str>) -> Result<()> {
-    let q = queue_or_default(rpc, queue).await?;
+    let q = find_queue(rpc, queue).await?;
     let Some(id) = q["scheduleId"].as_str().map(str::to_owned) else {
         println!("Cette file n'a pas de planification.");
         return Ok(());

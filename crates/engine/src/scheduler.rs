@@ -18,7 +18,7 @@
 //! d'elle-même quand la place revient ; la boucle le vérifie toutes les
 //! [`DISK_RECHECK`].
 //!
-//! Pas encore traitées : plages horaires (F-16).
+//! Plages horaires et action de fin (F-16, SPEC §7.11) : voir `planning`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ use crate::store::tasks::{
     self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
     change_state, load_task, next_retry_at, runnable_tasks,
 };
-use crate::store::{self, StoreError, now_ms, settings};
+use crate::store::{self, StoreError, now_ms, schedules, settings};
 use crate::transfer::{self, LiveSegment, Options, Outcome, Progress, TransferError};
 
 mod planning;
@@ -323,6 +323,7 @@ enum Command {
     Details(String, Include, Reply<TaskDetails>),
     List(TaskFilter, Reply<(Vec<TaskRow>, u64)>),
     Snapshot(Reply<Snapshot>),
+    Queues(Reply<Vec<QueueRow>>),
     UpdateTask {
         task_id: String,
         update: TaskUpdate,
@@ -441,6 +442,11 @@ impl Engine {
     /// Tâches et files, lues ensemble à une même révision.
     pub async fn snapshot(&self) -> Result<Snapshot, EngineError> {
         self.ask(Command::Snapshot).await
+    }
+
+    /// Files, dans leur ordre ; sans lire les tâches, contrairement à [`Engine::snapshot`].
+    pub async fn queues(&self) -> Result<Vec<QueueRow>, EngineError> {
+        self.ask(Command::Queues).await
     }
 
     /// Crée une file ; renvoie son identifiant.
@@ -728,8 +734,8 @@ impl Scheduler {
         }
     }
 
-    /// Délai jusqu'à la prochaine nouvelle tentative ou vérification de la place libre,
-    /// au plus une minute.
+    /// Délai jusqu'à la prochaine nouvelle tentative, vérification de la place libre,
+    /// contrôle des plages horaires ou action de fin, au plus une minute.
     fn next_wake(&self) -> Duration {
         let now = Instant::now();
         let cap = Duration::from_secs(60)
@@ -824,8 +830,21 @@ impl Scheduler {
             if self.running.contains_key(&c.task_id) || self.broken.contains(&c.task_id) {
                 continue;
             }
-            // Hors de ses plages horaires, une file attend (F-16).
+            // Hors de ses plages horaires, une file attend (F-16). Une tâche restée
+            // `active` (arrêt brutal du moteur) y retourne en file, comme à la fermeture.
             if self.planning.closed.contains(&c.queue_id) {
+                if c.state == TaskState::Active {
+                    let paused = Change {
+                        pause_reason: Some(PauseReason::Schedule),
+                        ..Change::to(TaskState::Paused)
+                    };
+                    let requeued = self
+                        .set_state(&c.task_id, &paused)
+                        .and_then(|()| self.set_state(&c.task_id, &Change::to(TaskState::Queued)));
+                    if requeued.is_err() {
+                        self.broken.insert(c.task_id);
+                    }
+                }
                 continue;
             }
             let used = busy.entry(c.queue_id.clone()).or_default();
@@ -961,6 +980,9 @@ impl Scheduler {
             }
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());
+            }
+            Command::Queues(reply) => {
+                let _ = reply.send(tasks::list_queues(&self.conn).map_err(Into::into));
             }
             Command::UpdateTask {
                 task_id,
@@ -1105,6 +1127,12 @@ impl Scheduler {
                 )));
             }
         }
+        // Tout est vérifié avant d'écrire : une demande refusée ne change rien.
+        if let Some(Some(id)) = &change.schedule_id
+            && schedules::load_schedule(&self.conn, id)?.is_none()
+        {
+            return Err(EngineError::ScheduleNotFound(id.clone()));
+        }
         let updated = tasks::update_queue(
             &self.conn,
             queue_id,
@@ -1196,7 +1224,9 @@ impl Scheduler {
         }
         let task = load_task(&self.conn, task_id)?;
         match task.state {
-            TaskState::Paused if task.pause_reason.as_deref() == Some("file_changed") => {
+            TaskState::Paused
+                if task.pause_reason.as_deref() == Some(PauseReason::FileChanged.as_sql()) =>
+            {
                 Err(EngineError::FileChanged)
             }
             TaskState::Paused | TaskState::Failed => {

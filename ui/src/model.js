@@ -134,8 +134,7 @@ function merge(into, other) {
   into.finished.push(...other.finished);
 }
 
-/// Tâche telle que la liste la garde : l'avancement manque à l'instantané ; les dates,
-/// à un moteur antérieur au 2026-11-07.
+/// Tâche telle que la liste la garde : l'avancement manque à l'instantané.
 function fresh(task) {
   return { bps: 0, etaS: null, connections: 0, createdAt: null, finishedAt: null, ...task };
 }
@@ -169,9 +168,7 @@ export class TaskStore {
   load(snapshot) {
     this.tasks = new Map(snapshot.tasks.map((t) => [t.taskId, fresh(t)]));
     this.queues = new Map(snapshot.queues.map((q) => [q.queueId, q]));
-    // Un moteur antérieur au 2026-11-07 ne les donne pas.
     this.limits = snapshot.limits ?? null;
-    // Un moteur antérieur au 2026-11-07 ne les donne pas.
     this.schedules = new Map((snapshot.schedules ?? []).map((s) => [s.scheduleId, s]));
     this.endAction = snapshot.endAction ?? null;
     this.rev = snapshot.rev;

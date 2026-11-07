@@ -165,17 +165,13 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Attache une planification à une file, ou l'en détache.
+    /// Attache une planification à une file, ou l'en détache. L'appelant
+    /// (`update_queue`) a vérifié qu'elle existe.
     pub(super) fn attach_schedule(
         &mut self,
         queue_id: &str,
         schedule_id: Option<&str>,
     ) -> Result<(), EngineError> {
-        if let Some(id) = schedule_id
-            && schedules::load_schedule(&self.conn, id)?.is_none()
-        {
-            return Err(EngineError::ScheduleNotFound(id.to_owned()));
-        }
         if !tasks::set_queue_schedule(&self.conn, queue_id, schedule_id)? {
             return Err(EngineError::QueueNotFound(queue_id.to_owned()));
         }
@@ -212,10 +208,13 @@ impl Scheduler {
     }
 
     /// Annonce l'action de fin d'une file armée qui n'a plus rien à télécharger ; annule
-    /// celle annoncée si sa file a de nouveau du travail ; l'exécute à l'heure dite.
+    /// celle annoncée si sa file a de nouveau du travail, ou si sa planification ne la
+    /// demande plus (désactivée, changée, détachée) ; l'exécute à l'heure dite.
     pub(super) fn check_end_action(&mut self) {
         if let Some(pending) = self.planning.pending.clone() {
-            if self.has_work(&pending.queue_id) {
+            if self.has_work(&pending.queue_id)
+                || self.end_action_of(&pending.queue_id) != pending.action
+            {
                 self.cancel_end_action();
             } else if self
                 .planning

@@ -903,6 +903,16 @@ async fn schedules_are_set_attached_announced_and_removed() {
             json!({"scheduleId": "inconnue"}),
             "SCHEDULE_NOT_FOUND",
         ),
+        (
+            "queue.create",
+            json!({"name": "Orpheline", "scheduleId": "inconnue"}),
+            "SCHEDULE_NOT_FOUND",
+        ),
+        (
+            "queue.update",
+            json!({"queueId": queue, "name": "Renommée", "scheduleId": "inconnue"}),
+            "SCHEDULE_NOT_FOUND",
+        ),
     ] {
         assert_eq!(
             c.error_code(method, params.clone()).await,
@@ -910,6 +920,10 @@ async fn schedules_are_set_attached_announced_and_removed() {
             "{method} {params}"
         );
     }
+    // Une demande refusée ne laisse rien : ni file créée, ni nom changé.
+    let queues = c.result("queue.list", json!({})).await;
+    assert_eq!(queues["items"].as_array().unwrap().len(), 1, "{queues}");
+    assert_ne!(queues["items"][0]["name"], "Renommée");
     assert_eq!(
         c.result("engine.cancelEndAction", json!({})).await,
         json!({"cancelled": false})

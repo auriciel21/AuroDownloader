@@ -208,7 +208,9 @@ fn window_from_json(value: &Value) -> Result<Window, String> {
 /// « HH:MM », de 00:00 à 23:59.
 fn parse_hhmm(text: &str) -> Option<u16> {
     let (h, m) = text.split_once(':')?;
-    if h.len() != 2 || m.len() != 2 {
+    // Deux chiffres de chaque côté : `parse` accepterait aussi « +1 ».
+    let two_digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
+    if !two_digits(h) || !two_digits(m) {
         return None;
     }
     let (h, m): (u16, u16) = (h.parse().ok()?, m.parse().ok()?);
@@ -309,6 +311,7 @@ mod tests {
             json!({"windows": [{"days": [8], "start": "01:00", "end": "02:00"}]}),
             json!({"windows": [{"days": [1], "start": "24:00", "end": "02:00"}]}),
             json!({"windows": [{"days": [1], "start": "1:00", "end": "02:00"}]}),
+            json!({"windows": [{"days": [1], "start": "+1:00", "end": "02:00"}]}),
             json!({"windows": [{"days": [1], "start": "01:00", "end": "02:00"}], "onDone": "reboot"}),
             json!([]),
         ] {
