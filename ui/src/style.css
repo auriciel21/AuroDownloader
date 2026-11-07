@@ -245,7 +245,7 @@ main {
 /* Le nom garde au moins 170 px : en dessous, le tableau défile en largeur. */
 #grid {
   width: 100%;
-  min-width: 800px;
+  min-width: 836px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -255,7 +255,7 @@ col.c-progress { width: 112px; }
 col.c-state { width: 136px; }
 col.c-eta { width: 108px; }
 col.c-rate { width: 92px; }
-col.c-added { width: 96px; }
+col.c-added { width: 132px; }
 
 #grid thead th {
   position: sticky;

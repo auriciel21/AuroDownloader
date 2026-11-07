@@ -118,13 +118,12 @@ function viewLabel(key) {
 }
 
 let dateFormat = new Intl.DateTimeFormat("fr", { dateStyle: "short", timeStyle: "short" });
-let timeFormat = new Intl.DateTimeFormat("fr", { timeStyle: "short" });
+/// Info-bulle : la date en toutes lettres.
+let longDateFormat = new Intl.DateTimeFormat("fr", { dateStyle: "full", timeStyle: "short" });
 
-/// Date courte : l'heure seule pour aujourd'hui.
-function shortDate(ms) {
-  if (!ms) return "";
-  const date = new Date(ms);
-  return date.toDateString() === new Date().toDateString() ? timeFormat.format(date) : dateFormat.format(date);
+/// Date et heure, toujours les deux : « 07/11/2026 13:10 ».
+function dateText(ms, format = dateFormat) {
+  return ms ? format.format(new Date(ms)) : "";
 }
 
 function percent(task) {
@@ -318,8 +317,8 @@ function renderRow(taskId) {
   const active = task.state === "active";
   cell("eta").textContent = active ? duration(task.etaS, t) : "";
   cell("rate").textContent = active ? rate(task.bps ?? 0) : "";
-  cell("added").textContent = shortDate(task.createdAt);
-  cell("added").title = task.createdAt ? dateFormat.format(new Date(task.createdAt)) : "";
+  cell("added").textContent = dateText(task.createdAt);
+  cell("added").title = dateText(task.createdAt, longDateFormat);
 }
 
 /// Met le tableau dans l'ordre de la vue ; ne déplace que les lignes mal placées, pour
@@ -719,8 +718,8 @@ function renderDetails() {
       ? t("Non : ce serveur ne permet pas de reprendre ; un arrêt ou une coupure fait repartir de zéro")
       : "");
   $("d-resume").classList.toggle("warn", source?.acceptsRanges === false);
-  set("added", task.createdAt ? dateFormat.format(new Date(task.createdAt)) : "");
-  set("finished", task.finishedAt ? dateFormat.format(new Date(task.finishedAt)) : "");
+  set("added", dateText(task.createdAt));
+  set("finished", dateText(task.finishedAt));
   $("d-progress").setAttribute("aria-label", t("Avancement de {0}", name));
   const p = percent(task);
   if (p !== null) {
@@ -1289,7 +1288,7 @@ function applyInfo(next) {
   lang = info.lang;
   t = translator(lang);
   dateFormat = new Intl.DateTimeFormat(lang, { dateStyle: "short", timeStyle: "short" });
-  timeFormat = new Intl.DateTimeFormat(lang, { timeStyle: "short" });
+  longDateFormat = new Intl.DateTimeFormat(lang, { dateStyle: "full", timeStyle: "short" });
   executables = new Set(info.executableExtensions);
   translatePage();
   $("dest").textContent = info.destDir;
