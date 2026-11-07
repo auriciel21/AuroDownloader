@@ -219,6 +219,22 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 
 Les cookies sont rangés dans le coffre du système, jamais dans la base (section 5.1).
 
+Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ensemble ; capture de tout ce qui dépasse une taille) :
+- **Relais** : `auro-relay` (paquet `auro-cli`), hôte de messagerie native `org.aurodownloader.relay`, installé à côté d'`aurod`. Messages JSON préfixés de leur longueur sur 4 octets (ordre de la machine), au plus 1 Mio. Il se connecte au point d'accès local par défaut avec la portée `add` (section 6.9), et démarre `aurod` s'il ne répond pas. Sous Windows, ce moteur est lancé hors du groupe de processus (job) dans lequel le navigateur range son hôte, pour lui survivre ; si le job l'interdit, il part dedans.
+  - `{"type": "ping"}` : `{"ok": true, "version"}`, sans le moteur.
+  - `{"type": "add", "url", "requestId", "paused"}` : `task.add` sans `destDir` (dossier des téléchargements du moteur), `requestId` en `idempotencyKey`. Réponse `{"ok": true, "taskId"}`.
+  - Un champ `id` est renvoyé tel quel. Refus : `{"ok": false, "code", "message"}`, `code` étant celui du moteur, ou `ENGINE_UNAVAILABLE`, `BAD_MESSAGE`, `UNKNOWN_TYPE`.
+- **Déclaration aux navigateurs** :
+  - Windows (installateur) : clés `HKCU\Software\Google\Chrome\NativeMessagingHosts\org.aurodownloader.relay`, `…\Microsoft\Edge\…` et `…\Mozilla\…`, vers `relay-chromium.json` et `relay-firefox.json` du dossier du programme ; retirées à la désinstallation si elles désignent ce dossier.
+  - Linux (`.deb`) : `/etc/opt/chrome/`, `/etc/chromium/`, `/etc/opt/edge/native-messaging-hosts/` et `/usr/lib/mozilla/native-messaging-hosts/`. L'AppImage ne déclare rien : son chemin change à chaque lancement.
+  - Identifiants admis : `chrome-extension://blpdooihcodaljmhaldncnkgchpaaheo/` (clé publique inscrite dans le manifeste de l'extension ; un identifiant de boutique s'y ajoutera) et `extension@aurodownloader.org` (Firefox).
+- **Extension** (`extension/`, Manifest V3, un seul manifeste pour les trois navigateurs) :
+  - Elle observe les téléchargements créés par le navigateur. Elle capture par défaut tout ce qui dépasse 1 Mio ; une taille inconnue est capturée. Restent au navigateur : les adresses non HTTP (`blob:`, `data:`), la navigation privée (sauf réglage), les sites exclus et leurs sous-domaines, et un téléchargement qui suit de moins de 3 s un clic avec la touche Alt.
+  - Le téléchargement du navigateur n'est annulé et effacé qu'une fois l'ajout accepté par le moteur ; si le relais manque ou refuse, le navigateur le garde. Un badge sur l'icône le dit (« ✓ » ou « ! »), et les options montrent le dernier envoi.
+  - Menu contextuel « Télécharger avec AuroDownloader » sur les liens, images, vidéos et sons, quels que soient les réglages.
+  - Options : capture oui ou non, taille minimale, sites exclus, navigation privée ; vérification de la liaison avec le relais.
+- **Pas encore** : cookies et en-têtes de la page (étape suivante ; un téléchargement qui demande une connexion échoue dans le moteur), détection des vidéos, publication dans les boutiques (Firefox n'installe une extension non signée que temporairement), Brave, Vivaldi et Opera. Un autre gestionnaire intégré au navigateur (IDM) peut intercepter un téléchargement avant l'extension.
+
 ### 4.6 Exécution et distribution
 
 - **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option.

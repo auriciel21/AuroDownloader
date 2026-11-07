@@ -53,21 +53,35 @@ pub fn start_daemon(endpoint: &str, db: Option<&Path>, ca_cert: Option<&Path>) -
         .stdout(Stdio::null())
         .stderr(log.map_or_else(Stdio::null, Stdio::from));
     #[cfg(windows)]
-    {
+    let spawned = {
         use std::os::windows::process::CommandExt;
         // Ni fenêtre ni console partagée : le Ctrl-C d'un terminal ne l'atteint pas.
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        // Hors du groupe de processus (job) du lanceur : un navigateur range son hôte de
+        // messagerie native (le relais) dans un job qu'il ferme à la fin, et le moteur
+        // doit lui survivre. Sans effet hors d'un job ; si le job interdit d'en sortir,
+        // le moteur part quand même, dedans.
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
         keep_own_handles();
-    }
+        match command
+            .creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+        {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                command.creation_flags(flags).spawn()
+            }
+            other => other,
+        }
+    };
     #[cfg(unix)]
-    {
+    let spawned = {
         use std::os::unix::process::CommandExt;
         // Son propre groupe : le Ctrl-C du terminal ne l'atteint pas.
-        command.process_group(0);
-    }
-    command.spawn().map(drop).map_err(|e| {
+        command.process_group(0).spawn()
+    };
+    spawned.map(drop).map_err(|e| {
         io::Error::new(
             e.kind(),
             format!("impossible de lancer {} : {e}", program.display()),

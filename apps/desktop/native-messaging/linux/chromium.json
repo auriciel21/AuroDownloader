@@ -1,0 +1,7 @@
+{
+  "name": "org.aurodownloader.relay",
+  "description": "AuroDownloader : relais de l'extension navigateur",
+  "path": "/usr/bin/auro-relay",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://blpdooihcodaljmhaldncnkgchpaaheo/"]
+}

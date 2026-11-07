@@ -16,7 +16,7 @@ triple=$(rustc -vV | sed -n 's/^host: //p')
 
 cargo build --release --manifest-path "$root/Cargo.toml" -p auro-daemon -p auro-cli
 mkdir -p "$here/binaries"
-for name in aurod auro; do
+for name in aurod auro auro-relay; do
   cp "$root/target/release/$name" "$here/binaries/$name-$triple"
 done
 

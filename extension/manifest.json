@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "description": "__MSG_description__",
+  "version": "0.1.0",
+  "default_locale": "en",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzPrI6GcrfoxG5tDU0er+2NbX1Fc1oBGWiMbbCEbhye9xnYZFIctmB71rygsC+bwuFw+yQz+8aktrrZ0WtWS+3vto+V8c9+h8QiX/1Prqi3ztxgybHLrcsgMTD0NCpw8btMfJ/xQwmUXGFlpUUkmHb2vT30SNpV1fo0EnIpAv7xfgmOYZLaM0pFixdsg6E34+B5XDH9zIZ4OX6ZZCjdXePe4uuPzQw+Fo7tJRpBC/Z1xMbXBxyeCDtHr+ZJPenVo7oNWWBe2wrq4tzlSxvj7ElhblIobHdqTImHE2TwYIt2J6njMzah9ChU79oVtItHXFsxC97DXvHzh5Gi67XUxt7wIDAQAB",
+  "icons": {
+    "32": "icons/32.png",
+    "64": "icons/64.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_icon": { "32": "icons/32.png", "64": "icons/64.png" },
+    "default_title": "__MSG_name__"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["decide.js", "background.js"]
+  },
+  "options_ui": { "page": "options.html", "open_in_tab": false },
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "minimum_chrome_version": "121",
+  "browser_specific_settings": {
+    "gecko": { "id": "extension@aurodownloader.org", "strict_min_version": "128.0" }
+  }
+}

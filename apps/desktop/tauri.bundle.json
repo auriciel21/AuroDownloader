@@ -1,5 +1,5 @@
 {
   "bundle": {
-    "externalBin": ["binaries/aurod", "binaries/auro"]
+    "externalBin": ["binaries/aurod", "binaries/auro", "binaries/auro-relay"]
   }
 }

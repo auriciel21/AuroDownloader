@@ -28,8 +28,12 @@ pub fn database() -> Option<PathBuf> {
 /// Point d'accès local par défaut du protocole : canal nommé `\\.\pipe\aurodownloader-<nom>`
 /// sous Windows, socket `$XDG_RUNTIME_DIR/aurodownloader/aurod.sock` ailleurs (ou
 /// `/tmp/aurodownloader-<nom>/aurod.sock` sans `XDG_RUNTIME_DIR`). Le nom d'utilisateur
-/// sépare les moteurs de plusieurs utilisateurs d'une même machine.
+/// sépare les moteurs de plusieurs utilisateurs d'une même machine. `AURO_ENDPOINT` le
+/// remplace, pour les essais (un navigateur d'essai le transmet au relais qu'il lance).
 pub fn endpoint() -> String {
+    if let Some(endpoint) = std::env::var_os("AURO_ENDPOINT").and_then(|e| e.into_string().ok()) {
+        return endpoint;
+    }
     let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "user".into())

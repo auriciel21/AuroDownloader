@@ -7,6 +7,11 @@
 # qu'ils existent. Demande `cargo install tauri-cli --version "^2" --locked`.
 #
 # Résultat : target\release\bundle\nsis\AuroDownloader_<version>_x64-setup.exe
+#
+# -Essai : installateur d'essai « AuroDownloader Essai » (tauri.essai.json), d'un autre nom
+# et d'un autre identifiant : ses clés de registre, ses raccourcis et son instance unique
+# ne touchent pas une vraie installation sur la même machine.
+param([switch]$Essai)
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path "$PSScriptRoot\..\.."
 
@@ -16,16 +21,18 @@ function Run([string]$what, [scriptblock]$cmd) {
 }
 
 $triple = ((rustc -vV) -match '^host: ') -replace '^host: ', ''
-Run 'moteur et CLI' { cargo build --release --manifest-path "$root\Cargo.toml" -p auro-daemon -p auro-cli }
+Run 'moteur, CLI et relais' { cargo build --release --manifest-path "$root\Cargo.toml" -p auro-daemon -p auro-cli }
 
 $bin = New-Item -ItemType Directory -Force "$PSScriptRoot\binaries"
-foreach ($name in 'aurod', 'auro') {
+foreach ($name in 'aurod', 'auro', 'auro-relay') {
     Copy-Item "$root\target\release\$name.exe" "$bin\$name-$triple.exe" -Force
 }
 
 Push-Location $PSScriptRoot
 try {
-    Run 'installateur' { cargo tauri build --bundles nsis --config tauri.bundle.json }
+    $configs = @('--config', 'tauri.bundle.json')
+    if ($Essai) { $configs += @('--config', 'tauri.essai.json') }
+    Run 'installateur' { cargo tauri build --bundles nsis @configs }
 } finally {
     Pop-Location
 }

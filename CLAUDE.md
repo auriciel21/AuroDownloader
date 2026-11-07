@@ -45,9 +45,10 @@ téléchargement.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
-- `crates/cli` (`auro-cli`, binaire `auro`) : ligne de commande, cliente d'`aurod`
-  (`client` : connexion, appels, démarrage d'`aurod` par `launch` ; `remote` : commandes ;
-  `display`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
+- `crates/cli` (`auro-cli`, binaires `auro` et `auro-relay`) : ligne de commande, cliente
+  d'`aurod` (bibliothèque `auro_cli` : `client`, connexion, appels, démarrage d'`aurod`
+  par `launch` ; `relay`, hôte de messagerie native de l'extension, SPEC 4.5 ; binaire
+  `auro` : `remote`, commandes, et `display`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
   deux bancs l'utilisent, pour mesurer le transfert seul.
 - Essais manuels de la CLI : toujours sur un point d'accès et une base d'essai
   (`--endpoint`, `engine start --db`), jamais sur le moteur réel de l'utilisateur ; finir
@@ -76,15 +77,34 @@ téléchargement.
   (il lui passe la main et se ferme). Ne jamais fermer ni piloter la sienne, ni toucher à
   son moteur (`\\.\pipe\aurodownloader-<utilisateur>`) ; lui demander de la quitter s'il
   faut un essai de l'interface.
-- Essais d'un installateur Windows : `/S /D=<dossier d'essai>` (jamais le dossier par
-  défaut, qui est aussi celui des données réelles), aucun `aurod` réel en marche (ses
-  crochets arrêtent le moteur du point d'accès par défaut), application installée lancée
-  avec `--endpoint`, `--db` et `--prefs` d'essai ; finir par la désinstallation (`/S`) et
-  vérifier que la clé `Run` de l'utilisateur n'a pas changé.
+- Essais d'un installateur Windows : toujours l'installateur d'essai (`bundle.ps1 -Essai`,
+  « AuroDownloader Essai ») : l'installateur normal partage les clés de registre
+  (désinstallation, dossier mémorisé) et les raccourcis d'une vraie installation, et sa
+  désinstallation d'essai les efface (incident du 2026-11-07, réparé à la main). Relever
+  avant, et rétablir après, les clés `NativeMessagingHosts\org.aurodownloader.relay`,
+  communes aux deux. `/S /D=<dossier d'essai>` (jamais le dossier par
+  défaut, qui est aussi celui des données réelles), lancé avec `USERNAME` changé dans
+  son environnement (ses crochets arrêtent le moteur du point d'accès par défaut, dérivé
+  de `USERNAME` : sinon ils arrêteraient le moteur réel de l'utilisateur), application
+  installée lancée avec `--endpoint`, `--db` et `--prefs` d'essai ; finir par la
+  désinstallation (`/S`) et vérifier que la clé `Run` de l'utilisateur n'a pas changé, et
+  que les clés `NativeMessagingHosts` du relais sont revenues à leur état d'avant.
 - Essais d'une action de fin (veille, extinction) : toujours avec un `aurod` d'essai lancé
   à la main avec `--simulate-power` avant l'application (qui s'y connecte au lieu d'en
   lancer un), et vérifier sa ligne de commande ; jamais avec un `aurod` qui pourrait
   éteindre la machine de l'utilisateur.
+- `extension` : extension navigateur (SPEC 4.5, F-37), Manifest V3 pour Firefox, Chrome et
+  Edge ; `decide.js` (décision de capture, testée par `node --test extension/tests/`),
+  `background.js`, `content.js` (clic avec Alt), `options.*`, `_locales` (en, fr).
+  `AURO_ENDPOINT` remplace le point d'accès par défaut (`paths::endpoint`) : un navigateur
+  d'essai lancé avec lui fait parler le relais à un moteur d'essai.
+- Essais de l'extension : jamais dans les profils de navigateur de l'utilisateur. Un profil
+  d'essai Edge se connecte de lui-même à son compte Microsoft et synchronise : ne pas
+  l'utiliser. Chrome de marque ignore `--load-extension` ; Chrome for Testing a été refusé
+  par la session (exécutable téléchargé). Essai automatisé : simuler le navigateur
+  (`tools/fake_browser.py` du bloc-notes : clé de registre, manifeste, relais) ; l'essai
+  dans un vrai navigateur revient à l'utilisateur. IDM, installé, intercepte certains
+  téléchargements avant l'extension et ouvre ses propres fenêtres.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
@@ -129,6 +149,7 @@ AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai>
 # Page : tests sans navigateur (Node 18 et plus ; installé dans la distribution WSL
 # d'essai Ubuntu-24.04) :
 node --test ui/tests/
+node --test extension/tests/
 # Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
 apps/desktop/bundle.ps1   # Windows, NSIS : apps/desktop/target/release/bundle/nsis/
 apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.04)
@@ -202,6 +223,11 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   faire) ; 6. plages horaires (F-16, fait le 2026-11-07 : SPEC 7.11, `auro schedule`,
   boîte « Planification »). Porte : utilisation quotidienne
   sans perte de données.
+- Phase 3, plan du 2026-11-07 : 1. portée déclarée à l'ouverture, sans jeton sur le canal
+  local (fait, SPEC 6.9) ; 2. `idempotencyKey` (fait) et dossier des téléchargements dans
+  le moteur (fait) ; 3. relais `auro-relay` et sa déclaration aux navigateurs (fait) ;
+  4. extension (écrite, `extension/` ; essai dans un vrai navigateur par l'utilisateur à
+  faire) ; 5. cookies et en-têtes de la page (coffre du système, SPEC 4.5 et 5.1).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,

@@ -4,15 +4,47 @@
 ; qui sinon relancerait le moteur, puis arrêter proprement le moteur par `auro engine stop`
 ; (point d'accès par défaut de l'utilisateur ; le moteur enregistre tout avant de rendre
 ; la main), et ne forcer `aurod` qu'en dernier recours, s'il tourne encore depuis ce
-; dossier. Ses fichiers ne sont pas remplaçables tant qu'il tourne.
+; dossier. Ses fichiers ne sont pas remplaçables tant qu'il tourne. Le relais de
+; l'extension (`auro-relay`), lancé par un navigateur, est fermé de même : le navigateur
+; le relancera.
+
+; L'installateur d'essai (« AuroDownloader Essai », bundle.ps1 -Essai) ne touche ni au
+; moteur du point d'accès par défaut ni au dossier des données réelles : ce sont ceux
+; d'une vraie installation sur la même machine.
+!if "${PRODUCTNAME}" == "AuroDownloader"
+  !define AURO_REAL
+!endif
+
+!macro AURO_STOP_ALL
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\auro-relay.exe" "${PRODUCTNAME}"
+  !ifdef AURO_REAL
+    ${If} ${FileExists} "$INSTDIR\auro.exe"
+      nsExec::Exec /TIMEOUT=20000 '"$INSTDIR\auro.exe" engine stop'
+      Pop $0
+    ${EndIf}
+  !endif
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\aurod.exe" "${PRODUCTNAME}"
+!macroend
+
+; Relais de l'extension, déclaré aux navigateurs (SPEC 4.5) : une clé par navigateur, dont
+; la valeur par défaut est le chemin du manifeste de l'hôte.
+!define AURO_RELAY "org.aurodownloader.relay"
+!define AURO_CHROME "Software\Google\Chrome\NativeMessagingHosts\${AURO_RELAY}"
+!define AURO_EDGE "Software\Microsoft\Edge\NativeMessagingHosts\${AURO_RELAY}"
+!define AURO_FIREFOX "Software\Mozilla\NativeMessagingHosts\${AURO_RELAY}"
+
+; Retire une déclaration, seulement si elle désigne le manifeste de ce dossier : une autre
+; installation garde la sienne.
+!macro AURO_UNREGISTER KEY MANIFEST
+  ReadRegStr $0 HKCU "${KEY}" ""
+  ${If} $0 == "$INSTDIR\${MANIFEST}"
+    DeleteRegKey HKCU "${KEY}"
+  ${EndIf}
+!macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  ${If} ${FileExists} "$INSTDIR\auro.exe"
-    nsExec::Exec /TIMEOUT=20000 '"$INSTDIR\auro.exe" engine stop'
-    Pop $0
-  ${EndIf}
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\aurod.exe" "${PRODUCTNAME}"
+  !insertmacro AURO_STOP_ALL
 !macroend
 
 ; Langue de l'installation, pour la désinstallation : le modèle ne l'enregistre que
@@ -20,15 +52,13 @@
 ; redemande à chaque fois.
 !macro NSIS_HOOK_POSTINSTALL
   WriteRegStr HKCU "${MANUPRODUCTKEY}" "Installer Language" $LANGUAGE
+  WriteRegStr HKCU "${AURO_CHROME}" "" "$INSTDIR\relay-chromium.json"
+  WriteRegStr HKCU "${AURO_EDGE}" "" "$INSTDIR\relay-chromium.json"
+  WriteRegStr HKCU "${AURO_FIREFOX}" "" "$INSTDIR\relay-firefox.json"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  ${If} ${FileExists} "$INSTDIR\auro.exe"
-    nsExec::Exec /TIMEOUT=20000 '"$INSTDIR\auro.exe" engine stop'
-    Pop $0
-  ${EndIf}
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\aurod.exe" "${PRODUCTNAME}"
+  !insertmacro AURO_STOP_ALL
 !macroend
 
 ; Case « Supprimer aussi les données » (décochée par défaut) : Tauri efface les
@@ -37,6 +67,12 @@
 ; dossier peut aussi être celui du programme, et rien d'autre n'y est touché. Les fichiers
 ; téléchargés ne le sont jamais.
 !macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $UpdateMode <> 1
+    !insertmacro AURO_UNREGISTER "${AURO_CHROME}" "relay-chromium.json"
+    !insertmacro AURO_UNREGISTER "${AURO_EDGE}" "relay-chromium.json"
+    !insertmacro AURO_UNREGISTER "${AURO_FIREFOX}" "relay-firefox.json"
+  ${EndIf}
+  !ifdef AURO_REAL
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     SetShellVarContext current
@@ -48,4 +84,5 @@
     Delete "$LOCALAPPDATA\AuroDownloader\aurod.log"
     RMDir "$LOCALAPPDATA\AuroDownloader"
   ${EndIf}
+  !endif
 !macroend

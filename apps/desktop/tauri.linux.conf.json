@@ -1,0 +1,14 @@
+{
+  "bundle": {
+    "linux": {
+      "deb": {
+        "files": {
+          "/etc/opt/chrome/native-messaging-hosts/org.aurodownloader.relay.json": "native-messaging/linux/chromium.json",
+          "/etc/chromium/native-messaging-hosts/org.aurodownloader.relay.json": "native-messaging/linux/chromium.json",
+          "/etc/opt/edge/native-messaging-hosts/org.aurodownloader.relay.json": "native-messaging/linux/chromium.json",
+          "/usr/lib/mozilla/native-messaging-hosts/org.aurodownloader.relay.json": "native-messaging/linux/firefox.json"
+        }
+      }
+    }
+  }
+}

@@ -6,8 +6,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::client::{EngineRefused, Rpc, Target};
 use crate::display::{self, Limit, Line, Status, size};
+use auro_cli::client::{EngineRefused, Rpc, Target};
 
 /// Dossier de destination en chemin absolu, qui doit exister.
 fn dest_dir(dir: &Path) -> Result<String> {
@@ -86,7 +86,7 @@ pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Resul
 
 /// Ajoute une tâche et la suit jusqu'à la fin ; Ctrl-C la met en pause.
 pub async fn get(target: &Target, url: &str, opts: &AddOptions<'_>) -> Result<()> {
-    let mut rpc = crate::client::connect(target).await?;
+    let mut rpc = auro_cli::client::connect(target).await?;
     // Abonné avant l'ajout : aucun événement de la tâche ne peut manquer. Seule la tâche
     // ajoutée est suivie.
     let mut follow = Follow::start(&mut rpc, Some(HashSet::new())).await?;

@@ -19,6 +19,20 @@ pub struct EngineRefused {
     pub message: String,
 }
 
+/// Ouverture d'une session : nom du client et portée gardée (SPEC §6.3, §6.9).
+pub struct Session {
+    pub name: &'static str,
+    /// `None` : tous les droits du canal local.
+    pub scope: Option<&'static str>,
+}
+
+impl Session {
+    pub const CLI: Session = Session {
+        name: "auro-cli",
+        scope: None,
+    };
+}
+
 /// Connexion au moteur.
 pub struct Rpc {
     lines: Lines<BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>>,
@@ -38,13 +52,22 @@ impl Rpc {
         }
     }
 
-    /// Se connecte et ouvre la session (`engine.hello`).
+    /// Se connecte et ouvre la session (`engine.hello`) au nom de la CLI, avec tous les
+    /// droits du canal local.
     pub async fn connect(endpoint: &str) -> std::io::Result<Self> {
+        Self::open(endpoint, &Session::CLI).await
+    }
+
+    /// Se connecte et ouvre la session décrite par `session`.
+    pub async fn open(endpoint: &str, session: &Session) -> std::io::Result<Self> {
         let mut rpc = Rpc::new(local::connect(endpoint).await?);
-        let hello = json!({
-            "client": {"name": "auro-cli", "version": env!("CARGO_PKG_VERSION")},
+        let mut hello = json!({
+            "client": {"name": session.name, "version": env!("CARGO_PKG_VERSION")},
             "protocol": {"min": "1.0", "max": "1.0"},
         });
+        if let Some(scope) = session.scope {
+            hello["scope"] = json!(scope);
+        }
         rpc.call("engine.hello", hello)
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -129,9 +152,14 @@ pub async fn connect(target: &Target) -> Result<Rpc> {
 
 /// Attend que le moteur réponde, dix secondes au plus.
 pub async fn wait_for(endpoint: &str) -> Result<Rpc> {
+    wait_for_session(endpoint, &Session::CLI).await
+}
+
+/// Attend que le moteur réponde, dix secondes au plus, et ouvre la session `session`.
+pub async fn wait_for_session(endpoint: &str, session: &Session) -> Result<Rpc> {
     let mut last = None;
     for _ in 0..100 {
-        match Rpc::connect(endpoint).await {
+        match Rpc::open(endpoint, session).await {
             Ok(rpc) => return Ok(rpc),
             Err(e) => last = Some(e),
         }

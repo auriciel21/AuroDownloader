@@ -15,10 +15,11 @@ use auro_engine::paths;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
-mod client;
 mod direct;
 mod display;
 mod remote;
+
+use auro_cli::client;
 
 use client::{Rpc, Target};
 use display::Limit;

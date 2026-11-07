@@ -1,0 +1,21 @@
+{
+  "name": { "message": "AuroDownloader" },
+  "description": { "message": "Hands your downloads to AuroDownloader, the free download manager." },
+  "menuDownload": { "message": "Download with AuroDownloader" },
+  "optionsTitle": { "message": "AuroDownloader: extension" },
+  "optCapture": { "message": "Hand downloads to AuroDownloader" },
+  "optMinSize": { "message": "Only from" },
+  "unitMiB": { "message": "MiB (0: all)" },
+  "optExcluded": { "message": "Excluded sites (one per line; their subdomains too)" },
+  "optExcludedHint": { "message": "example.org" },
+  "optIncognito": { "message": "In private browsing too" },
+  "optAltHint": { "message": "A click with the Alt key leaves that download to the browser. The “Download with AuroDownloader” context menu sends a link whatever these settings." },
+  "saved": { "message": "Saved." },
+  "linkTitle": { "message": "Link with AuroDownloader" },
+  "linkCheck": { "message": "Check" },
+  "linkOk": { "message": "Relay found (version $1)." },
+  "linkBad": { "message": "The relay answers but refuses: $1" },
+  "linkMissing": { "message": "Relay not found: install or reinstall AuroDownloader. ($1)" },
+  "lastOk": { "message": "Last sent, $1: $2" },
+  "lastBad": { "message": "Last one refused, $1: $2 — $3. The browser kept that download." }
+}
