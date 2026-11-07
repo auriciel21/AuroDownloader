@@ -682,6 +682,35 @@ mod limits_and_space {
         assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
     }
 
+    /// Une connexion qui attend son tour de débit ne lit pas : cette attente ne compte pas
+    /// dans le délai de lecture. Avant le 2026-11-07, le délai de reqwest courait aussi
+    /// entre deux lectures ; sous une limite basse, les tâches finissaient en
+    /// `NET_TIMEOUT` sur un serveur qui répondait pourtant aussitôt.
+    #[tokio::test]
+    async fn waiting_for_the_speed_limit_is_not_a_read_timeout() {
+        let len = 400_000;
+        let (_, server) = site(content(len));
+        let mut case = new_case(&server.url("/attente.bin"));
+        let opts = Options {
+            // 4 s à ce débit ; chaque morceau reçu fait attendre bien plus que le délai.
+            throttle: Throttle::new([Bucket::new(Some(100_000))]),
+            ..opts()
+        };
+        let impatient =
+            Client::with_timeouts(Duration::from_secs(5), Duration::from_millis(200)).unwrap();
+        let outcome = run(
+            &mut case.conn,
+            &impatient,
+            &case.task_id,
+            &opts,
+            no_stop(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert_completed(&case, &outcome, "attente.bin", &content(len));
+    }
+
     #[tokio::test]
     async fn missing_space_pauses_the_task_before_it_starts() {
         fn almost_full(_: &Path) -> std::io::Result<u64> {

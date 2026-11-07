@@ -32,7 +32,9 @@ pub const USER_AGENT: &str = concat!("AuroDownloader/", env!("CARGO_PKG_VERSION"
 /// Délai maximal d'établissement d'une connexion (TCP et TLS).
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Délai maximal sans recevoir d'octet sur une connexion établie.
+/// Délai maximal sans recevoir d'octet sur une connexion établie, et pour obtenir les
+/// en-têtes d'une réponse. Il ne court que pendant que le moteur attend le serveur : pas
+/// pendant qu'une connexion attend son tour de débit (SPEC §7.6).
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Nombre maximal de redirections suivies.
@@ -72,6 +74,9 @@ pub enum NetError {
 
     #[error("délai dépassé : {0}")]
     Timeout(#[source] reqwest::Error),
+
+    #[error("délai dépassé : rien reçu du serveur pendant {} s", .0.as_secs_f32())]
+    ReadTimeout(Duration),
 
     #[error("certificat refusé : {0}")]
     InvalidCertificate(#[source] reqwest::Error),
@@ -120,7 +125,7 @@ impl NetError {
             | NetError::Redirect(_)
             | NetError::RedirectNotFollowed { .. }
             | NetError::BadResponse(_) => Some("HTTP_STATUS"),
-            NetError::Timeout(_) => Some("NET_TIMEOUT"),
+            NetError::Timeout(_) | NetError::ReadTimeout(_) => Some("NET_TIMEOUT"),
             NetError::InvalidCertificate(_) => Some("TLS_INVALID_CERT"),
             NetError::TlsUnavailable => Some("TLS_UNAVAILABLE"),
             NetError::Unreachable(_) => Some("NET_UNREACHABLE"),
@@ -135,7 +140,7 @@ impl NetError {
             NetError::Status { status, .. } => {
                 matches!(status, 408 | 429) || (500..600).contains(status)
             }
-            NetError::Timeout(_) | NetError::Unreachable(_) => true,
+            NetError::Timeout(_) | NetError::ReadTimeout(_) | NetError::Unreachable(_) => true,
             _ => false,
         }
     }
@@ -279,6 +284,9 @@ impl Observed {
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
+    /// Délai de lecture, appliqué ici et non par reqwest : le sien court aussi entre deux
+    /// lectures, pendant l'attente d'un seau de débit.
+    read: Duration,
     /// Plafond de connexions par hôte, appris d'un serveur qui a résisté (SPEC §7.3).
     host_caps: Arc<Mutex<HashMap<String, u32>>>,
 }
@@ -335,13 +343,13 @@ impl Client {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(connect)
-            .read_timeout(read)
             .redirect(policy)
             .tls_certs_merge(roots)
             .build()
             .map_err(NetError::from_reqwest)?;
         Ok(Client {
             http,
+            read,
             host_caps: Arc::default(),
         })
     }
@@ -463,7 +471,10 @@ impl Client {
                 }
                 match (cr.range, cr.total) {
                     (Some((first, last)), Some(_)) if first == req.first && last <= req.last => {
-                        Ok(Body { response })
+                        Ok(Body {
+                            response,
+                            read: self.read,
+                        })
                     }
                     _ => Err(NetError::BadResponse(
                         "plage reçue différente de la demande",
@@ -505,7 +516,10 @@ impl Client {
                 return Err(NetError::FileChanged);
             }
         }
-        Ok(Body { response })
+        Ok(Body {
+            response,
+            read: self.read,
+        })
     }
 
     /// Plafond de connexions retenu pour `host` pendant la session, s'il y en a un.
@@ -548,7 +562,10 @@ impl Client {
         if let Some(range) = range {
             request = request.header(RANGE, range);
         }
-        let response = request.send().await.map_err(NetError::from_reqwest)?;
+        let response = tokio::time::timeout(self.read, request.send())
+            .await
+            .map_err(|_| NetError::ReadTimeout(self.read))?
+            .map_err(NetError::from_reqwest)?;
         // Une redirection qui arrive jusqu'ici n'a pas été suivie : reqwest rend telle
         // quelle celle qui vise un autre protocole (file://, ftp://…).
         if response.status().is_redirection() {
@@ -575,13 +592,18 @@ pub struct RangeRequest<'a> {
 #[derive(Debug)]
 pub struct Body {
     response: Response,
+    read: Duration,
 }
 
 impl Body {
     /// Morceau suivant ; `None` à la fin du corps. Une coupure avant la fin annoncée par
-    /// le serveur est une erreur réseau.
+    /// le serveur est une erreur réseau. Le délai de lecture court à partir de cet appel :
+    /// le temps passé entre deux appels (attente de débit) ne compte pas.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, NetError> {
-        self.response.chunk().await.map_err(NetError::from_reqwest)
+        tokio::time::timeout(self.read, self.response.chunk())
+            .await
+            .map_err(|_| NetError::ReadTimeout(self.read))?
+            .map_err(NetError::from_reqwest)
     }
 }
 
