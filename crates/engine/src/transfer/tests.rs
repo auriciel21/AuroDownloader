@@ -128,7 +128,11 @@ fn assert_completed(case: &Case, outcome: &Outcome, name: &str, data: &[u8]) {
     assert_eq!(task.done_bytes, data.len() as u64);
     assert_eq!(case.count("history"), 1);
     assert_eq!(case.count("segments"), 0, "segments purgés (règle 4)");
-    assert_eq!(case.count("sources"), 0);
+    assert_eq!(
+        case.count("sources"),
+        1,
+        "adresse gardée (retéléchargement)"
+    );
 }
 
 #[tokio::test]

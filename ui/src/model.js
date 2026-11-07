@@ -103,6 +103,9 @@ export const canResume = (state) => ["paused", "failed"].includes(state);
 export const canCancel = (state) => ["queued", "active", "paused", "retry_wait", "seeding"].includes(state);
 // Retrait de la liste (`task.remove`) : tâches finies seulement.
 export const canRemove = (state) => ["completed", "failed", "cancelled"].includes(state);
+// Retéléchargement depuis le début (`task.restart`) : tout ce qui ne tourne pas ni n'attend
+// son tour.
+export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
 
 /// Ce qu'un changement demande à l'affichage.
 function outcome() {

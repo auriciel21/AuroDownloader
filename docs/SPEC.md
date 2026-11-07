@@ -481,12 +481,14 @@ CREATE INDEX idx_event_log_task    ON event_log (task_id, ts);
 | `failed` | Échec définitif, cause dans `error_code` | `queued` (relance manuelle) |
 | `cancelled` | Annulée par l'utilisateur | état terminal |
 
+Retéléchargement (`task.restart`, depuis le 2026-11-07) : hors de cette table, qui décrit le cours d'un téléchargement, une tâche `completed`, `failed`, `cancelled`, `paused` (quelle qu'en soit la cause, `file_changed` compris : c'est le « repartir de zéro » de F-13) ou `retry_wait` repart à zéro en `queued`. Sa préparation est oubliée (nom, taille, segments, validateurs des sources), comme ses erreurs et ses tentatives ; son adresse, sa file, ses réglages et ses en-têtes restent. Une tâche `queued` ou `active` est refusée (`INVALID_STATE`).
+
 ### 5.6 Règles de cohérence
 
 1. **Ordre d'écriture.** Les octets sont d'abord écrits et vidés sur disque (`fdatasync`), puis seulement le compteur `written_bytes` est enregistré. Après un arrêt brutal, la base n'annonce jamais plus que ce qui est réellement sur le disque.
 2. **Couverture exacte.** Les segments d'une tâche couvrent `[0, total_bytes − 1]` sans trou ni chevauchement. Le moteur le vérifie au démarrage et après chaque redécoupage, dans la même transaction que la modification. Une tâche de taille nulle n'a aucun segment ; une tâche de taille inconnue (`total_bytes` NULL) est téléchargée en un seul flux, sans segments, et la règle ne s'applique pas. La taille d'une tâche et ses segments initiaux sont enregistrés dans la même transaction : une taille connue implique des segments, et un flux unique de taille connue en a un seul.
 3. **Compteur dérivé.** `tasks.done_bytes` est la somme des `written_bytes` ; il est recalculé au chargement, la somme faisant foi.
-4. **Fin de vie.** À la fin d'une tâche, la ligne `history` est écrite avant la purge des segments et des sources, dans une seule transaction.
+4. **Fin de vie.** À la fin d'une tâche, la ligne `history` est écrite avant la purge des segments, dans une seule transaction. Les sources (l'adresse) restent jusqu'au retrait de la tâche, pour la retélécharger (depuis le 2026-11-07 ; elles étaient purgées avec les segments auparavant, et une tâche terminée avant cette date ne peut pas être retéléchargée).
 5. **Migrations.** Numérotées, appliquées dans l'ordre et dans une transaction, après copie du fichier de base ; une base plus récente que le moteur empêche le démarrage au lieu d'être modifiée.
 6. **Rétention.** `event_log` est purgé au-delà de 30 jours ou de 10 000 lignes ; la durée de l'historique est un réglage.
 
@@ -555,6 +557,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `task.pause` / `task.resume` | `taskIds[]` | Liste des tâches modifiées |
 | `task.cancel` | `taskIds[]`, `deleteFiles` | Liste des tâches modifiées |
 | `task.remove` | `taskIds[]`, `deleteFiles` | Nombre de tâches retirées |
+| `task.restart` | `taskIds[]`, `deleteFiles` | Tâches reparties de zéro, et refus (`errors`) |
 | `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `checksum` | Tâche modifiée |
 | `task.move` | `taskIds[]`, `queueId`, `position`, `priority` | Liste des tâches modifiées |
 | `task.addSource` | `taskId`, `url`, `rank` | `sourceId` |
@@ -593,7 +596,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
   - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
@@ -640,6 +643,12 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
     listes sont vides ;
   - `files` (torrents) est refusé par `CAPABILITY_MISSING`, une valeur inconnue par
     `INVALID_PARAMS`.
+- **Retéléchargement** (`task.restart`, depuis le 2026-11-07 ; portée `control`) : section 5.5 pour les états.
+  - Le `.part` est supprimé ; avec `deleteFiles`, le fichier final d'une tâche terminée aussi, et le nouveau téléchargement reprend son nom. Sans, l'ancien fichier reste (le moteur n'écrase jamais un fichier) et le nouveau prend un autre nom (« nom (1).ext »).
+  - Annonce : `task.updated` avec `fileName`, `totalBytes`, `errorCode` et `errorDetail` à `null` et `doneBytes` à 0, puis `task.stateChanged` vers `queued`.
+  - Une tâche sans adresse (terminée avant le 2026-11-07) est refusée par `INVALID_PARAMS`.
+  - Les cookies d'une tâche terminée ont été effacés à sa fin (section 5.1) : un fichier qui demande d'être connecté se relance depuis le navigateur.
+  - L'application : « Retélécharger… » dans le menu contextuel, avec une case « Remplacer le fichier déjà téléchargé », cochée par défaut (décision du 2026-11-07).
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
     sont refusées par `INVALID_STATE` et s'annulent d'abord ;

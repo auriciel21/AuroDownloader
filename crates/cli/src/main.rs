@@ -135,6 +135,15 @@ enum Command {
         #[arg(long)]
         delete_files: bool,
     },
+    /// Retélécharge depuis le début des tâches terminées, en échec, annulées ou en pause
+    Restart {
+        #[arg(required = true)]
+        task_ids: Vec<String>,
+        /// Remplacer le fichier déjà téléchargé ; sinon il reste, et le nouveau prend un
+        /// autre nom
+        #[arg(long)]
+        delete_files: bool,
+    },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
     /// Limite de débit, globale par défaut, ou d'une tâche ou d'une file ; sans débit,
@@ -432,6 +441,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 } => {
                     let extra = json!({"deleteFiles": delete_files});
                     remote::act(&mut rpc, "task.remove", &task_ids, extra).await
+                }
+                Command::Restart {
+                    task_ids,
+                    delete_files,
+                } => {
+                    let extra = json!({"deleteFiles": delete_files});
+                    remote::act(&mut rpc, "task.restart", &task_ids, extra).await
                 }
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
                 Command::Limit { rate, task, queue } => {

@@ -127,6 +127,7 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 # `engine start --db`, puis `engine stop`.
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
+cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depuis le début
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
@@ -189,7 +190,8 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
 - Noms de fichier venus du serveur : toujours par `net::filename::sanitize` (SPEC 8.1).
   Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
 - États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
-  vérifient la table de la SPEC 5.5. Ne jamais écrire `tasks.state` directement.
+  vérifient la table de la SPEC 5.5, ou `restart_task` (retéléchargement, hors de la
+  table, SPEC 5.5). Ne jamais écrire `tasks.state` directement.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
   Toute modification de `scheduler`, `rpc` ou du daemon passe aussi celui d'`aurod`

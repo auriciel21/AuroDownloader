@@ -187,6 +187,12 @@ pub enum Event {
         file_name: Option<String>,
         total_bytes: Option<u64>,
     },
+    /// Tâche qui repart de zéro (`task.restart`) : nom, taille, octets et erreur effacés,
+    /// avant son passage à `queued`.
+    Restarted {
+        rev: u64,
+        task_id: String,
+    },
     /// Tâche retirée (`task.remove`) : elle n'existe plus.
     Removed {
         rev: u64,
@@ -284,8 +290,8 @@ pub enum EngineError {
     },
 
     #[error(
-        "le fichier distant a changé depuis le début du téléchargement ; repartir de zéro \
-         n'est pas encore possible (F-13)"
+        "le fichier distant a changé depuis le début du téléchargement : il ne se reprend \
+         pas, il se retélécharge depuis le début (task.restart, F-13)"
     )]
     FileChanged,
 
@@ -338,6 +344,11 @@ enum Command {
         reply: Reply<()>,
     },
     Remove {
+        task_id: String,
+        delete_files: bool,
+        reply: Reply<()>,
+    },
+    Restart {
         task_id: String,
         delete_files: bool,
         reply: Reply<()>,
@@ -606,6 +617,20 @@ impl Engine {
     pub async fn cancel(&self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
         let task_id = task_id.to_owned();
         self.ask(|reply| Command::Cancel {
+            task_id,
+            delete_files,
+            reply,
+        })
+        .await
+    }
+
+    /// Retélécharge une tâche (SPEC §5.5) : terminée, en échec, annulée, en pause ou en
+    /// attente d'un nouvel essai, elle repart de zéro. Son `.part` est supprimé ; avec
+    /// `delete_files`, le fichier final d'une tâche terminée aussi (sinon il reste, et le
+    /// nouveau prend un autre nom).
+    pub async fn restart(&self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::Restart {
             task_id,
             delete_files,
             reply,
@@ -1009,6 +1034,13 @@ impl Scheduler {
                 reply,
             } => {
                 let _ = reply.send(self.remove(&task_id, delete_files));
+            }
+            Command::Restart {
+                task_id,
+                delete_files,
+                reply,
+            } => {
+                let _ = reply.send(self.restart(&task_id, delete_files));
             }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
@@ -1463,6 +1495,38 @@ impl Scheduler {
             segments,
             sources,
         })
+    }
+
+    /// Retéléchargement : l'état et l'adresse d'abord, puis les fichiers, puis la base.
+    fn restart(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        let allowed = matches!(
+            task.state,
+            TaskState::Completed
+                | TaskState::Failed
+                | TaskState::Cancelled
+                | TaskState::Paused
+                | TaskState::RetryWait
+        );
+        if !allowed || self.running.contains_key(task_id) {
+            return Err(Self::invalid(&task, "retéléchargement"));
+        }
+        if tasks::load_sources(&self.conn, task_id)?.is_empty() {
+            return Err(EngineError::BadRequest(format!(
+                "tâche {task_id} : adresse non conservée (terminée avant le 2026-11-07) ; \
+                 l'ajouter de nouveau"
+            )));
+        }
+        if delete_files && task.state == TaskState::Completed {
+            delete_final(&task)?;
+        }
+        delete_part(&task)?;
+        let from = tasks::restart_task(&mut self.conn, task_id)?;
+        self.broken.remove(task_id);
+        let id = task_id.to_owned();
+        self.emit(|rev| Event::Restarted { rev, task_id: id });
+        self.changed(task_id, from, TaskState::Queued);
+        Ok(())
     }
 
     /// Retire une tâche finie. Le fichier demandé est supprimé d'abord : si cela échoue, la

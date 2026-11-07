@@ -62,8 +62,9 @@ pub fn resume(db: &Path, task_id: &str, connections: Option<u32>, client: Client
             if task.pause_reason.as_deref() == Some(PauseReason::FileChanged.as_sql()) =>
         {
             bail!(
-                "le fichier distant a changé depuis le début du téléchargement ; repartir de \
-                 zéro n'est pas encore possible (F-13)"
+                "le fichier distant a changé depuis le début du téléchargement : il ne se \
+                 reprend pas, il se retélécharge depuis le début (`auro restart`, avec le \
+                 moteur)"
             )
         }
         TaskState::Paused | TaskState::Failed => transfer::requeue(&mut conn, task_id)?,

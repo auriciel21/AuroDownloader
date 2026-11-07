@@ -68,6 +68,7 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "task.resume"
         | "task.cancel"
         | "task.remove"
+        | "task.restart"
         | "task.update"
         | "task.move"
         | "task.addSource"

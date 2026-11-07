@@ -313,6 +313,23 @@ async fn describe(
                 }),
             ))
         }
+        Event::Restarted { rev, task_id } => {
+            progress.forget(&task_id);
+            topics.tasks.then(|| {
+                notification(
+                    "task.updated",
+                    json!({
+                        "rev": rev,
+                        "taskId": task_id,
+                        "fileName": null,
+                        "totalBytes": null,
+                        "doneBytes": 0,
+                        "errorCode": null,
+                        "errorDetail": null,
+                    }),
+                )
+            })
+        }
         Event::Removed { rev, task_id } if topics.tasks => Some(notification(
             "task.removed",
             json!({"rev": rev, "taskId": task_id}),

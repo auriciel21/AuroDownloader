@@ -301,6 +301,14 @@ pub fn reset_segments(
     Ok(())
 }
 
+/// Retire tous les segments d'une tâche, dans la transaction de l'appelant : fin d'une
+/// tâche (SPEC §5.6, règle 4) ou retéléchargement. La règle 2 ne s'applique plus : la
+/// tâche n'a plus de taille enregistrée, ou elle est finie.
+pub(crate) fn clear(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
+    conn.execute("DELETE FROM segments WHERE task_id = ?1", [task_id])?;
+    Ok(())
+}
+
 /// Contrôle de démarrage (SPEC §7.4, étape 2) : tâches HTTP et FTP non terminées dont les
 /// segments enregistrés violent l'invariant de couverture, avec la cause.
 ///

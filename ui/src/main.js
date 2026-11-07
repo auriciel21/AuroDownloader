@@ -4,7 +4,7 @@
 import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
-  canPause, canResume, canCancel, canRemove,
+  canPause, canResume, canCancel, canRemove, canRestart,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -502,6 +502,7 @@ function openMenu(x, y) {
   const enable = {
     open: done && !isExecutable(one.fileName),
     reveal: done,
+    restart: chosen.some((task) => canRestart(task.state)),
     resume: chosen.some((task) => canResume(task.state)),
     pause: chosen.some((task) => canPause(task.state)),
     limit: one && (canPause(one.state) || canResume(one.state)),
@@ -553,7 +554,7 @@ function onMenuKey(event) {
 function runCommand(command) {
   const chosen = selectedTasks();
   const one = chosen.length === 1 ? chosen[0] : null;
-  closeMenu(command !== "properties" && command !== "limit" && command !== "remove");
+  closeMenu(!["properties", "limit", "remove", "restart"].includes(command));
   switch (command) {
     case "open": if (one) withFile(one.taskId, host.openFile); break;
     case "reveal": if (one) withFile(one.taskId, host.revealFile); break;
@@ -561,6 +562,7 @@ function runCommand(command) {
     case "pause": pause(chosen); break;
     case "limit": if (one) openDetails(one.taskId, { focusLimit: true }); break;
     case "remove": openRemove(); break;
+    case "restart": openRestart(); break;
     case "properties": if (one) openDetails(one.taskId); break;
   }
 }
@@ -652,6 +654,38 @@ function clearFinished() {
   const cancelled = all.filter((task) => task.state === "cancelled").map((task) => task.taskId);
   if (done.length) act("task.remove", { taskIds: done, deleteFiles: false });
   if (cancelled.length) act("task.remove", { taskIds: cancelled, deleteFiles: true });
+}
+
+// ---------- Retéléchargement ----------
+
+let restarting = [];
+
+/// « Retélécharger… » : confirmation ; pour un fichier terminé, une case « Remplacer le
+/// fichier déjà téléchargé », cochée par défaut (décision du 2026-11-07).
+function openRestart() {
+  const chosen = selectedTasks().filter((task) => canRestart(task.state));
+  if (!chosen.length || !connected) return;
+  restarting = chosen.map((task) => task.taskId);
+  const completed = chosen.some((task) => task.state === "completed");
+  $("restart-text").textContent = chosen.length === 1
+    ? t("Retélécharger « {0} » depuis le début ?", taskName(chosen[0]))
+    : t("Retélécharger {0} téléchargements depuis le début ?", chosen.length);
+  $("restart-files").checked = true;
+  $("restart-files-label").hidden = !completed;
+  $("restart-keep-note").hidden = !completed;
+  $("restart-part-note").hidden = chosen.every((task) => task.state === "completed");
+  const dialog = $("restart-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
+async function closeRestart() {
+  const taskIds = restarting;
+  restarting = [];
+  if ($("restart-dialog").returnValue === "confirm") {
+    await act("task.restart", { taskIds, deleteFiles: $("restart-files").checked });
+  }
+  (cursor ? rows.get(cursor) : null)?.focus();
 }
 
 // ---------- Propriétés d'un téléchargement ----------
@@ -1431,6 +1465,7 @@ function wire() {
   });
   $("dest-change").addEventListener("click", () => chooseFolder("dest-change"));
   $("remove-dialog").addEventListener("close", closeRemove);
+  $("restart-dialog").addEventListener("close", closeRestart);
 
   $("details").addEventListener("close", closeDetails);
   $("d-toggle").addEventListener("click", () => {

@@ -106,6 +106,7 @@
   <div id="menu" role="menu" hidden tabindex="-1">
     <button type="button" role="menuitem" data-command="open" data-i18n="Ouvrir">Ouvrir</button>
     <button type="button" role="menuitem" data-command="reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
+    <button type="button" role="menuitem" data-command="restart" data-i18n="Retélécharger…">Retélécharger…</button>
     <div class="menu-separator" role="separator"></div>
     <button type="button" role="menuitem" data-command="resume" data-i18n="Reprendre">Reprendre</button>
     <button type="button" role="menuitem" data-command="pause" data-i18n="Arrêter">Arrêter</button>
@@ -148,6 +149,21 @@
       <div class="buttons">
         <button value="cancel" data-i18n="Annuler">Annuler</button>
         <button value="confirm" class="danger" data-i18n="Supprimer">Supprimer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="restart-dialog" aria-labelledby="restart-title" aria-describedby="restart-text">
+    <form method="dialog">
+      <h2 id="restart-title" data-i18n="Retélécharger">Retélécharger</h2>
+      <p id="restart-text"></p>
+      <label class="check" id="restart-files-label"><input type="checkbox" id="restart-files">
+        <span data-i18n="Remplacer le fichier déjà téléchargé">Remplacer le fichier déjà téléchargé</span></label>
+      <p class="note" id="restart-keep-note" data-i18n="Sinon, il reste, et le nouveau prend un autre nom.">Sinon, il reste, et le nouveau prend un autre nom.</p>
+      <p class="note" id="restart-part-note" data-i18n="Ce qui a déjà été reçu des téléchargements inachevés est supprimé.">Ce qui a déjà été reçu des téléchargements inachevés est supprimé.</p>
+      <div class="buttons">
+        <button value="cancel" data-i18n="Annuler">Annuler</button>
+        <button value="confirm" data-i18n="Retélécharger">Retélécharger</button>
       </div>
     </form>
   </dialog>

@@ -377,6 +377,72 @@ async fn task_add_accepts_page_headers() {
     engine.shutdown().await;
 }
 
+/// `task.restart` : une tâche terminée repart de zéro ; `task.updated` efface son nom, sa
+/// taille et ses octets avant `task.stateChanged` vers `queued`. La portée `add` ne suffit
+/// pas.
+#[tokio::test]
+async fn task_restart_downloads_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(64 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/r.bin")}], "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .clone();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id && p["to"] == "completed"
+    })
+    .await;
+    let done = c
+        .result(
+            "task.restart",
+            json!({"taskIds": [id], "deleteFiles": true}),
+        )
+        .await;
+    assert_eq!(done["taskIds"], json!([id]), "{done}");
+    let reset = c
+        .notification("task.updated", |p| p["taskId"] == id && p["doneBytes"] == 0)
+        .await;
+    assert!(
+        reset["fileName"].is_null() && reset["totalBytes"].is_null(),
+        "{reset}"
+    );
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id && p["from"] == "completed" && p["to"] == "queued"
+    })
+    .await;
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id && p["to"] == "completed"
+    })
+    .await;
+    assert!(dir.path().join("r.bin").exists());
+
+    // Un identifiant inconnu figure dans `errors`, sans empêcher les autres.
+    let mixed = c
+        .result("task.restart", json!({"taskIds": ["inconnue"]}))
+        .await;
+    assert_eq!(mixed["errors"][0]["code"], "TASK_NOT_FOUND", "{mixed}");
+
+    let mut relay = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("add");
+    relay.result("engine.hello", params).await;
+    assert_eq!(
+        relay
+            .error_code("task.restart", json!({"taskIds": [id]}))
+            .await,
+        "UNAUTHORIZED"
+    );
+    engine.shutdown().await;
+}
+
 fn hello() -> Value {
     json!({"client": {"name": "test", "version": "0"}, "protocol": {"min": "1.0", "max": "1.2"}})
 }
@@ -1057,7 +1123,7 @@ async fn task_get_shows_segments_and_sources_on_request() {
         "INVALID_PARAMS"
     );
 
-    // Terminée : segments et sources sont partis avec sa fin.
+    // Terminée : les segments sont partis avec sa fin ; l'adresse reste (retéléchargement).
     let done = timeout(WAIT, async {
         loop {
             let task = c.result("task.get", both.clone()).await;
@@ -1070,7 +1136,7 @@ async fn task_get_shows_segments_and_sources_on_request() {
     .await
     .expect("jamais terminée");
     assert_eq!(done["segments"], json!([]));
-    assert_eq!(done["sources"], json!([]));
+    assert_eq!(done["sources"][0]["url"], json!(url));
     engine.shutdown().await;
 }
 

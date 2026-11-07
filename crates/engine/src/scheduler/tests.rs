@@ -556,6 +556,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::TaskUpdated { rev, .. }
                 | Event::Prepared { rev, .. }
                 | Event::Removed { rev, .. }
+                | Event::Restarted { rev, .. }
                 | Event::LimitsChanged { rev, .. }
                 | Event::DownloadDirChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
@@ -1356,5 +1357,83 @@ async fn orphan_secrets_are_collected_at_start() {
     .expect("orphelin effacé");
     assert_eq!(scoped.get(&kept).unwrap().as_deref(), Some("garde=1"));
     assert_eq!(elsewhere.get(&foreign).unwrap().as_deref(), Some("autre=1"));
+    engine.shutdown().await;
+}
+
+/// « Retélécharger » (SPEC §5.5) : une tâche terminée repart de zéro. Avec
+/// `delete_files`, sous le même nom ; sans, l'ancien fichier reste et le nouveau en prend
+/// un autre. Refusé pendant le téléchargement.
+#[tokio::test]
+async fn a_completed_task_is_downloaded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/encore.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    let first = server.requests().len();
+
+    // Remplacé : supprimé, puis retéléchargé sous le même nom.
+    engine.restart(&id, true).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert!(
+        server.requests().len() > first,
+        "de nouveau demandé au serveur"
+    );
+    assert_file(dir.path(), "encore.bin", SIZE);
+    assert_eq!(
+        task(dir.path(), &id).file_name.as_deref(),
+        Some("encore.bin")
+    );
+
+    // Gardé : le nouveau prend un autre nom.
+    engine.restart(&id, false).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(dir.path(), "encore.bin", SIZE);
+    assert_file(dir.path(), "encore (1).bin", SIZE);
+    assert_eq!(
+        task(dir.path(), &id).file_name.as_deref(),
+        Some("encore (1).bin")
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_running_or_queued_task_is_not_restarted() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/lent.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    assert!(matches!(
+        engine.restart(&id, true).await,
+        Err(EngineError::InvalidState { .. })
+    ));
+    // En pause, le `.part` est supprimé et la tâche repart de zéro.
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+    let name = task(dir.path(), &id).file_name.unwrap();
+    assert!(part_path(&dir.path().join(&name)).exists());
+    engine.restart(&id, false).await.unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let Ok(Event::Restarted { task_id, .. }) = events.recv().await
+                && task_id == id
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("retéléchargement annoncé");
+    wait_state(&mut events, &id, TaskState::Queued).await;
+    engine.cancel(&id, true).await.unwrap();
     engine.shutdown().await;
 }

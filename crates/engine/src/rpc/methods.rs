@@ -200,6 +200,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             result["removed"] = json!(result["taskIds"].as_array().map_or(0, Vec::len));
             Ok(result)
         }
+        // Retéléchargement (depuis le 2026-11-07) ; `deleteFiles` : le fichier final d'une
+        // tâche terminée part aussi.
+        "task.restart" => {
+            let delete_files = p.bool("deleteFiles")?;
+            for_each(ctx, &p, Action::Restart { delete_files }).await
+        }
         "queue.list" => {
             let queues = ctx.engine.queues().await?;
             Ok(json!({"items": queues.iter().map(queue_json).collect::<Vec<_>>()}))
@@ -524,6 +530,7 @@ enum Action {
     Resume,
     Cancel { delete_files: bool },
     Remove { delete_files: bool },
+    Restart { delete_files: bool },
 }
 
 /// Applique `action` à chaque tâche de `taskIds`. Les tâches refusées n'empêchent pas
@@ -536,6 +543,7 @@ async fn for_each(ctx: &Ctx, p: &Params, action: Action) -> Result<Value, RpcErr
             Action::Resume => ctx.engine.resume(&id).await,
             Action::Cancel { delete_files } => ctx.engine.cancel(&id, delete_files).await,
             Action::Remove { delete_files } => ctx.engine.remove(&id, delete_files).await,
+            Action::Restart { delete_files } => ctx.engine.restart(&id, delete_files).await,
         };
         match result {
             Ok(()) => done.push(id),

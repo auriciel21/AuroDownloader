@@ -572,8 +572,9 @@ pub fn change_state(
 }
 
 /// Fin d'une tâche réussie (SPEC §5.6, règle 4) : depuis `active` (ou `verifying`), passe
-/// par `verifying` puis `completed`, écrit la ligne `history`, puis purge les segments et
-/// les sources, dans une seule transaction. À appeler après le renommage du fichier.
+/// par `verifying` puis `completed`, écrit la ligne `history`, puis purge les segments, dans
+/// une seule transaction ; les sources (l'adresse) restent jusqu'au retrait. À appeler
+/// après le renommage du fichier.
 ///
 /// `verifying` n'est pas encore un état durable : sans empreinte à contrôler (F-11, à
 /// venir), il est traversé dans cette transaction.
@@ -620,10 +621,65 @@ pub fn complete_task(
          WHERE id = ?1",
         params![task_id, total, now],
     )?;
-    tx.execute("DELETE FROM segments WHERE task_id = ?1", [task_id])?;
-    tx.execute("DELETE FROM sources WHERE task_id = ?1", [task_id])?;
+    // Les sources restent (depuis le 2026-11-07) : « Retélécharger » en a besoin.
+    super::segments::clear(&tx, task_id)?;
     tx.commit()?;
     Ok(())
+}
+
+/// Retéléchargement (SPEC §5.5, depuis le 2026-11-07) : une tâche terminée, en échec,
+/// annulée, en pause ou en attente d'un nouvel essai repart de zéro, en `queued`. Sa
+/// préparation est oubliée (nom, taille, segments, validateurs de ses sources), comme
+/// ses erreurs et ses tentatives ; son adresse, sa file et ses réglages restent. Renvoie
+/// l'état quitté. Les fichiers ne sont pas touchés : le moteur supprime avant le `.part`,
+/// et le fichier final si on le lui demande.
+///
+/// Hors de la table des transitions, qui décrit le cours d'un téléchargement : c'en est un
+/// nouveau, pour la même tâche.
+pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let task = load_task(&tx, task_id)?;
+    if !matches!(
+        task.state,
+        TaskState::Completed
+            | TaskState::Failed
+            | TaskState::Cancelled
+            | TaskState::Paused
+            | TaskState::RetryWait
+    ) {
+        return Err(StoreError::BadTransition {
+            task_id: task_id.to_owned(),
+            from: task.state.as_sql(),
+            to: "retéléchargée",
+        });
+    }
+    let sources: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sources WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )?;
+    if sources == 0 {
+        return Err(StoreError::NoSource {
+            task_id: task_id.to_owned(),
+        });
+    }
+    super::segments::clear(&tx, task_id)?;
+    tx.execute(
+        "UPDATE sources SET state = 'unknown', accepts_ranges = NULL, etag = NULL,
+           last_modified = NULL, content_length = NULL, fail_count = 0, last_error = NULL
+         WHERE task_id = ?1",
+        [task_id],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET state = 'queued', file_name = NULL, total_bytes = NULL,
+           done_bytes = 0, pause_reason = NULL, error_code = NULL, error_detail = NULL,
+           retry_count = 0, next_retry_at = NULL, started_at = NULL, finished_at = NULL,
+           updated_at = ?2
+         WHERE id = ?1",
+        params![task_id, now_ms()],
+    )?;
+    tx.commit()?;
+    Ok(task.state)
 }
 
 /// Retire une tâche finie (`completed`, `failed` ou `cancelled`) : sa ligne et, en
@@ -1105,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_writes_history_then_purges_segments_and_sources() {
+    fn completion_writes_history_then_purges_segments_but_keeps_sources() {
         let mut conn = open_in_memory().unwrap();
         let (id, source_id) = new_http_task(&mut conn);
         let prep = Preparation {
@@ -1128,7 +1184,8 @@ mod tests {
         assert_eq!(task.state, TaskState::Completed);
         assert_eq!(task.done_bytes, 100);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM segments"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sources"), 0);
+        // L'adresse reste, pour « Retélécharger ».
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sources"), 1);
         let (path, host, state): (String, String, String) = conn
             .query_row(
                 "SELECT final_path, source_host, final_state FROM history WHERE task_id = ?1",
@@ -1248,5 +1305,61 @@ mod tests {
             assert_eq!((left("sources"), left("segments")), (0, 0));
         }
         assert!(load_task(&conn, &busy).is_ok(), "les autres restent");
+    }
+
+    #[test]
+    fn a_finished_task_restarts_from_zero_with_its_address() {
+        let mut conn = open_in_memory().unwrap();
+        let (id, source_id) = new_http_task(&mut conn);
+        let prep = Preparation {
+            source_id: &source_id,
+            accepts_ranges: true,
+            etag: Some("\"v1\""),
+            last_modified: None,
+            total_bytes: Some(100),
+            file_name: "f.iso",
+        };
+        save_preparation(&mut conn, &id, &prep, &initial_split(100, 2, 1)).unwrap();
+        // En file ou en cours : rien à retélécharger.
+        assert!(matches!(
+            restart_task(&mut conn, &id),
+            Err(StoreError::BadTransition { from: "queued", .. })
+        ));
+        change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+        assert!(restart_task(&mut conn, &id).is_err());
+        complete_task(&mut conn, &id, "/dl/f.iso", 100).unwrap();
+
+        assert_eq!(restart_task(&mut conn, &id).unwrap(), TaskState::Completed);
+        let task = load_task(&conn, &id).unwrap();
+        assert_eq!(task.state, TaskState::Queued);
+        assert_eq!((task.file_name, task.total_bytes), (None, None));
+        assert_eq!((task.done_bytes, task.finished_at), (0, None));
+        let source = primary_source(&conn, &id).unwrap();
+        assert_eq!(source.url, "https://exemple.org/f.iso?token=secret");
+        assert_eq!((source.etag, source.accepts_ranges), (None, None));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM segments"), 0);
+        // La fin précédente reste dans l'historique.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM history"), 1);
+
+        // Une tâche en échec repart aussi, erreur et tentatives effacées.
+        change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+        let failed = Change {
+            error: Some(("HTTP_STATUS", "404")),
+            ..Change::to(TaskState::Failed)
+        };
+        change_state(&mut conn, &id, &failed).unwrap();
+        restart_task(&mut conn, &id).unwrap();
+        let task = load_task(&conn, &id).unwrap();
+        assert_eq!((task.state, task.error_code), (TaskState::Queued, None));
+
+        // Sans adresse (tâche terminée avant qu'elle ne soit gardée) : refusé.
+        conn.execute("DELETE FROM sources WHERE task_id = ?1", [&id])
+            .unwrap();
+        change_state(&mut conn, &id, &Change::to(TaskState::Cancelled)).unwrap();
+        assert!(matches!(
+            restart_task(&mut conn, &id),
+            Err(StoreError::NoSource { .. })
+        ));
+        assert_eq!(load_task(&conn, &id).unwrap().state, TaskState::Cancelled);
     }
 }

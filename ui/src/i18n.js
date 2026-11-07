@@ -68,6 +68,16 @@ export const EN = {
   "Supprimer aussi les fichiers terminés du disque": "Also delete finished files from the disk",
   "Les fichiers partiels des téléchargements inachevés sont toujours supprimés.":
     "Partial files of unfinished downloads are always deleted.",
+  // Retéléchargement
+  "Retélécharger…": "Download again…",
+  "Retélécharger": "Download again",
+  "Retélécharger « {0} » depuis le début ?": "Download “{0}” again from the start?",
+  "Retélécharger {0} téléchargements depuis le début ?": "Download {0} downloads again from the start?",
+  "Remplacer le fichier déjà téléchargé": "Replace the file already downloaded",
+  "Sinon, il reste, et le nouveau prend un autre nom.":
+    "Otherwise it stays, and the new one gets another name.",
+  "Ce qui a déjà été reçu des téléchargements inachevés est supprimé.":
+    "What unfinished downloads have already received is deleted.",
   // Propriétés
   "Fichier": "File",
   "Dossier": "Folder",

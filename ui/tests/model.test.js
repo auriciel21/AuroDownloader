@@ -1,7 +1,9 @@
 // Révisions et état des tâches (SPEC §6.10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume } from "../src/model.js";
+import {
+  TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
+} from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
   taskId: id, state, fileName: `${id}.bin`, doneBytes: 0, totalBytes: 100, pauseReason: null, errorCode: null, ...extra,
@@ -208,6 +210,22 @@ test("actions permises par la table des états (SPEC §5.5)", () => {
   // Seules les tâches finies se retirent ; les autres s'annulent d'abord.
   assert.ok(canRemove("completed") && canRemove("failed") && canRemove("cancelled"));
   assert.ok(!canRemove("paused") && !canRemove("active") && !canRemove("queued"));
+  // Retélécharger : tout sauf ce qui tourne ou attend son tour.
+  for (const s of ["completed", "failed", "cancelled", "paused", "retry_wait"]) assert.ok(canRestart(s), s);
+  assert.ok(!canRestart("active") && !canRestart("queued"));
+});
+
+test("retéléchargement : nom, taille et octets effacés, puis en file", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "completed", { totalBytes: 9, doneBytes: 9 })]));
+  store.apply("task.updated", { rev: 2, taskId: "a", fileName: null, totalBytes: null, doneBytes: 0, errorCode: null, errorDetail: null });
+  const out = store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "completed", to: "queued" });
+  const again = store.tasks.get("a");
+  assert.equal(again.state, "queued");
+  assert.equal(again.fileName, null);
+  assert.equal(again.doneBytes, 0);
+  assert.equal(again.finishedAt, null);
+  assert.ok(out.list);
 });
 
 test("planifications, ouverture des files et action de fin (F-16)", () => {
