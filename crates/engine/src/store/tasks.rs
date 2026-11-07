@@ -341,28 +341,29 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     rows.map(|r| r?.try_into()).collect()
 }
 
-/// Source de rang le plus faible (la préférée) d'une tâche.
-pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, StoreError> {
-    let raw = conn
-        .query_row(
-            "SELECT id, url, accepts_ranges, etag, last_modified, content_length
-             FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
-            [task_id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| StoreError::NoSource {
-            task_id: task_id.to_owned(),
-        })?;
+const SOURCE_COLUMNS: &str = "id, url, accepts_ranges, etag, last_modified, content_length";
+
+type RawSource = (
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
+fn raw_source(r: &Row<'_>) -> rusqlite::Result<RawSource> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+    ))
+}
+
+fn source_row(raw: RawSource) -> Result<SourceRow, StoreError> {
     let (id, url, ranges, etag, last_modified, length) = raw;
     Ok(SourceRow {
         id,
@@ -372,6 +373,33 @@ pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, Sto
         last_modified,
         content_length: to_u64(length, "taille de la source")?,
     })
+}
+
+/// Source de rang le plus faible (la préférée) d'une tâche.
+pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, StoreError> {
+    let raw = conn
+        .query_row(
+            &format!(
+                "SELECT {SOURCE_COLUMNS} FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1"
+            ),
+            [task_id],
+            raw_source,
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::NoSource {
+            task_id: task_id.to_owned(),
+        })?;
+    source_row(raw)
+}
+
+/// Sources d'une tâche, de la préférée à la dernière ; aucune pour une tâche terminée
+/// (elles partent avec sa fin, section 5.6, règle 4).
+pub fn load_sources(conn: &Connection, task_id: &str) -> Result<Vec<SourceRow>, StoreError> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {SOURCE_COLUMNS} FROM sources WHERE task_id = ?1 ORDER BY rank, id"
+    ))?;
+    let rows = stmt.query_map([task_id], raw_source)?;
+    rows.map(|r| source_row(r?)).collect()
 }
 
 /// Noms de fichier enregistrés par les autres tâches du dossier `dest_dir` qui peuvent

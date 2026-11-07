@@ -646,11 +646,34 @@ function clearFinished() {
 // ---------- Propriétés d'un téléchargement ----------
 
 let detailsTask = null;
+/// Dernière réponse de `task.get` avec segments et sources, pour la tâche affichée.
+let detailsFull = null;
+let detailsTimer = 0;
+
+/// Segments et sources : redemandés chaque seconde tant que les propriétés sont ouvertes
+/// (SPEC §6.5, détail d'une tâche).
+async function refreshDetails() {
+  const id = detailsTask;
+  if (!id || !connected) return;
+  let full;
+  try {
+    full = await host.call("task.get", { taskId: id, include: ["segments", "sources"] });
+  } catch {
+    return; // Tâche retirée ou moteur perdu : la notification suivra.
+  }
+  if (detailsTask !== id) return;
+  detailsFull = full;
+  renderDetails();
+}
 
 function openDetails(taskId, { focusLimit = false } = {}) {
   const task = store.tasks.get(taskId);
   if (!task) return;
   detailsTask = taskId;
+  detailsFull = null;
+  clearInterval(detailsTimer);
+  detailsTimer = setInterval(refreshDetails, 1000);
+  refreshDetails();
   fillLimits($("d-limit"), task.speedLimitBps ?? null);
   renderDetails();
   const dialog = $("details");
@@ -670,14 +693,23 @@ function renderDetails() {
     $(`f-${key}`).hidden = !text;
   };
   const active = task.state === "active";
+  const source = detailsFull?.sources?.[0];
   set("name", name);
   set("dir", task.destDir ?? "");
+  set("url", source?.url ?? "");
   set("state", stateText(task, t));
   set("size", task.totalBytes != null ? bytes(task.totalBytes, lang, t) : t("inconnue"));
   set("done", pct ? t("{0} ({1})", bytes(task.doneBytes, lang, t), pct) : bytes(task.doneBytes, lang, t));
   set("rate", active ? rate(task.bps ?? 0) : "");
   set("eta", active ? duration(task.etaS, t) : "");
   set("connections", active && task.connections > 0 ? String(task.connections) : "");
+  // F-04 : un serveur sans reprise le dit clairement.
+  set("resume", source?.acceptsRanges === true
+    ? t("Oui")
+    : source?.acceptsRanges === false
+      ? t("Non : ce serveur ne permet pas de reprendre ; un arrêt ou une coupure fait repartir de zéro")
+      : "");
+  $("d-resume").classList.toggle("warn", source?.acceptsRanges === false);
   set("added", task.createdAt ? dateFormat.format(new Date(task.createdAt)) : "");
   set("finished", task.finishedAt ? dateFormat.format(new Date(task.finishedAt)) : "");
   $("d-progress").setAttribute("aria-label", t("Avancement de {0}", name));
@@ -705,11 +737,53 @@ function renderDetails() {
   $("d-reveal").hidden = !done;
   $("d-limit-field").hidden = !(canPause(task.state) || canResume(task.state));
   $("d-limit-apply").disabled = !connected;
+  renderSegments(task);
+}
+
+/// Carte des segments (chacun à sa place dans le fichier, rempli de ce qu'il a reçu) et
+/// tableau des segments, comme les connexions d'un gestionnaire classique.
+function renderSegments(task) {
+  const segments = detailsFull?.segments ?? [];
+  const section = $("d-map-section");
+  const size = (s) => s.end - s.start + 1;
+  const total = task.totalBytes ?? segments.reduce((sum, s) => Math.max(sum, s.end + 1), 0);
+  section.hidden = !segments.length || !(total > 0);
+  if (section.hidden) return;
+  const map = $("d-map");
+  const pct = (n) => `${(100 * n) / total}%`;
+  map.replaceChildren(...segments.map((s) => {
+    const part = document.createElement("div");
+    part.className = s.receiving ? "part receiving" : "part";
+    part.style.left = pct(s.start);
+    part.style.width = pct(size(s));
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    fill.style.width = `${Math.min(100, (100 * s.doneBytes) / size(s))}%`;
+    part.append(fill);
+    return part;
+  }));
+  const receiving = segments.filter((s) => s.receiving).length;
+  map.setAttribute("aria-label", t("{0} segments, {1} en cours de réception", segments.length, receiving));
+  const body = $("d-segments").tBodies[0];
+  body.replaceChildren(...segments.map((s, i) => {
+    const row = document.createElement("tr");
+    const finished = s.doneBytes >= size(s);
+    const info = s.receiving ? t("Réception des données") : finished ? t("Terminé") : t("En attente");
+    row.className = s.receiving ? "receiving" : finished ? "finished" : "";
+    for (const text of [String(i + 1), t("{0} sur {1}", bytes(s.doneBytes, lang, t), bytes(size(s), lang, t)), info]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    return row;
+  }));
 }
 
 function closeDetails() {
   const id = detailsTask;
   detailsTask = null;
+  detailsFull = null;
+  clearInterval(detailsTimer);
   (id && rows.get(id)?.isConnected ? rows.get(id) : null)?.focus();
 }
 

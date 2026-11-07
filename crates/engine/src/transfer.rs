@@ -141,11 +141,21 @@ impl Options {
 }
 
 /// Avancement, pour l'affichage : des octets reçus, pas forcément vidés sur disque.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
     pub received: u64,
     pub total: Option<u64>,
     pub connections: usize,
+    /// Segments en cours de réception, par numéro croissant.
+    pub segments: Arc<[LiveSegment]>,
+}
+
+/// Un segment qu'une connexion reçoit en ce moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveSegment {
+    pub idx: u32,
+    /// Octets reçus depuis le début du segment, pas forcément vidés sur disque.
+    pub received: u64,
 }
 
 /// Issue d'une exécution, déjà enregistrée dans la base.
@@ -1005,10 +1015,19 @@ fn progress(
                 .map(|(_, h)| h.handed_over()),
         )
         .sum();
+    let mut segments: Vec<LiveSegment> = handles
+        .iter()
+        .map(|(&idx, h)| LiveSegment {
+            idx,
+            received: h.handed_over().max(saved.get(&idx).copied().unwrap_or(0)),
+        })
+        .collect();
+    segments.sort_by_key(|s| s.idx);
     Progress {
         received,
         total,
         connections,
+        segments: segments.into(),
     }
 }
 

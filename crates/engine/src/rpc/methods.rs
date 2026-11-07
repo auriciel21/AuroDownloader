@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::session::{Ctx, Topics};
 use super::{PROTOCOL_VERSIONS, RpcError, negotiate, queue_json, task_json};
-use crate::scheduler::{AddTask, EngineError, QueueChange, TaskUpdate};
+use crate::scheduler::{AddTask, EngineError, Include, QueueChange, TaskDetails, TaskUpdate};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -128,10 +128,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(json!({}))
         }
         "task.add" => task_add(ctx, &p).await,
-        "task.get" => {
-            let task = ctx.engine.get(&p.required_str("taskId")?).await?;
-            Ok(task_json(&task))
-        }
+        "task.get" => task_get(ctx, &p).await,
         "task.list" => task_list(ctx, &p).await,
         "task.update" => {
             p.refuse(&["maxConnections", "destDir", "fileName", "checksum"])?;
@@ -290,6 +287,59 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         })
         .await?;
     Ok(json!({"taskId": task_id}))
+}
+
+/// `task.get` : la tâche, et sur demande (`include`) ses segments et ses sources.
+async fn task_get(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
+    let mut include = Include::default();
+    for item in p.strings("include")?.unwrap_or_default() {
+        match item.as_str() {
+            "segments" => include.segments = true,
+            "sources" => include.sources = true,
+            // Fichiers d'un torrent (SPEC §6.4) : pas encore de torrents.
+            "files" => {
+                return Err(RpcError::capability_missing(
+                    "include files n'est pas encore pris en charge par ce moteur",
+                ));
+            }
+            other => {
+                return Err(RpcError::invalid_params(format!(
+                    "include : valeur inconnue {other}"
+                )));
+            }
+        }
+    }
+    let details = ctx
+        .engine
+        .details(&p.required_str("taskId")?, include)
+        .await?;
+    Ok(details_json(&details))
+}
+
+fn details_json(d: &TaskDetails) -> Value {
+    let mut task = task_json(&d.task);
+    if let Some(segments) = &d.segments {
+        task["segments"] = segments
+            .iter()
+            .map(|(s, receiving)| {
+                json!({
+                    "idx": s.idx,
+                    "start": s.start,
+                    "end": s.end,
+                    // Vidés sur disque, ou reçus par la connexion en cours, le plus grand.
+                    "doneBytes": receiving.map_or(s.written, |r| r.max(s.written)),
+                    "receiving": receiving.is_some(),
+                })
+            })
+            .collect();
+    }
+    if let Some(sources) = &d.sources {
+        task["sources"] = sources
+            .iter()
+            .map(|s| json!({"url": s.url, "acceptsRanges": s.accepts_ranges}))
+            .collect();
+    }
+    task
 }
 
 async fn task_list(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {

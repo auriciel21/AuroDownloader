@@ -34,12 +34,14 @@ use tokio::time::Instant;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::net::{self, Client, NetError};
+use crate::segmenter::Segment;
+use crate::store::segments::load_segments;
 use crate::store::tasks::{
-    self, Change, NewTask, PauseReason, QueueRow, TaskFilter, TaskRow, TaskState, change_state,
-    load_task, next_retry_at, runnable_tasks,
+    self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
+    change_state, load_task, next_retry_at, runnable_tasks,
 };
 use crate::store::{self, StoreError, now_ms, settings};
-use crate::transfer::{self, Options, Outcome, Progress, TransferError};
+use crate::transfer::{self, LiveSegment, Options, Outcome, Progress, TransferError};
 
 #[cfg(test)]
 mod tests;
@@ -143,6 +145,22 @@ pub enum Event {
     },
 }
 
+/// Ce que `task.get` demande en plus de la tâche (SPEC §6.4, `include`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Include {
+    pub segments: bool,
+    pub sources: bool,
+}
+
+/// Une tâche avec ses segments et ses sources, si demandés.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskDetails {
+    pub task: TaskRow,
+    /// Segments enregistrés, chacun avec ses octets reçus s'il est en cours de réception.
+    pub segments: Option<Vec<(Segment, Option<u64>)>>,
+    pub sources: Option<Vec<SourceRow>>,
+}
+
 /// État complet du moteur à une révision donnée (`sync.snapshot`, SPEC §6.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -224,6 +242,7 @@ enum Command {
         reply: Reply<()>,
     },
     Get(String, Reply<TaskRow>),
+    Details(String, Include, Reply<TaskDetails>),
     List(TaskFilter, Reply<(Vec<TaskRow>, u64)>),
     Snapshot(Reply<Snapshot>),
     UpdateTask {
@@ -313,6 +332,17 @@ impl Engine {
     pub async fn get(&self, task_id: &str) -> Result<TaskRow, EngineError> {
         let id = task_id.to_owned();
         self.ask(|reply| Command::Get(id, reply)).await
+    }
+
+    /// Une tâche, avec ses segments (et ce que ses connexions en reçoivent en ce moment)
+    /// et ses sources si `include` les demande.
+    pub async fn details(
+        &self,
+        task_id: &str,
+        include: Include,
+    ) -> Result<TaskDetails, EngineError> {
+        let id = task_id.to_owned();
+        self.ask(|reply| Command::Details(id, include, reply)).await
     }
 
     /// Tâches selon `filter`, avec la révision à laquelle la liste a été lue.
@@ -467,6 +497,8 @@ struct Running {
     queue_id: String,
     stop: watch::Sender<bool>,
     then: Then,
+    /// Segments en cours de réception, publiés par l'exécution à chaque avancement.
+    live: watch::Receiver<Arc<[LiveSegment]>>,
 }
 
 struct Scheduler {
@@ -686,12 +718,14 @@ impl Scheduler {
         }
         let throttle = self.throttle_for(&task_id, &queue_id);
         let (stop, stopped) = watch::channel(false);
+        let (live_tx, live) = watch::channel(Arc::from([]));
         self.running.insert(
             task_id.clone(),
             Running {
                 queue_id,
                 stop,
                 then: Then::Keep,
+                live,
             },
         );
         self.changed(&task_id, from, TaskState::Active);
@@ -702,7 +736,7 @@ impl Scheduler {
         let prepared = self.prepared.clone();
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
-            let result = execute(&config, &id, stopped, events, rev, prepared).await;
+            let result = execute(&config, &id, stopped, events, rev, prepared, live_tx).await;
             (id, result)
         });
         self.run_ids.insert(handle.id(), task_id);
@@ -768,6 +802,9 @@ impl Scheduler {
             }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
+            }
+            Command::Details(task_id, include, reply) => {
+                let _ = reply.send(self.details(&task_id, include));
             }
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
@@ -1037,6 +1074,42 @@ impl Scheduler {
         }
     }
 
+    /// Tâche, segments et sources (`task.get`, SPEC §6.4). Les octets reçus d'un segment en
+    /// cours viennent de son exécution ; ceux de la base ne suivent que les points de
+    /// contrôle.
+    fn details(&self, task_id: &str, include: Include) -> Result<TaskDetails, EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        let segments = if include.segments {
+            let live = self
+                .running
+                .get(task_id)
+                .map(|r| Arc::clone(&r.live.borrow()))
+                .unwrap_or_else(|| Arc::from([]));
+            let received = |idx: u32| live.iter().find(|l| l.idx == idx).map(|l| l.received);
+            Some(
+                load_segments(&self.conn, task_id)?
+                    .into_iter()
+                    .map(|s| {
+                        let now = received(s.idx);
+                        (s, now)
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let sources = if include.sources {
+            Some(tasks::load_sources(&self.conn, task_id)?)
+        } else {
+            None
+        };
+        Ok(TaskDetails {
+            task,
+            segments,
+            sources,
+        })
+    }
+
     /// Retire une tâche finie. Le fichier demandé est supprimé d'abord : si cela échoue, la
     /// tâche reste, et l'utilisateur peut réessayer.
     fn remove(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
@@ -1175,6 +1248,7 @@ async fn execute(
     events: broadcast::Sender<Event>,
     rev: Arc<AtomicU64>,
     prepared: mpsc::UnboundedSender<String>,
+    live: watch::Sender<Arc<[LiveSegment]>>,
 ) -> Result<Outcome, TransferError> {
     let mut conn = store::open(&config.db_path)?;
     // `transfer::run` enregistre la préparation avant le premier avancement : celui-ci
@@ -1184,6 +1258,7 @@ async fn execute(
         if std::mem::take(&mut first) {
             let _ = prepared.send(task_id.to_owned());
         }
+        live.send_replace(Arc::clone(&progress.segments));
         let _ = events.send(Event::Progress {
             rev: rev.load(Ordering::SeqCst),
             task_id: task_id.to_owned(),

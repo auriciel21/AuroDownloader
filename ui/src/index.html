@@ -149,16 +149,32 @@
       <dl class="facts">
         <div id="f-name"><dt data-i18n="Fichier">Fichier</dt><dd id="d-name" class="path"></dd></div>
         <div id="f-dir"><dt data-i18n="Dossier">Dossier</dt><dd id="d-dir" class="path"></dd></div>
+        <div id="f-url"><dt data-i18n="Adresse">Adresse</dt><dd id="d-url" class="path"></dd></div>
         <div id="f-state"><dt data-i18n="Statut">Statut</dt><dd id="d-state"></dd></div>
         <div id="f-size"><dt data-i18n="Taille">Taille</dt><dd id="d-size"></dd></div>
         <div id="f-done"><dt data-i18n="Téléchargé">Téléchargé</dt><dd id="d-done"></dd></div>
         <div id="f-rate"><dt data-i18n="Débit">Débit</dt><dd id="d-rate"></dd></div>
         <div id="f-eta"><dt data-i18n="Temps restant">Temps restant</dt><dd id="d-eta"></dd></div>
         <div id="f-connections"><dt data-i18n="Connexions">Connexions</dt><dd id="d-connections"></dd></div>
+        <div id="f-resume"><dt data-i18n="Reprise possible">Reprise possible</dt><dd id="d-resume"></dd></div>
         <div id="f-added"><dt data-i18n="Ajouté le">Ajouté le</dt><dd id="d-added"></dd></div>
         <div id="f-finished"><dt data-i18n="Fini le">Fini le</dt><dd id="d-finished"></dd></div>
       </dl>
       <progress id="d-progress" max="1" value="0"></progress>
+      <section id="d-map-section" class="map-section" aria-labelledby="d-map-title" hidden>
+        <h3 id="d-map-title" data-i18n="Segments et connexions">Segments et connexions</h3>
+        <div id="d-map" class="map" role="img"></div>
+        <div class="segments-box">
+          <table id="d-segments">
+            <thead><tr>
+              <th scope="col" data-i18n="N°">N°</th>
+              <th scope="col" data-i18n="Téléchargé">Téléchargé</th>
+              <th scope="col" data-i18n="État">État</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
       <div class="field limit-field" id="d-limit-field">
         <label for="d-limit" data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</label>
         <span class="row"><select id="d-limit"></select>

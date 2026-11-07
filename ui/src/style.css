@@ -429,6 +429,47 @@ dialog .buttons.end { justify-content: flex-end; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 #d-progress { height: 12px; margin: 4px 0 14px; }
+.facts dd.warn { color: var(--fail); }
+
+/* Carte des segments : chacun à sa place dans le fichier, rempli de ce qu'il a reçu. */
+.map-section { margin-bottom: 12px; }
+.map-section h3 { margin: 0 0 6px; font-size: 14px; }
+.map {
+  position: relative;
+  height: 18px;
+  margin-bottom: 8px;
+  background: var(--track);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.map .part {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px solid var(--panel);
+}
+.map .fill { height: 100%; background: var(--bar); }
+.map .part.receiving .fill { background: var(--accent); }
+.segments-box {
+  max-height: 150px;
+  overflow: auto;
+  border: 1px solid var(--row-line);
+  border-radius: 4px;
+}
+#d-segments { width: 100%; border-collapse: collapse; font-size: 13px; }
+#d-segments th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+#d-segments td { padding: 2px 8px; border-top: 1px solid var(--row-line); font-variant-numeric: tabular-nums; }
+#d-segments th:first-child, #d-segments td:first-child { width: 48px; }
+#d-segments tr.receiving td:last-child { color: var(--accent); font-weight: 600; }
+#d-segments tr.finished td:last-child { color: var(--done); }
 .limit-field { padding-top: 10px; border-top: 1px solid var(--row-line); }
 
 .tabs {

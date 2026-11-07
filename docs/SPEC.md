@@ -560,6 +560,20 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   tâche n'est pas terminée, en échec ou annulée, et redevient `null` quand elle repart.
   `task.stateChanged` ne la porte pas : un client la date à la réception, et l'instantané
   suivant donne celle du moteur.
+- **Détail d'une tâche** (`task.get` avec `include`, depuis le 2026-11-07) :
+  - `segments` ajoute `segments[]` : `idx`, `start` et `end` (octets, bornes incluses),
+    `doneBytes` et `receiving`. Pour un segment qu'une connexion reçoit en ce moment
+    (`receiving` vrai), `doneBytes` compte les octets reçus, sinon ceux vidés sur disque
+    au dernier point de contrôle. Un client qui veut suivre la carte des connexions
+    rappelle `task.get` (une fois par seconde suffit) ;
+  - `sources` ajoute `sources[]` : `url` et `acceptsRanges` (`null` avant la
+    préparation). `acceptsRanges` faux signale un téléchargement sans reprise possible
+    (F-04). L'adresse peut porter un jeton : un client l'affiche sans la journaliser
+    (section 8.2) ;
+  - une tâche terminée n'a plus ni segments ni sources (section 5.6, règle 4) : les deux
+    listes sont vides ;
+  - `files` (torrents) est refusé par `CAPABILITY_MISSING`, une valeur inconnue par
+    `INVALID_PARAMS`.
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
     sont refusées par `INVALID_STATE` et s'annulent d'abord ;

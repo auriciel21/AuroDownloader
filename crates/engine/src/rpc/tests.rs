@@ -14,7 +14,7 @@ use tokio::time::timeout;
 use super::serve;
 use crate::net::Client;
 use crate::scheduler::{Config, DISK_RECHECK, Engine};
-use crate::testing::{FileSite, Server, serve_file};
+use crate::testing::{FileSite, Pace, Server, serve_file, serve_file_paced};
 use crate::transfer::Options;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -735,4 +735,87 @@ fn engine_at(dir: &Path, db: &str) -> Engine {
         disk_recheck: DISK_RECHECK,
     })
     .unwrap()
+}
+
+#[tokio::test]
+async fn task_get_shows_segments_and_sources_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let len: u64 = 1 << 20;
+    let pace = Pace {
+        chunk: 16 * 1024,
+        delay: Duration::from_millis(40),
+    };
+    let server = serve_file_paced(Arc::new(Mutex::new(FileSite::new(len))), Some(pace));
+    let url = server.url("/carte.bin");
+    let mut c = TestClient::connect(&engine);
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": url}], "destDir": dir_text(dir.path())}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    let both = json!({"taskId": id, "include": ["segments", "sources"]});
+
+    // Pendant le téléchargement : les segments couvrent le fichier, et au moins une
+    // connexion reçoit le sien.
+    let running = timeout(WAIT, async {
+        loop {
+            let task = c.result("task.get", both.clone()).await;
+            let receiving = task["segments"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|s| s["receiving"] == true));
+            if receiving {
+                return task;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("aucun segment en cours de réception");
+    let segments = running["segments"].as_array().unwrap();
+    let covered: u64 = segments
+        .iter()
+        .map(|s| s["end"].as_u64().unwrap() - s["start"].as_u64().unwrap() + 1)
+        .sum();
+    assert_eq!(covered, len, "{running}");
+    for s in segments {
+        let size = s["end"].as_u64().unwrap() - s["start"].as_u64().unwrap() + 1;
+        assert!(s["doneBytes"].as_u64().unwrap() <= size, "{s}");
+    }
+    assert_eq!(
+        running["sources"],
+        json!([{"url": url, "acceptsRanges": true}])
+    );
+
+    // Sans `include`, ni segments ni sources.
+    let plain = c.result("task.get", json!({"taskId": id})).await;
+    assert!(plain.get("segments").is_none() && plain.get("sources").is_none());
+    assert_eq!(
+        c.error_code("task.get", json!({"taskId": id, "include": ["files"]}))
+            .await,
+        "CAPABILITY_MISSING"
+    );
+    assert_eq!(
+        c.error_code("task.get", json!({"taskId": id, "include": ["tout"]}))
+            .await,
+        "INVALID_PARAMS"
+    );
+
+    // Terminée : segments et sources sont partis avec sa fin.
+    let done = timeout(WAIT, async {
+        loop {
+            let task = c.result("task.get", both.clone()).await;
+            if task["state"] == "completed" {
+                return task;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("jamais terminée");
+    assert_eq!(done["segments"], json!([]));
+    assert_eq!(done["sources"], json!([]));
+    engine.shutdown().await;
 }

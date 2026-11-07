@@ -446,6 +446,7 @@ mod tests {
             received,
             total: Some(100 << 20),
             connections: 1,
+            segments: std::sync::Arc::from([]),
         }
     }
 
