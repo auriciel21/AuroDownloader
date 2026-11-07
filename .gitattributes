@@ -6,3 +6,4 @@
 *.md        text eol=lf
 *.yml       text eol=lf
 Cargo.lock  text eol=lf
+*.sh        text eol=lf
