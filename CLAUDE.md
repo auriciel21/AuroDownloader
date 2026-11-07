@@ -57,7 +57,10 @@ téléchargement.
   l'Ubuntu 20.04 de WSL). `bridge` : liaison avec le moteur (démarrage d'`aurod`, session,
   abonnement, reconnexion, avancement suspendu fenêtre cachée), sans dépendre de Tauri ;
   `prefs` : préférences de l'interface (JSON, aucun secret) ; `files` : ouverture d'un
-  fichier terminé, jamais d'un exécutable (SPEC 8.1).
+  fichier terminé, jamais d'un exécutable (SPEC 8.1). Paquets : `bundle.ps1`,
+  `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
+  (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
+  icônes).
 - `ui` : la page web de l'application, destinée aussi à l'interface distante (F-39).
   `src/model.js` (instantané, notifications et révisions, SPEC 6.10 ; vues de
   l'arborescence, types de fichier, tri des colonnes), `src/i18n.js` (français source,
@@ -68,6 +71,11 @@ téléchargement.
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
   `engine stop` sur ce point d'accès.
+- Essais d'un installateur Windows : `/S /D=<dossier d'essai>` (jamais le dossier par
+  défaut, qui est aussi celui des données réelles), aucun `aurod` réel en marche (ses
+  crochets arrêtent le moteur du point d'accès par défaut), application installée lancée
+  avec `--endpoint`, `--db` et `--prefs` d'essai ; finir par la désinstallation (`/S`) et
+  vérifier que la clé `Run` de l'utilisateur n'a pas changé.
 - Essais d'une action de fin (veille, extinction) : toujours avec un `aurod` d'essai lancé
   à la main avec `--simulate-power` avant l'application (qui s'y connecte au lieu d'en
   lancer un), et vérifier sa ligne de commande ; jamais avec un `aurod` qui pourrait
@@ -115,6 +123,9 @@ AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai>
 # Page : tests sans navigateur (Node 18 et plus ; installé dans la distribution WSL
 # d'essai Ubuntu-24.04) :
 node --test ui/tests/
+# Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
+apps/desktop/bundle.ps1   # Windows, NSIS : apps/desktop/target/release/bundle/nsis/
+apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.04)
 ```
 
 ## Règles du projet

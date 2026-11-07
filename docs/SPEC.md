@@ -226,6 +226,12 @@ Les cookies sont rangés dans le coffre du système, jamais dans la base (sectio
 - **Sans interface** : l'option `--headless` lance le moteur seul, pour un NAS ou un serveur, avec une image Docker et une unité `systemd` utilisateur. L'interface web est servie par le moteur lui-même.
 - **Windows** : installateur signé et version portable.
 - **Linux** : AppImage et paquet `.deb` ; Flatpak à étudier, car son bac à sable complique la messagerie native avec le navigateur.
+- **Premiers paquets** (décisions du 2026-11-07, phase 2), construits par `apps/desktop/bundle.ps1` et `bundle.sh` ; non signés, la signature vient avec la version 1 (phase 7) :
+  - Windows : installateur NSIS seul (le MSI, qui s'installe pour toute la machine, viendra avec la version 1), pour l'utilisateur courant, sans élévation. Dossier par défaut : `%LOCALAPPDATA%\AuroDownloader`, choix du modèle de Tauri ; c'est aussi le dossier des données du moteur, et chacun n'y touche qu'à ses propres fichiers.
+  - Linux : `.deb` et AppImage.
+  - Contenu : l'application, `aurod` et `auro`, côte à côte ; l'application lance le `aurod` voisin.
+  - Avant d'installer, de mettre à jour ou de désinstaller : l'application est fermée (sinon elle relancerait le moteur), puis le moteur arrêté proprement (`auro engine stop`) ; il n'est forcé que s'il tourne encore depuis le dossier du programme.
+  - Désinstallation : la base, son journal et les préférences sont conservés ; une case « supprimer les données », décochée par défaut, les efface avec le cache de la page. Les fichiers téléchargés ne sont jamais touchés. Le démarrage avec la session est retiré.
 - **Android** : F-Droid et APK signé.
 
 ## 5. Modèle de données

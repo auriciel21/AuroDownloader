@@ -18,3 +18,5 @@
 # Application de bureau : schémas générés par Tauri
 /apps/desktop/gen/
 /apps/desktop/target/
+# Binaires du moteur copiés pour l'installateur (bundle.ps1, bundle.sh)
+/apps/desktop/binaries/
