@@ -185,6 +185,12 @@ impl Default for TestTls {
     }
 }
 
+thread_local! {
+    /// Connexions servies en même temps, celle de ce fil comprise, à l'arrivée de sa
+    /// requête (chaque connexion a son fil).
+    static SERVING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Une connexion : une requête, une réponse, en clair ou chiffrée.
 fn answer(
     mut stream: impl Read + Write,
@@ -199,6 +205,7 @@ fn answer(
     log.lock().unwrap().push(request.clone());
     let now = active.fetch_add(1, Ordering::SeqCst) + 1;
     peak.fetch_max(now, Ordering::SeqCst);
+    SERVING.with(|s| s.set(now));
     let _ = write_reply(&mut stream, &handler(&request), pace);
     active.fetch_sub(1, Ordering::SeqCst);
 }
@@ -327,6 +334,9 @@ pub struct FileSite {
     /// Les `busy_responses` prochaines requêtes par plage reçoivent un 503 (serveur qui
     /// résiste, SPEC §7.3).
     pub busy_responses: usize,
+    /// Au-delà de ce nombre de connexions servies en même temps, une requête par plage
+    /// reçoit un 503 : serveur qui plafonne les connexions par client (SPEC §7.3).
+    pub max_concurrent: Option<usize>,
 }
 
 impl FileSite {
@@ -339,6 +349,7 @@ impl FileSite {
             cut_responses: 0,
             cut_after: 0,
             busy_responses: 0,
+            max_concurrent: None,
         }
     }
 }
@@ -363,6 +374,14 @@ fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send
     let busy_done = AtomicUsize::new(0);
     move |r: &Request| {
         let site = site.lock().unwrap();
+        if r.method == "GET"
+            && r.header("range").is_some()
+            && site
+                .max_concurrent
+                .is_some_and(|max| SERVING.with(std::cell::Cell::get) > max)
+        {
+            return reply("503 Service Unavailable", &[("Content-Length", "0")], b"");
+        }
         if r.method == "GET"
             && r.header("range").is_some()
             && busy_done.load(Ordering::SeqCst) < site.busy_responses

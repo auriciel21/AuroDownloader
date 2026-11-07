@@ -20,6 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -544,10 +545,7 @@ async fn execute(
     let part = Arc::new(part);
     let ctx = Pool {
         client,
-        target: Arc::new(Target {
-            url: source.url.clone(),
-            headers: task_headers,
-        }),
+        target: Arc::new(Target::new(source.url.clone(), task_headers)),
         fetch,
         plan,
         host: host_of(&source.url),
@@ -680,13 +678,22 @@ enum Fetch {
     Whole { total: Option<u64> },
 }
 
+/// Pause avant de rouvrir une connexion après un refus du serveur (SPEC §7.3), sauf
+/// `Retry-After`, plafonné à [`REFUSAL_PAUSE_MAX`].
+pub const REFUSAL_PAUSE: Duration = Duration::from_secs(1);
+pub const REFUSAL_PAUSE_MAX: Duration = Duration::from_secs(30);
+/// Épisodes de refus d'affilée, sans connexion finie entre eux, à partir desquels le
+/// moteur descend aux connexions encore actives, même sous ce que le serveur a déjà
+/// accepté ensemble.
+pub const REFUSALS_TO_LOWER: u32 = 3;
+
 /// Nombre de connexions automatique (SPEC §7.3), comme le démarrage de TCP : montée
 /// rapide tant qu'elle paie, réduction rapide quand le serveur résiste.
 ///
 /// À chaque fenêtre de mesure, le nombre de connexions double (dans la limite du plafond)
 /// si le débit a progressé d'au moins 10 % depuis la dernière augmentation ; sinon
-/// l'augmentation s'arrête pour cette exécution. Sur un serveur qui résiste, moitié moins
-/// de connexions, et un plafond égal à la valeur atteinte moins une.
+/// l'augmentation s'arrête pour cette exécution. Sur un refus du serveur, les connexions
+/// encore actives deviennent la cible et le plafond.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutoConnections {
     width: u32,
@@ -733,12 +740,16 @@ impl AutoConnections {
         self.width
     }
 
-    /// Le serveur résiste (429, 503, connexion refusée) : divise par deux et renvoie le
-    /// plafond à retenir pour l'hôte pendant la session.
-    pub fn on_overload(&mut self) -> u32 {
-        let reached = self.width;
-        self.width = (reached / 2).max(1);
-        self.cap = self.cap.min(reached.saturating_sub(1).max(1));
+    /// Le serveur refuse une connexion (429, 503, connexion refusée) alors que `alive`
+    /// autres tournent encore : celles-là, il les accepte. Elles deviennent la cible et le
+    /// plafond (au moins une) ; renvoie le plafond à retenir pour l'hôte pendant la session.
+    ///
+    /// Une salve de refus (montée de 8 à 16 face à un serveur qui en accepte 8) ne fait
+    /// donc descendre qu'à ce que le serveur accepte, et non de moitié à chaque refus :
+    /// avant le 2026-11-07, 16, 8, 4, 2 puis 1 connexion.
+    pub fn on_overload(&mut self, alive: u32) -> u32 {
+        self.width = alive.clamp(1, self.width);
+        self.cap = self.cap.min(self.width);
         self.frozen = true;
         self.cap
     }
@@ -783,10 +794,47 @@ fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u3
     }
 }
 
-/// Adresse d'une tâche et en-têtes de ses requêtes, secrets compris (SPEC §5.1).
+/// Adresse d'une tâche et en-têtes de ses requêtes, secrets compris (SPEC §5.1), et les
+/// connexions dont le serveur a accepté la requête (SPEC §7.3).
 struct Target {
     url: String,
     headers: Vec<(String, String)>,
+    /// Connexions acceptées et ouvertes en ce moment.
+    open: AtomicUsize,
+    /// Le plus de connexions acceptées en même temps pendant l'exécution : ce que le
+    /// serveur tolère, au moins.
+    peak: AtomicUsize,
+}
+
+impl Target {
+    fn new(url: String, headers: Vec<(String, String)>) -> Self {
+        Target {
+            url,
+            headers,
+            open: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        }
+    }
+
+    /// Le serveur a accepté une requête : compte la connexion jusqu'à la fin du garde.
+    fn accepted(&self) -> Accepted<'_> {
+        let now = self.open.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        Accepted(self)
+    }
+
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
+    }
+}
+
+/// Une connexion acceptée, comptée dans [`Target::open`] tant qu'elle vit.
+struct Accepted<'a>(&'a Target);
+
+impl Drop for Accepted<'_> {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Ce que partagent les connexions d'une exécution.
@@ -854,9 +902,14 @@ async fn pool(
     let mut measure = interval_at(start + ctx.opts.measure_every, ctx.opts.measure_every);
     measure.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut measured = (start, progress(&saved, &handles, total, 0).received);
+    // Refus du serveur (SPEC §7.3) : épisodes d'affilée sans connexion finie entre eux,
+    // connexion finie depuis le dernier, et pause avant de rouvrir une connexion.
+    let (mut strikes, mut ended_ok, mut hold): (u32, bool, Option<Instant>) = (0, false, None);
 
     loop {
-        while failure.is_none() && !user_stop && running.len() < width {
+        // Après un refus, pas de nouvelle connexion avant la fin de la pause.
+        let held = hold.filter(|t| Instant::now() < *t);
+        while failure.is_none() && !user_stop && held.is_none() && running.len() < width {
             let segment = match todo.pop_front() {
                 Some(segment) => segment,
                 // Plus rien en attente : la connexion libre coupe le plus gros segment en
@@ -885,7 +938,23 @@ async fn pool(
             ));
         }
         if running.is_empty() {
-            break;
+            // Plus aucune connexion, mais des segments attendent la fin d'une pause.
+            match held {
+                Some(until) if failure.is_none() && !user_stop && !todo.is_empty() => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(until) => {}
+                        changed = async { stop.wait_for(|s| *s).await.is_ok() }, if !stop_gone => {
+                            if changed {
+                                user_stop = true;
+                            } else {
+                                stop_gone = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ => break,
+            }
         }
 
         let first_failure = |f: Failure, failure: &mut Option<Failure>| {
@@ -910,18 +979,37 @@ async fn pool(
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
                 }
                 match end.result {
-                    Ok(()) => {}
-                    // Le serveur résiste alors que d'autres connexions tournent : moitié
-                    // moins de connexions, plafond retenu pour l'hôte, et le segment
+                    Ok(()) => ended_ok = true,
+                    // Le serveur refuse une connexion alors que d'autres tournent : elles
+                    // deviennent la cible et le plafond retenu pour l'hôte, et le segment
                     // attend son tour depuis ses octets enregistrés (SPEC §7.3).
                     Err(Failure::Net(e))
                         if e.is_overload()
                             && failure.is_none()
-                            && !running.is_empty()
+                            && (!running.is_empty() || strikes + 1 < REFUSALS_TO_LOWER)
                             && auto.is_some() =>
                     {
                         let a = auto.as_mut().expect("mode automatique");
-                        let cap = a.on_overload();
+                        let now = Instant::now();
+                        // Un nouvel épisode de refus : le premier, ou un refus d'une connexion
+                        // ouverte après la pause du précédent. Ceux qui arrivent pendant la
+                        // pause sont de la même salve.
+                        if hold.is_none_or(|t| now >= t) {
+                            strikes = if ended_ok { 1 } else { strikes + 1 };
+                            ended_ok = false;
+                            let pause = e.retry_after().unwrap_or(REFUSAL_PAUSE);
+                            hold = Some(now + pause.min(REFUSAL_PAUSE_MAX));
+                        }
+                        // Le serveur refuse encore alors qu'aucune connexion n'a fini entre
+                        // deux épisodes : il a baissé sa limite, on descend aux connexions
+                        // actives. Sinon (montée trop haute, ou remplacement d'une connexion
+                        // que le serveur compte encore), pas sous ce qu'il a déjà accepté
+                        // ensemble.
+                        let keep = match strikes {
+                            n if n >= REFUSALS_TO_LOWER => running.len(),
+                            _ => running.len().max(ctx.target.peak()),
+                        };
+                        let cap = a.on_overload(u32::try_from(keep).unwrap_or(u32::MAX));
                         width = a.width() as usize;
                         if let Some(host) = &ctx.host {
                             ctx.client.limit_host(host, cap);
@@ -1153,6 +1241,7 @@ async fn pump(
             _ = halted(halt) => return Ok(()),
             body = request => body.map_err(Failure::Net)?,
         };
+        let _accepted = target.accepted();
         let before = writer.accepted();
         loop {
             let chunk = tokio::select! {

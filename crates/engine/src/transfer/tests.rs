@@ -557,16 +557,19 @@ mod auto {
     }
 
     #[test]
-    fn overload_halves_and_caps() {
-        let mut a = AutoConnections::new(3, 16);
+    fn overload_keeps_the_connections_still_alive() {
+        let mut a = AutoConnections::new(8, 16);
         a.on_rate(100.0);
-        assert_eq!(a.width(), 6);
-        assert_eq!(a.on_overload(), 5, "plafond : valeur atteinte moins une");
-        assert_eq!(a.width(), 3);
+        assert_eq!(a.width(), 16);
+        // Salve de refus : 15, puis 14… encore actives, jusqu'aux 8 que le serveur garde.
+        for alive in (8..=15).rev() {
+            assert_eq!(a.on_overload(alive), alive);
+        }
+        assert_eq!(a.width(), 8, "ce que le serveur accepte, pas 1");
         assert!(a.is_frozen());
-        assert_eq!(a.on_overload(), 2);
-        assert_eq!(a.width(), 1);
-        assert_eq!(a.on_overload(), 1, "jamais moins d'une connexion");
+        // Jamais au-dessus de la cible déjà retenue, jamais moins d'une connexion.
+        assert_eq!(a.on_overload(12), 8);
+        assert_eq!(a.on_overload(0), 1);
         assert_eq!(a.width(), 1);
     }
 
@@ -635,6 +638,26 @@ mod auto {
             client.host_cap("127.0.0.1"),
             Some(3),
             "4 atteintes, moins une"
+        );
+    }
+
+    /// Serveur qui plafonne les connexions par client (6 ici) : la montée automatique
+    /// (4, 8, 16) se heurte à une salve de refus. Le moteur garde les connexions que le
+    /// serveur accepte, au lieu de diviser par deux à chaque refus de la salve (16, 8, 4,
+    /// 2, 1 : la fin du téléchargement sur une seule connexion, constaté le 2026-11-07).
+    #[tokio::test]
+    async fn a_burst_of_refusals_keeps_the_connections_the_server_accepts() {
+        let len = 8 * 1024 * 1024;
+        let (site, server) = paced_site(len);
+        site.lock().unwrap().max_concurrent = Some(6);
+        let mut case = new_case(&server.url("/plafond.bin"));
+        let client = client();
+        let outcome = run_auto(&mut case, &client).await;
+        assert_completed(&case, &outcome, "plafond.bin", &content(len as usize));
+        let cap = client.host_cap("127.0.0.1").expect("refus constatés");
+        assert!(
+            (5..=6).contains(&cap),
+            "plafond retenu : {cap} connexions, le serveur en accepte 6"
         );
     }
 

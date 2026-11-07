@@ -795,7 +795,7 @@ Quand l'utilisateur ne fixe pas `maxConnections`, le moteur ajuste le nombre de 
 - Départ à 4 connexions.
 - Toutes les 2 secondes, si le débit total a progressé d'au moins 10 % depuis la dernière augmentation, il double le nombre de connexions, jusqu'à 16 (plafond automatique ; 32 au maximum en réglage manuel). Depuis 4, le plafond est atteint en deux fenêtres.
 - Si le gain est inférieur, il cesse d'augmenter.
-- Sur une réponse 429 ou 503, ou une connexion refusée, il divise le nombre de connexions par deux et mémorise pour cet hôte, pendant la session, un plafond égal à la valeur atteinte moins une.
+- Sur une réponse 429 ou 503, ou une connexion refusée, il revient aux connexions que le serveur accepte, cesse d'augmenter, et mémorise ce nombre comme plafond pour cet hôte, pendant la session (règle du 2026-11-07, détaillée plus bas ; auparavant, il divisait par deux à chaque refus).
 
 Cette boucle est volontairement proche du démarrage de TCP (le nombre double à chaque fenêtre tant que le débit suit) : prudente quand le serveur résiste, rapide quand il répond. Une première version ajoutait une seule connexion par fenêtre ; elle laissait le mode automatique loin derrière sur les téléchargements courts face à un serveur qui bride chaque connexion (`docs/MESURES.md`).
 
@@ -803,7 +803,13 @@ Précisions de mise en œuvre :
 - La première mesure double toujours le nombre de connexions, car il n'y a pas encore de débit de référence. Une fenêtre sans aucun octet reçu ne permet aucune conclusion : elle ne change rien.
 - Chaque connexion ajoutée prend la moitié du plus gros segment en cours (section 7.2).
 - Quand une connexion reçoit un 429 ou un 503, ou voit sa connexion refusée, alors que d'autres connexions tournent encore, la tâche n'échoue pas. Le segment de cette connexion attend son tour à partir de ses octets enregistrés, et les autres connexions continuent.
-- Si c'est la dernière connexion de la tâche, l'échec suit la section 7.8 (nouvelle tentative, `Retry-After`).
+- Refus du serveur (depuis le 2026-11-07) :
+  - Une salve de refus (montée de 8 à 16 face à un serveur qui en accepte 8) ramène aux connexions encore actives, jamais sous le plus grand nombre que le serveur a accepté en même temps pendant l'exécution. Avant cette règle, chaque refus de la salve divisait par deux : 16, 8, 4, 2 puis 1 connexion, et la fin du téléchargement se faisait sur une seule (constaté le 2026-11-07).
+  - Un serveur compte encore un moment une connexion qui vient de se fermer : la connexion qui la remplace peut être refusée. Ce refus ne fait pas non plus descendre sous ce nombre.
+  - Après un refus, aucune connexion ne s'ouvre pendant 1 s, ou pendant le délai de `Retry-After` (au plus 30 s). Les refus qui arrivent pendant cette pause sont du même épisode.
+  - Si trois épisodes de refus se suivent sans qu'aucune connexion ne finisse son segment entre eux, le serveur a baissé sa limite : le moteur descend aux connexions encore actives.
+  - Un refus quand aucune autre connexion ne tourne est traité de même (pause, puis nouvel essai), jusqu'au troisième épisode.
+- Au-delà, sur la dernière connexion de la tâche, l'échec suit la section 7.8 (nouvelle tentative, `Retry-After`).
 - Le plafond par hôte vit en mémoire, pour la durée du processus du moteur.
 - Un nombre de connexions fixé par l'utilisateur (`maxConnections`) n'est jamais ajusté.
 
