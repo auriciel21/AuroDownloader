@@ -16,10 +16,12 @@ use crate::store::tasks::{QueueRow, TaskRow};
 
 pub mod local;
 mod methods;
+mod scope;
 mod session;
 #[cfg(test)]
 mod tests;
 
+pub use scope::Scope;
 pub use session::serve;
 
 /// Versions du protocole que ce moteur parle, de la plus ancienne à la plus récente.
@@ -67,6 +69,11 @@ impl RpcError {
 
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(-32603, "INTERNAL_ERROR", message)
+    }
+
+    /// Méthode ou portée hors de celle de la connexion (SPEC §6.7, §6.9).
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(-32001, "UNAUTHORIZED", message)
     }
 
     pub fn capability_missing(message: impl Into<String>) -> Self {

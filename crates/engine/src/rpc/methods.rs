@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
+use super::scope::{self, Scope};
 use super::session::{Ctx, Topics};
 use super::{
     PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
@@ -17,6 +18,9 @@ use crate::transfer::MAX_CONNECTIONS;
 
 /// Intervalle par défaut des notifications `task.progress` (SPEC §6.5).
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Longueur maximale d'une clé d'idempotence, en octets.
+const MAX_IDEMPOTENCY_KEY: usize = 256;
 
 /// Paramètres nommés d'un appel : toujours un objet (SPEC §6.1).
 struct Params(Map<String, Value>);
@@ -138,6 +142,15 @@ impl Params {
 
 /// Appelle `method` ; les méthodes inconnues répondent « méthode inconnue ».
 pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<Value, RpcError> {
+    if let Some(need) = scope::required(method, &params)
+        && !ctx.scope.allows(need)
+    {
+        return Err(RpcError::unauthorized(format!(
+            "{method} demande la portée {}, cette connexion a la portée {}",
+            need.as_str(),
+            ctx.scope.as_str()
+        )));
+    }
     let p = Params::new(params)?;
     match method {
         "engine.hello" => hello(ctx, &p),
@@ -296,11 +309,29 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
             format!("versions du protocole de ce moteur : {}", ours.join(", ")),
         ));
     };
+    // Portée demandée : seulement plus étroite que celle de la connexion (SPEC §6.9).
+    if let Some(text) = p.str("scope")? {
+        let wanted = Scope::parse(&text).ok_or_else(|| {
+            RpcError::invalid_params("scope : read, add, control ou admin attendu")
+        })?;
+        if !ctx.scope.allows(wanted) {
+            return Err(RpcError::unauthorized(format!(
+                "portée {text} refusée : cette connexion a la portée {}",
+                ctx.scope.as_str()
+            )));
+        }
+        ctx.scope = wanted;
+        // Plus le droit de lire : l'abonnement en cours s'arrête.
+        if !wanted.allows(Scope::Read) {
+            ctx.stop_events();
+        }
+    }
     Ok(json!({
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
         "capabilities": [],
         "rev": ctx.engine.rev(),
+        "scope": ctx.scope.as_str(),
     }))
 }
 
@@ -311,7 +342,16 @@ async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
 }
 
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&["fileName", "checksum", "headers", "idempotencyKey"])?;
+    p.refuse(&["fileName", "checksum", "headers"])?;
+    let idempotency_key = p.str("idempotencyKey")?;
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|k| k.is_empty() || k.len() > MAX_IDEMPOTENCY_KEY)
+    {
+        return Err(RpcError::invalid_params(format!(
+            "idempotencyKey : de 1 à {MAX_IDEMPOTENCY_KEY} octets"
+        )));
+    }
     let sources = p
         .get("sources")
         .and_then(Value::as_array)
@@ -352,6 +392,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             max_connections,
             speed_limit_bps: p.limit("speedLimitBps")?.flatten(),
             start_paused: p.bool("startPaused")?,
+            idempotency_key,
         })
         .await?;
     Ok(json!({"taskId": task_id}))

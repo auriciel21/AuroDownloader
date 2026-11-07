@@ -301,6 +301,9 @@ pub struct AddTask {
     pub speed_limit_bps: Option<u64>,
     /// Ajoutée en pause (cause `user`), sans partir.
     pub start_paused: bool,
+    /// Clé d'idempotence (SPEC §6.1) : un ajout répété avec la même clé rend la tâche déjà
+    /// créée, tant qu'elle n'est pas retirée.
+    pub idempotency_key: Option<String>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -1159,6 +1162,12 @@ impl Scheduler {
     }
 
     fn add(&mut self, task: AddTask) -> Result<String, EngineError> {
+        // Déjà ajoutée avec cette clé : la même tâche, rien de nouveau à annoncer.
+        if let Some(key) = &task.idempotency_key
+            && let Some(existing) = tasks::task_by_idempotency_key(&self.conn, key)?
+        {
+            return Ok(existing);
+        }
         net::check_url(&task.url)?;
         Self::check_speed_limit(task.speed_limit_bps)?;
         let queue_id = task.queue_id.unwrap_or_else(|| self.default_queue.clone());
@@ -1175,6 +1184,7 @@ impl Scheduler {
                 dest_dir: &task.dest_dir,
                 max_connections: task.max_connections,
                 speed_limit_bps: task.speed_limit_bps,
+                idempotency_key: task.idempotency_key.as_deref(),
             },
         )?;
         let id = task_id.clone();

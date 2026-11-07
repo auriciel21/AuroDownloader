@@ -59,6 +59,7 @@ fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
             dest_dir: dir.path().to_str().unwrap(),
             max_connections: None,
             speed_limit_bps: None,
+            idempotency_key: None,
         },
     )
     .unwrap();
@@ -902,6 +903,7 @@ mod names {
                 dest_dir: dir.to_str().unwrap(),
                 max_connections: None,
                 speed_limit_bps: None,
+                idempotency_key: None,
             },
         )
         .unwrap();

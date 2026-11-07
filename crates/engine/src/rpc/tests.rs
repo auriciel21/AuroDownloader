@@ -125,6 +125,141 @@ impl TestClient {
     }
 }
 
+/// Portées (SPEC §6.9) : une connexion qui se limite à `add` ne peut plus qu'ajouter ;
+/// une portée ne s'élargit jamais ; `control` n'éteint ni ne planifie.
+#[tokio::test]
+async fn a_connection_keeps_to_the_scope_it_declares() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(1024);
+    let engine = engine(dir.path());
+
+    // Par défaut, sur le canal local : tous les droits.
+    let mut admin = TestClient::connect(&engine);
+    assert_eq!(
+        admin.result("engine.hello", hello()).await["scope"],
+        "admin"
+    );
+
+    let mut relay = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("add");
+    assert_eq!(relay.result("engine.hello", params).await["scope"], "add");
+    let added = relay
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/r.bin")}], "destDir": dir_text(dir.path()), "startPaused": true}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    for (method, params) in [
+        ("task.list", json!({})),
+        ("task.get", json!({"taskId": id})),
+        ("sync.snapshot", json!({})),
+        ("events.subscribe", json!({"topics": ["tasks"]})),
+        ("task.remove", json!({"taskIds": [id]})),
+        ("task.resume", json!({"taskIds": [id]})),
+        ("limits.set", json!({"downloadBps": 1000})),
+        ("engine.shutdown", json!({})),
+    ] {
+        assert_eq!(
+            relay.error_code(method, params).await,
+            "UNAUTHORIZED",
+            "{method}"
+        );
+    }
+    // Ni plus large, ni de côté.
+    for scope in ["admin", "control", "read"] {
+        let mut params = hello();
+        params["scope"] = json!(scope);
+        assert_eq!(
+            relay.error_code("engine.hello", params).await,
+            "UNAUTHORIZED",
+            "{scope}"
+        );
+    }
+    let mut params = hello();
+    params["scope"] = json!("root");
+    assert_eq!(
+        relay.error_code("engine.hello", params).await,
+        "INVALID_PARAMS"
+    );
+
+    // `control` : agir sur les tâches, mais ni planifier ni arrêter le moteur.
+    let mut app = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("control");
+    app.result("engine.hello", params).await;
+    app.result("task.resume", json!({"taskIds": [id]})).await;
+    app.result("engine.cancelEndAction", json!({})).await;
+    let rules = json!({"windows": [{"days": [1], "start": "01:00", "end": "02:00"}]});
+    let queue = app.result("queue.list", json!({})).await["items"][0]["queueId"].clone();
+    for (method, params) in [
+        ("schedule.set", json!({"name": "X", "rules": rules})),
+        (
+            "queue.update",
+            json!({"queueId": queue, "scheduleId": null}),
+        ),
+        ("engine.shutdown", json!({})),
+    ] {
+        assert_eq!(
+            app.error_code(method, params).await,
+            "UNAUTHORIZED",
+            "{method}"
+        );
+    }
+
+    // L'administrateur, lui, voit la tâche ajoutée par le relais.
+    let listed = admin.result("task.list", json!({})).await;
+    assert_eq!(listed["items"][0]["taskId"], id.as_str());
+    engine.shutdown().await;
+}
+
+/// `idempotencyKey` (SPEC §6.1) : un ajout rejoué rend la même tâche, sans doublon ni
+/// annonce ; une fois la tâche retirée, la clé resservirait.
+#[tokio::test]
+async fn a_replayed_add_returns_the_same_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let params = |key: &str| {
+        json!({
+            "sources": [{"url": server.url("/i.bin")}],
+            "destDir": dir_text(dir.path()),
+            "startPaused": true,
+            "idempotencyKey": key,
+        })
+    };
+    let first = c.result("task.add", params("clé-1")).await["taskId"].clone();
+    let again = c.result("task.add", params("clé-1")).await["taskId"].clone();
+    assert_eq!(first, again);
+    let other = c.result("task.add", params("clé-2")).await["taskId"].clone();
+    assert_ne!(first, other);
+    let listed = c.result("task.list", json!({})).await;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 2, "{listed}");
+    // Deux ajouts annoncés, pas trois.
+    let added = c.notification("task.added", |_| true).await;
+    assert_eq!(added["task"]["taskId"], first);
+    let added = c.notification("task.added", |_| true).await;
+    assert_eq!(added["task"]["taskId"], other);
+
+    // Retirée : la clé est libre.
+    c.result("task.cancel", json!({"taskIds": [first]})).await;
+    c.result("task.remove", json!({"taskIds": [first]})).await;
+    let fresh = c.result("task.add", params("clé-1")).await["taskId"].clone();
+    assert_ne!(fresh, first);
+
+    for key in [String::new(), "x".repeat(257)] {
+        assert_eq!(
+            c.error_code("task.add", params(&key)).await,
+            "INVALID_PARAMS"
+        );
+    }
+    engine.shutdown().await;
+}
+
 fn hello() -> Value {
     json!({"client": {"name": "test", "version": "0"}, "protocol": {"min": "1.0", "max": "1.2"}})
 }

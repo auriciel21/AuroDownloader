@@ -214,7 +214,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 
 1. L'utilisateur lance un téléchargement ; l'extension le détecte, l'annule dans le navigateur et relève l'adresse, les en-têtes utiles et les cookies nécessaires.
 2. Elle transmet le tout au programme relais, installé avec l'application et déclaré au navigateur.
-3. Le relais appelle `task.add` sur le socket local avec un jeton de portée `add` seulement (section 6.9).
+3. Le relais appelle `task.add` sur le point d'accès local, après s'être limité à la portée `add` à l'ouverture de session (section 6.9 ; décision du 2026-11-07 : pas de jeton sur le canal local, que le système réserve déjà à l'utilisateur).
 4. Le moteur répond ; l'extension affiche la confirmation. Si le moteur n'est pas lancé, le relais le démarre.
 
 Les cookies sont rangés dans le coffre du système, jamais dans la base (section 5.1).
@@ -325,6 +325,11 @@ CREATE TABLE tasks (
   finished_at     INTEGER,
   updated_at      INTEGER NOT NULL
 );
+-- Migration 0002 (2026-11-07) : clé d'idempotence de task.add (section 6.1), unique
+-- parmi les tâches présentes ; retirer la tâche la libère.
+ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;
+CREATE UNIQUE INDEX tasks_idempotency_key ON tasks (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE sources (
   id             TEXT PRIMARY KEY,
@@ -462,7 +467,7 @@ Le moteur parle JSON-RPC 2.0, quel que soit le client ou le transport : applicat
 - **Noms de méthodes** : `espace.verbe`, en minuscules et casse mixte (`task.add`, `queue.update`).
 - **Dates et tailles** : millisecondes Unix en UTC, octets, octets par seconde, tous en entiers.
 - **Évolution** : ajouter un champ optionnel ou une méthode ne casse rien ; supprimer ou renommer exige une nouvelle version majeure du protocole.
-- **Idempotence** : `task.add` accepte une `idempotencyKey` ; rejouer le même appel ne crée pas de doublon (utile pour l'extension qui réessaie).
+- **Idempotence** : `task.add` accepte une `idempotencyKey` ; rejouer le même appel ne crée pas de doublon (utile pour l'extension qui réessaie). Mise en œuvre (2026-11-07) : une clé de 1 à 256 octets ; un ajout dont la clé est déjà celle d'une tâche présente rend cette tâche, sans rien changer ni annoncer, même si ses autres paramètres diffèrent ; la clé est libérée quand la tâche est retirée.
 
 ### 6.2 Transports et authentification
 
@@ -473,7 +478,7 @@ Le moteur parle JSON-RPC 2.0, quel que soit le client ou le transport : applicat
 | WebSocket sur `127.0.0.1` | Interface web, outils de développement | Jeton porteur dans l'en-tête `Authorization` ou dans le premier message |
 | WebSocket sur le réseau, en TLS | Moteur distant (NAS, serveur) | Jeton porteur, TLS obligatoire dès que l'écoute n'est pas locale |
 | HTTP `POST /rpc` | Scripts simples sans notifications | Jeton porteur |
-| Messagerie native du navigateur | Extension, via un petit programme relais | Jeton à portée limitée (voir 6.9) |
+| Messagerie native du navigateur | Extension, via un petit programme relais | Le relais passe par le canal local et s'y limite à la portée `add` (voir 6.9) |
 
 Deux protections s'ajoutent pour toute écoute TCP : le moteur vérifie les en-têtes `Host` et `Origin` et refuse ceux qu'il ne reconnaît pas, ce qui bloque les attaques depuis une page web quelconque visant le port local ; et il n'accepte jamais de connexion sans jeton, même depuis `127.0.0.1`.
 
@@ -500,11 +505,13 @@ Le premier appel d'un client est `engine.hello`. Il annonce la plage de versions
 
 Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et ferme la connexion.
 
+Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client garde pour cette connexion (section 6.9). Elle ne peut que se restreindre ; une portée plus large, ou de côté, est refusée par `UNAUTHORIZED`. La réponse donne la portée de la connexion dans `scope`.
+
 ### 6.4 Méthodes
 
 | Méthode | Paramètres principaux | Résultat |
 | --- | --- | --- |
-| `engine.hello` | `client`, `protocol` | Version retenue, capacités, `rev` |
+| `engine.hello` | `client`, `protocol`, `scope` | Version retenue, capacités, `rev`, `scope` |
 | `engine.stats` | aucun | Débit global, tâches actives, espace disque |
 | `engine.shutdown` | `graceful` | Arrêt après sauvegarde de l'état |
 | `task.add` | `sources[]`, `queueId`, `destDir`, `fileName`, `maxConnections`, `speedLimitBps`, `checksum`, `headers`, `startPaused`, `idempotencyKey` | `taskId` |
@@ -553,7 +560,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
 État de la mise en œuvre (phase 2) :
 - **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
-  - dans `task.add` : `fileName`, `checksum`, `headers`, `idempotencyKey` et plusieurs sources ;
+  - dans `task.add` : `fileName`, `checksum`, `headers` et plusieurs sources ;
   - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
   - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
@@ -665,6 +672,18 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `add` | `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` | L'extension navigateur, un partage Android |
 | `control` | Tout ce que fait `add`, plus `task.*` et `queue.*` | L'application de bureau, la CLI, l'interface web |
 | `admin` | Tout, dont `settings.set`, `engine.shutdown` et la gestion des jetons | Le propriétaire de la machine |
+
+Mise en œuvre (décision du 2026-11-07, phase 3) :
+- **Canal local** : une connexion a d'emblée la portée `admin`, le système réservant le canal à l'utilisateur (section 6.2). Un client peut se restreindre à l'ouverture (`engine.hello`, paramètre `scope`), jamais s'élargir. Le relais de l'extension se limite ainsi à `add`. Aucun jeton : un programme qui pourrait lire celui du relais pourrait aussi bien se connecter lui-même au canal.
+- **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6).
+- **Portées exigées** :
+  - aucune : `engine.hello` ;
+  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `schedule.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
+  - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` ;
+  - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction` ;
+  - `admin` : `engine.shutdown`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine).
+- `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
+- Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 
 ### 6.10 Garanties de livraison
 
@@ -856,7 +875,7 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
   - Une seule action de fin à la fois. `sync.snapshot` porte celle qui est annoncée dans `endAction`.
   - Exécution : sous Windows, `SetSuspendState` pour la veille, `%SystemRoot%\System32\shutdown.exe /s /t 0` pour l'extinction ; sous Linux, `systemctl suspend` ou `systemctl poweroff`. Ailleurs (Android), l'action est refusée.
   - Seul `aurod` branche ces actions. La bibliothèque du moteur, ses tests et ses bancs n'en ont aucune, et refusent. `aurod --simulate-power` écrit l'action dans son journal au lieu de l'exécuter, pour les essais.
-  - Portée : quand les jetons existeront (section 6.9), choisir une action de fin demandera la portée `admin`.
+  - Portée (section 6.9) : créer, modifier, supprimer ou attacher une planification demande la portée `admin` ; annuler une action de fin, `control`.
 
 ## 8. Sécurité, vie privée et cadre légal
 

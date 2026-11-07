@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use super::{
-    MAX_MESSAGE, RpcError, end_action_json, methods, notification, queue_json, response,
+    MAX_MESSAGE, RpcError, Scope, end_action_json, methods, notification, queue_json, response,
     schedule_json, task_json,
 };
 use crate::scheduler::{Engine, Event};
@@ -42,6 +42,8 @@ pub(super) struct Ctx {
     pub close_after: bool,
     /// Arrêter le moteur après la réponse (`engine.shutdown`).
     pub shutdown_after: bool,
+    /// Ce que la connexion peut demander (SPEC §6.9).
+    pub scope: Scope,
 }
 
 impl Ctx {
@@ -81,6 +83,9 @@ where
         events: None,
         close_after: false,
         shutdown_after: false,
+        // Canal local, réservé à l'utilisateur par le système : tous les droits, sauf
+        // ceux que le client abandonne à l'ouverture.
+        scope: Scope::Admin,
     };
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();

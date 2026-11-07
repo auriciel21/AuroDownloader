@@ -304,6 +304,7 @@ async fn higher_priority_starts_first() {
             dest_dir: dir.path().to_str().unwrap(),
             max_connections: None,
             speed_limit_bps: None,
+            idempotency_key: None,
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
     }
@@ -470,6 +471,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         dest_dir: dir.path().to_str().unwrap(),
         max_connections: None,
         speed_limit_bps: None,
+        idempotency_key: None,
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
     change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();

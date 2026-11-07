@@ -205,6 +205,8 @@ pub struct NewTask<'a> {
     pub max_connections: Option<u32>,
     /// `None` : pas de limite propre à la tâche.
     pub speed_limit_bps: Option<u64>,
+    /// Clé d'idempotence de `task.add` ; unique parmi les tâches présentes.
+    pub idempotency_key: Option<&'a str>,
 }
 
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
@@ -217,10 +219,11 @@ pub fn create_task(
     let limit = limit_to_sql(new.speed_limit_bps)?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
-                            max_connections, speed_limit_bps, created_at, updated_at)
+                            max_connections, speed_limit_bps, idempotency_key, created_at,
+                            updated_at)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?7, ?6, ?6)",
+                 ?3, ?4, ?5, ?7, ?8, ?6, ?6)",
         params![
             task_id,
             new.queue_id,
@@ -228,7 +231,8 @@ pub fn create_task(
             new.dest_dir,
             new.max_connections,
             now,
-            limit
+            limit,
+            new.idempotency_key
         ],
     )?;
     tx.execute(
@@ -670,6 +674,17 @@ pub fn remove_task(conn: &mut Connection, task_id: &str) -> Result<(), StoreErro
     Ok(())
 }
 
+/// Tâche créée avec cette clé d'idempotence, si elle existe encore.
+pub fn task_by_idempotency_key(conn: &Connection, key: &str) -> Result<Option<String>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM tasks WHERE idempotency_key = ?1",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// La file `queue_id` existe-t-elle ?
 pub fn queue_exists(conn: &Connection, queue_id: &str) -> Result<bool, StoreError> {
     Ok(conn
@@ -894,6 +909,7 @@ mod tests {
                 dest_dir: "/dl",
                 max_connections: None,
                 speed_limit_bps: None,
+                idempotency_key: None,
             },
         )
         .unwrap()

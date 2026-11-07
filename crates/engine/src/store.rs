@@ -33,11 +33,18 @@ pub struct Migration {
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Toutes les migrations connues de ce moteur, dans l'ordre.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "idempotency_key",
+        sql: include_str!("../migrations/0002_idempotency_key.sql"),
+    },
+];
 
 /// Erreurs du module de stockage.
 #[derive(Debug, thiserror::Error)]
@@ -298,21 +305,55 @@ mod tests {
         )
     }
 
+    /// Version de la dernière migration connue.
+    fn latest() -> i64 {
+        MIGRATIONS.last().unwrap().version
+    }
+
     #[test]
-    fn initial_migration_creates_the_14_tables_of_the_spec() {
+    fn migrations_create_the_14_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
-        assert_eq!(current_version(&conn).unwrap(), 1);
+        assert_eq!(current_version(&conn).unwrap(), latest());
+        // Numérotées sans trou à partir de 1 (SPEC §5.6, règle 5).
+        for (i, m) in MIGRATIONS.iter().enumerate() {
+            assert_eq!(m.version, i as i64 + 1, "{}", m.name);
+        }
     }
 
     #[test]
     fn migrate_twice_changes_nothing() {
         let mut conn = open_in_memory().unwrap();
-        assert_eq!(migrate(&mut conn, MIGRATIONS).unwrap(), 1);
+        assert_eq!(migrate(&mut conn, MIGRATIONS).unwrap(), latest());
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 1);
+        assert_eq!(rows, latest());
+    }
+
+    /// Une base de la version 1 qui a déjà des tâches passe à la clé d'idempotence (0002) :
+    /// ses tâches restent, sans clé.
+    #[test]
+    fn a_version_1_database_gains_the_idempotency_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auro.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            migrate(&mut conn, &MIGRATIONS[..1]).unwrap();
+            let queue = tasks::ensure_queue(&conn, "default").unwrap();
+            insert_task(&conn, "t1", &queue, "queued").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), latest());
+        let key: Option<String> = conn
+            .query_row(
+                "SELECT idempotency_key FROM tasks WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, None);
+        assert!(dir.path().join("auro.db.bak-v1").exists());
     }
 
     #[test]
@@ -329,7 +370,7 @@ mod tests {
         }
         match open(&path) {
             Err(StoreError::DatabaseTooNew { found, supported }) => {
-                assert_eq!((found, supported), (99, 1));
+                assert_eq!((found, supported), (99, latest()));
             }
             other => panic!("attendu DatabaseTooNew, obtenu {other:?}"),
         }
