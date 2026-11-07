@@ -73,6 +73,11 @@ enum Command {
         /// Ajouter en pause
         #[arg(long)]
         paused: bool,
+        /// En-tête HTTP « Nom: valeur », à répéter (Referer, Cookie…). Cookie et
+        /// Authorization vont au coffre du système, mais restent visibles dans
+        /// l'historique du terminal
+        #[arg(short = 'H', long = "header", value_name = "EN-TÊTE", value_parser = display::parse_header)]
+        headers: Vec<(String, String)>,
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
@@ -90,6 +95,9 @@ enum Command {
         /// Limite de débit de la tâche (500K, 2M…)
         #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
         limit: Option<Limit>,
+        /// En-tête HTTP « Nom: valeur », à répéter (voir `add`)
+        #[arg(short = 'H', long = "header", value_name = "EN-TÊTE", value_parser = display::parse_header)]
+        headers: Vec<(String, String)>,
     },
     /// Liste les tâches
     List {
@@ -367,6 +375,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             connections,
             queue,
             limit,
+            headers,
         } => {
             let opts = AddOptions {
                 dir: &dir,
@@ -374,6 +383,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 queue: queue.as_deref(),
                 limit: limit.and_then(|l| l.0),
                 paused: false,
+                headers: &headers,
             };
             remote::get(target, &url, &opts).await
         }
@@ -388,6 +398,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     queue,
                     limit,
                     paused,
+                    headers,
                 } => {
                     let opts = AddOptions {
                         dir: &dir,
@@ -395,6 +406,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         queue: queue.as_deref(),
                         limit: limit.and_then(|l| l.0),
                         paused,
+                        headers: &headers,
                     };
                     remote::add(&mut rpc, &urls, &opts).await
                 }

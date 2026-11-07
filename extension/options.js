@@ -1,5 +1,6 @@
-// Réglages de l'extension : capture, taille minimale, sites exclus, navigation privée ;
-// état de la liaison avec AuroDownloader (relais de messagerie native).
+// Réglages de l'extension : capture, taille minimale, sites exclus, navigation privée,
+// cookies de la page ; état de la liaison avec AuroDownloader (relais de messagerie
+// native) ; accès aux sites, pour les cookies.
 const { DEFAULTS, settings } = globalThis.AuroDecide;
 const HOST = "org.aurodownloader.relay";
 const t = (key, ...subs) => chrome.i18n.getMessage(key, subs) || key;
@@ -15,6 +16,7 @@ async function load() {
   $("minSizeMiB").value = String(s.minSizeMiB);
   $("excludedSites").value = s.excludedSites.join("\n");
   $("captureIncognito").checked = s.captureIncognito;
+  $("sendCookies").checked = s.sendCookies;
 }
 
 let savedTimer = 0;
@@ -25,6 +27,7 @@ async function save() {
     minSizeMiB: Number.isFinite(value) && value >= 0 ? value : DEFAULTS.minSizeMiB,
     excludedSites: $("excludedSites").value.split(/[\s,]+/).filter(Boolean),
     captureIncognito: $("captureIncognito").checked,
+    sendCookies: $("sendCookies").checked,
   });
   $("saved").textContent = t("saved");
   clearTimeout(savedTimer);
@@ -56,3 +59,16 @@ $("check").addEventListener("click", check);
 load();
 showLast();
 check();
+
+/// Accès aux cookies des sites : accordé à l'installation sous Chrome et Edge ; Firefox
+/// peut le laisser à accorder ici.
+const ALL_SITES = { origins: ["<all_urls>"] };
+async function showAccess() {
+  const granted = await chrome.permissions.contains(ALL_SITES).catch(() => true);
+  $("access").hidden = granted;
+}
+$("grant").addEventListener("click", async () => {
+  await chrome.permissions.request(ALL_SITES).catch(() => false);
+  showAccess();
+});
+showAccess();

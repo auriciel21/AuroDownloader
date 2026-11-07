@@ -5,7 +5,7 @@
 // accepté : si le relais manque ou refuse, le navigateur continue seul.
 if (typeof importScripts === "function" && !globalThis.AuroDecide) importScripts("decide.js");
 
-const { decide, requestId } = globalThis.AuroDecide;
+const { decide, requestId, pageHeaders, cookieStore } = globalThis.AuroDecide;
 const HOST = "org.aurodownloader.relay";
 const t = (key, ...subs) => chrome.i18n.getMessage(key, subs) || key;
 
@@ -38,9 +38,34 @@ function remember(url, reply) {
   chrome.storage.local.set({ last }).catch(() => {});
 }
 
-/// Confie une adresse à AuroDownloader ; vrai si le moteur l'a acceptée.
-async function hand(url, key) {
-  const reply = await relay({ type: "add", url, requestId: key });
+/// Cookies que le navigateur enverrait à `url`, dans le magasin `storeId` ; aucun si
+/// l'accès aux sites n'est pas accordé (Firefox le demande à part).
+async function cookiesFor(url, storeId) {
+  if (!chrome.cookies) return [];
+  const query = storeId ? { url, storeId } : { url };
+  try {
+    return await chrome.cookies.getAll(query);
+  } catch {
+    // Firefox, isolation par site activée : le domaine de premier niveau est exigé.
+    try {
+      return await chrome.cookies.getAll({ ...query, firstPartyDomain: null });
+    } catch {
+      return [];
+    }
+  }
+}
+
+/// Confie une adresse à AuroDownloader, avec les en-têtes de sa page ; vrai si le moteur
+/// l'a acceptée.
+async function hand(url, key, { page, storeId } = {}) {
+  const stored = await chrome.storage.sync.get(null).catch(() => ({}));
+  const headers = pageHeaders(stored, {
+    url,
+    page,
+    userAgent: navigator.userAgent,
+    cookies: await cookiesFor(url, storeId),
+  });
+  const reply = await relay({ type: "add", url, requestId: key, headers });
   remember(url, reply);
   if (reply?.ok) flash("✓", "#2b6cb0");
   else flash("!", "#b45309");
@@ -51,7 +76,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const stored = await chrome.storage.sync.get(null).catch(() => ({}));
   const verdict = decide(item, stored, { altClickAt, selfId: chrome.runtime.id });
   if (!verdict.capture) return;
-  if (await hand(item.finalUrl || item.url, requestId(item))) {
+  const page = item.referrer || undefined;
+  if (await hand(item.finalUrl || item.url, requestId(item), { page, storeId: cookieStore(item) })) {
     await chrome.downloads.cancel(item.id).catch(() => {});
     await chrome.downloads.erase({ id: item.id }).catch(() => {});
   }
@@ -68,10 +94,13 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "auro-download") return;
   const url = info.linkUrl || info.srcUrl;
-  if (url && /^https?:/i.test(url)) hand(url, `menu-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  if (!url || !/^https?:/i.test(url)) return;
+  const key = `menu-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const storeId = tab?.cookieStoreId ?? (tab?.incognito ? "1" : undefined);
+  hand(url, key, { page: info.frameUrl || info.pageUrl, storeId });
 });
 
 // L'icône ouvre les réglages.

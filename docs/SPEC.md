@@ -222,7 +222,7 @@ Les cookies sont rangés dans le coffre du système, jamais dans la base (sectio
 Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ensemble ; capture de tout ce qui dépasse une taille) :
 - **Relais** : `auro-relay` (paquet `auro-cli`), hôte de messagerie native `org.aurodownloader.relay`, installé à côté d'`aurod`. Messages JSON préfixés de leur longueur sur 4 octets (ordre de la machine), au plus 1 Mio. Il se connecte au point d'accès local par défaut avec la portée `add` (section 6.9), et démarre `aurod` s'il ne répond pas. Sous Windows, ce moteur est lancé hors du groupe de processus (job) dans lequel le navigateur range son hôte, pour lui survivre ; si le job l'interdit, il part dedans.
   - `{"type": "ping"}` : `{"ok": true, "version"}`, sans le moteur.
-  - `{"type": "add", "url", "requestId", "paused"}` : `task.add` sans `destDir` (dossier des téléchargements du moteur), `requestId` en `idempotencyKey`. Réponse `{"ok": true, "taskId"}`.
+  - `{"type": "add", "url", "requestId", "paused", "headers"}` : `task.add` sans `destDir` (dossier des téléchargements du moteur), `requestId` en `idempotencyKey`, `headers` (objet, facultatif) transmis tels quels. Réponse `{"ok": true, "taskId"}`.
   - Un champ `id` est renvoyé tel quel. Refus : `{"ok": false, "code", "message"}`, `code` étant celui du moteur, ou `ENGINE_UNAVAILABLE`, `BAD_MESSAGE`, `UNKNOWN_TYPE`.
 - **Déclaration aux navigateurs** :
   - Windows (installateur) : clés `HKCU\Software\Google\Chrome\NativeMessagingHosts\org.aurodownloader.relay`, `…\Microsoft\Edge\…` et `…\Mozilla\…`, vers `relay-chromium.json` et `relay-firefox.json` du dossier du programme ; retirées à la désinstallation si elles désignent ce dossier.
@@ -232,8 +232,14 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
   - Elle observe les téléchargements créés par le navigateur. Elle capture par défaut tout ce qui dépasse 1 Mio ; une taille inconnue est capturée. Restent au navigateur : les adresses non HTTP (`blob:`, `data:`), la navigation privée (sauf réglage), les sites exclus et leurs sous-domaines, et un téléchargement qui suit de moins de 3 s un clic avec la touche Alt.
   - Le téléchargement du navigateur n'est annulé et effacé qu'une fois l'ajout accepté par le moteur ; si le relais manque ou refuse, le navigateur le garde. Un badge sur l'icône le dit (« ✓ » ou « ! »), et les options montrent le dernier envoi.
   - Menu contextuel « Télécharger avec AuroDownloader » sur les liens, images, vidéos et sons, quels que soient les réglages.
-  - Options : capture oui ou non, taille minimale, sites exclus, navigation privée ; vérification de la liaison avec le relais.
-- **Pas encore** : cookies et en-têtes de la page (étape suivante ; un téléchargement qui demande une connexion échoue dans le moteur), détection des vidéos, publication dans les boutiques (Firefox n'installe une extension non signée que temporairement), Brave, Vivaldi et Opera. Un autre gestionnaire intégré au navigateur (IDM) peut intercepter un téléchargement avant l'extension.
+  - Cookies et en-têtes de la page (étape 5, depuis le 2026-11-07) : avec l'adresse, l'extension transmet `Referer`, `User-Agent` et `Cookie`.
+    - `Referer` : la page d'origine, comme le navigateur l'enverrait lui-même (politique `strict-origin-when-cross-origin`) : l'adresse entière vers la même origine, l'origine seule vers une autre, rien de HTTPS vers HTTP.
+    - `Cookie` : les cookies du navigateur pour l'adresse (`cookies.getAll`, chemins les plus longs d'abord), pris dans le magasin du téléchargement (conteneur Firefox, navigation privée).
+    - Permissions `cookies` et accès à tous les sites ; Firefox peut laisser ce dernier à accorder, depuis les options.
+    - Une option coupe cet envoi (« Transmettre les cookies et la page d'origine », active par défaut).
+    - Le moteur range `Cookie` dans le coffre du système (section 5.1) et l'efface quand la tâche est finie.
+  - Options : capture oui ou non, taille minimale, sites exclus, navigation privée, cookies ; vérification de la liaison avec le relais.
+- **Pas encore** : cookies partitionnés (CHIPS) et posés pendant une redirection, détection des vidéos, publication dans les boutiques (Firefox n'installe une extension non signée que temporairement), Brave, Vivaldi et Opera. Un autre gestionnaire intégré au navigateur (IDM) peut intercepter un téléchargement avant l'extension.
 
 ### 4.6 Exécution et distribution
 
@@ -262,6 +268,14 @@ Tout l'état durable tient dans une base SQLite unique, dont le moteur est le se
 - Tailles et débits : octets et octets par seconde, entiers de 64 bits.
 - Les chemins sont stockés tels que le système les fournit ; sur Android, `dest_dir` peut être une URI du sélecteur de stockage.
 - Aucun secret en base : mots de passe, jetons et cookies sensibles sont rangés dans le coffre du système (Gestionnaire d'identification sous Windows, Secret Service sous Linux, Keystore sous Android) ; la base ne garde qu'une référence.
+  - Mise en œuvre (module `secrets`, depuis le 2026-11-07) : les en-têtes `Cookie`, `Authorization` et `Proxy-Authorization` d'une tâche vont au coffre ; `task_headers.secret_ref` en garde la référence.
+  - Windows : identifiants génériques de l'utilisateur, gardés sur la machine (`CRED_PERSIST_LOCAL_MACHINE`), nommés `AuroDownloader:<espace>:<référence>:<n>` ; un secret de plus de 2 560 octets est réparti sur plusieurs.
+  - Linux : élément de la collection par défaut, reconnu par ses attributs (`application`, `namespace`, `id`). Le moteur ne déverrouille jamais un trousseau : verrouillé, c'est une erreur temporaire. Sans Secret Service à la première utilisation (serveur sans session graphique, WSL), le moteur garde les secrets en mémoire, perdus à son arrêt, et le dit dans son journal. Décision du 2026-11-07, à confirmer.
+  - Android : la mémoire, jusqu'au Keystore (phase 4).
+  - Chaque base a son espace de noms (`vault.namespace`) : un moteur d'essai ne touche pas aux secrets du moteur réel.
+  - Ordre : le secret est écrit avant sa référence, et la référence effacée avant le secret ; au démarrage, le moteur efface les secrets de son espace sans référence en base (arrêt brutal entre les deux).
+  - Fin de vie : les secrets d'une tâche sont effacés quand elle se termine (`completed`) ou quand elle est retirée. Une tâche annulée garde les siens jusqu'à son retrait.
+  - Un secret absent du coffre au départ d'une tâche (coffre en mémoire après un redémarrage) : l'en-tête n'est pas envoyé, et le serveur dira s'il en avait besoin. Un coffre qui ne répond pas : échec temporaire `SECRET_UNAVAILABLE` (section 6.8).
 
 ### 5.2 Configuration, files et planification
 
@@ -282,7 +296,8 @@ CREATE TABLE settings (
 );
 -- Clés en usage : "limits.downloadBps" (F-15) ; "downloads.dir" (depuis le 2026-11-07) :
 -- dossier des ajouts sans destDir, chemin absolu ou null (dossier « Téléchargements »
--- du système).
+-- du système) ; "vault.namespace" (depuis le 2026-11-07, interne, absent de
+-- settings.get) : espace de noms des secrets de cette base dans le coffre (section 5.1).
 
 CREATE TABLE schedules (
   id         TEXT PRIMARY KEY,
@@ -584,8 +599,15 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
   - Un `destDir` donné à `task.add` doit aussi être un dossier existant, en chemin absolu (`DEST_NOT_WRITABLE`).
   - La CLI garde le dossier courant par défaut (`-o .`), comme les outils en ligne de commande.
+- **En-têtes d'une tâche** (`headers` de `task.add`, depuis le 2026-11-07) : un objet `{nom: valeur}` de textes, envoyé avec chaque requête de la tâche (préparation et segments).
+  - Au plus 32 en-têtes, chacun d'au plus 32 Kio ; noms et valeurs valides en HTTP, sans doublon (casse ignorée).
+  - Refusés, car fixés par le moteur ou propres à une connexion : `Host`, `Range`, `If-Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `Accept-Encoding`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade` et `Expect`.
+  - Un refus répond `INVALID_PARAMS`, sans citer de valeur.
+  - `Cookie`, `Authorization` et `Proxy-Authorization` vont au coffre du système (section 5.1) ; s'il refuse, `SECRET_UNAVAILABLE`.
+  - Une redirection vers un autre hôte n'emporte pas ces trois en-têtes. Le moteur n'ajoute jamais de `Referer` de lui-même : avant le 2026-11-07, après une redirection, la bibliothèque HTTP y mettait l'adresse qui redirige, signature comprise, à l'intention de l'hôte suivant.
+  - La portée `add` suffit (relais de l'extension, section 4.5). `task.get` ne rend pas les en-têtes.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
-  - dans `task.add` : `fileName`, `checksum`, `headers` et plusieurs sources ;
+  - dans `task.add` : `fileName`, `checksum` et plusieurs sources ;
   - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
   - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
@@ -665,6 +687,7 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32020 | `URL_INVALID` | Adresse non reconnue ou schéma non pris en charge |
 | -32021 | `DEST_NOT_WRITABLE` | Dossier de destination inaccessible en écriture |
 | -32022 | `INSUFFICIENT_SPACE` | Espace disque insuffisant pour la taille annoncée |
+| -32023 | `SECRET_UNAVAILABLE` | Le coffre du système a refusé un secret de `task.add` (depuis le 2026-11-07) |
 | -32030 | `CAPABILITY_MISSING` | Fonction non disponible dans ce moteur (torrent, vidéo) |
 
 `INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
@@ -686,6 +709,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `DEST_PERMISSION` | non | Écriture refusée dans le dossier |
 | `DISK_IO` | non | Autre erreur de lecture, d'écriture ou de renommage sur le disque |
 | `CHECKSUM_MISMATCH` | non | L'empreinte du fichier final diffère de celle attendue |
+| `SECRET_UNAVAILABLE` | oui | Le coffre du système n'a pas rendu un secret de la tâche (trousseau verrouillé ; depuis le 2026-11-07) |
 | `INTERNAL` | non | Erreur du moteur lui-même (base illisible, incohérence, panique d'une exécution) ; détail dans `error_detail`. La tâche ne repart qu'à la demande de l'utilisateur |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 
@@ -927,7 +951,7 @@ Aléa cryptographique : TLS repose sur l'aléa du système (`getrandom` sous Lin
 - Aucune télémétrie, aucun compte, aucune requête vers un serveur du projet en dehors de la vérification de mises à jour, désactivable.
 - Un mode « sans historique » n'écrit ni `history` ni `event_log`.
 - Les journaux et rapports de diagnostic remplacent les adresses complètes par le nom d'hôte, sauf demande contraire.
-- L'extension navigateur ne lit que les requêtes de téléchargement et les pages que l'utilisateur lui désigne ; elle ne transmet rien ailleurs qu'au moteur local.
+- L'extension navigateur ne lit que les requêtes de téléchargement et les pages que l'utilisateur lui désigne ; elle ne transmet rien ailleurs qu'au moteur local. Les cookies qu'elle transmet sont ceux de l'adresse téléchargée, et seulement si l'option est active ; le moteur les garde dans le coffre du système, jamais dans la base ni dans ses journaux, et les efface à la fin de la tâche.
 
 ### 8.3 Cadre légal
 

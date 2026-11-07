@@ -12,6 +12,25 @@ pub const DOWNLOAD_LIMIT: &str = "limits.downloadBps";
 /// « Téléchargements » du système.
 pub const DOWNLOAD_DIR: &str = "downloads.dir";
 
+/// Espace de noms des secrets de cette base dans le coffre du système (`secrets`), tiré
+/// au hasard au premier démarrage. Interne : `settings.get` ne le montre pas.
+pub const VAULT_NAMESPACE: &str = "vault.namespace";
+
+/// Espace de noms des secrets de cette base, créé s'il n'existe pas encore.
+pub fn vault_namespace(conn: &Connection) -> Result<String, StoreError> {
+    match get(conn, VAULT_NAMESPACE)? {
+        Some(Value::String(ns)) if !ns.is_empty() => Ok(ns),
+        None => {
+            let ns = uuid::Uuid::now_v7().simple().to_string();
+            set(conn, VAULT_NAMESPACE, &Value::from(ns.as_str()))?;
+            Ok(ns)
+        }
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {VAULT_NAMESPACE} : {v} n'est pas un espace de noms"
+        ))),
+    }
+}
+
 /// Dossier des téléchargements enregistré ; `None` : aucun (celui du système).
 pub fn download_dir(conn: &Connection) -> Result<Option<String>, StoreError> {
     match get(conn, DOWNLOAD_DIR)? {

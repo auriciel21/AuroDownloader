@@ -118,6 +118,21 @@ impl Params {
             .transpose()
     }
 
+    /// Objet dont chaque valeur est un texte (`headers`), dans l'ordre reçu.
+    fn string_map(&self, name: &str) -> Result<Vec<(String, String)>, RpcError> {
+        let Some(value) = self.get(name) else {
+            return Ok(Vec::new());
+        };
+        value
+            .as_object()
+            .and_then(|map| {
+                map.iter()
+                    .map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| Self::wrong(name, "objet de textes"))
+    }
+
     fn task_ids(&self) -> Result<Vec<String>, RpcError> {
         let ids = self
             .strings("taskIds")?
@@ -371,7 +386,7 @@ async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
 }
 
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&["fileName", "checksum", "headers"])?;
+    p.refuse(&["fileName", "checksum"])?;
     let idempotency_key = p.str("idempotencyKey")?;
     if idempotency_key
         .as_ref()
@@ -415,6 +430,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             speed_limit_bps: p.limit("speedLimitBps")?.flatten(),
             start_paused: p.bool("startPaused")?,
             idempotency_key,
+            headers: p.string_map("headers")?,
         })
         .await?;
     Ok(json!({"taskId": task_id}))

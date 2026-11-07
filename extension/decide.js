@@ -9,6 +9,9 @@
     minSizeMiB: 1,
     excludedSites: [],
     captureIncognito: false,
+    // Cookies, page d'origine et navigateur transmis avec l'adresse (SPEC 4.5) : un
+    // téléchargement qui demande d'être connecté réussit aussi dans AuroDownloader.
+    sendCookies: true,
   });
 
   /// Délai pendant lequel un clic avec Alt laisse le téléchargement au navigateur.
@@ -25,6 +28,7 @@
         .map((site) => String(site).trim().toLowerCase())
         .filter(Boolean),
       captureIncognito: s.captureIncognito === true,
+      sendCookies: s.sendCookies !== false,
     };
   }
 
@@ -74,5 +78,70 @@
     return `browser-${item.id}-${item.startTime ?? ""}`;
   }
 
-  globalThis.AuroDecide = { DEFAULTS, ALT_WINDOW_MS, settings, decide, requestId, host };
+  /// `Referer` que le navigateur lui-même enverrait (politique par défaut,
+  /// `strict-origin-when-cross-origin`) : l'adresse entière vers la même origine,
+  /// l'origine seule vers une autre, rien de HTTPS vers HTTP ; `null` sans page.
+  function refererFor(page, target) {
+    let from;
+    let to;
+    try {
+      from = new URL(page);
+      to = new URL(target);
+    } catch {
+      return null;
+    }
+    if (!/^https?:$/.test(from.protocol)) return null;
+    if (from.protocol === "https:" && to.protocol === "http:") return null;
+    if (from.origin === to.origin) {
+      from.hash = "";
+      from.username = "";
+      from.password = "";
+      return from.href;
+    }
+    return `${from.origin}/`;
+  }
+
+  /// En-tête `Cookie` tel que le navigateur le formerait : les chemins les plus longs
+  /// d'abord (RFC 6265, 5.4) ; `""` sans cookie.
+  function cookieHeader(cookies) {
+    return [...(cookies ?? [])]
+      .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0))
+      .map((c) => (c.name ? `${c.name}=${c.value}` : c.value))
+      .join("; ");
+  }
+
+  /// En-têtes transmis au moteur avec l'adresse `url` : `Referer` (page d'origine),
+  /// `User-Agent` et `Cookie` ; rien de tout cela si l'option est coupée.
+  function pageHeaders(stored, { url, page, userAgent, cookies }) {
+    if (!settings(stored).sendCookies) return {};
+    const headers = {};
+    const referer = page ? refererFor(page, url) : null;
+    if (referer) headers.Referer = referer;
+    if (userAgent) headers["User-Agent"] = userAgent;
+    const cookie = cookieHeader(cookies);
+    if (cookie) headers.Cookie = cookie;
+    return headers;
+  }
+
+  /// Magasin de cookies d'un téléchargement : celui que Firefox indique (conteneur,
+  /// navigation privée), sinon celui de la navigation privée de Chrome et Edge (« 1 »),
+  /// sinon le magasin par défaut (`undefined`).
+  function cookieStore(item) {
+    if (item.cookieStoreId) return item.cookieStoreId;
+    return item.incognito ? "1" : undefined;
+  }
+
+  globalThis.AuroDecide = {
+    DEFAULTS,
+    ALT_WINDOW_MS,
+    settings,
+    decide,
+    requestId,
+    host,
+    refererFor,
+    cookieHeader,
+    pageHeaders,
+    cookieStore,
+  };
+
 })();

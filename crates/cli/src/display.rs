@@ -24,6 +24,18 @@ pub fn size(bytes: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limit(pub Option<u64>);
 
+/// Lit un en-tête « Nom: valeur » (`auro add -H`) ; le moteur vérifie le reste.
+pub fn parse_header(text: &str) -> Result<(String, String), String> {
+    let (name, value) = text
+        .split_once(':')
+        .ok_or_else(|| "« Nom: valeur » attendu".to_owned())?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("nom d'en-tête vide".into());
+    }
+    Ok((name.to_owned(), value.trim().to_owned()))
+}
+
 /// Lit un débit par seconde : « 800000 », « 500K », « 1.5M », « 2G » (unités binaires :
 /// Kio, Mio, Gio), ou « none » pour aucune limite.
 pub fn parse_limit(text: &str) -> Result<Limit, String> {
@@ -196,5 +208,19 @@ mod tests {
         }
         assert_eq!(limit(Some(2 * 1024 * 1024)), "2.0 Mio/s");
         assert_eq!(limit(None), "aucune");
+    }
+
+    #[test]
+    fn headers_are_split_at_the_first_colon() {
+        let pair = |n: &str, v: &str| Ok((n.to_owned(), v.to_owned()));
+        assert_eq!(parse_header("Cookie: a=1; b=2"), pair("Cookie", "a=1; b=2"));
+        assert_eq!(
+            parse_header("Referer:https://exemple.org/p"),
+            pair("Referer", "https://exemple.org/p")
+        );
+        assert_eq!(parse_header("X-Vide:"), pair("X-Vide", ""));
+        for bad in ["Cookie", ": valeur", ""] {
+            assert!(parse_header(bad).is_err(), "{bad}");
+        }
     }
 }

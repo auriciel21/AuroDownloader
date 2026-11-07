@@ -35,7 +35,9 @@ use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::net::{self, Client, NetError};
 use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
+use crate::secrets::{Vault, VaultError};
 use crate::segmenter::Segment;
+use crate::store::headers::{self, Stored, StoredHeader};
 use crate::store::segments::load_segments;
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
@@ -296,6 +298,9 @@ pub enum EngineError {
 
     #[error("le moteur est arrêté")]
     Stopped,
+
+    #[error(transparent)]
+    Vault(#[from] VaultError),
 }
 
 /// Tâche à ajouter.
@@ -316,6 +321,9 @@ pub struct AddTask {
     /// Clé d'idempotence (SPEC §6.1) : un ajout répété avec la même clé rend la tâche déjà
     /// créée, tant qu'elle n'est pas retirée.
     pub idempotency_key: Option<String>,
+    /// En-têtes HTTP de la tâche (`Referer`, `Cookie`…) ; les secrets vont au coffre du
+    /// système (SPEC §5.1).
+    pub headers: Vec<(String, String)>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -369,6 +377,8 @@ enum Command {
     },
     DeleteSchedule(String, Reply<()>),
     CancelEndAction(Reply<bool>),
+    /// Secrets relevés dans le coffre au démarrage, pour le ramassage.
+    CollectSecrets(Vec<String>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -387,10 +397,16 @@ impl Engine {
     /// Ouvre la base, crée la file par défaut et lance la boucle du planificateur, qui
     /// reprend aussitôt les tâches interrompues par un arrêt du moteur (SPEC §7.4).
     /// Demande un environnement d'exécution `tokio`.
-    pub fn start(config: Config) -> Result<Engine, EngineError> {
+    pub fn start(mut config: Config) -> Result<Engine, EngineError> {
         let conn = store::open(&config.db_path)?;
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
         let download_limit = settings::download_limit(&conn)?;
+        // Les secrets de cette base seulement (voir `secrets`).
+        let vault = config
+            .transfer
+            .vault
+            .scoped(&settings::vault_namespace(&conn)?);
+        config.transfer.vault = vault.clone();
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
@@ -408,6 +424,18 @@ impl Engine {
         tokio::spawn(async move {
             state.run(inbox, prepared).await;
             let _ = stopped_tx.send(true);
+        });
+        // Ramassage des secrets orphelins : le relevé du coffre, hors de la boucle, puis
+        // la comparaison avec la base, dans la boucle.
+        let collect = commands.clone();
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(move || vault.ids()).await {
+                Ok(Ok(found)) if !found.is_empty() => {
+                    let _ = collect.send(Command::CollectSecrets(found)).await;
+                }
+                Ok(Err(e)) => eprintln!("aurod : relevé du coffre impossible : {e}"),
+                _ => {}
+            }
         });
         Ok(Engine {
             commands,
@@ -1006,6 +1034,7 @@ impl Scheduler {
             Command::CancelEndAction(reply) => {
                 let _ = reply.send(Ok(self.cancel_end_action()));
             }
+            Command::CollectSecrets(found) => self.collect_secrets(found),
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
                 let _ = reply.send(rows.map(|r| (r, self.current_rev())).map_err(Into::into));
@@ -1226,6 +1255,8 @@ impl Scheduler {
             return Ok(existing);
         }
         net::check_url(&task.url)?;
+        net::check_task_headers(&task.headers)
+            .map_err(|e| EngineError::BadRequest(e.to_string()))?;
         Self::check_speed_limit(task.speed_limit_bps)?;
         let dest_dir = match task.dest_dir {
             Some(dir) => dir,
@@ -1243,7 +1274,10 @@ impl Scheduler {
             return Err(EngineError::QueueNotFound(queue_id));
         }
         let display_name = transfer::display_name_for(&task.url);
-        let (task_id, _) = tasks::create_task(
+        // Les secrets d'abord, leurs références ensuite (SPEC §5.1) ; si la tâche n'est
+        // pas créée, ils sont effacés.
+        let stored = self.store_secrets(task.headers)?;
+        let created = tasks::create_task(
             &mut self.conn,
             &NewTask {
                 queue_id: &queue_id,
@@ -1253,14 +1287,73 @@ impl Scheduler {
                 max_connections: task.max_connections,
                 speed_limit_bps: task.speed_limit_bps,
                 idempotency_key: task.idempotency_key.as_deref(),
+                headers: &stored,
             },
-        )?;
+        );
+        let (task_id, _) = match created {
+            Ok(created) => created,
+            Err(e) => {
+                self.vault().forget(secret_ids(stored));
+                return Err(e.into());
+            }
+        };
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
         if task.start_paused {
             self.set_state(&task_id, &user_pause())?;
         }
         Ok(task_id)
+    }
+
+    fn vault(&self) -> &Vault {
+        &self.config.transfer.vault
+    }
+
+    /// Range les en-têtes secrets dans le coffre ; les autres restent en clair. Si le
+    /// coffre refuse, ceux déjà rangés sont effacés.
+    fn store_secrets(
+        &self,
+        headers: Vec<(String, String)>,
+    ) -> Result<Vec<StoredHeader>, EngineError> {
+        let mut stored = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            if !net::is_secret_header(&name) {
+                stored.push((name, Stored::Plain(value)));
+                continue;
+            }
+            match self.vault().put(&value) {
+                Ok(id) => stored.push((name, Stored::Secret(id))),
+                Err(e) => {
+                    self.vault().forget(secret_ids(stored));
+                    return Err(e.into());
+                }
+            }
+        }
+        Ok(stored)
+    }
+
+    /// Retire de la base les secrets d'une tâche terminée, puis les efface du coffre.
+    fn drop_secrets(&mut self, task_id: &str) {
+        if let Ok(ids) = headers::drop_secrets(&self.conn, task_id) {
+            self.vault().forget(ids);
+        }
+    }
+
+    /// Ramassage (voir `secrets`) : efface du coffre les secrets `found` dont la base n'a
+    /// pas la référence. `found` a été relevé avant ce tour de boucle : un ajout qui a
+    /// rangé un secret avant ce relevé a aussi enregistré sa référence, dans le même tour.
+    fn collect_secrets(&mut self, found: Vec<String>) {
+        let Ok(known) = headers::all_secret_refs(&self.conn) else {
+            return;
+        };
+        let orphans: Vec<String> = found.into_iter().filter(|id| !known.contains(id)).collect();
+        if !orphans.is_empty() {
+            eprintln!(
+                "aurod : {} secret(s) orphelin(s) effacé(s) du coffre",
+                orphans.len()
+            );
+        }
+        self.vault().forget(orphans);
     }
 
     /// Change l'état d'une tâche qui ne tourne pas, et l'annonce.
@@ -1389,7 +1482,9 @@ impl Scheduler {
                 _ => delete_part(&task)?,
             }
         }
+        let secrets = headers::secret_refs(&self.conn, task_id)?;
         tasks::remove_task(&mut self.conn, task_id)?;
+        self.vault().forget(secrets);
         self.broken.remove(task_id);
         let id = task_id.to_owned();
         self.emit(|rev| Event::Removed { rev, task_id: id });
@@ -1417,6 +1512,9 @@ impl Scheduler {
         let run = self.running.remove(task_id);
         if let (Some(run), Ok(Outcome::Completed(_))) = (&run, &result) {
             self.arm_end_action(&run.queue_id);
+        }
+        if let Ok(Outcome::Completed(_)) = &result {
+            self.drop_secrets(task_id);
         }
         let then = run.map_or(Then::Keep, |r| r.then);
         self.limits.tasks.remove(task_id);
@@ -1473,6 +1571,17 @@ impl Scheduler {
             self.changed(&task_id, TaskState::Active, task.state);
         }
     }
+}
+
+/// Références des secrets parmi des en-têtes enregistrés.
+fn secret_ids(stored: Vec<StoredHeader>) -> Vec<String> {
+    stored
+        .into_iter()
+        .filter_map(|(_, s)| match s {
+            Stored::Secret(id) => Some(id),
+            Stored::Plain(_) => None,
+        })
+        .collect()
 }
 
 /// Un dossier de destination : chemin absolu d'un dossier existant.

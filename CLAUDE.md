@@ -41,7 +41,10 @@ téléchargement.
   globale), `schedule` (plages horaires et action de fin, F-16 : règles, ouverture à
   une heure locale lue par SQLite), `store::schedules` (planifications en base),
   `scheduler::planning` (files fermées hors plage, action de fin annoncée puis
-  exécutée), `power` (veille et extinction ; branchées par `aurod` seulement).
+  exécutée), `power` (veille et extinction ; branchées par `aurod` seulement). Phase 3 :
+  `secrets` (coffre du système des cookies et jetons : Gestionnaire d'identification,
+  Secret Service, sinon mémoire ; un espace de noms par base), `store::headers`
+  (en-têtes des tâches, secrets par référence).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -126,6 +129,7 @@ cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
+cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
@@ -166,6 +170,13 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
+- Secrets des tâches (`Cookie`, `Authorization`, `Proxy-Authorization`) : seulement par
+  `secrets::Vault`, la base n'en garde que la référence ; le secret est écrit avant sa
+  référence, la référence effacée avant le secret. Tests : `Vault::memory()` (défaut
+  d'`Options`) ; le coffre réel seulement dans les tests de `secrets`, sur un espace de
+  noms d'essai vidé à la fin. Secret Service sous Linux : `AURO_SECRET_SERVICE=1`, dans
+  une session D-Bus avec un trousseau d'essai (`gnome-keyring-daemon --unlock`,
+  `XDG_DATA_HOME` à part).
 - Aléa : aws-lc est compilé sans entropie de gigue (`AWS_LC_SYS_NO_JITTER_ENTROPY`,
   `.cargo/config.toml`, SPEC 8.1) ; il s'amorce sur l'aléa du système.
 - Invariant de couverture (SPEC 5.6, règle 2) : calcul dans `segmenter`, application en
@@ -227,7 +238,9 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   local (fait, SPEC 6.9) ; 2. `idempotencyKey` (fait) et dossier des téléchargements dans
   le moteur (fait) ; 3. relais `auro-relay` et sa déclaration aux navigateurs (fait) ;
   4. extension (écrite, `extension/` ; essai dans un vrai navigateur par l'utilisateur à
-  faire) ; 5. cookies et en-têtes de la page (coffre du système, SPEC 4.5 et 5.1).
+  faire) ; 5. cookies et en-têtes de la page (fait : `headers` de `task.add`, coffre du
+  système, SPEC 4.5, 5.1 et 6.5 ; repli en mémoire sous Linux sans Secret Service, à
+  confirmer).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,

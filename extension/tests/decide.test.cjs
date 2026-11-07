@@ -3,7 +3,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 require("../decide.js");
 
-const { decide, settings, requestId, ALT_WINDOW_MS } = globalThis.AuroDecide;
+const { decide, settings, requestId, ALT_WINDOW_MS, refererFor, cookieHeader, pageHeaders, cookieStore } =
+  globalThis.AuroDecide;
 const MiB = 1024 * 1024;
 const item = (extra = {}) => ({
   id: 7,
@@ -61,4 +62,52 @@ test("réglages abîmés : valeurs par défaut", () => {
 test("une demande garde la même clé pour le même téléchargement", () => {
   assert.equal(requestId(item()), requestId(item()));
   assert.notEqual(requestId(item()), requestId(item({ id: 8 })));
+});
+
+test("Referer : ce que le navigateur enverrait lui-même", () => {
+  const page = "https://exemple.org/page?q=1#ancre";
+  assert.equal(refererFor(page, "https://exemple.org/f.iso"), "https://exemple.org/page?q=1");
+  // Autre origine : l'origine seule.
+  assert.equal(refererFor(page, "https://cdn.exemple.org/f.iso"), "https://exemple.org/");
+  // De HTTPS vers HTTP : rien.
+  assert.equal(refererFor(page, "http://exemple.org/f.iso"), null);
+  assert.equal(refererFor("http://exemple.org/p", "https://exemple.org/f"), "http://exemple.org/");
+  // Identifiants retirés ; pages non HTTP et adresses illisibles ignorées.
+  assert.equal(refererFor("https://moi:secret@exemple.org/p", "https://exemple.org/f"), "https://exemple.org/p");
+  assert.equal(refererFor("about:blank", "https://exemple.org/f"), null);
+  assert.equal(refererFor("pas une adresse", "https://exemple.org/f"), null);
+});
+
+test("en-tête Cookie : chemins les plus longs d'abord", () => {
+  const cookies = [
+    { name: "a", value: "1", path: "/" },
+    { name: "b", value: "2", path: "/telechargements" },
+    { name: "", value: "nu", path: "/t" },
+  ];
+  assert.equal(cookieHeader(cookies), "b=2; nu; a=1");
+  assert.equal(cookieHeader([]), "");
+  assert.equal(cookieHeader(undefined), "");
+});
+
+test("en-têtes transmis, sauf si l'option est coupée", () => {
+  const page = {
+    url: "https://cdn.exemple.org/f.iso",
+    page: "https://exemple.org/p",
+    userAgent: "Navigateur/1",
+    cookies: [{ name: "s", value: "1", path: "/" }],
+  };
+  assert.deepEqual(pageHeaders({}, page), {
+    Referer: "https://exemple.org/",
+    "User-Agent": "Navigateur/1",
+    Cookie: "s=1",
+  });
+  assert.deepEqual(pageHeaders({}, { url: page.url, cookies: [] }), {});
+  assert.deepEqual(pageHeaders({ sendCookies: false }, page), {});
+  assert.equal(settings({}).sendCookies, true);
+});
+
+test("magasin de cookies d'un téléchargement", () => {
+  assert.equal(cookieStore(item({ cookieStoreId: "firefox-container-2" })), "firefox-container-2");
+  assert.equal(cookieStore(item({ incognito: true })), "1");
+  assert.equal(cookieStore(item()), undefined);
 });

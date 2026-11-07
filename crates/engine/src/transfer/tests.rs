@@ -60,6 +60,7 @@ fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            headers: &[],
         },
     )
     .unwrap();
@@ -904,6 +905,7 @@ mod names {
                 max_connections: None,
                 speed_limit_bps: None,
                 idempotency_key: None,
+                headers: &[],
             },
         )
         .unwrap();
@@ -998,4 +1000,99 @@ mod names {
             assert!(paths.insert(path.clone()), "{path:?} partagé");
         }
     }
+}
+
+/// Un secret qui n'est plus dans le coffre (coffre en mémoire, moteur redémarré) : la
+/// tâche part sans cet en-tête, avec les autres.
+#[tokio::test]
+async fn a_secret_missing_from_the_vault_is_left_out() {
+    let (_, server) = site(content(SIZE));
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_in_memory().unwrap();
+    let queue = ensure_queue(&conn, "default").unwrap();
+    let url = server.url("/s.bin");
+    let stored = [
+        ("Cookie".to_owned(), Stored::Secret("disparu".into())),
+        (
+            "Referer".to_owned(),
+            Stored::Plain("https://exemple.org/".into()),
+        ),
+    ];
+    let (task_id, _) = create_task(
+        &mut conn,
+        &NewTask {
+            queue_id: &queue,
+            url: &url,
+            display_name: "s.bin",
+            dest_dir: dir.path().to_str().unwrap(),
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            headers: &stored,
+        },
+    )
+    .unwrap();
+    let mut case = Case { conn, task_id, dir };
+    assert!(matches!(case.run().await, Outcome::Completed(_)));
+    for r in server.requests() {
+        assert_eq!(r.header("cookie"), None);
+        assert_eq!(r.header("referer"), Some("https://exemple.org/"));
+    }
+}
+
+/// Coffre qui ne répond pas (trousseau verrouillé) : échec temporaire, la tâche réessaiera.
+#[tokio::test]
+async fn an_unreachable_vault_is_a_temporary_failure() {
+    struct Locked;
+    impl crate::secrets::Backend for Locked {
+        fn kind(&self) -> &'static str {
+            "verrouillé"
+        }
+        fn put(&self, _: &str, _: &str, _: &[u8]) -> Result<(), VaultError> {
+            Err(VaultError("verrouillé".into()))
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Option<Vec<u8>>, VaultError> {
+            Err(VaultError("verrouillé".into()))
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), VaultError> {
+            Err(VaultError("verrouillé".into()))
+        }
+        fn ids(&self, _: &str) -> Result<Vec<String>, VaultError> {
+            Err(VaultError("verrouillé".into()))
+        }
+    }
+    let (_, server) = site(content(SIZE));
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_in_memory().unwrap();
+    let queue = ensure_queue(&conn, "default").unwrap();
+    let url = server.url("/v.bin");
+    let stored = [("Cookie".to_owned(), Stored::Secret("x".into()))];
+    let (task_id, _) = create_task(
+        &mut conn,
+        &NewTask {
+            queue_id: &queue,
+            url: &url,
+            display_name: "v.bin",
+            dest_dir: dir.path().to_str().unwrap(),
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            headers: &stored,
+        },
+    )
+    .unwrap();
+    let mut case = Case { conn, task_id, dir };
+    let opts = Options {
+        vault: Vault::with_backend(Arc::new(Locked)),
+        ..opts()
+    };
+    let (_, stop) = watch::channel(false);
+    match case.run_opts(&opts, stop).await {
+        Outcome::RetryLater { code, .. } => assert_eq!(code, "SECRET_UNAVAILABLE"),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        server.requests().is_empty(),
+        "rien n'est demandé sans le secret"
+    );
 }

@@ -8,9 +8,11 @@
 //!
 //! Messages de l'extension (champ `id` facultatif, renvoyé tel quel dans la réponse) :
 //! - `{"type": "ping"}` : `{"ok": true, "version": …}`, sans toucher au moteur ;
-//! - `{"type": "add", "url": …, "requestId": …, "paused": false}` : ajoute un
-//!   téléchargement dans le dossier du moteur ; `requestId` sert de clé d'idempotence (un
-//!   nouvel essai ne crée pas de doublon). Réponse `{"ok": true, "taskId": …}`.
+//! - `{"type": "add", "url": …, "requestId": …, "paused": false, "headers": {…}}` : ajoute
+//!   un téléchargement dans le dossier du moteur ; `requestId` sert de clé d'idempotence
+//!   (un nouvel essai ne crée pas de doublon) ; `headers`, les en-têtes de la page
+//!   (`Referer`, `User-Agent`, `Cookie`), transmis à `task.add`. Réponse
+//!   `{"ok": true, "taskId": …}`.
 //!
 //! Un refus répond `{"ok": false, "code": …, "message": …}` : `code` est celui du moteur
 //! (SPEC §6.7), ou `ENGINE_UNAVAILABLE`, `BAD_MESSAGE`, `UNKNOWN_TYPE`.
@@ -149,6 +151,13 @@ impl Relay {
         });
         if let Some(key) = message.get("requestId").and_then(Value::as_str) {
             params["idempotencyKey"] = json!(key);
+        }
+        // En-têtes de la page (`Referer`, `User-Agent`, `Cookie`) : le moteur les vérifie,
+        // et range les secrets dans le coffre du système.
+        match message.get("headers") {
+            None | Some(Value::Null) => {}
+            Some(headers @ Value::Object(_)) => params["headers"] = headers.clone(),
+            Some(_) => return refusal("BAD_MESSAGE", "headers : un objet est attendu"),
         }
         match self.call("task.add", params).await {
             Ok(result) => json!({"ok": true, "taskId": result["taskId"]}),

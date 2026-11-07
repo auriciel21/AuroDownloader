@@ -33,9 +33,11 @@ use crate::io::{
 };
 use crate::limit::Throttle;
 use crate::net::{Client, NetError, RangeRequest, headers};
+use crate::secrets::{Vault, VaultError};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
 };
+use crate::store::headers::{self as stored_headers, Stored, StoredHeader};
 use crate::store::segments::{
     check_task_coverage, load_segments, reset_segments, save_progress, save_split,
 };
@@ -92,6 +94,9 @@ pub struct Options {
     pub free_space: fn(&Path) -> std::io::Result<u64>,
     /// Place à laisser libre sur le disque ([`KEEP_FREE`]).
     pub keep_free: u64,
+    /// Coffre des en-têtes secrets des tâches (SPEC §5.1) ; la mémoire par défaut, le
+    /// coffre du système pour `aurod`.
+    pub vault: Vault,
 }
 
 impl Default for Options {
@@ -108,6 +113,7 @@ impl Default for Options {
             throttle: Throttle::default(),
             free_space: io::free_space,
             keep_free: KEEP_FREE,
+            vault: Vault::default(),
         }
     }
 }
@@ -214,6 +220,8 @@ enum Failure {
         free: u64,
         keep: u64,
     },
+    /// Le coffre du système n'a pas rendu un secret de la tâche (trousseau verrouillé…).
+    Vault(VaultError),
 }
 
 impl Failure {
@@ -228,6 +236,7 @@ impl Failure {
             },
             Failure::Truncated => "NET_UNREACHABLE",
             Failure::NoSpace { .. } => "DISK_FULL",
+            Failure::Vault(_) => "SECRET_UNAVAILABLE",
         }
     }
 
@@ -236,6 +245,7 @@ impl Failure {
             Failure::Net(e) => e.retryable(),
             Failure::Io(_) | Failure::NoSpace { .. } => false,
             Failure::Truncated => true,
+            Failure::Vault(_) => true,
         }
     }
 
@@ -253,6 +263,7 @@ impl Failure {
         match self {
             Failure::Net(e) => e.to_string(),
             Failure::Io(e) => e.to_string(),
+            Failure::Vault(e) => e.to_string(),
             Failure::Truncated => "le serveur a fermé la connexion avant la fin".into(),
             Failure::NoSpace { needed, free, keep } => format!(
                 "espace disque insuffisant : {} encore à écrire et {} à laisser libres, \
@@ -390,6 +401,35 @@ fn record_failure(
     Ok(outcome)
 }
 
+/// En-têtes de la tâche, secrets lus dans le coffre. Un secret qui n'y est plus (coffre en
+/// mémoire après un redémarrage du moteur, effacé à la main) : l'en-tête n'est pas envoyé,
+/// et le serveur dira s'il en avait besoin. Un coffre qui ne répond pas : échec temporaire.
+async fn request_headers(
+    stored: Vec<StoredHeader>,
+    task_id: &str,
+    vault: &Vault,
+) -> Step<Vec<(String, String)>> {
+    let mut list = Vec::new();
+    for (name, stored) in stored {
+        let id = match stored {
+            Stored::Plain(value) => {
+                list.push((name, value));
+                continue;
+            }
+            Stored::Secret(id) => id,
+        };
+        let vault = vault.clone();
+        match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
+            Ok(Some(secret)) => list.push((name, secret)),
+            Ok(None) => {
+                eprintln!("aurod : tâche {task_id} : en-tête {name} absent du coffre, non envoyé")
+            }
+            Err(e) => return fail(Failure::Vault(e)),
+        }
+    }
+    Ok(Ok(list))
+}
+
 async fn execute(
     conn: &mut Connection,
     client: &Client,
@@ -400,10 +440,15 @@ async fn execute(
 ) -> Step<PathBuf> {
     let mut task = load_task(conn, task_id)?;
     let source = primary_source(conn, task_id)?;
+    let stored = stored_headers::load(conn, task_id)?;
+    let task_headers = match request_headers(stored, task_id, &opts.vault).await? {
+        Ok(list) => list,
+        Err(stop) => return Ok(Err(stop)),
+    };
 
     // Préparation (SPEC §7.1), une seule fois par tâche.
     if task.file_name.is_none() {
-        let probe = match client.probe(&source.url, &[]).await {
+        let probe = match client.probe(&source.url, &task_headers).await {
             Ok(probe) => probe,
             Err(e) => return fail(Failure::Net(e)),
         };
@@ -499,7 +544,10 @@ async fn execute(
     let part = Arc::new(part);
     let ctx = Pool {
         client,
-        url: &source.url,
+        target: Arc::new(Target {
+            url: source.url.clone(),
+            headers: task_headers,
+        }),
         fetch,
         plan,
         host: host_of(&source.url),
@@ -735,10 +783,17 @@ fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u3
     }
 }
 
+/// Adresse d'une tâche et en-têtes de ses requêtes, secrets compris (SPEC §5.1).
+struct Target {
+    url: String,
+    headers: Vec<(String, String)>,
+}
+
 /// Ce que partagent les connexions d'une exécution.
 struct Pool<'a> {
     client: &'a Client,
-    url: &'a str,
+    /// Adresse et en-têtes des requêtes, partagés par les connexions.
+    target: Arc<Target>,
     fetch: Fetch,
     plan: Plan,
     /// Hôte de la source, pour le plafond appris d'un serveur qui résiste.
@@ -821,7 +876,7 @@ async fn pool(
             handles.insert(segment.idx, writer.progress());
             running.spawn(connection(
                 ctx.client.clone(),
-                ctx.url.to_owned(),
+                Arc::clone(&ctx.target),
                 ctx.fetch.clone(),
                 segment.start,
                 writer,
@@ -1034,7 +1089,7 @@ fn progress(
 /// Une connexion : télécharge le segment de `writer`, puis vide ce qu'elle a reçu.
 async fn connection(
     client: Client,
-    url: String,
+    target: Arc<Target>,
     fetch: Fetch,
     start: u64,
     mut writer: SegmentWriter,
@@ -1043,7 +1098,7 @@ async fn connection(
 ) -> ConnEnd {
     let result = pump(
         &client,
-        &url,
+        &target,
         &fetch,
         start,
         &mut writer,
@@ -1067,7 +1122,7 @@ async fn connection(
 /// que les seaux de débit le permettent, puis les paie (SPEC §7.6).
 async fn pump(
     client: &Client,
-    url: &str,
+    target: &Target,
     fetch: &Fetch,
     start: u64,
     writer: &mut SegmentWriter,
@@ -1086,9 +1141,11 @@ async fn pump(
                         total: *total,
                         if_range: if_range.as_deref(),
                     };
-                    client.get_range(url, &[], &req).await
+                    client.get_range(&target.url, &target.headers, &req).await
                 }
-                Fetch::Whole { total } => client.get_all(url, &[], *total).await,
+                Fetch::Whole { total } => {
+                    client.get_all(&target.url, &target.headers, *total).await
+                }
             }
         };
         let mut body = tokio::select! {

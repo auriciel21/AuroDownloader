@@ -13,6 +13,7 @@ use auro_engine::paths;
 use auro_engine::power;
 use auro_engine::rpc::local;
 use auro_engine::scheduler::{Config, DISK_RECHECK, Engine, Planning};
+use auro_engine::secrets::Vault;
 use auro_engine::transfer::Options;
 use clap::Parser;
 
@@ -79,7 +80,11 @@ async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) 
     let engine = Engine::start(Config {
         db_path: db.clone(),
         client,
-        transfer: Options::default(),
+        // Cookies et jetons des tâches : le coffre du système (SPEC §5.1).
+        transfer: Options {
+            vault: Vault::system(),
+            ..Options::default()
+        },
         disk_recheck: DISK_RECHECK,
         planning,
     })

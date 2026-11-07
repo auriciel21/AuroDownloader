@@ -42,6 +42,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    # Coffre du système : Gestionnaire d'identification (`secrets`).
+    "Win32_Security_Credentials",
     # Espace libre d'un volume (`io::free_space`).
     "Win32_Storage_FileSystem",
     # Lancer `aurod` sans lui transmettre les poignées d'entrée et de sortie (`launch`).
@@ -50,6 +52,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Power",
     "Win32_System_Threading",
 ] }
+
+# Coffre du système sous Linux : Secret Service par D-Bus (`secrets`).
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5.1.0", features = ["rt-async-io-crypto-rust"] }
 
 # Espace libre d'un volume (`io::free_space`).
 [target.'cfg(unix)'.dependencies]

@@ -6,6 +6,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 
+use super::headers::{self, StoredHeader};
 use super::segments::set_size_and_segments;
 use super::{StoreError, new_id, now_ms};
 use crate::segmenter::Segment;
@@ -207,6 +208,8 @@ pub struct NewTask<'a> {
     pub speed_limit_bps: Option<u64>,
     /// Clé d'idempotence de `task.add` ; unique parmi les tâches présentes.
     pub idempotency_key: Option<&'a str>,
+    /// En-têtes HTTP de la tâche ; les secrets sont déjà dans le coffre.
+    pub headers: &'a [StoredHeader],
 }
 
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
@@ -239,6 +242,7 @@ pub fn create_task(
         "INSERT INTO sources (id, task_id, url) VALUES (?1, ?2, ?3)",
         params![source_id, task_id, new.url],
     )?;
+    headers::insert(&tx, &task_id, new.headers)?;
     tx.commit()?;
     Ok((task_id, source_id))
 }
@@ -910,6 +914,7 @@ mod tests {
                 max_connections: None,
                 speed_limit_bps: None,
                 idempotency_key: None,
+                headers: &[],
             },
         )
         .unwrap()

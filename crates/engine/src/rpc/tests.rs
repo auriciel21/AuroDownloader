@@ -327,6 +327,56 @@ async fn a_replayed_add_returns_the_same_task() {
     engine.shutdown().await;
 }
 
+/// `headers` de `task.add` : un objet de textes ; un en-tête réservé, une valeur qui n'est
+/// pas un texte sont refusés ; la portée `add` suffit (relais de l'extension).
+#[tokio::test]
+async fn task_add_accepts_page_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(64 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("add");
+    c.result("engine.hello", params).await;
+    let add = |headers: Value| {
+        json!({
+            "sources": [{"url": server.url("/p.bin")}],
+            "destDir": dir_text(dir.path()),
+            "headers": headers,
+        })
+    };
+    let added = c
+        .result(
+            "task.add",
+            add(json!({"Referer": "https://exemple.org/", "Cookie": "s=1", "User-Agent": "Essai/1"})),
+        )
+        .await;
+    assert!(added["taskId"].is_string(), "{added}");
+    for bad in [
+        json!({"Range": "bytes=0-"}),
+        json!({"Cookie": 3}),
+        json!(["Cookie", "s=1"]),
+        json!({"Nom invalide": "x"}),
+    ] {
+        assert_eq!(
+            c.error_code("task.add", add(bad.clone())).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    // La tâche ajoutée envoie ses en-têtes.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while server.requests().is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "aucune requête");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let first = &server.requests()[0];
+    assert_eq!(first.header("cookie"), Some("s=1"));
+    assert_eq!(first.header("user-agent"), Some("Essai/1"));
+    assert_eq!(first.header("referer"), Some("https://exemple.org/"));
+    engine.shutdown().await;
+}
+
 fn hello() -> Value {
     json!({"client": {"name": "test", "version": "0"}, "protocol": {"min": "1.0", "max": "1.2"}})
 }

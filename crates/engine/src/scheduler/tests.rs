@@ -305,6 +305,7 @@ async fn higher_priority_starts_first() {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            headers: &[],
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
     }
@@ -472,6 +473,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         max_connections: None,
         speed_limit_bps: None,
         idempotency_key: None,
+        headers: &[],
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
     change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
@@ -1202,4 +1204,157 @@ mod planning {
         assert!(error.is_some_and(|e| e.contains("aucune action de fin")));
         engine.shutdown().await;
     }
+}
+
+/// En-têtes d'une tâche (SPEC §5.1) : envoyés à chaque requête ; le secret va au coffre,
+/// jamais en base, et en sort quand la tâche est finie.
+#[tokio::test]
+async fn task_headers_are_sent_and_secrets_leave_the_vault_when_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let config = config(dir.path());
+    let vault = config.transfer.vault.clone();
+    let engine = Engine::start(config).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(AddTask {
+            headers: vec![
+                ("Referer".into(), "https://exemple.org/page".into()),
+                ("Cookie".into(), "session=s3cr3t".into()),
+            ],
+            ..add(&server.url("/h.bin"), dir.path())
+        })
+        .await
+        .unwrap();
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let ns = settings::vault_namespace(&conn).unwrap();
+    let scoped = vault.scoped(&ns);
+    // En base : la référence du cookie, jamais sa valeur.
+    let raw: Vec<(String, Option<String>, Option<String>)> = conn
+        .prepare("SELECT name, value, secret_ref FROM task_headers ORDER BY name")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(raw.len(), 2);
+    assert_eq!(raw[0].0, "Cookie");
+    assert_eq!(raw[0].1, None);
+    let secret_ref = raw[0].2.clone().unwrap();
+    assert_eq!(
+        raw[1],
+        (
+            "Referer".into(),
+            Some("https://exemple.org/page".into()),
+            None
+        )
+    );
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(dir.path(), "h.bin", SIZE);
+    let requests = server.requests();
+    assert!(requests.len() >= 2, "préparation puis au moins une plage");
+    for r in &requests {
+        assert_eq!(
+            r.header("cookie"),
+            Some("session=s3cr3t"),
+            "{} {}",
+            r.method,
+            r.path
+        );
+        assert_eq!(r.header("referer"), Some("https://exemple.org/page"));
+    }
+    // Tâche finie : la référence quitte la base, puis le secret le coffre.
+    assert!(headers::secret_refs(&conn, &id).unwrap().is_empty());
+    timeout(WAIT, async {
+        while scoped.get(&secret_ref).unwrap().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("secret effacé du coffre");
+    engine.shutdown().await;
+}
+
+/// Un en-tête refusé (réservé au moteur, en double) : rien n'est créé, rien n'est rangé.
+#[tokio::test]
+async fn refused_headers_create_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let vault = config.transfer.vault.clone();
+    let engine = Engine::start(config).unwrap();
+    for headers in [
+        vec![("Range".to_owned(), "bytes=0-".to_owned())],
+        vec![
+            ("Cookie".to_owned(), "a=1".to_owned()),
+            ("cookie".to_owned(), "b=2".to_owned()),
+        ],
+        vec![("Mauvais nom".to_owned(), "x".to_owned())],
+        vec![("X-Ligne".to_owned(), "a\nb".to_owned())],
+    ] {
+        let refused = engine
+            .add(AddTask {
+                headers,
+                ..add("https://exemple.org/f.bin", dir.path())
+            })
+            .await;
+        assert!(
+            matches!(refused, Err(EngineError::BadRequest(_))),
+            "{refused:?}"
+        );
+    }
+    let (tasks, _) = engine.list(TaskFilter::default()).await.unwrap();
+    assert!(tasks.is_empty());
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let ns = settings::vault_namespace(&conn).unwrap();
+    assert!(vault.scoped(&ns).ids().unwrap().is_empty());
+    engine.shutdown().await;
+}
+
+/// Au démarrage, un secret du coffre sans référence en base (arrêt brutal entre les deux)
+/// est effacé ; celui d'une tâche, et ceux d'une autre base, restent.
+#[tokio::test]
+async fn orphan_secrets_are_collected_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let vault = config.transfer.vault.clone();
+    let mut conn = store::open(&config.db_path).unwrap();
+    let ns = settings::vault_namespace(&conn).unwrap();
+    let scoped = vault.scoped(&ns);
+    let elsewhere = vault.scoped("une-autre-base");
+    let orphan = scoped.put("orphelin=1").unwrap();
+    let kept = scoped.put("garde=1").unwrap();
+    let foreign = elsewhere.put("autre=1").unwrap();
+    let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
+    let stored = [("Cookie".to_owned(), Stored::Secret(kept.clone()))];
+    tasks::create_task(
+        &mut conn,
+        &NewTask {
+            queue_id: &queue,
+            url: "https://exemple.org/f.bin",
+            display_name: "f.bin",
+            dest_dir: dir.path().to_str().unwrap(),
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            headers: &stored,
+        },
+    )
+    .unwrap();
+    // Qu'elle ne parte pas : seul le ramassage compte ici.
+    let paused = tasks::runnable_tasks(&conn, now_ms()).unwrap();
+    for c in paused {
+        change_state(&mut conn, &c.task_id, &user_pause()).unwrap();
+    }
+    drop(conn);
+    let engine = Engine::start(config).unwrap();
+    timeout(WAIT, async {
+        while scoped.get(&orphan).unwrap().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("orphelin effacé");
+    assert_eq!(scoped.get(&kept).unwrap().as_deref(), Some("garde=1"));
+    assert_eq!(elsewhere.get(&foreign).unwrap().as_deref(), Some("autre=1"));
+    engine.shutdown().await;
 }

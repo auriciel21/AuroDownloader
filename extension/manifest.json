@@ -19,7 +19,8 @@
     "scripts": ["decide.js", "background.js"]
   },
   "options_ui": { "page": "options.html", "open_in_tab": false },
-  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage"],
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage", "cookies"],
+  "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

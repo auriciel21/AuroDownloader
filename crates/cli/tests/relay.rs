@@ -111,8 +111,41 @@ async fn the_relay_adds_downloads_and_nothing_else() {
     assert_eq!(task.state.as_sql(), "paused");
     assert_eq!(engine.list(Default::default()).await.unwrap().0.len(), 1);
 
+    // Avec les en-têtes de la page : envoyés au serveur.
+    let with_page = ask(json!({
+        "type": "add",
+        "url": site.url("/connecte.bin"),
+        "requestId": "dl-43",
+        "headers": {"Cookie": "session=1", "Referer": "https://exemple.org/", "User-Agent": "Navigateur/1"},
+    }))
+    .await;
+    assert_eq!(with_page["ok"], true, "{with_page}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let sent = loop {
+        if let Some(r) = site
+            .requests()
+            .into_iter()
+            .find(|r| r.path == "/connecte.bin")
+        {
+            break r;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "aucune requête");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(sent.header("cookie"), Some("session=1"));
+    assert_eq!(sent.header("referer"), Some("https://exemple.org/"));
+    assert_eq!(sent.header("user-agent"), Some("Navigateur/1"));
+
     for (message, code) in [
         (json!({"type": "add"}), "BAD_MESSAGE"),
+        (
+            json!({"type": "add", "url": "https://x/a", "headers": "Cookie: a"}),
+            "BAD_MESSAGE",
+        ),
+        (
+            json!({"type": "add", "url": "https://x/a", "headers": {"Host": "y"}}),
+            "INVALID_PARAMS",
+        ),
         (json!({"url": "https://x"}), "BAD_MESSAGE"),
         (json!({"type": "remove", "taskId": task_id}), "UNKNOWN_TYPE"),
         (json!({"type": "add", "url": "ftp:/rien"}), "URL_INVALID"),

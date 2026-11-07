@@ -13,6 +13,40 @@ fn client() -> Client {
     Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap()
 }
 
+#[test]
+fn task_headers_are_checked() {
+    let h = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+            .collect()
+    };
+    assert!(check_task_headers(&h(&[("Referer", "https://x/"), ("Cookie", "a=1")])).is_ok());
+    assert!(check_task_headers(&[]).is_ok());
+    for bad in [
+        h(&[("host", "x")]),
+        h(&[("If-Range", "\"v\"")]),
+        h(&[("Accept-Encoding", "gzip")]),
+        h(&[("Cookie", "a"), ("COOKIE", "b")]),
+        h(&[("Nom invalide", "x")]),
+        h(&[("X-Ligne", "a\r\nb")]),
+    ] {
+        assert!(check_task_headers(&bad).is_err(), "{bad:?}");
+    }
+    let long = vec![(
+        "Cookie".to_owned(),
+        "x".repeat(crate::secrets::MAX_SECRET + 1),
+    )];
+    let refused = check_task_headers(&long).unwrap_err().to_string();
+    assert!(!refused.contains("xxxx"), "la valeur n'est jamais citée");
+    let many: Vec<_> = (0..=MAX_TASK_HEADERS)
+        .map(|i| (format!("X-{i}"), "v".to_owned()))
+        .collect();
+    assert!(check_task_headers(&many).is_err());
+    assert!(is_secret_header("cookie") && is_secret_header("Authorization"));
+    assert!(is_secret_header("PROXY-AUTHORIZATION") && !is_secret_header("Referer"));
+}
+
 #[tokio::test]
 async fn head_announcing_ranges_and_size_is_enough() {
     let server = serve(|_| {
@@ -187,6 +221,67 @@ async fn redirects_are_followed_and_the_name_comes_from_the_final_url() {
     let probe = client().probe(&server.url("/court"), &[]).await.unwrap();
     assert_eq!(probe.final_url.path(), "/fichiers/b%C3%A9b%C3%A9.iso");
     assert_eq!(probe.file_name, "bébé.iso");
+}
+
+/// Les en-têtes secrets d'une tâche (SPEC §5.1) suivent une redirection vers le même hôte,
+/// jamais vers un autre : le cookie d'un site ne part pas chez son hébergeur de fichiers.
+/// Le `Referer` reste celui de la tâche, et pas l'adresse qui redirige (SPEC §8.2).
+#[tokio::test]
+async fn secret_headers_do_not_follow_a_redirect_to_another_host() {
+    let elsewhere = serve(|_| {
+        reply(
+            "200 OK",
+            &[("Content-Length", "7"), ("Accept-Ranges", "bytes")],
+            b"",
+        )
+    });
+    let target = elsewhere.url("/f.bin");
+    let site = serve(move |r| match r.path.as_str() {
+        "/ici" => reply(
+            "302 Found",
+            &[("Location", "/f.bin"), ("Content-Length", "0")],
+            b"",
+        ),
+        "/ailleurs" => reply(
+            "302 Found",
+            &[("Location", target.as_str()), ("Content-Length", "0")],
+            b"",
+        ),
+        _ => reply(
+            "200 OK",
+            &[("Content-Length", "7"), ("Accept-Ranges", "bytes")],
+            b"",
+        ),
+    });
+    let headers = [
+        ("Cookie".to_owned(), "session=1".to_owned()),
+        ("Authorization".to_owned(), "Bearer jeton".to_owned()),
+        ("Referer".to_owned(), "https://exemple.org/".to_owned()),
+    ];
+    client().probe(&site.url("/ici"), &headers).await.unwrap();
+    let followed = site.requests();
+    let last = followed.last().unwrap();
+    assert_eq!(last.path, "/f.bin");
+    assert_eq!(last.header("cookie"), Some("session=1"));
+    assert_eq!(last.header("authorization"), Some("Bearer jeton"));
+
+    client()
+        .probe(&site.url("/ailleurs"), &headers)
+        .await
+        .unwrap();
+    let away = elsewhere.requests();
+    assert!(!away.is_empty());
+    for r in away {
+        assert_eq!(r.header("cookie"), None);
+        assert_eq!(r.header("authorization"), None);
+        assert_eq!(r.header("referer"), Some("https://exemple.org/"));
+    }
+    // Sans `Referer` dans la tâche, aucun après la redirection.
+    let before = elsewhere.requests().len();
+    client().probe(&site.url("/ailleurs"), &[]).await.unwrap();
+    for r in &elsewhere.requests()[before..] {
+        assert_eq!(r.header("referer"), None);
+    }
 }
 
 #[tokio::test]

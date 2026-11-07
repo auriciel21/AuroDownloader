@@ -7,6 +7,7 @@
 //! Phase 1 (SPEC §9.3) : `store`, `segmenter`, `net`, `io` et `transfer`. Phase 2 :
 //! `scheduler` (files, nouvelles tentatives, reprise au démarrage ; objet `Engine`),
 //! `rpc`, `limit` (limites de débit), `launch` (démarrage d'`aurod` par ses clients).
+//! Phase 3 : `secrets` (coffre du système, pour les cookies et jetons des tâches).
 //! Torrent, média, post-traitement et plugins arriveront avec leurs phases.
 
 pub mod io;
@@ -18,6 +19,7 @@ pub mod power;
 pub mod rpc;
 pub mod schedule;
 pub mod scheduler;
+pub mod secrets;
 pub mod segmenter;
 pub mod store;
 #[cfg(any(test, feature = "testing"))]

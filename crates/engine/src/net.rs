@@ -4,9 +4,10 @@
 //! segments avec `If-Range` ([`Client::get_range`], SPEC §7.4) et flux unique
 //! ([`Client::get_all`]), noms de fichier ([`filename`]), classement des erreurs selon la
 //! SPEC §6.8. TLS par `rustls`, avec les certificats racines du système
-//! (`rustls-platform-verifier`).
+//! (`rustls-platform-verifier`). En-têtes d'une tâche ([`check_task_headers`]) : ceux de
+//! la page transmis par l'extension, cookies compris (F-06).
 //!
-//! À faire : FTP, proxies (F-07), cookies et authentification (F-06), HTTP/3 (F-05).
+//! À faire : FTP, proxies (F-07), authentification Basic et Digest (F-06), HTTP/3 (F-05).
 
 pub mod filename;
 pub mod headers;
@@ -346,6 +347,10 @@ impl Client {
             .user_agent(USER_AGENT)
             .connect_timeout(connect)
             .redirect(policy)
+            // Pas de `Referer` inventé après une redirection : reqwest y mettrait l'adresse
+            // qui redirige, signature comprise, à l'intention d'un autre hôte. Celui de la
+            // tâche (page d'origine) reste, comme dans un navigateur.
+            .referer(false)
             .tls_certs_merge(roots)
             .build()
             .map_err(NetError::from_reqwest)?;
@@ -662,6 +667,67 @@ fn parse_url(url: &str) -> Result<Url, NetError> {
         "http" | "https" => Ok(url),
         other => Err(NetError::UnsupportedScheme(other.to_owned())),
     }
+}
+
+/// En-têtes d'une tâche, au plus (`task.add`, SPEC §6.5).
+pub const MAX_TASK_HEADERS: usize = 32;
+
+/// En-têtes que le moteur fixe lui-même (plages, validateurs, compression : SPEC §7.1 et
+/// §7.4), ou propres à une connexion : une tâche ne les impose pas.
+const RESERVED_HEADERS: [&str; 17] = [
+    "accept-encoding",
+    "connection",
+    "content-length",
+    "expect",
+    "host",
+    "if-match",
+    "if-modified-since",
+    "if-none-match",
+    "if-range",
+    "if-unmodified-since",
+    "keep-alive",
+    "proxy-connection",
+    "range",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// En-têtes secrets (SPEC §5.1) : rangés dans le coffre du système, jamais en base.
+/// reqwest les retire d'une redirection vers un autre hôte.
+pub fn is_secret_header(name: &str) -> bool {
+    ["cookie", "authorization", "proxy-authorization"]
+        .iter()
+        .any(|s| name.eq_ignore_ascii_case(s))
+}
+
+/// Vérifie les en-têtes d'une tâche : noms et valeurs valides, sans doublon (casse
+/// ignorée), ni en-tête réservé au moteur, valeurs d'au plus
+/// [`crate::secrets::MAX_SECRET`] octets. Le message ne cite jamais une valeur (SPEC §8.2).
+pub fn check_task_headers(list: &[(String, String)]) -> Result<(), NetError> {
+    if list.len() > MAX_TASK_HEADERS {
+        return Err(NetError::BadHeader(format!(
+            "{} en-têtes, {MAX_TASK_HEADERS} au plus",
+            list.len()
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in list {
+        let lower = name.to_ascii_lowercase();
+        if RESERVED_HEADERS.contains(&lower.as_str()) {
+            return Err(NetError::BadHeader(format!(
+                "{name} est fixé par le moteur"
+            )));
+        }
+        if !seen.insert(lower) {
+            return Err(NetError::BadHeader(format!("{name} en double")));
+        }
+        if value.len() > crate::secrets::MAX_SECRET {
+            return Err(NetError::BadHeader(format!("valeur de {name} trop longue")));
+        }
+    }
+    header_map(list).map(|_| ())
 }
 
 /// En-têtes de la tâche ; le message d'erreur ne cite que le nom, jamais la valeur.

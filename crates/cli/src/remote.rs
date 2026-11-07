@@ -52,6 +52,8 @@ pub struct AddOptions<'a> {
     /// Limite de débit de la tâche, en octets par seconde.
     pub limit: Option<u64>,
     pub paused: bool,
+    /// En-têtes HTTP de la tâche.
+    pub headers: &'a [(String, String)],
 }
 
 async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<String> {
@@ -68,6 +70,14 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
     }
     if let Some(queue) = opts.queue {
         params["queueId"] = json!(queue_id(rpc, queue).await?);
+    }
+    if !opts.headers.is_empty() {
+        let headers: serde_json::Map<String, Value> = opts
+            .headers
+            .iter()
+            .map(|(n, v)| (n.clone(), json!(v)))
+            .collect();
+        params["headers"] = Value::Object(headers);
     }
     let added = rpc.call("task.add", params).await?;
     added["taskId"]
