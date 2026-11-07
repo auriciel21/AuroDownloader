@@ -759,12 +759,14 @@ pub struct QueueRow {
     pub position: i64,
     pub max_active: u32,
     pub speed_limit_bps: Option<u64>,
+    /// Planification de la file (F-16) ; `None` : elle télécharge à toute heure.
+    pub schedule_id: Option<String>,
 }
 
 /// Toutes les files, dans leur ordre.
 pub fn list_queues(conn: &Connection) -> Result<Vec<QueueRow>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, position, max_active, speed_limit_bps FROM queues
+        "SELECT id, name, position, max_active, speed_limit_bps, schedule_id FROM queues
          ORDER BY position, id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -774,10 +776,11 @@ pub fn list_queues(conn: &Connection) -> Result<Vec<QueueRow>, StoreError> {
             r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
             r.get::<_, Option<i64>>(4)?,
+            r.get::<_, Option<String>>(5)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, name, position, max_active, limit) = row?;
+        let (id, name, position, max_active, limit, schedule_id) = row?;
         Ok(QueueRow {
             max_active: u32::try_from(max_active)
                 .map_err(|_| StoreError::BadValue(format!("file {id} : limite invalide")))?,
@@ -785,6 +788,7 @@ pub fn list_queues(conn: &Connection) -> Result<Vec<QueueRow>, StoreError> {
             id,
             name,
             position,
+            schedule_id,
         })
     })
     .collect()
@@ -835,6 +839,32 @@ pub fn update_queue(
         params![queue_id, name, max_active, limit.is_some(), limit.flatten()],
     )?;
     Ok(updated > 0)
+}
+
+/// Attache une planification à une file, ou l'en détache (`None`) ; `false` si la file
+/// n'existe pas. La planification doit exister (clé étrangère).
+pub fn set_queue_schedule(
+    conn: &Connection,
+    queue_id: &str,
+    schedule_id: Option<&str>,
+) -> Result<bool, StoreError> {
+    let updated = conn.execute(
+        "UPDATE queues SET schedule_id = ?2 WHERE id = ?1",
+        params![queue_id, schedule_id],
+    )?;
+    Ok(updated > 0)
+}
+
+/// Tâches d'une file qui ont encore à télécharger : en file, en cours, en attente d'une
+/// nouvelle tentative, en vérification ou en finition. Les pauses n'en sont pas.
+pub fn count_pending(conn: &Connection, queue_id: &str) -> Result<u64, StoreError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE queue_id = ?1 AND state IN
+           ('queued', 'active', 'retry_wait', 'verifying', 'post_processing')",
+        [queue_id],
+        |r| r.get(0),
+    )?;
+    Ok(n.unsigned_abs())
 }
 
 /// Date de la prochaine nouvelle tentative (millisecondes Unix), s'il y en a une.

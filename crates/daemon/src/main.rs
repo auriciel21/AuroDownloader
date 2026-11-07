@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use auro_engine::net::Client;
 use auro_engine::paths;
+use auro_engine::power;
 use auro_engine::rpc::local;
-use auro_engine::scheduler::{Config, DISK_RECHECK, Engine};
+use auro_engine::scheduler::{Config, DISK_RECHECK, Engine, Planning};
 use auro_engine::transfer::Options;
 use clap::Parser;
 
@@ -34,6 +35,11 @@ struct Args {
     /// validation des certificats reste stricte.
     #[arg(long, value_name = "FICHIER")]
     ca_cert: Option<PathBuf>,
+
+    /// Essais : l'action de fin d'une planification (veille, extinction) est écrite dans
+    /// le journal au lieu d'être exécutée
+    #[arg(long)]
+    simulate_power: bool,
 }
 
 fn main() -> Result<()> {
@@ -58,15 +64,24 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run(db, endpoint, client))
+    let planning = Planning {
+        power: if args.simulate_power {
+            power::simulate
+        } else {
+            power::system
+        },
+        ..Planning::default()
+    };
+    runtime.block_on(run(db, endpoint, client, planning))
 }
 
-async fn run(db: PathBuf, endpoint: String, client: Client) -> Result<()> {
+async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) -> Result<()> {
     let engine = Engine::start(Config {
         db_path: db.clone(),
         client,
         transfer: Options::default(),
         disk_recheck: DISK_RECHECK,
+        planning,
     })
     .with_context(|| format!("impossible de démarrer le moteur sur {}", db.display()))?;
     let mut listening = tokio::spawn({

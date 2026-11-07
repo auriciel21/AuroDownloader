@@ -7,7 +7,10 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use super::session::{Ctx, Topics};
-use super::{PROTOCOL_VERSIONS, RpcError, negotiate, queue_json, task_json};
+use super::{
+    PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
+};
+use crate::schedule::Rules;
 use crate::scheduler::{AddTask, EngineError, Include, QueueChange, TaskDetails, TaskUpdate};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
@@ -71,6 +74,16 @@ impl Params {
                 Some(n) if n > 0 => Ok(Some(Some(n))),
                 _ => Err(Self::wrong(name, "entier strictement positif ou null")),
             },
+        }
+    }
+
+    /// Texte facultatif qu'on peut effacer : absent `None`, `null` `Some(None)`.
+    fn nullable_str(&self, name: &str) -> Result<Option<Option<String>>, RpcError> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(Value::Null) => Ok(Some(None)),
+            Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+            Some(_) => Err(Self::wrong(name, "texte ou null")),
         }
     }
 
@@ -159,20 +172,27 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(json!({"items": queues.iter().map(queue_json).collect::<Vec<_>>()}))
         }
         "queue.create" => {
-            p.refuse(&["scheduleId"])?;
             let name = p.required_str("name")?;
             let max_active = p.u32("maxActive")?.unwrap_or(3);
             let limit = p.limit("speedLimitBps")?.flatten();
+            let schedule_id = p.nullable_str("scheduleId")?.flatten();
             let id = ctx.engine.create_queue(&name, max_active, limit).await?;
+            if let Some(schedule_id) = schedule_id {
+                let change = QueueChange {
+                    schedule_id: Some(Some(schedule_id)),
+                    ..QueueChange::default()
+                };
+                ctx.engine.update_queue(&id, change).await?;
+            }
             queue_by_id(ctx, &id).await
         }
         "queue.update" => {
-            p.refuse(&["scheduleId"])?;
             let id = p.required_str("queueId")?;
             let change = QueueChange {
                 name: p.str("name")?,
                 max_active: p.u32("maxActive")?,
                 speed_limit_bps: p.limit("speedLimitBps")?,
+                schedule_id: p.nullable_str("scheduleId")?,
             };
             let queue = ctx.engine.update_queue(&id, change).await?;
             Ok(queue_json(&queue))
@@ -198,7 +218,45 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": null},
+                "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
+                "endAction": end_action_json(s.end_action.as_ref()),
             }))
+        }
+        "schedule.list" => {
+            let items = ctx.engine.schedules().await?;
+            Ok(json!({"items": items.iter().map(schedule_json).collect::<Vec<_>>()}))
+        }
+        "schedule.set" => {
+            let rules = p
+                .get("rules")
+                .ok_or_else(|| RpcError::invalid_params("rules manquant"))
+                .and_then(|v| Rules::from_json(v).map_err(RpcError::invalid_params))?;
+            let enabled = match p.get("enabled") {
+                None => true,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| RpcError::invalid_params("enabled : booléen attendu"))?,
+            };
+            let view = ctx
+                .engine
+                .set_schedule(
+                    p.str("scheduleId")?,
+                    p.required_str("name")?,
+                    enabled,
+                    rules,
+                )
+                .await?;
+            Ok(schedule_json(&view))
+        }
+        "schedule.delete" => {
+            ctx.engine
+                .delete_schedule(&p.required_str("scheduleId")?)
+                .await?;
+            Ok(json!({}))
+        }
+        "engine.cancelEndAction" => {
+            let cancelled = ctx.engine.cancel_end_action().await?;
+            Ok(json!({"cancelled": cancelled}))
         }
         _ => Err(RpcError::method_not_found(method)),
     }

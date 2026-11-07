@@ -44,6 +44,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Storage_FileSystem",
     # Lancer `aurod` sans lui transmettre les poignées d'entrée et de sortie (`launch`).
     "Win32_System_Console",
+    # Mise en veille, action de fin d'une planification (`power`).
+    "Win32_System_Power",
     "Win32_System_Threading",
 ] }
 

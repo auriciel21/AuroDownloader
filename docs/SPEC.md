@@ -265,6 +265,9 @@ CREATE TABLE schedules (
   rules_json TEXT NOT NULL,   -- plages horaires, jours, action de fin
   enabled    INTEGER NOT NULL DEFAULT 1
 );
+-- rules_json (depuis le 2026-11-07, format du protocole, section 7.11) :
+--   {"windows": [{"days": [1,2,3,4,5], "start": "23:00", "end": "07:00"}],
+--    "onDone": "none" | "sleep" | "shutdown"}
 
 CREATE TABLE queues (
   id              TEXT PRIMARY KEY,
@@ -511,13 +514,14 @@ Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et 
 | `task.setFiles` | `taskId`, `selected[]` (torrent) | Tâche modifiée |
 | `queue.list` / `queue.create` / `queue.update` / `queue.delete` | `name`, `maxActive`, `speedLimitBps`, `scheduleId` | File ou liste de files |
 | `limits.get` / `limits.set` | `downloadBps`, `uploadBps` | Limites globales |
-| `schedule.list` / `schedule.set` | `rules` | Planification |
+| `schedule.list` / `schedule.set` / `schedule.delete` | `scheduleId`, `name`, `enabled`, `rules` | Planification, avec son ouverture (section 7.11) |
+| `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
 | `history.list` / `history.clear` | `query`, `before`, `limit` | Entrées d'historique |
 | `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages |
 | `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
-| `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`) et `rev` |
+| `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`, `schedules`, `endAction`) et `rev` |
 
 ### 6.5 Notifications du moteur
 
@@ -532,17 +536,19 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `task.removed` | `taskId` |
 | `queue.updated` | File modifiée |
 | `limits.updated` | Limites globales, comme `limits.get` (depuis le 2026-11-07) |
+| `schedule.updated` | Planification créée, modifiée, ou dont l'ouverture vient de changer, comme `schedule.list` la décrit (depuis le 2026-11-07) |
+| `schedule.removed` | `scheduleId` (depuis le 2026-11-07) |
+| `engine.endAction` | `pending` : action de fin annoncée (`queueId`, `action`, `at`), ou `null` quand elle est exécutée ou annulée ; `error` : refus du système (depuis le 2026-11-07) |
 | `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
-Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : `fileName`, `checksum`, `headers`, `idempotencyKey` et plusieurs sources ;
   - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
-  - pour les files : `scheduleId` ;
   - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
   - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
@@ -617,6 +623,7 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32010 | `TASK_NOT_FOUND` | Identifiant de tâche inconnu |
 | -32011 | `INVALID_STATE` | Transition interdite depuis l'état actuel de la tâche |
 | -32012 | `QUEUE_NOT_FOUND` | Identifiant de file inconnu |
+| -32013 | `SCHEDULE_NOT_FOUND` | Identifiant de planification inconnu (depuis le 2026-11-07) |
 | -32020 | `URL_INVALID` | Adresse non reconnue ou schéma non pris en charge |
 | -32021 | `DEST_NOT_WRITABLE` | Dossier de destination inaccessible en écriture |
 | -32022 | `INSUFFICIENT_SPACE` | Espace disque insuffisant pour la taille annoncée |
@@ -816,6 +823,33 @@ En flux unique, l'empreinte se calcule au fil de l'eau. Pour un fichier segment�
 | Réserve d'un seau de débit inemployé | 100 ms de son débit | non |
 | Place laissée libre sur le disque de destination | 64 Mio | non |
 | Vérification de la place pour les tâches en pause `disk_full` | 30 s | non |
+| Contrôle des plages horaires (section 7.11) | 15 s | non |
+| Délai entre l'annonce d'une action de fin et son exécution | 60 s | non |
+
+### 7.11 Planification (F-16)
+
+Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions de fin sont la mise en veille et l'extinction (la commande externe viendra avec F-34) ; une reprise manuelle hors des plages attend la plage suivante.
+
+- **Règles.** Une planification porte un nom, un drapeau `enabled` et des règles : au moins une plage, et une action de fin (`onDone` : `none`, `sleep` ou `shutdown` ; `none` si absente).
+  - Une plage : `days` (de 1, lundi, à 7, dimanche ; au moins un), `start` et `end` au format `HH:MM`, heure locale de la machine du moteur.
+  - Une plage dont `end` est inférieur ou égal à `start` passe minuit, et appartient au jour où elle commence : « vendredi, 23:00 à 07:00 » couvre la nuit du vendredi au samedi. `start` égal à `end` : 24 h.
+  - L'heure locale suit l'heure d'été du système (lue par SQLite, modificateur `localtime`).
+- **Ouverture.** Une file sans planification, ou dont la planification est désactivée, télécharge à toute heure. Sinon, elle est ouverte pendant ses plages et fermée en dehors.
+  - Une file fermée ne démarre rien : ni ses tâches en file, ni ses nouvelles tentatives, ni une tâche reprise à la main, qui attend la plage suivante.
+  - Quand elle ferme, ses tâches en cours s'arrêtent après leur point de contrôle et retournent en file (`active` → `paused` → `queued`, comme à l'arrêt du moteur, section 7.4). Elles reprendront à la plage suivante, à partir de leurs octets enregistrés.
+  - Le moteur contrôle les plages toutes les 15 s : une file s'ouvre ou se ferme au plus 15 s après l'heure prévue.
+- **Protocole.** `schedule.list` et `sync.snapshot` décrivent chaque planification : `scheduleId`, `name`, `enabled`, `rules`, `open` (ses files peuvent télécharger ; toujours vrai si elle est désactivée) et `nextChangeAt` (prochain changement d'ouverture, millisecondes Unix, `null` s'il n'y en a pas).
+  - `schedule.set` crée une planification (sans `scheduleId`) ou la remplace ; `enabled` vaut vrai s'il est absent. Des règles invalides sont refusées par `INVALID_PARAMS`, un identifiant inconnu par `SCHEDULE_NOT_FOUND`.
+  - `queue.create` et `queue.update` acceptent `scheduleId` ; `null` détache la planification. Une file la décrit dans `scheduleId`.
+  - `schedule.delete` la supprime ; ses files la perdent, ce qu'annonce `queue.updated`.
+  - Chaque changement, et chaque ouverture ou fermeture, est annoncé par `schedule.updated` avec une nouvelle révision.
+- **Action de fin.** Quand une tâche d'une file planifiée se termine, et que la planification active de cette file a une action de fin, le moteur l'arme. Dès que la file n'a plus rien à télécharger (aucune tâche en file, en cours, en attente d'une nouvelle tentative, en vérification ou en finition ; les pauses ne comptent pas), il l'annonce par `engine.endAction`, avec l'heure prévue `at`, une minute plus tard.
+  - Pendant cette minute, `engine.cancelEndAction` l'annule ; elle tombe aussi d'elle-même si la file a de nouveau du travail. L'annulation est annoncée par `engine.endAction` avec `pending` à `null`.
+  - À l'heure dite, le moteur exécute l'action, puis l'annonce de même ; si le système la refuse, `error` le dit.
+  - Une seule action de fin à la fois. `sync.snapshot` porte celle qui est annoncée dans `endAction`.
+  - Exécution : sous Windows, `SetSuspendState` pour la veille, `%SystemRoot%\System32\shutdown.exe /s /t 0` pour l'extinction ; sous Linux, `systemctl suspend` ou `systemctl poweroff`. Ailleurs (Android), l'action est refusée.
+  - Seul `aurod` branche ces actions. La bibliothèque du moteur, ses tests et ses bancs n'en ont aucune, et refusent. `aurod --simulate-power` écrit l'action dans son journal au lieu de l'exécuter, pour les essais.
+  - Portée : quand les jetons existeront (section 6.9), choisir une action de fin demandera la portée `admin`.
 
 ## 8. Sécurité, vie privée et cadre légal
 

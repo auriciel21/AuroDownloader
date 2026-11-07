@@ -31,6 +31,7 @@
     <symbol id="i-programs" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9h17M7 13l2.5 2L7 17M11.5 17h4"/></symbol>
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></symbol>
     <symbol id="i-other" viewBox="0 0 24 24"><path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5"/></symbol>
+    <symbol id="i-schedule" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v3.5l2.5 1.5"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
   </svg>
 
@@ -55,11 +56,18 @@
     <span class="separator" aria-hidden="true"></span>
     <button type="button" id="tb-properties" class="tool" aria-keyshortcuts="Enter">
       <svg aria-hidden="true"><use href="#i-properties"/></svg><span data-i18n="Propriétés">Propriétés</span></button>
+    <button type="button" id="tb-schedule" class="tool">
+      <svg aria-hidden="true"><use href="#i-schedule"/></svg><span data-i18n="Planification">Planification</span></button>
     <button type="button" id="tb-settings" class="tool">
       <svg aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="Options">Options</span></button>
   </div>
 
   <div id="banner" role="status" hidden></div>
+  <div id="end-action" role="alert" hidden>
+    <span id="end-action-text"></span>
+    <span id="end-action-count" aria-hidden="true"></span>
+    <button type="button" id="end-action-cancel" data-i18n="Annuler">Annuler</button>
+  </div>
   <div id="error" role="alert" hidden>
     <span id="error-text"></span>
     <button type="button" id="error-close" data-i18n="Fermer" data-i18n-label="Fermer le message">Fermer</button>
@@ -85,6 +93,7 @@
 
   <footer>
     <span id="summary"></span>
+    <span id="planning-status"></span>
     <span id="selection-count"></span>
     <label class="limit">
       <span data-i18n="Limite de débit globale">Limite de débit globale</span>
@@ -139,6 +148,39 @@
       <div class="buttons">
         <button value="cancel" data-i18n="Annuler">Annuler</button>
         <button value="confirm" class="danger" data-i18n="Supprimer">Supprimer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="schedule-dialog" class="wide" aria-labelledby="schedule-title">
+    <form method="dialog" id="schedule-form">
+      <h2 id="schedule-title" data-i18n="Planification">Planification</h2>
+      <label class="field" id="sch-queue-field">
+        <span data-i18n="File d'attente">File d'attente</span>
+        <select id="sch-queue"></select>
+      </label>
+      <label class="check"><input type="checkbox" id="sch-enabled">
+        <span data-i18n="Ne télécharger que pendant ces plages horaires">Ne télécharger que pendant ces plages horaires</span></label>
+      <fieldset id="sch-windows-box">
+        <legend data-i18n="Plages horaires">Plages horaires</legend>
+        <ul id="sch-windows"></ul>
+        <button type="button" id="sch-add-window" data-i18n="Ajouter une plage">Ajouter une plage</button>
+        <p class="note flush" data-i18n="Une plage dont la fin précède le début passe minuit : de 23:00 à 07:00, c'est la nuit.">Une plage dont la fin précède le début passe minuit : de 23:00 à 07:00, c'est la nuit.</p>
+      </fieldset>
+      <label class="field">
+        <span data-i18n="Quand la file n'a plus rien à télécharger">Quand la file n'a plus rien à télécharger</span>
+        <select id="sch-end">
+          <option value="none" data-i18n="Ne rien faire">Ne rien faire</option>
+          <option value="sleep" data-i18n="Mettre l'ordinateur en veille">Mettre l'ordinateur en veille</option>
+          <option value="shutdown" data-i18n="Éteindre l'ordinateur">Éteindre l'ordinateur</option>
+        </select>
+        <span class="note" data-i18n="Annoncé une minute avant, avec un bouton pour l'annuler.">Annoncé une minute avant, avec un bouton pour l'annuler.</span>
+      </label>
+      <p id="sch-state" class="note flush"></p>
+      <p id="sch-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="sch-save" class="primary" data-i18n="Enregistrer">Enregistrer</button>
       </div>
     </form>
   </dialog>

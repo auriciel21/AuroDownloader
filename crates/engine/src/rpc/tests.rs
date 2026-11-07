@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 use super::serve;
 use crate::net::Client;
-use crate::scheduler::{Config, DISK_RECHECK, Engine};
+use crate::scheduler::{Config, DISK_RECHECK, Engine, Planning};
 use crate::testing::{FileSite, Pace, Server, serve_file, serve_file_paced};
 use crate::transfer::Options;
 
@@ -31,6 +31,7 @@ fn engine(dir: &Path) -> Engine {
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
     })
     .unwrap()
 }
@@ -733,6 +734,7 @@ fn engine_at(dir: &Path, db: &str) -> Engine {
         client: Client::new().unwrap(),
         transfer: Options::default(),
         disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
     })
     .unwrap()
 }
@@ -817,5 +819,113 @@ async fn task_get_shows_segments_and_sources_on_request() {
     .expect("jamais terminée");
     assert_eq!(done["segments"], json!([]));
     assert_eq!(done["sources"], json!([]));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn schedules_are_set_attached_announced_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let rules = json!({
+        "windows": [{"days": [1, 2, 3, 4, 5], "start": "23:00", "end": "07:00"}],
+        "onDone": "shutdown",
+    });
+
+    let set = c
+        .result("schedule.set", json!({"name": "Nuit", "rules": rules}))
+        .await;
+    let id = set["scheduleId"].as_str().unwrap().to_owned();
+    assert_eq!(set["name"], "Nuit");
+    assert_eq!(set["enabled"], true, "activée par défaut");
+    assert_eq!(set["rules"], rules);
+    assert!(set["open"].is_boolean());
+    assert!(set["nextChangeAt"].as_i64().is_some(), "{set}");
+    let note = c.notification("schedule.updated", |_| true).await;
+    assert_eq!(note["schedule"], set);
+
+    let listed = c.result("schedule.list", json!({})).await;
+    assert_eq!(listed["items"], json!([set]));
+
+    // Attachée à la file principale : annoncée, et dans l'instantané.
+    let queue = c.result("queue.list", json!({})).await["items"][0]["queueId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let updated = c
+        .result("queue.update", json!({"queueId": queue, "scheduleId": id}))
+        .await;
+    assert_eq!(updated["scheduleId"], id.as_str());
+    let note = c.notification("queue.updated", |_| true).await;
+    assert_eq!(note["queue"]["scheduleId"], id.as_str());
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["schedules"][0]["scheduleId"], id.as_str());
+    assert_eq!(snapshot["queues"][0]["scheduleId"], id.as_str());
+    assert_eq!(snapshot["endAction"], Value::Null);
+
+    // Désactivée : toujours ouverte, sans prochain changement.
+    let off = c
+        .result(
+            "schedule.set",
+            json!({"scheduleId": id, "name": "Nuit", "enabled": false, "rules": rules}),
+        )
+        .await;
+    assert_eq!(off["open"], true);
+    assert_eq!(off["nextChangeAt"], Value::Null);
+
+    // Refus.
+    for (method, params, code) in [
+        (
+            "schedule.set",
+            json!({"name": "X", "rules": {"windows": []}}),
+            "INVALID_PARAMS",
+        ),
+        ("schedule.set", json!({"name": "X"}), "INVALID_PARAMS"),
+        (
+            "schedule.set",
+            json!({"scheduleId": "inconnue", "name": "X", "rules": rules}),
+            "SCHEDULE_NOT_FOUND",
+        ),
+        (
+            "queue.update",
+            json!({"queueId": queue, "scheduleId": "inconnue"}),
+            "SCHEDULE_NOT_FOUND",
+        ),
+        (
+            "queue.update",
+            json!({"queueId": queue, "scheduleId": 3}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "schedule.delete",
+            json!({"scheduleId": "inconnue"}),
+            "SCHEDULE_NOT_FOUND",
+        ),
+    ] {
+        assert_eq!(
+            c.error_code(method, params.clone()).await,
+            code,
+            "{method} {params}"
+        );
+    }
+    assert_eq!(
+        c.result("engine.cancelEndAction", json!({})).await,
+        json!({"cancelled": false})
+    );
+
+    // Supprimée : annoncée, et la file la perd.
+    c.result("schedule.delete", json!({"scheduleId": id})).await;
+    let note = c.notification("schedule.removed", |_| true).await;
+    assert_eq!(note["scheduleId"], id.as_str());
+    let note = c
+        .notification("queue.updated", |p| p["queue"]["scheduleId"].is_null())
+        .await;
+    assert_eq!(note["queue"]["queueId"], queue.as_str());
+    assert_eq!(
+        c.result("schedule.list", json!({})).await,
+        json!({"items": []})
+    );
     engine.shutdown().await;
 }

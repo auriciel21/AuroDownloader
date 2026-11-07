@@ -9,7 +9,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use super::{MAX_MESSAGE, RpcError, methods, notification, queue_json, response, task_json};
+use super::{
+    MAX_MESSAGE, RpcError, end_action_json, methods, notification, queue_json, response,
+    schedule_json, task_json,
+};
 use crate::scheduler::{Engine, Event};
 use crate::store::tasks::TaskState;
 use crate::transfer::Progress;
@@ -319,6 +322,22 @@ async fn describe(
                 json!({"rev": rev, "queue": queue_json(queue)}),
             ))
         }
+        Event::ScheduleChanged { rev, view } if topics.queues => Some(notification(
+            "schedule.updated",
+            json!({"rev": rev, "schedule": schedule_json(&view)}),
+        )),
+        Event::ScheduleRemoved { rev, schedule_id } if topics.queues => Some(notification(
+            "schedule.removed",
+            json!({"rev": rev, "scheduleId": schedule_id}),
+        )),
+        Event::EndAction {
+            rev,
+            pending,
+            error,
+        } if topics.queues => Some(notification(
+            "engine.endAction",
+            json!({"rev": rev, "pending": end_action_json(pending.as_ref()), "error": error}),
+        )),
         Event::Progress {
             task_id,
             progress: p,

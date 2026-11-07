@@ -38,7 +38,10 @@ téléchargement.
   (démarrage détaché d'`aurod` par ses clients, CLI et bureau), `limit`
   (seaux de jetons des limites de débit ; le planificateur tient le global, ceux des
   files et ceux des tâches en cours), `store::settings` (réglages, dont la limite
-  globale).
+  globale), `schedule` (plages horaires et action de fin, F-16 : règles, ouverture à
+  une heure locale lue par SQLite), `store::schedules` (planifications en base),
+  `scheduler::planning` (files fermées hors plage, action de fin annoncée puis
+  exécutée), `power` (veille et extinction ; branchées par `aurod` seulement).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -65,6 +68,10 @@ téléchargement.
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
   `engine stop` sur ce point d'accès.
+- Essais d'une action de fin (veille, extinction) : toujours avec un `aurod` d'essai lancé
+  à la main avec `--simulate-power` avant l'application (qui s'y connecte au lieu d'en
+  lancer un), et vérifier sa ligne de commande ; jamais avec un `aurod` qui pourrait
+  éteindre la machine de l'utilisateur.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
@@ -84,6 +91,7 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 # `engine start --db`, puis `engine stop`.
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
+cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
@@ -173,8 +181,9 @@ node --test ui/tests/
   sur `aurod`) ; 4. limites de débit (F-15) et espace disque (F-18) (faits : SPEC 7.6
   et 7.6 bis, commande `auro limit`) ; 5. prototypes Qt Quick et Tauri comparés (faits,
   `experiments/desktop/README.md`), Tauri choisi le 2026-11-06, application de bureau
-  (`apps/desktop`, `ui`, en cours ; essai NVDA par l'utilisateur à faire) ; 6. plages
-  horaires (F-16). Porte : utilisation quotidienne
+  (`apps/desktop`, `ui`, fenêtre à la manière d'IDM ; essai NVDA par l'utilisateur à
+  faire) ; 6. plages horaires (F-16, fait le 2026-11-07 : SPEC 7.11, `auro schedule`,
+  boîte « Planification »). Porte : utilisation quotidienne
   sans perte de données.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

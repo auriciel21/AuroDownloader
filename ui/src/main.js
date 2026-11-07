@@ -141,6 +141,15 @@ function percentText(task) {
 
 const rate = (bps) => t("{0}/s", bytes(bps, lang, t));
 
+/// État affiché d'une tâche : une tâche en file dont la file est hors de ses plages
+/// horaires le dit.
+function taskStateText(task) {
+  if (task.state === "queued" && store.waitsForWindow(task.queueId)) {
+    return t("En attente de la plage horaire");
+  }
+  return stateText(task, t);
+}
+
 // ---------- Arborescence ----------
 
 let treeSignature = "";
@@ -304,7 +313,7 @@ function renderRow(taskId) {
     bar.value = 0;
   }
   cell("pct").textContent = percentText(task);
-  cell("state").textContent = stateText(task, t);
+  cell("state").textContent = taskStateText(task);
   cell("state").title = cell("state").textContent;
   const active = task.state === "active";
   cell("eta").textContent = active ? duration(task.etaS, t) : "";
@@ -697,7 +706,7 @@ function renderDetails() {
   set("name", name);
   set("dir", task.destDir ?? "");
   set("url", source?.url ?? "");
-  set("state", stateText(task, t));
+  set("state", taskStateText(task));
   set("size", task.totalBytes != null ? bytes(task.totalBytes, lang, t) : t("inconnue"));
   set("done", pct ? t("{0} ({1})", bytes(task.doneBytes, lang, t), pct) : bytes(task.doneBytes, lang, t));
   set("rate", active ? rate(task.bps ?? 0) : "");
@@ -797,6 +806,235 @@ async function applyTaskLimit() {
   }
 }
 
+// ---------- Planification (F-16) ----------
+
+/// Lundi 2026-11-02 à midi, heure locale : pour nommer les jours dans la langue choisie.
+const A_MONDAY = new Date(2026, 10, 2, 12);
+
+function dayName(day, style) {
+  const date = new Date(A_MONDAY);
+  date.setDate(A_MONDAY.getDate() + day - 1);
+  return new Intl.DateTimeFormat(lang, { weekday: style }).format(date);
+}
+
+/// Moment d'un changement de plage : l'heure seule aujourd'hui, avec le jour sinon.
+function whenText(ms) {
+  if (!ms) return "";
+  const date = new Date(ms);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(lang, sameDay
+    ? { timeStyle: "short" }
+    : { weekday: "long", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+/// État d'une planification, en une phrase ; vide sans planification active.
+function planningText(schedule) {
+  if (!schedule?.enabled) return "";
+  if (schedule.open) {
+    return schedule.nextChangeAt
+      ? t("ouverte jusqu'à {0}", whenText(schedule.nextChangeAt))
+      : t("ouverte");
+  }
+  return schedule.nextChangeAt
+    ? t("fermée jusqu'à {0}", whenText(schedule.nextChangeAt))
+    : t("fermée");
+}
+
+const END_ACTIONS = {
+  sleep: "Mise en veille de l'ordinateur dans une minute : la file « {0} » n'a plus rien à télécharger.",
+  shutdown: "Extinction de l'ordinateur dans une minute : la file « {0} » n'a plus rien à télécharger.",
+};
+
+let endActionTimer = 0;
+
+/// Bandeau de l'action de fin annoncée, avec son compte à rebours.
+function renderEndAction() {
+  const pending = store.endAction;
+  const box = $("end-action");
+  clearInterval(endActionTimer);
+  if (!pending) {
+    box.hidden = true;
+    return;
+  }
+  const queue = store.queues.get(pending.queueId);
+  const text = t(END_ACTIONS[pending.action] ?? END_ACTIONS.shutdown, queue ? queueName(queue) : "?");
+  // Lu une fois par les lecteurs d'écran ; le décompte, lui, ne l'est pas.
+  if ($("end-action-text").textContent !== text) $("end-action-text").textContent = text;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((pending.at - Date.now()) / 1000));
+    $("end-action-count").textContent = t("({0} s)", left);
+  };
+  tick();
+  endActionTimer = setInterval(tick, 1000);
+  $("end-action-cancel").disabled = !connected;
+  box.hidden = false;
+}
+
+/// Barre d'état : les files planifiées et leur ouverture.
+function renderPlanningStatus() {
+  const parts = [];
+  for (const queue of store.queues.values()) {
+    const text = planningText(store.scheduleOf(queue.queueId));
+    if (text) parts.push(t("{0} : {1}", queueName(queue), text));
+  }
+  $("planning-status").textContent = parts.join(" · ");
+}
+
+function renderPlanning() {
+  renderEndAction();
+  renderPlanningStatus();
+  $("tb-schedule").disabled = !connected || store.queues.size === 0;
+}
+
+/// File dont la boîte de planification est ouverte.
+let scheduleQueue = null;
+
+function windowRow(window) {
+  const item = document.createElement("li");
+  item.className = "window";
+  const days = document.createElement("fieldset");
+  days.className = "days";
+  const legend = document.createElement("legend");
+  legend.className = "visually-hidden";
+  legend.textContent = t("Jours");
+  days.append(legend);
+  for (let day = 1; day <= 7; day++) {
+    const label = document.createElement("label");
+    label.className = "day";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(day);
+    box.checked = window.days.includes(day);
+    box.setAttribute("aria-label", dayName(day, "long"));
+    const short = document.createElement("span");
+    short.setAttribute("aria-hidden", "true");
+    short.textContent = dayName(day, "short");
+    label.append(box, short);
+    days.append(label);
+  }
+  const time = (cls, label, value) => {
+    const wrap = document.createElement("label");
+    wrap.className = "time";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const input = document.createElement("input");
+    input.type = "time";
+    input.className = cls;
+    input.required = true;
+    input.value = value;
+    wrap.append(text, input);
+    return wrap;
+  };
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-window";
+  remove.textContent = t("Retirer");
+  remove.setAttribute("aria-label", t("Retirer cette plage"));
+  remove.addEventListener("click", () => {
+    const list = $("sch-windows");
+    const next = item.nextElementSibling ?? item.previousElementSibling;
+    item.remove();
+    (next?.querySelector("input") ?? $("sch-add-window")).focus();
+    if (!list.childElementCount) list.append(windowRow(NEW_WINDOW));
+  });
+  item.append(days, time("start", t("de"), window.start), time("end", t("à"), window.end), remove);
+  return item;
+}
+
+/// Plage proposée à une file qui n'en a pas : la nuit, tous les jours.
+const NEW_WINDOW = { days: [1, 2, 3, 4, 5, 6, 7], start: "23:00", end: "07:00" };
+
+function fillSchedule(queueId) {
+  scheduleQueue = queueId;
+  const schedule = store.scheduleOf(queueId);
+  $("sch-enabled").checked = schedule ? schedule.enabled : true;
+  const windows = schedule?.rules?.windows?.length ? schedule.rules.windows : [NEW_WINDOW];
+  $("sch-windows").replaceChildren(...windows.map(windowRow));
+  $("sch-end").value = schedule?.rules?.onDone ?? "none";
+  const state = planningText(schedule);
+  $("sch-state").textContent = state ? t("En ce moment : {0}.", state) : "";
+  $("sch-error").hidden = true;
+  syncScheduleForm();
+}
+
+/// Les plages ne servent que si la planification est active.
+function syncScheduleForm() {
+  const on = $("sch-enabled").checked;
+  $("sch-windows-box").disabled = !on;
+  $("sch-end").disabled = !on;
+}
+
+function openSchedule() {
+  if (!connected || !store.queues.size) return;
+  const select = $("sch-queue");
+  const queues = [...store.queues.values()].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  select.replaceChildren(...queues.map((q) => {
+    const option = document.createElement("option");
+    option.value = q.queueId;
+    option.textContent = queueName(q);
+    return option;
+  }));
+  // La file de la vue choisie, sinon la première.
+  const fromView = view.startsWith("queue:") ? view.slice(6) : null;
+  select.value = fromView && store.queues.has(fromView) ? fromView : queues[0].queueId;
+  $("sch-queue-field").hidden = queues.length < 2;
+  fillSchedule(select.value);
+  $("schedule-dialog").showModal();
+}
+
+/// Règles saisies, ou un message d'erreur.
+function readSchedule() {
+  const windows = [];
+  for (const item of $("sch-windows").children) {
+    const days = [...item.querySelectorAll(".days input:checked")].map((box) => Number(box.value));
+    const start = item.querySelector("input.start").value;
+    const end = item.querySelector("input.end").value;
+    if (!days.length) return { error: t("Chaque plage a besoin d'au moins un jour.") };
+    if (!start || !end) return { error: t("Chaque plage a besoin d'une heure de début et de fin.") };
+    windows.push({ days, start: start.slice(0, 5), end: end.slice(0, 5) });
+  }
+  return { rules: { windows, onDone: $("sch-end").value } };
+}
+
+async function saveSchedule() {
+  const queue = store.queues.get(scheduleQueue);
+  if (!queue) return;
+  const enabled = $("sch-enabled").checked;
+  const existing = store.scheduleOf(scheduleQueue);
+  const fail = (text) => {
+    $("sch-error").textContent = text;
+    $("sch-error").hidden = false;
+  };
+  // Rien à enregistrer : pas de planification, et aucune demandée.
+  if (!enabled && !existing) {
+    $("schedule-dialog").close();
+    return;
+  }
+  const { rules, error } = readSchedule();
+  if (error) return fail(error);
+  try {
+    const params = { name: queueName(queue), enabled, rules };
+    if (existing) params.scheduleId = existing.scheduleId;
+    const saved = await host.call("schedule.set", params);
+    if (queue.scheduleId !== saved.scheduleId) {
+      await host.call("queue.update", { queueId: queue.queueId, scheduleId: saved.scheduleId });
+    }
+  } catch (e) {
+    return fail(refused(e));
+  }
+  $("schedule-dialog").close();
+  announce(enabled ? t("Planification enregistrée") : t("Planification désactivée"));
+}
+
+async function cancelEndAction() {
+  try {
+    await host.call("engine.cancelEndAction", {});
+    announce(t("Action de fin annulée"));
+  } catch (e) {
+    showError(refused(e));
+  }
+}
+
 // ---------- Rendu groupé ----------
 
 function renderSummary() {
@@ -857,6 +1095,7 @@ async function resync() {
   renderAll();
   if (store.limits) renderLimit();
   else loadLimit();
+  renderPlanning();
   removeCancelled();
   if (result.resync) resync();
 }
@@ -879,6 +1118,7 @@ function onStatus(status) {
   }
   renderToolbar();
   renderLimit();
+  renderPlanning();
   if (detailsTask) renderDetails();
   renderAbout();
 }
@@ -908,6 +1148,10 @@ function onEngine(event) {
       if (removeWhenCancelled.size) removeCancelled();
       schedule(result);
       if (result.limits) renderLimit();
+      if (result.planning) renderPlanning();
+      if (result.endActionError) {
+        showError(t("Action de fin refusée par le système : {0}", result.endActionError));
+      }
       break;
     }
   }
@@ -1058,6 +1302,7 @@ function applyInfo(next) {
   $("grid").setAttribute("aria-label", t("Téléchargements : {0}", viewLabel(view)));
   renderAbout();
   renderLimit();
+  renderPlanning();
   renderAll();
 }
 
@@ -1098,6 +1343,25 @@ function wire() {
   $("tb-remove").addEventListener("click", openRemove);
   $("tb-clear").addEventListener("click", clearFinished);
   $("tb-properties").addEventListener("click", () => cursor && openDetails(cursor));
+  $("tb-schedule").addEventListener("click", openSchedule);
+  $("sch-queue").addEventListener("change", (e) => fillSchedule(e.target.value));
+  $("sch-enabled").addEventListener("change", syncScheduleForm);
+  $("sch-add-window").addEventListener("click", () => {
+    const item = windowRow(NEW_WINDOW);
+    $("sch-windows").append(item);
+    item.querySelector("input").focus();
+  });
+  $("schedule-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    // Enregistrée d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    saveSchedule();
+  });
+  $("schedule-dialog").addEventListener("close", () => {
+    scheduleQueue = null;
+    $("tb-schedule").focus();
+  });
+  $("end-action-cancel").addEventListener("click", cancelEndAction);
   $("tb-settings").addEventListener("click", () => {
     selectTab($("tab-general"));
     $("settings").showModal();

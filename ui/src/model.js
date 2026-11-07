@@ -117,6 +117,10 @@ function outcome() {
     finished: [],
     /// Les limites globales ont changé.
     limits: false,
+    /// Les planifications, les files ou l'action de fin annoncée ont changé.
+    planning: false,
+    /// Le refus d'une action de fin par le système, à montrer.
+    endActionError: null,
   };
 }
 
@@ -125,6 +129,8 @@ function merge(into, other) {
   into.list ||= other.list;
   into.resync ||= other.resync;
   into.limits ||= other.limits;
+  into.planning ||= other.planning;
+  into.endActionError ??= other.endActionError;
   into.finished.push(...other.finished);
 }
 
@@ -142,6 +148,10 @@ export class TaskStore {
     this.queues = new Map();
     /// Limites globales (`limits.get`) ; `null` avant le premier instantané.
     this.limits = null;
+    /// Planifications (F-16), par identifiant, avec leur ouverture.
+    this.schedules = new Map();
+    /// Action de fin annoncée (`{queueId, action, at}`), ou `null`.
+    this.endAction = null;
     /// Révision de l'état chargé ; `null` tant qu'un instantané est attendu.
     this.rev = null;
     /// Notifications reçues en attendant l'instantané.
@@ -161,10 +171,14 @@ export class TaskStore {
     this.queues = new Map(snapshot.queues.map((q) => [q.queueId, q]));
     // Un moteur antérieur au 2026-11-07 ne les donne pas.
     this.limits = snapshot.limits ?? null;
+    // Un moteur antérieur au 2026-11-07 ne les donne pas.
+    this.schedules = new Map((snapshot.schedules ?? []).map((s) => [s.scheduleId, s]));
+    this.endAction = snapshot.endAction ?? null;
     this.rev = snapshot.rev;
     const result = outcome();
     result.list = true;
     result.limits = true;
+    result.planning = true;
     for (const id of this.tasks.keys()) result.changed.add(id);
     const waiting = this.waiting;
     this.waiting = [];
@@ -200,6 +214,9 @@ export class TaskStore {
       case "task.removed":
       case "queue.updated":
       case "limits.updated":
+      case "schedule.updated":
+      case "schedule.removed":
+      case "engine.endAction":
         break;
       default:
         return result;
@@ -257,6 +274,25 @@ export class TaskStore {
         break;
       case "queue.updated":
         this.queues.set(params.queue.queueId, params.queue);
+        result.planning = true;
+        // L'ouverture de la file change l'état affiché de ses tâches en attente.
+        this.touchQueue(params.queue.queueId, result);
+        break;
+      case "schedule.updated":
+        this.schedules.set(params.schedule.scheduleId, params.schedule);
+        result.planning = true;
+        for (const q of this.queues.values()) {
+          if (q.scheduleId === params.schedule.scheduleId) this.touchQueue(q.queueId, result);
+        }
+        break;
+      case "schedule.removed":
+        this.schedules.delete(params.scheduleId);
+        result.planning = true;
+        break;
+      case "engine.endAction":
+        this.endAction = params.pending ?? null;
+        result.endActionError = params.error ?? null;
+        result.planning = true;
         break;
       case "limits.updated": {
         const { rev: _rev, ...limits } = params;
@@ -266,6 +302,25 @@ export class TaskStore {
       }
     }
     return result;
+  }
+
+  /// Redessine les tâches d'une file.
+  touchQueue(queueId, result) {
+    for (const task of this.tasks.values()) {
+      if (task.queueId === queueId) result.changed.add(task.taskId);
+    }
+  }
+
+  /// Planification d'une file, ou `null`.
+  scheduleOf(queueId) {
+    const id = this.queues.get(queueId)?.scheduleId;
+    return id ? this.schedules.get(id) ?? null : null;
+  }
+
+  /// La file attend sa plage horaire : planifiée, activée et fermée.
+  waitsForWindow(queueId) {
+    const s = this.scheduleOf(queueId);
+    return Boolean(s && s.enabled && !s.open);
   }
 
   /// Tâches d'une vue de l'arborescence, triées.

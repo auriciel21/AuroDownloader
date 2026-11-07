@@ -34,6 +34,7 @@ use tokio::time::Instant;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::net::{self, Client, NetError};
+use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
 use crate::segmenter::Segment;
 use crate::store::segments::load_segments;
 use crate::store::tasks::{
@@ -43,6 +44,7 @@ use crate::store::tasks::{
 use crate::store::{self, StoreError, now_ms, settings};
 use crate::transfer::{self, LiveSegment, Options, Outcome, Progress, TransferError};
 
+mod planning;
 #[cfg(test)]
 mod tests;
 
@@ -66,6 +68,59 @@ pub struct Config {
     pub transfer: Options,
     /// [`DISK_RECHECK`], sauf dans les tests.
     pub disk_recheck: Duration,
+    /// Plages horaires et action de fin (F-16).
+    pub planning: Planning,
+}
+
+/// Intervalle de contrôle des plages horaires : une file s'ouvre ou se ferme au plus
+/// tard ce délai après l'heure prévue.
+pub const SCHEDULE_CHECK: Duration = Duration::from_secs(15);
+
+/// Délai entre l'annonce d'une action de fin et son exécution : le temps de l'annuler.
+pub const END_ACTION_DELAY: Duration = Duration::from_secs(60);
+
+/// Réglages de la planification (F-16, SPEC §7.11).
+#[derive(Debug, Clone)]
+pub struct Planning {
+    /// Heure de la machine ; [`crate::schedule::local_now`], sauf dans les tests.
+    pub clock: fn(&Connection) -> LocalNow,
+    /// [`SCHEDULE_CHECK`], sauf dans les tests.
+    pub check_every: Duration,
+    /// [`END_ACTION_DELAY`], sauf dans les tests.
+    pub end_delay: Duration,
+    /// Exécute une action de fin. Par défaut, aucune : seul `aurod` branche la mise en
+    /// veille et l'extinction réelles (`power::system`).
+    pub power: fn(EndAction) -> std::io::Result<()>,
+}
+
+impl Default for Planning {
+    fn default() -> Self {
+        Planning {
+            clock: crate::schedule::local_now,
+            check_every: SCHEDULE_CHECK,
+            end_delay: END_ACTION_DELAY,
+            power: crate::power::unplugged,
+        }
+    }
+}
+
+/// Une planification, avec son ouverture à l'heure où elle est lue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleView {
+    pub schedule: Schedule,
+    /// Ses files peuvent télécharger ; toujours vrai si elle est désactivée.
+    pub open: bool,
+    /// Prochain changement d'ouverture, en millisecondes Unix.
+    pub next_change_at: Option<i64>,
+}
+
+/// Action de fin annoncée, qui s'exécutera à `at_ms` sauf annulation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEnd {
+    pub queue_id: String,
+    pub action: EndAction,
+    /// Millisecondes Unix.
+    pub at_ms: i64,
 }
 
 /// Champs modifiés d'une tâche (`task.update`) ; `None` : inchangé.
@@ -88,6 +143,8 @@ pub struct QueueChange {
     pub max_active: Option<u32>,
     /// `Some(None)` : retire la limite.
     pub speed_limit_bps: Option<Option<u64>>,
+    /// `Some(None)` : retire la planification.
+    pub schedule_id: Option<Option<String>>,
 }
 
 /// Ce qui arrive aux tâches et aux files, pour les interfaces (SPEC §6.5).
@@ -143,6 +200,22 @@ pub enum Event {
         task_id: String,
         progress: Progress,
     },
+    /// Planification créée, modifiée, ou dont l'ouverture vient de changer.
+    ScheduleChanged {
+        rev: u64,
+        view: ScheduleView,
+    },
+    ScheduleRemoved {
+        rev: u64,
+        schedule_id: String,
+    },
+    /// Action de fin annoncée (`Some`), puis exécutée ou annulée (`None`) ; `error` si
+    /// le système l'a refusée.
+    EndAction {
+        rev: u64,
+        pending: Option<PendingEnd>,
+        error: Option<String>,
+    },
 }
 
 /// Ce que `task.get` demande en plus de la tâche (SPEC §6.4, `include`).
@@ -166,6 +239,8 @@ pub struct TaskDetails {
 pub struct Snapshot {
     pub rev: u64,
     pub tasks: Vec<TaskRow>,
+    pub schedules: Vec<ScheduleView>,
+    pub end_action: Option<PendingEnd>,
     pub queues: Vec<QueueRow>,
     /// Limite de débit globale (`None` : aucune).
     pub download_limit: Option<u64>,
@@ -182,6 +257,9 @@ pub enum EngineError {
 
     #[error("file inconnue : {0}")]
     QueueNotFound(String),
+
+    #[error("planification inconnue : {0}")]
+    ScheduleNotFound(String),
 
     #[error("demande invalide : {0}")]
     BadRequest(String),
@@ -263,6 +341,16 @@ enum Command {
     },
     DownloadLimit(Reply<Option<u64>>),
     SetDownloadLimit(Option<u64>, Reply<()>),
+    ListSchedules(Reply<Vec<ScheduleView>>),
+    SetSchedule {
+        schedule_id: Option<String>,
+        name: String,
+        enabled: bool,
+        rules: Rules,
+        reply: Reply<ScheduleView>,
+    },
+    DeleteSchedule(String, Reply<()>),
+    CancelEndAction(Reply<bool>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -472,6 +560,40 @@ impl Engine {
         .await
     }
 
+    /// Planifications, avec leur ouverture à cet instant.
+    pub async fn schedules(&self) -> Result<Vec<ScheduleView>, EngineError> {
+        self.ask(Command::ListSchedules).await
+    }
+
+    /// Crée une planification (`schedule_id` absent) ou la remplace.
+    pub async fn set_schedule(
+        &self,
+        schedule_id: Option<String>,
+        name: String,
+        enabled: bool,
+        rules: Rules,
+    ) -> Result<ScheduleView, EngineError> {
+        self.ask(|reply| Command::SetSchedule {
+            schedule_id,
+            name,
+            enabled,
+            rules,
+            reply,
+        })
+        .await
+    }
+
+    /// Supprime une planification ; ses files téléchargent de nouveau à toute heure.
+    pub async fn delete_schedule(&self, schedule_id: &str) -> Result<(), EngineError> {
+        let id = schedule_id.to_owned();
+        self.ask(|reply| Command::DeleteSchedule(id, reply)).await
+    }
+
+    /// Annule l'action de fin annoncée ; `false` s'il n'y en avait pas.
+    pub async fn cancel_end_action(&self) -> Result<bool, EngineError> {
+        self.ask(Command::CancelEndAction).await
+    }
+
     /// Arrête le moteur : les tâches en cours s'arrêtent après leur point de contrôle et
     /// repartiront au prochain démarrage. Revient quand tout est enregistré.
     pub async fn shutdown(&self) {
@@ -523,6 +645,8 @@ struct Scheduler {
     /// Les exécutions y signalent leur préparation enregistrée ; la boucle l'annonce
     /// (`Event::Prepared`), car elle seule augmente la révision.
     prepared: mpsc::UnboundedSender<String>,
+    /// Plages horaires et action de fin (F-16).
+    planning: planning::State,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -560,6 +684,7 @@ impl Scheduler {
             },
             next_disk_check: Instant::now(),
             prepared,
+            planning: planning::State::default(),
         }
     }
 
@@ -571,6 +696,8 @@ impl Scheduler {
         loop {
             if self.shutdown.is_none() {
                 self.recheck_disk();
+                self.refresh_schedules(false);
+                self.check_end_action();
                 self.start_runnable();
             } else if self.running.is_empty() {
                 break;
@@ -604,10 +731,10 @@ impl Scheduler {
     /// Délai jusqu'à la prochaine nouvelle tentative ou vérification de la place libre,
     /// au plus une minute.
     fn next_wake(&self) -> Duration {
-        let cap = Duration::from_secs(60).min(
-            self.next_disk_check
-                .saturating_duration_since(Instant::now()),
-        );
+        let now = Instant::now();
+        let cap = Duration::from_secs(60)
+            .min(self.next_disk_check.saturating_duration_since(now))
+            .min(self.planning_wake(now));
         match next_retry_at(&self.conn) {
             Ok(Some(at)) => {
                 Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
@@ -695,6 +822,10 @@ impl Scheduler {
         }
         for c in candidates {
             if self.running.contains_key(&c.task_id) || self.broken.contains(&c.task_id) {
+                continue;
+            }
+            // Hors de ses plages horaires, une file attend (F-16).
+            if self.planning.closed.contains(&c.queue_id) {
                 continue;
             }
             let used = busy.entry(c.queue_id.clone()).or_default();
@@ -806,6 +937,24 @@ impl Scheduler {
             Command::Details(task_id, include, reply) => {
                 let _ = reply.send(self.details(&task_id, include));
             }
+            Command::ListSchedules(reply) => {
+                let _ = reply.send(self.schedule_views());
+            }
+            Command::SetSchedule {
+                schedule_id,
+                name,
+                enabled,
+                rules,
+                reply,
+            } => {
+                let _ = reply.send(self.set_schedule(schedule_id, &name, enabled, rules));
+            }
+            Command::DeleteSchedule(schedule_id, reply) => {
+                let _ = reply.send(self.delete_schedule(&schedule_id));
+            }
+            Command::CancelEndAction(reply) => {
+                let _ = reply.send(Ok(self.cancel_end_action()));
+            }
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
                 let _ = reply.send(rows.map(|r| (r, self.current_rev())).map_err(Into::into));
@@ -854,6 +1003,8 @@ impl Scheduler {
         Ok(Snapshot {
             rev: self.current_rev(),
             tasks: tasks::find_tasks(&self.conn, &TaskFilter::default())?,
+            schedules: self.schedule_views()?,
+            end_action: self.planning.pending.clone(),
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,
         })
@@ -963,6 +1114,9 @@ impl Scheduler {
         )?;
         if !updated {
             return Err(EngineError::QueueNotFound(queue_id.to_owned()));
+        }
+        if let Some(schedule_id) = &change.schedule_id {
+            self.attach_schedule(queue_id, schedule_id.as_deref())?;
         }
         if let (Some(limit), Some(bucket)) =
             (change.speed_limit_bps, self.limits.queues.get(queue_id))
@@ -1152,7 +1306,11 @@ impl Scheduler {
     /// Fin d'une exécution : annonce son issue, puis applique ce qui a été demandé
     /// pendant qu'elle tournait.
     fn finished(&mut self, task_id: &str, result: Result<Outcome, TransferError>) {
-        let then = self.running.remove(task_id).map_or(Then::Keep, |r| r.then);
+        let run = self.running.remove(task_id);
+        if let (Some(run), Ok(Outcome::Completed(_))) = (&run, &result) {
+            self.arm_end_action(&run.queue_id);
+        }
+        let then = run.map_or(Then::Keep, |r| r.then);
         self.limits.tasks.remove(task_id);
         if let Err(e) = &result {
             self.record_internal_error(task_id, e);

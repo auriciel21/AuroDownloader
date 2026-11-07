@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use auro_engine::net::Client;
-use auro_engine::scheduler::{Config, DISK_RECHECK, Engine};
+use auro_engine::scheduler::{Config, DISK_RECHECK, Engine, Planning};
 use auro_engine::testing::{FileSite, Pace, serve_file_paced};
 use auro_engine::transfer::Options;
 use serde_json::{Value, json};
@@ -36,6 +36,7 @@ fn engine(dir: &std::path::Path) -> Engine {
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
     })
     .unwrap()
 }

@@ -24,6 +24,7 @@ fn config(dir: &Path) -> Config {
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
     }
 }
 
@@ -551,7 +552,10 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::TaskUpdated { rev, .. }
                 | Event::Prepared { rev, .. }
                 | Event::Removed { rev, .. }
-                | Event::LimitsChanged { rev, .. } => revs.push(rev),
+                | Event::LimitsChanged { rev, .. }
+                | Event::ScheduleChanged { rev, .. }
+                | Event::ScheduleRemoved { rev, .. }
+                | Event::EndAction { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
                     if to == TaskState::Completed {
@@ -857,4 +861,250 @@ async fn an_announced_state_is_already_recorded() {
         "annoncée active, encore en file en base"
     );
     scheduler.begin_shutdown(None);
+}
+
+/// Planification (F-16, SPEC §7.11) : plages horaires et action de fin.
+mod planning {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::schedule::{EndAction, LocalNow, Rules};
+
+    /// Lundi 2026-11-02, minuit, en heure locale.
+    const MONDAY: i64 = 20_759 * 86_400_000;
+
+    fn monday(h: i64, m: i64) -> i64 {
+        MONDAY + h * 3_600_000 + m * 60_000
+    }
+
+    fn planning_config(
+        dir: &Path,
+        clock: fn(&Connection) -> LocalNow,
+        power: fn(EndAction) -> std::io::Result<()>,
+    ) -> Config {
+        Config {
+            planning: Planning {
+                clock,
+                check_every: Duration::from_millis(20),
+                end_delay: Duration::from_millis(300),
+                power,
+            },
+            ..config(dir)
+        }
+    }
+
+    /// Crée une planification et l'attache à la file par défaut.
+    async fn attach(engine: &Engine, rules: Value) -> ScheduleView {
+        let rules = Rules::from_json(&rules).unwrap();
+        let view = engine
+            .set_schedule(None, "Essai".into(), true, rules)
+            .await
+            .unwrap();
+        let change = QueueChange {
+            schedule_id: Some(Some(view.schedule.id.clone())),
+            ..QueueChange::default()
+        };
+        let queue = engine.default_queue().to_owned();
+        engine.update_queue(&queue, change).await.unwrap();
+        view
+    }
+
+    static WINDOW_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn window_clock(_: &Connection) -> LocalNow {
+        LocalNow {
+            utc_ms: WINDOW_CLOCK.load(Ordering::SeqCst),
+            offset_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_queue_downloads_only_inside_its_window() {
+        WINDOW_CLOCK.store(monday(12, 0), Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let len = 8 << 20;
+        let server = slow_site(len);
+        let engine = Engine::start(planning_config(
+            dir.path(),
+            window_clock,
+            crate::power::unplugged,
+        ))
+        .unwrap();
+        let mut events = engine.subscribe();
+        let view = attach(
+            &engine,
+            json!({"windows": [{"days": [1], "start": "13:00", "end": "14:00"}]}),
+        )
+        .await;
+        assert!(!view.open);
+        assert_eq!(view.next_change_at, Some(monday(13, 0)));
+        let snapshot = engine.snapshot().await.unwrap();
+        assert_eq!(
+            snapshot.queues[0].schedule_id.as_deref(),
+            Some(view.schedule.id.as_str())
+        );
+
+        // Fermée : la tâche attend.
+        let id = engine
+            .add(add(&server.url("/plage.bin"), dir.path()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(engine.get(&id).await.unwrap().state, TaskState::Queued);
+
+        // La plage s'ouvre : elle part.
+        WINDOW_CLOCK.store(monday(13, 0), Ordering::SeqCst);
+        wait_state(&mut events, &id, TaskState::Active).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        // La plage se ferme : elle retourne en file ; ce qu'elle a reçu reste.
+        WINDOW_CLOCK.store(monday(14, 0), Ordering::SeqCst);
+        wait_state(&mut events, &id, TaskState::Queued).await;
+        let waiting = engine.get(&id).await.unwrap();
+        assert!(
+            waiting.done_bytes > 0 && waiting.done_bytes < len as u64,
+            "{}",
+            waiting.done_bytes
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(engine.get(&id).await.unwrap().state, TaskState::Queued);
+        assert!(!engine.schedules().await.unwrap()[0].open);
+
+        // Rouverte : elle reprend où elle en était et finit.
+        WINDOW_CLOCK.store(monday(13, 30), Ordering::SeqCst);
+        wait_state(&mut events, &id, TaskState::Completed).await;
+        assert_file(dir.path(), "plage.bin", len);
+        assert!(engine.schedules().await.unwrap()[0].open);
+
+        // Supprimée : la file ne l'a plus.
+        engine.delete_schedule(&view.schedule.id).await.unwrap();
+        assert_eq!(engine.snapshot().await.unwrap().queues[0].schedule_id, None);
+        assert!(matches!(
+            engine.delete_schedule(&view.schedule.id).await,
+            Err(EngineError::ScheduleNotFound(_))
+        ));
+        engine.shutdown().await;
+    }
+
+    static CALLS: Mutex<Vec<EndAction>> = Mutex::new(Vec::new());
+
+    fn record(action: EndAction) -> std::io::Result<()> {
+        CALLS.lock().unwrap().push(action);
+        Ok(())
+    }
+
+    /// Prochaine annonce d'action de fin.
+    async fn end_action(
+        events: &mut broadcast::Receiver<Event>,
+    ) -> (Option<PendingEnd>, Option<String>) {
+        timeout(WAIT, async {
+            loop {
+                match events.recv().await {
+                    Ok(Event::EndAction { pending, error, .. }) => return (pending, error),
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+                }
+            }
+        })
+        .await
+        .expect("aucune action de fin annoncée")
+    }
+
+    #[tokio::test]
+    async fn the_end_action_follows_the_last_download_and_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(SIZE);
+        let engine = Engine::start(planning_config(
+            dir.path(),
+            crate::schedule::local_now,
+            record,
+        ))
+        .unwrap();
+        let mut events = engine.subscribe();
+        // Ouverte à toute heure, la veille à la fin.
+        attach(
+            &engine,
+            json!({
+                "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "00:00"}],
+                "onDone": "sleep",
+            }),
+        )
+        .await;
+
+        // La file se vide : la veille est annoncée, puis exécutée une fois.
+        let before = now_ms();
+        engine
+            .add(add(&server.url("/a.bin"), dir.path()))
+            .await
+            .unwrap();
+        let pending = end_action(&mut events).await.0.expect("annonce");
+        assert_eq!(pending.action, EndAction::Sleep);
+        assert_eq!(pending.queue_id, engine.default_queue());
+        assert!(pending.at_ms >= before + 300, "{pending:?}");
+        assert_eq!(
+            engine.snapshot().await.unwrap().end_action,
+            Some(pending.clone())
+        );
+        assert_eq!(end_action(&mut events).await, (None, None));
+        assert_eq!(*CALLS.lock().unwrap(), [EndAction::Sleep]);
+
+        // Annoncée de nouveau, puis annulée : rien ne s'exécute.
+        engine
+            .add(add(&server.url("/b.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert!(end_action(&mut events).await.0.is_some());
+        assert!(engine.cancel_end_action().await.unwrap());
+        assert_eq!(end_action(&mut events).await, (None, None));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(CALLS.lock().unwrap().len(), 1);
+        assert!(!engine.cancel_end_action().await.unwrap());
+
+        // Du travail revient dans la file pendant l'annonce : elle tombe d'elle-même.
+        engine
+            .add(add(&server.url("/c.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert!(end_action(&mut events).await.0.is_some());
+        let slow = slow_site(8 << 20);
+        engine
+            .add(add(&slow.url("/d.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(end_action(&mut events).await, (None, None));
+        assert_eq!(CALLS.lock().unwrap().len(), 1);
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn without_a_plugged_power_action_the_refusal_is_announced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(SIZE);
+        let engine = Engine::start(planning_config(
+            dir.path(),
+            crate::schedule::local_now,
+            crate::power::unplugged,
+        ))
+        .unwrap();
+        let mut events = engine.subscribe();
+        attach(
+            &engine,
+            json!({
+                "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "00:00"}],
+                "onDone": "shutdown",
+            }),
+        )
+        .await;
+        engine
+            .add(add(&server.url("/e.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert!(end_action(&mut events).await.0.is_some());
+        let (pending, error) = end_action(&mut events).await;
+        assert!(pending.is_none());
+        assert!(error.is_some_and(|e| e.contains("aucune action de fin")));
+        engine.shutdown().await;
+    }
 }

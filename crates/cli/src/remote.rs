@@ -307,6 +307,200 @@ pub async fn limit(rpc: &mut Rpc, of: LimitOf<'_>, rate: Option<Limit>) -> Resul
     Ok(())
 }
 
+/// File visée : par son nom ou son identifiant, sinon la file principale.
+async fn queue_or_default(rpc: &mut Rpc, queue: Option<&str>) -> Result<Value> {
+    let list = rpc.call("queue.list", json!({})).await?;
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    let found = match queue {
+        Some(q) => items
+            .into_iter()
+            .find(|i| i["name"] == q || i["queueId"] == q),
+        None => {
+            let main = items.iter().find(|i| i["name"] == "default").cloned();
+            main.or_else(|| items.into_iter().next())
+        }
+    };
+    found.with_context(|| format!("file inconnue : {}", queue.unwrap_or("principale")))
+}
+
+const DAY_NAMES: [&str; 7] = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+
+fn days_text(days: &[Value]) -> String {
+    let days: Vec<usize> = days
+        .iter()
+        .filter_map(Value::as_u64)
+        .map(|d| d as usize)
+        .collect();
+    let all_following = days.windows(2).all(|w| w[1] == w[0] + 1);
+    match (days.first(), days.last()) {
+        (Some(&a), Some(&b)) if days.len() > 2 && all_following => {
+            format!("{}-{}", DAY_NAMES[a - 1], DAY_NAMES[b - 1])
+        }
+        _ => days
+            .iter()
+            .map(|&d| DAY_NAMES[d - 1])
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+fn end_text(action: &str) -> &'static str {
+    match action {
+        "sleep" => "mise en veille",
+        "shutdown" => "extinction",
+        _ => "rien",
+    }
+}
+
+/// Durée jusqu'à `at` (millisecondes Unix), arrondie à la minute.
+fn until(at: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let minutes = ((at - now).max(0) + 59_999) / 60_000;
+    match (minutes / 1440, minutes % 1440 / 60, minutes % 60) {
+        (0, 0, m) => format!("{m} min"),
+        (0, h, m) => format!("{h} h {m:02} min"),
+        (d, h, _) => format!("{d} j {h} h"),
+    }
+}
+
+fn schedule_line(s: &Value, queues: &[Value]) -> String {
+    let windows: Vec<String> = s["rules"]["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            format!(
+                "{} {}-{}",
+                days_text(w["days"].as_array().map_or(&[][..], Vec::as_slice)),
+                w["start"].as_str().unwrap_or("?"),
+                w["end"].as_str().unwrap_or("?"),
+            )
+        })
+        .collect();
+    let state = match (s["enabled"].as_bool(), s["open"].as_bool()) {
+        (Some(false), _) => "désactivée".to_owned(),
+        (_, Some(open)) => {
+            let (now, then) = if open {
+                ("ouverte", "ferme")
+            } else {
+                ("fermée", "ouvre")
+            };
+            match s["nextChangeAt"].as_i64() {
+                Some(at) => format!("{now}, {then} dans {}", until(at)),
+                None => now.to_owned(),
+            }
+        }
+        _ => "?".to_owned(),
+    };
+    let used: Vec<&str> = queues
+        .iter()
+        .filter(|q| q["scheduleId"] == s["scheduleId"])
+        .filter_map(|q| q["name"].as_str())
+        .collect();
+    format!(
+        "{}  {}  [{}]  fin : {}  files : {}",
+        s["name"].as_str().unwrap_or("?"),
+        windows.join(" ; "),
+        state,
+        end_text(s["rules"]["onDone"].as_str().unwrap_or("none")),
+        if used.is_empty() {
+            "aucune".to_owned()
+        } else {
+            used.join(", ")
+        }
+    )
+}
+
+pub async fn schedules(rpc: &mut Rpc) -> Result<()> {
+    let list = rpc.call("schedule.list", json!({})).await?;
+    let queues = rpc.call("queue.list", json!({})).await?;
+    let queues = queues["items"].as_array().cloned().unwrap_or_default();
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Aucune planification : toutes les files téléchargent à toute heure.");
+    }
+    for s in &items {
+        println!("{}", schedule_line(s, &queues));
+    }
+    Ok(())
+}
+
+/// Une plage d'une planification.
+pub struct WindowSpec<'a> {
+    pub days: &'a [u8],
+    pub from: &'a str,
+    pub to: &'a str,
+    pub then: &'a str,
+}
+
+/// Donne à une file une seule plage, en remplaçant sa planification.
+pub async fn schedule_set(rpc: &mut Rpc, queue: Option<&str>, spec: &WindowSpec<'_>) -> Result<()> {
+    let q = queue_or_default(rpc, queue).await?;
+    let queue_id = q["queueId"]
+        .as_str()
+        .context("file sans identifiant")?
+        .to_owned();
+    let name = match q["name"].as_str() {
+        Some("default") | None => "File principale".to_owned(),
+        Some(n) => n.to_owned(),
+    };
+    let mut params = json!({
+        "name": name,
+        "enabled": true,
+        "rules": {
+            "windows": [{"days": spec.days, "start": spec.from, "end": spec.to}],
+            "onDone": spec.then,
+        },
+    });
+    if let Some(id) = q["scheduleId"].as_str() {
+        params["scheduleId"] = json!(id);
+    }
+    let s = rpc.call("schedule.set", params).await?;
+    if q["scheduleId"] != s["scheduleId"] {
+        let params = json!({"queueId": queue_id, "scheduleId": s["scheduleId"]});
+        rpc.call("queue.update", params).await?;
+    }
+    let queues = rpc.call("queue.list", json!({})).await?;
+    let queues = queues["items"].as_array().cloned().unwrap_or_default();
+    println!("{}", schedule_line(&s, &queues));
+    Ok(())
+}
+
+/// Retire la planification d'une file, et la supprime si plus aucune file ne s'en sert.
+pub async fn schedule_clear(rpc: &mut Rpc, queue: Option<&str>) -> Result<()> {
+    let q = queue_or_default(rpc, queue).await?;
+    let Some(id) = q["scheduleId"].as_str().map(str::to_owned) else {
+        println!("Cette file n'a pas de planification.");
+        return Ok(());
+    };
+    let params = json!({"queueId": q["queueId"], "scheduleId": null});
+    rpc.call("queue.update", params).await?;
+    let queues = rpc.call("queue.list", json!({})).await?;
+    let still_used = queues["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|q| q["scheduleId"] == id.as_str());
+    if !still_used {
+        rpc.call("schedule.delete", json!({"scheduleId": id}))
+            .await?;
+    }
+    println!("Planification retirée : la file télécharge à toute heure.");
+    Ok(())
+}
+
+pub async fn cancel_end_action(rpc: &mut Rpc) -> Result<()> {
+    let r = rpc.call("engine.cancelEndAction", json!({})).await?;
+    if r["cancelled"] == true {
+        println!("Action de fin annulée.");
+    } else {
+        println!("Aucune action de fin n'était annoncée.");
+    }
+    Ok(())
+}
+
 pub async fn status(rpc: &mut Rpc, endpoint: &str) -> Result<()> {
     let snapshot = rpc.call("sync.snapshot", json!({})).await?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();

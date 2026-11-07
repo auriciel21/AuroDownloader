@@ -12,7 +12,7 @@
 
 use serde_json::{Value, json};
 
-use crate::scheduler::EngineError;
+use crate::scheduler::{EngineError, PendingEnd, ScheduleView};
 use crate::store::StoreError;
 use crate::store::tasks::{QueueRow, TaskRow};
 
@@ -91,6 +91,7 @@ impl From<EngineError> for RpcError {
                 Self::new(-32011, "INVALID_STATE", message)
             }
             EngineError::QueueNotFound(_) => Self::new(-32012, "QUEUE_NOT_FOUND", message),
+            EngineError::ScheduleNotFound(_) => Self::new(-32013, "SCHEDULE_NOT_FOUND", message),
             EngineError::Url(_) => Self::new(-32020, "URL_INVALID", message),
             EngineError::BadRequest(_) => Self::invalid_params(message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
@@ -144,7 +145,28 @@ pub fn queue_json(q: &QueueRow) -> Value {
         "position": q.position,
         "maxActive": q.max_active,
         "speedLimitBps": q.speed_limit_bps,
+        "scheduleId": q.schedule_id,
     })
+}
+
+/// Une planification telle que le protocole la décrit, avec son ouverture (SPEC §7.11).
+pub fn schedule_json(v: &ScheduleView) -> Value {
+    json!({
+        "scheduleId": v.schedule.id,
+        "name": v.schedule.name,
+        "enabled": v.schedule.enabled,
+        "rules": v.schedule.rules.to_json(),
+        "open": v.open,
+        "nextChangeAt": v.next_change_at,
+    })
+}
+
+/// Action de fin annoncée, ou `null`.
+pub fn end_action_json(pending: Option<&PendingEnd>) -> Value {
+    match pending {
+        Some(p) => json!({"queueId": p.queue_id, "action": p.action.as_str(), "at": p.at_ms}),
+        None => Value::Null,
+    }
 }
 
 /// Version « majeure.mineure ».

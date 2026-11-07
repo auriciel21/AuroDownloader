@@ -146,6 +146,11 @@ enum Command {
         #[command(subcommand)]
         action: QueueAction,
     },
+    /// Plages horaires d'une file et action de fin (veille, extinction)
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
     /// Moteur : démarrage, état, arrêt
     Engine {
         #[command(subcommand)]
@@ -196,6 +201,72 @@ enum QueueAction {
         #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
         limit: Option<Limit>,
     },
+}
+
+#[derive(Subcommand)]
+enum ScheduleAction {
+    /// Liste les planifications : plages, ouverture, action de fin, files
+    List,
+    /// Donne à une file une plage horaire, qui remplace sa planification
+    Set {
+        /// Jours : « 1-5 », « 6,7 » ou « tous » (1 : lundi, 7 : dimanche)
+        #[arg(long, value_parser = parse_days)]
+        days: Days,
+        /// Début de la plage, HH:MM
+        #[arg(long, value_name = "HH:MM")]
+        from: String,
+        /// Fin de la plage, HH:MM ; avant le début, la plage passe minuit
+        #[arg(long, value_name = "HH:MM")]
+        to: String,
+        /// File (nom ou identifiant ; la principale par défaut)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+        /// Quand la file n'a plus rien à télécharger : none, sleep (veille) ou
+        /// shutdown (extinction), annoncée 60 s avant
+        #[arg(long, default_value = "none", value_parser = ["none", "sleep", "shutdown"])]
+        then: String,
+    },
+    /// Retire la planification d'une file : elle télécharge à toute heure
+    Clear {
+        /// File (nom ou identifiant ; la principale par défaut)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+    },
+    /// Annule l'action de fin annoncée (veille, extinction)
+    Cancel,
+}
+
+/// Jours de la semaine d'une plage, de 1 (lundi) à 7 (dimanche).
+#[derive(Clone)]
+struct Days(Vec<u8>);
+
+fn parse_days(text: &str) -> Result<Days, String> {
+    if matches!(text, "tous" | "all") {
+        return Ok(Days((1..=7).collect()));
+    }
+    let day = |t: &str| {
+        t.trim()
+            .parse::<u8>()
+            .ok()
+            .filter(|d| (1..=7).contains(d))
+            .ok_or_else(|| format!("jour invalide : {t} (1 : lundi … 7 : dimanche)"))
+    };
+    let mut days = Vec::new();
+    for part in text.split(',') {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b) = (day(a)?, day(b)?);
+                if a > b {
+                    return Err(format!("intervalle à l'envers : {part}"));
+                }
+                days.extend(a..=b);
+            }
+            None => days.push(day(part)?),
+        }
+    }
+    days.sort_unstable();
+    days.dedup();
+    Ok(Days(days))
 }
 
 #[derive(Subcommand)]
@@ -348,6 +419,28 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     };
                     remote::limit(&mut rpc, to, rate).await
                 }
+                Command::Schedule { action } => match action {
+                    ScheduleAction::List => remote::schedules(&mut rpc).await,
+                    ScheduleAction::Set {
+                        days,
+                        from,
+                        to,
+                        queue,
+                        then,
+                    } => {
+                        let spec = remote::WindowSpec {
+                            days: &days.0,
+                            from: &from,
+                            to: &to,
+                            then: &then,
+                        };
+                        remote::schedule_set(&mut rpc, queue.as_deref(), &spec).await
+                    }
+                    ScheduleAction::Clear { queue } => {
+                        remote::schedule_clear(&mut rpc, queue.as_deref()).await
+                    }
+                    ScheduleAction::Cancel => remote::cancel_end_action(&mut rpc).await,
+                },
                 Command::Queue { action } => match action {
                     QueueAction::List => remote::queues(&mut rpc).await,
                     QueueAction::Create {
@@ -472,4 +565,20 @@ fn probe(url: &str, ca: Option<&Path>) -> Result<()> {
         println!("Attention       : une redirection est passée de HTTPS à HTTP");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn days_are_read_as_lists_ranges_or_all() {
+        assert_eq!(parse_days("1-5").unwrap().0, [1, 2, 3, 4, 5]);
+        assert_eq!(parse_days("7,6,6").unwrap().0, [6, 7]);
+        assert_eq!(parse_days("1,3-4").unwrap().0, [1, 3, 4]);
+        assert_eq!(parse_days("tous").unwrap().0, [1, 2, 3, 4, 5, 6, 7]);
+        for bad in ["0", "8", "5-1", "lun", ""] {
+            assert!(parse_days(bad).is_err(), "{bad}");
+        }
+    }
 }

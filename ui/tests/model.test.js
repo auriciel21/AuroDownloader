@@ -209,3 +209,44 @@ test("actions permises par la table des états (SPEC §5.5)", () => {
   assert.ok(canRemove("completed") && canRemove("failed") && canRemove("cancelled"));
   assert.ok(!canRemove("paused") && !canRemove("active") && !canRemove("queued"));
 });
+
+test("planifications, ouverture des files et action de fin (F-16)", () => {
+  const store = new TaskStore();
+  const night = { scheduleId: "s", name: "Nuit", enabled: true, open: false, nextChangeAt: 5, rules: {} };
+  store.load({
+    rev: 1,
+    tasks: [task("a", "queued", { queueId: "q" }), task("b", "queued", { queueId: "autre" })],
+    queues: [{ queueId: "q", name: "default", scheduleId: "s" }, { queueId: "autre", name: "x" }],
+    schedules: [night],
+    endAction: null,
+  });
+  assert.ok(store.waitsForWindow("q"));
+  assert.ok(!store.waitsForWindow("autre"), "sans planification");
+
+  // La plage s'ouvre : les tâches de la file sont à redessiner.
+  const opened = store.apply("schedule.updated", { rev: 2, schedule: { ...night, open: true } });
+  assert.ok(opened.planning && !opened.resync);
+  assert.deepEqual([...opened.changed], ["a"]);
+  assert.ok(!store.waitsForWindow("q"));
+  // Désactivée : jamais en attente, même fermée.
+  store.apply("schedule.updated", { rev: 3, schedule: { ...night, enabled: false } });
+  assert.ok(!store.waitsForWindow("q"));
+
+  // Action de fin annoncée, puis refusée par le système.
+  store.apply("engine.endAction", { rev: 4, pending: { queueId: "q", action: "shutdown", at: 9 }, error: null });
+  assert.deepEqual(store.endAction, { queueId: "q", action: "shutdown", at: 9 });
+  const refused = store.apply("engine.endAction", { rev: 5, pending: null, error: "refusée" });
+  assert.equal(store.endAction, null);
+  assert.equal(refused.endActionError, "refusée");
+
+  // Supprimée, puis la file la perd.
+  store.apply("schedule.removed", { rev: 6, scheduleId: "s" });
+  store.apply("queue.updated", { rev: 7, queue: { queueId: "q", name: "default", scheduleId: null } });
+  assert.equal(store.scheduleOf("q"), null);
+  assert.equal(store.rev, 7, "aucune révision perdue");
+
+  // Moteur antérieur : ni planifications ni action de fin dans l'instantané.
+  store.load(snapshot(1, []));
+  assert.equal(store.schedules.size, 0);
+  assert.equal(store.endAction, null);
+});
