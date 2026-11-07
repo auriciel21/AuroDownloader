@@ -250,3 +250,16 @@ test("planifications, ouverture des files et action de fin (F-16)", () => {
   assert.equal(store.schedules.size, 0);
   assert.equal(store.endAction, null);
 });
+
+test("le dossier des téléchargements suit l'instantané puis settings.updated", () => {
+  const store = new TaskStore();
+  store.load({ ...snapshot(1, []), settings: { "downloads.dir": "/a" } });
+  assert.equal(store.settings["downloads.dir"], "/a");
+  const result = store.apply("settings.updated", { rev: 2, values: { "downloads.dir": "/b" } });
+  assert.ok(result.settings);
+  assert.ok(!result.resync);
+  assert.equal(store.settings["downloads.dir"], "/b");
+  // Une révision déjà connue ne change rien.
+  assert.ok(!store.apply("settings.updated", { rev: 2, values: { "downloads.dir": "/c" } }).settings);
+  assert.equal(store.settings["downloads.dir"], "/b");
+});

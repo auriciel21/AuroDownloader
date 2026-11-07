@@ -264,6 +264,9 @@ CREATE TABLE settings (
   value_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- Clés en usage : "limits.downloadBps" (F-15) ; "downloads.dir" (depuis le 2026-11-07) :
+-- dossier des ajouts sans destDir, chemin absolu ou null (dossier « Téléchargements »
+-- du système).
 
 CREATE TABLE schedules (
   id         TEXT PRIMARY KEY,
@@ -532,9 +535,9 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
 | `history.list` / `history.clear` | `query`, `before`, `limit` | Entrées d'historique |
-| `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages |
+| `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages (`values`, par clé) |
 | `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
-| `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`, `schedules`, `endAction`) et `rev` |
+| `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`, `settings`, `schedules`, `endAction`) et `rev` |
 
 ### 6.5 Notifications du moteur
 
@@ -549,16 +552,22 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `task.removed` | `taskId` |
 | `queue.updated` | File modifiée |
 | `limits.updated` | Limites globales, comme `limits.get` (depuis le 2026-11-07) |
+| `settings.updated` | `values` : les réglages changés, comme `settings.get` (depuis le 2026-11-07) |
 | `schedule.updated` | Planification créée, modifiée, ou dont l'ouverture vient de changer, comme `schedule.list` la décrit (depuis le 2026-11-07) |
 | `schedule.removed` | `scheduleId` (depuis le 2026-11-07) |
 | `engine.endAction` | `pending` : action de fin annoncée (`queueId`, `action`, `at`), ou `null` quand elle est exécutée ou annulée ; `error` : refus du système (depuis le 2026-11-07) |
 | `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
-Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
+Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
+  - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
+  - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
+  - Un `destDir` donné à `task.add` doit aussi être un dossier existant, en chemin absolu (`DEST_NOT_WRITABLE`).
+  - La CLI garde le dossier courant par défaut (`-o .`), comme les outils en ligne de commande.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : `fileName`, `checksum`, `headers` et plusieurs sources ;
   - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
@@ -678,10 +687,10 @@ Mise en œuvre (décision du 2026-11-07, phase 3) :
 - **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6).
 - **Portées exigées** :
   - aucune : `engine.hello` ;
-  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `schedule.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
+  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
   - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` ;
   - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction` ;
-  - `admin` : `engine.shutdown`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine).
+  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 

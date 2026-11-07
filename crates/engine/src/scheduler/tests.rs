@@ -47,7 +47,7 @@ fn fast_site(len: usize) -> (Arc<Mutex<FileSite>>, Server) {
 fn add(url: &str, dir: &Path) -> AddTask {
     AddTask {
         url: url.to_owned(),
-        dest_dir: dir.to_str().unwrap().to_owned(),
+        dest_dir: Some(dir.to_str().unwrap().to_owned()),
         ..AddTask::default()
     }
 }
@@ -555,6 +555,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::Prepared { rev, .. }
                 | Event::Removed { rev, .. }
                 | Event::LimitsChanged { rev, .. }
+                | Event::DownloadDirChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),

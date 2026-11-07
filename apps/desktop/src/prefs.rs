@@ -1,5 +1,5 @@
-//! Préférences de l'application de bureau, propres à l'interface : dossier proposé pour
-//! les ajouts, langue, repli dans la zone de notification. Les réglages du moteur (limites,
+//! Préférences de l'application de bureau, propres à l'interface : langue, repli dans la
+//! zone de notification. Les réglages du moteur (dossier des téléchargements, limites,
 //! files) restent dans sa base et passent par le protocole.
 //!
 //! Fichier JSON dans le dossier de configuration de l'application ; aucun secret (SPEC §8.2).
@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Prefs {
-    /// Dossier proposé pour les nouveaux téléchargements ; vide : « Téléchargements ».
-    pub dest_dir: String,
     /// `fr`, `en`, ou vide pour suivre le système.
     pub lang: String,
     /// Fermer la fenêtre la replie dans la zone de notification, quand il y en a une.
@@ -23,7 +21,6 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
-            dest_dir: String::new(),
             lang: String::new(),
             close_to_tray: true,
         }
@@ -84,7 +81,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sous-dossier").join("prefs.json");
         let prefs = Prefs {
-            dest_dir: "D:\\Téléchargements".into(),
             lang: "en".into(),
             close_to_tray: false,
         };
@@ -92,8 +88,9 @@ mod tests {
         assert_eq!(Prefs::load(&path), prefs);
         assert!(!path.with_extension("json.tmp").exists());
 
-        // Fichier d'une version future, ou partiel : les champs connus sont gardés.
-        std::fs::write(&path, br#"{"lang":"fr","nouveau":1}"#).unwrap();
+        // Fichier d'une autre version (dont l'ancien `destDir`, passé au moteur le
+        // 2026-11-07), ou partiel : les champs connus sont gardés.
+        std::fs::write(&path, br#"{"lang":"fr","destDir":"D:\\dl","nouveau":1}"#).unwrap();
         let loaded = Prefs::load(&path);
         assert_eq!(loaded.lang, "fr");
         assert!(loaded.close_to_tray);

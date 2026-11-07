@@ -140,6 +140,7 @@ export const EN = {
   "Aucun téléchargement en cours": "No download in progress",
   "Action refusée : {0}": "Action refused: {0}",
   "{0} adresse(s) refusée(s) : {1}": "{0} address(es) refused: {1}",
+  "(aucun)": "(none)",
   // Planification (F-16)
   "Planification": "Schedule",
   "File d'attente": "Queue",

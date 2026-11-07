@@ -8,6 +8,26 @@ use super::{StoreError, now_ms};
 /// Limite de débit descendant globale, en octets par seconde ; `null` : aucune (F-15).
 pub const DOWNLOAD_LIMIT: &str = "limits.downloadBps";
 
+/// Dossier des téléchargements ajoutés sans `destDir` ; `null` : le dossier
+/// « Téléchargements » du système.
+pub const DOWNLOAD_DIR: &str = "downloads.dir";
+
+/// Dossier des téléchargements enregistré ; `None` : aucun (celui du système).
+pub fn download_dir(conn: &Connection) -> Result<Option<String>, StoreError> {
+    match get(conn, DOWNLOAD_DIR)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(dir)) => Ok(Some(dir)),
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {DOWNLOAD_DIR} : {v} n'est pas un dossier"
+        ))),
+    }
+}
+
+/// Enregistre le dossier des téléchargements ; `None` : celui du système.
+pub fn set_download_dir(conn: &Connection, dir: Option<&str>) -> Result<(), StoreError> {
+    set(conn, DOWNLOAD_DIR, &dir.map_or(Value::Null, Value::from))
+}
+
 /// Valeur d'un réglage ; `None` s'il n'a jamais été enregistré.
 pub fn get(conn: &Connection, key: &str) -> Result<Option<Value>, StoreError> {
     let text: Option<String> = conn
@@ -70,6 +90,18 @@ mod tests {
         set_download_limit(&conn, None).unwrap();
         assert_eq!(download_limit(&conn).unwrap(), None);
         assert_eq!(get(&conn, DOWNLOAD_LIMIT).unwrap(), Some(Value::Null));
+    }
+
+    #[test]
+    fn the_download_dir_is_kept_and_reset() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(download_dir(&conn).unwrap(), None);
+        set_download_dir(&conn, Some("/srv/dl")).unwrap();
+        assert_eq!(download_dir(&conn).unwrap().as_deref(), Some("/srv/dl"));
+        set_download_dir(&conn, None).unwrap();
+        assert_eq!(download_dir(&conn).unwrap(), None);
+        set(&conn, DOWNLOAD_DIR, &Value::from(3)).unwrap();
+        assert!(download_dir(&conn).is_err());
     }
 
     #[test]

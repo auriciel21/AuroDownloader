@@ -71,6 +71,11 @@ téléchargement.
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
   `engine stop` sur ce point d'accès.
+- L'utilisateur se sert de l'application installée (depuis le 2026-11-07) : instance
+  unique, donc un essai de l'application ne démarre pas tant que la sienne est ouverte
+  (il lui passe la main et se ferme). Ne jamais fermer ni piloter la sienne, ni toucher à
+  son moteur (`\\.\pipe\aurodownloader-<utilisateur>`) ; lui demander de la quitter s'il
+  faut un essai de l'interface.
 - Essais d'un installateur Windows : `/S /D=<dossier d'essai>` (jamais le dossier par
   défaut, qui est aussi celui des données réelles), aucun `aurod` réel en marche (ses
   crochets arrêtent le moteur du point d'accès par défaut), application installée lancée
@@ -100,6 +105,7 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
+cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement

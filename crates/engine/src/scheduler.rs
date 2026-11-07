@@ -195,6 +195,11 @@ pub enum Event {
         rev: u64,
         download_bps: Option<u64>,
     },
+    /// Dossier des téléchargements changé : le dossier retenu désormais.
+    DownloadDirChanged {
+        rev: u64,
+        download_dir: Option<String>,
+    },
     Progress {
         rev: u64,
         task_id: String,
@@ -244,6 +249,8 @@ pub struct Snapshot {
     pub queues: Vec<QueueRow>,
     /// Limite de débit globale (`None` : aucune).
     pub download_limit: Option<u64>,
+    /// Dossier des ajouts sans `destDir` ; `None` s'il n'y en a aucun.
+    pub download_dir: Option<String>,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -263,6 +270,9 @@ pub enum EngineError {
 
     #[error("demande invalide : {0}")]
     BadRequest(String),
+
+    #[error("dossier de destination refusé : {0}")]
+    DestDir(String),
 
     #[error("la tâche {task_id} est dans l'état {state} : {action} impossible")]
     InvalidState {
@@ -292,7 +302,9 @@ pub enum EngineError {
 #[derive(Debug, Clone, Default)]
 pub struct AddTask {
     pub url: String,
-    pub dest_dir: String,
+    /// Dossier de destination, en chemin absolu ; `None` : le dossier des téléchargements
+    /// du moteur (réglage `downloads.dir`, sinon celui du système).
+    pub dest_dir: Option<String>,
     /// File de la tâche ; `None` : la file par défaut.
     pub queue_id: Option<String>,
     /// `None` : nombre de connexions automatique (SPEC §7.3).
@@ -345,6 +357,8 @@ enum Command {
     },
     DownloadLimit(Reply<Option<u64>>),
     SetDownloadLimit(Option<u64>, Reply<()>),
+    DownloadDir(Reply<Option<String>>),
+    SetDownloadDir(Option<String>, Reply<Option<String>>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
         schedule_id: Option<String>,
@@ -511,6 +525,21 @@ impl Engine {
     pub async fn set_download_limit(&self, limit: Option<u64>) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetDownloadLimit(limit, reply))
             .await
+    }
+
+    /// Dossier des ajouts sans dossier : le réglage, sinon le dossier « Téléchargements »
+    /// du système ; `None` s'il n'y en a aucun.
+    pub async fn download_dir(&self) -> Result<Option<String>, EngineError> {
+        self.ask(Command::DownloadDir).await
+    }
+
+    /// Change le dossier des téléchargements (un dossier existant, en chemin absolu) ;
+    /// `None` revient à celui du système. Renvoie le dossier retenu désormais.
+    pub async fn set_download_dir(
+        &self,
+        dir: Option<String>,
+    ) -> Result<Option<String>, EngineError> {
+        self.ask(|reply| Command::SetDownloadDir(dir, reply)).await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -1015,6 +1044,12 @@ impl Scheduler {
             Command::SetDownloadLimit(limit, reply) => {
                 let _ = reply.send(self.set_download_limit(limit));
             }
+            Command::DownloadDir(reply) => {
+                let _ = reply.send(self.download_dir());
+            }
+            Command::SetDownloadDir(dir, reply) => {
+                let _ = reply.send(self.set_download_dir(dir));
+            }
             Command::Shutdown(done) => self.begin_shutdown(Some(done)),
         }
     }
@@ -1032,7 +1067,29 @@ impl Scheduler {
             end_action: self.planning.pending.clone(),
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,
+            download_dir: self.download_dir()?,
         })
+    }
+
+    /// Dossier des ajouts sans dossier : le réglage, sinon le dossier « Téléchargements »
+    /// du système.
+    fn download_dir(&self) -> Result<Option<String>, EngineError> {
+        Ok(settings::download_dir(&self.conn)?
+            .or_else(|| dirs::download_dir().and_then(|d| d.to_str().map(str::to_owned))))
+    }
+
+    fn set_download_dir(&mut self, dir: Option<String>) -> Result<Option<String>, EngineError> {
+        if let Some(dir) = &dir {
+            check_dest_dir(dir)?;
+        }
+        settings::set_download_dir(&self.conn, dir.as_deref())?;
+        let effective = self.download_dir()?;
+        let announced = effective.clone();
+        self.emit(|rev| Event::DownloadDirChanged {
+            rev,
+            download_dir: announced,
+        });
+        Ok(effective)
     }
 
     fn check_queue_limit(max_active: u32) -> Result<(), EngineError> {
@@ -1170,6 +1227,17 @@ impl Scheduler {
         }
         net::check_url(&task.url)?;
         Self::check_speed_limit(task.speed_limit_bps)?;
+        let dest_dir = match task.dest_dir {
+            Some(dir) => dir,
+            None => self.download_dir()?.ok_or_else(|| {
+                EngineError::DestDir(
+                    "aucun dossier indiqué, et ni réglage ni dossier « Téléchargements » sur \
+                     cette machine"
+                        .into(),
+                )
+            })?,
+        };
+        check_dest_dir(&dest_dir)?;
         let queue_id = task.queue_id.unwrap_or_else(|| self.default_queue.clone());
         if !tasks::queue_exists(&self.conn, &queue_id)? {
             return Err(EngineError::QueueNotFound(queue_id));
@@ -1181,7 +1249,7 @@ impl Scheduler {
                 queue_id: &queue_id,
                 url: &task.url,
                 display_name: &display_name,
-                dest_dir: &task.dest_dir,
+                dest_dir: &dest_dir,
                 max_connections: task.max_connections,
                 speed_limit_bps: task.speed_limit_bps,
                 idempotency_key: task.idempotency_key.as_deref(),
@@ -1405,6 +1473,17 @@ impl Scheduler {
             self.changed(&task_id, TaskState::Active, task.state);
         }
     }
+}
+
+/// Un dossier de destination : chemin absolu d'un dossier existant.
+fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
+    let path = Path::new(dir);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(EngineError::DestDir(format!(
+            "{dir} : un dossier existant, en chemin absolu, est attendu"
+        )));
+    }
+    Ok(())
 }
 
 fn user_pause() -> Change<'static> {

@@ -1100,6 +1100,7 @@ async function resync() {
   const result = store.load(snapshot);
   renderAll();
   renderLimit();
+  renderDest();
   renderPlanning();
   removeCancelled();
   if (result.resync) resync();
@@ -1123,6 +1124,7 @@ function onStatus(status) {
   }
   renderToolbar();
   renderLimit();
+  renderDest();
   renderPlanning();
   if (detailsTask) renderDetails();
   renderAbout();
@@ -1153,6 +1155,7 @@ function onEngine(event) {
       if (removeWhenCancelled.size) removeCancelled();
       schedule(result);
       if (result.limits) renderLimit();
+      if (result.settings) renderDest();
       if (result.planning) renderPlanning();
       if (result.endActionError) {
         showError(t("Action de fin refusée par le système : {0}", result.endActionError));
@@ -1177,9 +1180,16 @@ async function act(method, params) {
 
 // ---------- Ajout ----------
 
+/// Dossier des téléchargements du moteur (`downloads.dir`), dans l'ajout et les options.
+function renderDest() {
+  const dir = store.settings["downloads.dir"] ?? "";
+  for (const id of ["dest", "pref-dest"]) $(id).textContent = dir || t("(aucun)");
+  for (const id of ["dest-change", "pref-dest-change"]) $(id).disabled = !connected;
+}
+
 function openAdd() {
   if (!connected || document.querySelector("dialog[open]")) return;
-  $("dest").textContent = info.destDir;
+  renderDest();
   const dialog = $("add-dialog");
   dialog.returnValue = "";
   dialog.showModal();
@@ -1199,11 +1209,8 @@ async function closeAdd() {
   let firstError = null;
   for (const url of urls) {
     try {
-      await host.call("task.add", {
-        sources: [{ url }],
-        destDir: info.destDir,
-        startPaused: choice === "later",
-      });
+      // Sans destDir : le dossier des téléchargements du moteur.
+      await host.call("task.add", { sources: [{ url }], startPaused: choice === "later" });
     } catch (e) {
       failed.push(url);
       firstError ??= e;
@@ -1287,8 +1294,7 @@ function applyInfo(next) {
   longDateFormat = new Intl.DateTimeFormat(lang, { dateStyle: "full", timeStyle: "short" });
   executables = new Set(info.executableExtensions);
   translatePage();
-  $("dest").textContent = info.destDir;
-  $("pref-dest").textContent = info.destDir;
+  renderDest();
   $("pref-lang").value = info.prefs.lang;
   $("pref-tray").checked = info.prefs.closeToTray && info.tray;
   $("pref-tray").disabled = !info.tray;
@@ -1321,9 +1327,20 @@ async function savePrefs(change) {
   }
 }
 
+/// Change le dossier des téléchargements du moteur ; le moteur l'annonce
+/// (`settings.updated`), la réponse le donne aussitôt.
 async function chooseFolder(save) {
-  const folder = await host.pickFolder(info.destDir).catch(() => null);
-  if (folder) await savePrefs({ destDir: folder });
+  const current = store.settings["downloads.dir"] ?? "";
+  const folder = await host.pickFolder(current).catch(() => null);
+  if (folder) {
+    try {
+      const result = await host.call("settings.set", { values: { "downloads.dir": folder } });
+      Object.assign(store.settings, result.values);
+      renderDest();
+    } catch (e) {
+      showError(refused(e));
+    }
+  }
   if (save) $(save).focus();
 }
 

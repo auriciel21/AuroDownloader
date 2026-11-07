@@ -1,7 +1,6 @@
 //! Méthodes du protocole (SPEC §6.4) : lecture des paramètres nommés, appel du moteur,
 //! résultat en JSON.
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -13,6 +12,7 @@ use super::{
 };
 use crate::schedule::Rules;
 use crate::scheduler::{AddTask, EngineError, Include, QueueChange, TaskDetails, TaskUpdate};
+use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -226,6 +226,27 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let queue = ctx.engine.update_queue(&id, change).await?;
             Ok(queue_json(&queue))
         }
+        "settings.get" => settings(ctx).await,
+        "settings.set" => {
+            let values = p
+                .get("values")
+                .and_then(Value::as_object)
+                .ok_or_else(|| RpcError::invalid_params("values : objet attendu"))?;
+            if let Some(key) = values.keys().find(|k| *k != DOWNLOAD_DIR) {
+                return Err(RpcError::invalid_params(format!(
+                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR})"
+                )));
+            }
+            if let Some(value) = values.get(DOWNLOAD_DIR) {
+                let dir = match value {
+                    Value::Null => None,
+                    Value::String(dir) => Some(dir.clone()),
+                    _ => return Err(Params::wrong(DOWNLOAD_DIR, "texte ou null")),
+                };
+                ctx.engine.set_download_dir(dir).await?;
+            }
+            settings(ctx).await
+        }
         "limits.get" => limits(ctx).await,
         "limits.set" => {
             // Débit montant : pour les torrents, pas encore pris en charge.
@@ -247,6 +268,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": null},
+                "settings": {DOWNLOAD_DIR: s.download_dir},
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -335,6 +357,13 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     }))
 }
 
+/// Réglages du moteur (`settings.get`) : tous ceux qu'il prend en charge, avec la valeur
+/// retenue (pour `downloads.dir`, le dossier du système si aucun n'est enregistré).
+async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
+    let dir = ctx.engine.download_dir().await?;
+    Ok(json!({"values": {DOWNLOAD_DIR: dir}}))
+}
+
 /// Limites globales (`limits.get`) ; le débit montant n'est pas encore limité.
 async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
     let download = ctx.engine.download_limit().await?;
@@ -368,15 +397,8 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             ));
         }
     };
-    let dest_dir = p.required_str("destDir")?;
-    let dir = Path::new(&dest_dir);
-    if !dir.is_absolute() || !dir.is_dir() {
-        return Err(RpcError::new(
-            -32021,
-            "DEST_NOT_WRITABLE",
-            "destDir doit être un dossier existant, en chemin absolu",
-        ));
-    }
+    // Absent : le dossier des téléchargements du moteur (`settings.get`).
+    let dest_dir = p.str("destDir")?;
     let max_connections = p.u32("maxConnections")?;
     if max_connections.is_some_and(|c| c == 0 || c > MAX_CONNECTIONS) {
         return Err(RpcError::invalid_params(format!(

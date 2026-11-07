@@ -59,9 +59,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
     Some(match method {
         "engine.hello" => return None,
         "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list"
-        | "events.subscribe" | "events.unsubscribe" | "sync.snapshot" | "engine.stats" => {
-            Scope::Read
-        }
+        | "settings.get" | "events.subscribe" | "events.unsubscribe" | "sync.snapshot"
+        | "engine.stats" => Scope::Read,
         "task.add" | "task.addBatch" | "media.probe" | "linkscan.run" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
@@ -78,7 +77,7 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "queue.delete"
         | "limits.set"
         | "engine.cancelEndAction" => Scope::Control,
-        "engine.shutdown" | "schedule.set" | "schedule.delete" => Scope::Admin,
+        "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
         _ => return None,
     })
 }

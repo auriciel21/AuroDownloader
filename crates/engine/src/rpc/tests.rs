@@ -214,6 +214,73 @@ async fn a_connection_keeps_to_the_scope_it_declares() {
     engine.shutdown().await;
 }
 
+/// Dossier des téléchargements du moteur (`downloads.dir`) : réglé, annoncé, et pris par
+/// un ajout sans `destDir` ; `null` revient au dossier du système.
+#[tokio::test]
+async fn the_download_dir_is_an_engine_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let server = site(1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let system = c.result("settings.get", json!({})).await["values"]["downloads.dir"].clone();
+
+    let chosen = dir_text(downloads.path());
+    let set = c
+        .result("settings.set", json!({"values": {"downloads.dir": chosen}}))
+        .await;
+    assert_eq!(set["values"]["downloads.dir"], chosen.as_str());
+    let note = c.notification("settings.updated", |_| true).await;
+    assert_eq!(note["values"]["downloads.dir"], chosen.as_str());
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["settings"]["downloads.dir"], chosen.as_str());
+
+    // Un ajout sans dossier va dans celui du moteur.
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/d.bin")}], "startPaused": true}),
+        )
+        .await;
+    let task = c
+        .result("task.get", json!({"taskId": added["taskId"]}))
+        .await;
+    assert_eq!(task["destDir"], chosen.as_str());
+
+    for (params, code) in [
+        (
+            json!({"values": {"downloads.dir": "relatif"}}),
+            "DEST_NOT_WRITABLE",
+        ),
+        (json!({"values": {"downloads.dir": 3}}), "INVALID_PARAMS"),
+        (json!({"values": {"inconnu": 1}}), "INVALID_PARAMS"),
+        (json!({}), "INVALID_PARAMS"),
+    ] {
+        assert_eq!(
+            c.error_code("settings.set", params.clone()).await,
+            code,
+            "{params}"
+        );
+    }
+    assert_eq!(
+        c.error_code(
+            "task.add",
+            json!({"sources": [{"url": server.url("/e.bin")}], "destDir": "relatif"}),
+        )
+        .await,
+        "DEST_NOT_WRITABLE"
+    );
+
+    // Retiré : de nouveau le dossier du système.
+    let reset = c
+        .result("settings.set", json!({"values": {"downloads.dir": null}}))
+        .await;
+    assert_eq!(reset["values"]["downloads.dir"], system);
+    engine.shutdown().await;
+}
+
 /// `idempotencyKey` (SPEC §6.1) : un ajout rejoué rend la même tâche, sans doublon ni
 /// annonce ; une fois la tâche retirée, la clé resservirait.
 #[tokio::test]

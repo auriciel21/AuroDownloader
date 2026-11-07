@@ -262,6 +262,27 @@ pub async fn queue_update(rpc: &mut Rpc, queue: &str, edit: &QueueEdit<'_>) -> R
     Ok(())
 }
 
+/// Affiche le dossier des téléchargements du moteur ; avec `path`, le change d'abord ;
+/// avec `reset`, revient à celui du système.
+pub async fn download_dir(rpc: &mut Rpc, path: Option<&Path>, reset: bool) -> Result<()> {
+    let settings = match (path, reset) {
+        (Some(p), _) => {
+            let values = json!({"downloads.dir": dest_dir(p)?});
+            rpc.call("settings.set", json!({"values": values})).await?
+        }
+        (None, true) => {
+            let values = json!({"downloads.dir": null});
+            rpc.call("settings.set", json!({"values": values})).await?
+        }
+        (None, false) => rpc.call("settings.get", json!({})).await?,
+    };
+    match settings["values"]["downloads.dir"].as_str() {
+        Some(dir) => println!("Dossier des téléchargements : {dir}"),
+        None => println!("Aucun dossier des téléchargements : préciser -o à chaque ajout."),
+    }
+    Ok(())
+}
+
 /// Ce dont `auro limit` lit ou change la limite.
 pub enum LimitOf<'a> {
     Global,

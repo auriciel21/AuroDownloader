@@ -14,6 +14,7 @@ use super::{
     schedule_json, task_json,
 };
 use crate::scheduler::{Engine, Event};
+use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::TaskState;
 use crate::transfer::Progress;
 
@@ -26,8 +27,8 @@ const OUTGOING: usize = 256;
 pub(super) struct Topics {
     /// `task.added`, `task.stateChanged`, `task.updated`, `task.removed`.
     pub tasks: bool,
-    /// `queue.updated`, `limits.updated`, `schedule.updated`, `schedule.removed`,
-    /// `engine.endAction`.
+    /// `queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`,
+    /// `schedule.removed`, `engine.endAction`.
     pub queues: bool,
     /// `task.progress`, regroupé.
     pub progress: bool,
@@ -319,6 +320,10 @@ async fn describe(
         Event::LimitsChanged { rev, download_bps } if topics.queues => Some(notification(
             "limits.updated",
             json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
+        )),
+        Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
+            "settings.updated",
+            json!({"rev": rev, "values": {DOWNLOAD_DIR: download_dir}}),
         )),
         Event::QueueUpdated { rev, queue_id } if topics.queues => {
             let queues = engine.queues().await.ok()?;

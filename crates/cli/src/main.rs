@@ -141,6 +141,16 @@ enum Command {
         #[arg(short = 'q', long)]
         queue: Option<String>,
     },
+    /// Dossier des téléchargements du moteur, pour les ajouts sans dossier (extension,
+    /// application) ; sans argument, l'affiche
+    Dir {
+        /// Nouveau dossier (existant)
+        #[arg(conflicts_with = "reset")]
+        path: Option<PathBuf>,
+        /// Revenir au dossier « Téléchargements » du système
+        #[arg(long)]
+        reset: bool,
+    },
     /// Files de téléchargement
     Queue {
         #[command(subcommand)]
@@ -418,6 +428,9 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         (None, None) => remote::LimitOf::Global,
                     };
                     remote::limit(&mut rpc, to, rate).await
+                }
+                Command::Dir { path, reset } => {
+                    remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }
                 Command::Schedule { action } => match action {
                     ScheduleAction::List => remote::schedules(&mut rpc).await,

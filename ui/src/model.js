@@ -117,6 +117,8 @@ function outcome() {
     finished: [],
     /// Les limites globales ont changé.
     limits: false,
+    /// Les réglages du moteur (dossier des téléchargements) ont changé.
+    settings: false,
     /// Les planifications, les files ou l'action de fin annoncée ont changé.
     planning: false,
     /// Le refus d'une action de fin par le système, à montrer.
@@ -129,6 +131,7 @@ function merge(into, other) {
   into.list ||= other.list;
   into.resync ||= other.resync;
   into.limits ||= other.limits;
+  into.settings ||= other.settings;
   into.planning ||= other.planning;
   into.endActionError ??= other.endActionError;
   into.finished.push(...other.finished);
@@ -147,6 +150,8 @@ export class TaskStore {
     this.queues = new Map();
     /// Limites globales (`limits.get`) ; `null` avant le premier instantané.
     this.limits = null;
+    /// Réglages du moteur (`settings.get`), par clé.
+    this.settings = {};
     /// Planifications (F-16), par identifiant, avec leur ouverture.
     this.schedules = new Map();
     /// Action de fin annoncée (`{queueId, action, at}`), ou `null`.
@@ -169,12 +174,14 @@ export class TaskStore {
     this.tasks = new Map(snapshot.tasks.map((t) => [t.taskId, fresh(t)]));
     this.queues = new Map(snapshot.queues.map((q) => [q.queueId, q]));
     this.limits = snapshot.limits ?? null;
+    this.settings = { ...snapshot.settings };
     this.schedules = new Map((snapshot.schedules ?? []).map((s) => [s.scheduleId, s]));
     this.endAction = snapshot.endAction ?? null;
     this.rev = snapshot.rev;
     const result = outcome();
     result.list = true;
     result.limits = true;
+    result.settings = true;
     result.planning = true;
     for (const id of this.tasks.keys()) result.changed.add(id);
     const waiting = this.waiting;
@@ -211,6 +218,7 @@ export class TaskStore {
       case "task.removed":
       case "queue.updated":
       case "limits.updated":
+      case "settings.updated":
       case "schedule.updated":
       case "schedule.removed":
       case "engine.endAction":
@@ -297,6 +305,10 @@ export class TaskStore {
         result.limits = true;
         break;
       }
+      case "settings.updated":
+        Object.assign(this.settings, params.values);
+        result.settings = true;
+        break;
     }
     return result;
   }

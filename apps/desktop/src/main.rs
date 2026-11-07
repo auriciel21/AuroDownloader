@@ -57,8 +57,6 @@ fn options() -> Options {
 struct App {
     prefs: Mutex<Prefs>,
     prefs_path: PathBuf,
-    /// Dossier « Téléchargements » de l'utilisateur, proposé si aucun n'est choisi.
-    downloads: String,
     /// Une zone de notification existe : fermer la fenêtre peut l'y replier.
     tray: bool,
     menu: Mutex<Option<TrayMenu>>,
@@ -127,8 +125,6 @@ struct Info {
     prefs: Prefs,
     /// Langue retenue : `fr` ou `en`.
     lang: &'static str,
-    /// Dossier des ajouts : la préférence, sinon « Téléchargements ».
-    dest_dir: String,
     tray: bool,
     autostart: bool,
     executable_extensions: &'static [&'static str],
@@ -137,16 +133,10 @@ struct Info {
 fn info(app: &AppHandle, state: &App) -> Info {
     let prefs = state.prefs.lock().unwrap().clone();
     let lang = prefs.language(sys_locale::get_locale().as_deref());
-    let dest_dir = if prefs.dest_dir.is_empty() {
-        state.downloads.clone()
-    } else {
-        prefs.dest_dir.clone()
-    };
     Info {
         version: env!("CARGO_PKG_VERSION"),
         platform: std::env::consts::OS,
         lang,
-        dest_dir,
         prefs,
         tray: state.tray,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
@@ -373,17 +363,10 @@ fn main() {
                 None => app.path().app_config_dir()?.join("prefs.json"),
             };
             let prefs = Prefs::load(&prefs_path);
-            let downloads = app
-                .path()
-                .download_dir()
-                .or_else(|_| app.path().home_dir())
-                .map(|d| d.to_string_lossy().into_owned())
-                .unwrap_or_default();
             let menu = if tray { Some(build_tray(app)?) } else { None };
             let state = App {
                 prefs: Mutex::new(prefs),
                 prefs_path,
-                downloads,
                 tray,
                 menu: Mutex::new(menu),
             };
