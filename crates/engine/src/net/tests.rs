@@ -645,3 +645,127 @@ mod segments {
         assert!(matches!(err, NetError::FileChanged), "{err:?}");
     }
 }
+
+/// Identification d'une tâche (F-06, SPEC §7.14) face au serveur de test.
+mod authentication {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::net::auth::{Auth, Login, Site};
+    use crate::testing::{FileSite, SiteAuth, TestTls, serve_file, serve_file_tls};
+
+    fn protected(auth: SiteAuth) -> crate::testing::Server {
+        let mut site = FileSite::new(10_000);
+        site.auth = Some(auth);
+        serve_file(Arc::new(Mutex::new(site)))
+    }
+
+    fn login(site: &str, password: &str) -> Auth {
+        Auth::new(Login {
+            site: Site::parse(site).unwrap(),
+            username: "moi".into(),
+            password: password.into(),
+        })
+    }
+
+    fn authorizations(server: &crate::testing::Server) -> Vec<Option<String>> {
+        server
+            .requests()
+            .iter()
+            .map(|r| r.header("authorization").map(str::to_owned))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn digest_is_answered_then_sent_with_every_request() {
+        for algorithm in ["MD5", "SHA-256", "SHA-256-sess"] {
+            let server = protected(SiteAuth::digest("moi", "secret", algorithm));
+            let url = server.url("/f.bin?jeton=1");
+            let auth = login("127.0.0.1", "secret");
+            let probe = client().probe_as(&url, &[], Some(&auth)).await.unwrap();
+            assert_eq!(probe.total_bytes, Some(10_000), "{algorithm}");
+            let req = RangeRequest {
+                first: 0,
+                last: 99,
+                total: 10_000,
+                if_range: None,
+            };
+            client()
+                .get_range_as(&url, &[], &req, Some(&auth))
+                .await
+                .unwrap();
+            let sent = authorizations(&server);
+            // Le premier `HEAD` sans rien, refusé ; puis toujours l'identification.
+            assert_eq!(sent[0], None, "{algorithm}");
+            assert!(
+                sent[1..].iter().all(Option::is_some),
+                "{algorithm} : {sent:?}"
+            );
+            assert_eq!(sent.len(), 3, "un seul refus : {sent:?}");
+            assert!(!sent.iter().flatten().any(|v| v.contains("secret")));
+        }
+    }
+
+    #[tokio::test]
+    async fn wrong_or_missing_credentials_are_reported() {
+        let server = protected(SiteAuth::digest("moi", "secret", "MD5"));
+        let url = server.url("/f.bin");
+        let err = client().probe(&url, &[]).await.unwrap_err();
+        assert!(matches!(err, NetError::AuthRequired), "{err:?}");
+        assert_eq!(err.error_code(), Some("AUTH_REQUIRED"));
+        assert!(!err.retryable());
+
+        let wrong = login("127.0.0.1", "faux");
+        let err = client()
+            .probe_as(&url, &[], Some(&wrong))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::AuthRefused), "{err:?}");
+        assert_eq!(err.error_code(), Some("AUTH_FAILED"));
+
+        // Identifiants d'un autre site : rien n'est envoyé.
+        let elsewhere = login("exemple.org", "secret");
+        let before = server.requests().len();
+        let err = client()
+            .probe_as(&url, &[], Some(&elsewhere))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::AuthRequired), "{err:?}");
+        assert!(
+            authorizations(&server)[before..]
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[tokio::test]
+    async fn basic_goes_over_https_only() {
+        // En clair : refusé, sans jamais envoyer le mot de passe.
+        let plain = protected(SiteAuth::basic("moi", "secret"));
+        let auth = login("127.0.0.1", "secret");
+        let err = client()
+            .probe_as(&plain.url("/f.bin"), &[], Some(&auth))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::AuthInsecure), "{err:?}");
+        assert!(authorizations(&plain).iter().all(Option::is_none));
+
+        if !tls_available() {
+            return;
+        }
+        let tls = TestTls::new();
+        let mut site = FileSite::new(10_000);
+        site.auth = Some(SiteAuth::basic("moi", "secret"));
+        let server = serve_file_tls(Arc::new(Mutex::new(site)), None, &tls);
+        let trusting = Client::with_extra_roots(tls.ca_pem.as_bytes()).unwrap();
+        let probe = trusting
+            .probe_as(&server.url("/f.bin"), &[], Some(&auth))
+            .await
+            .unwrap();
+        assert_eq!(probe.total_bytes, Some(10_000));
+        assert_eq!(
+            authorizations(&server).last().unwrap().as_deref(),
+            Some("Basic bW9pOnNlY3JldA==")
+        );
+    }
+}

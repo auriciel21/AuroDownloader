@@ -345,6 +345,9 @@ pub enum EngineError {
 
     #[error("nouvelle adresse injoignable : {0}")]
     SourceUnreachable(#[source] NetError),
+
+    #[error("identifiants inconnus : {0}")]
+    LoginNotFound(String),
 }
 
 /// Tâche à ajouter.
@@ -374,6 +377,40 @@ pub struct AddTask {
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
 
+/// Identifiants d'un site tels que le protocole les montre : jamais le mot de passe
+/// (SPEC §7.14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginView {
+    pub id: String,
+    /// Forme normalisée du site.
+    pub site: String,
+    pub username: String,
+}
+
+impl From<store::logins::LoginRow> for LoginView {
+    fn from(row: store::logins::LoginRow) -> Self {
+        LoginView {
+            id: row.id,
+            site: row.site,
+            username: row.username,
+        }
+    }
+}
+
+/// Identifiants à enregistrer (`login.set`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoginChange {
+    /// `None` : de nouveaux identifiants.
+    pub id: Option<String>,
+    pub site: String,
+    pub username: String,
+    /// Obligatoire pour de nouveaux identifiants ; `None` garde le mot de passe enregistré.
+    pub password: Option<String>,
+}
+
+/// Longueur maximale d'un nom d'utilisateur, en octets.
+pub const MAX_USERNAME: usize = 256;
+
 /// Ce que la boucle donne pour vérifier une nouvelle adresse (SPEC §7.13).
 #[derive(Debug, Clone)]
 pub struct SourceCheck {
@@ -384,6 +421,8 @@ pub struct SourceCheck {
     headers: Vec<StoredHeader>,
     /// L'hôte change : les secrets de la tâche (cookies) ne suivent pas.
     other_host: bool,
+    /// Identifiants du site de la nouvelle adresse (SPEC §7.14).
+    login: Option<store::logins::LoginRow>,
 }
 
 /// Ce que le moteur a appris de la nouvelle adresse.
@@ -467,6 +506,9 @@ enum Command {
     },
     DeleteSchedule(String, Reply<()>),
     CancelEndAction(Reply<bool>),
+    Logins(Reply<Vec<LoginView>>),
+    SetLogin(LoginChange, Reply<LoginView>),
+    DeleteLogin(String, Reply<()>),
     /// Secrets relevés dans le coffre au démarrage, pour le ramassage.
     CollectSecrets(Vec<String>),
     Shutdown(oneshot::Sender<()>),
@@ -766,9 +808,10 @@ impl Engine {
             None => None,
             Some(expected) => {
                 let headers = reveal(check.headers, &self.vault).await?;
+                let auth = reveal_site_login(check.login, &self.vault).await?;
                 let probe = self
                     .client
-                    .probe(url, &headers)
+                    .probe_as(url, &headers, auth.as_ref())
                     .await
                     .map_err(EngineError::SourceUnreachable)?;
                 if probe.total_bytes != Some(expected) {
@@ -842,6 +885,23 @@ impl Engine {
     /// Annule l'action de fin annoncée ; `false` s'il n'y en avait pas.
     pub async fn cancel_end_action(&self) -> Result<bool, EngineError> {
         self.ask(Command::CancelEndAction).await
+    }
+
+    /// Identifiants de sites enregistrés, sans leurs mots de passe (SPEC §7.14).
+    pub async fn logins(&self) -> Result<Vec<LoginView>, EngineError> {
+        self.ask(Command::Logins).await
+    }
+
+    /// Enregistre ou modifie les identifiants d'un site ; le mot de passe va au coffre du
+    /// système.
+    pub async fn set_login(&self, change: LoginChange) -> Result<LoginView, EngineError> {
+        self.ask(|reply| Command::SetLogin(change, reply)).await
+    }
+
+    /// Retire les identifiants d'un site, et leur mot de passe du coffre.
+    pub async fn delete_login(&self, id: &str) -> Result<(), EngineError> {
+        let id = id.to_owned();
+        self.ask(|reply| Command::DeleteLogin(id, reply)).await
     }
 
     /// Arrête le moteur : les tâches en cours s'arrêtent après leur point de contrôle et
@@ -1259,6 +1319,19 @@ impl Scheduler {
             Command::CancelEndAction(reply) => {
                 let _ = reply.send(Ok(self.cancel_end_action()));
             }
+            Command::Logins(reply) => {
+                let rows = store::logins::list(&self.conn);
+                let _ = reply.send(
+                    rows.map(|r| r.into_iter().map(LoginView::from).collect())
+                        .map_err(Into::into),
+                );
+            }
+            Command::SetLogin(change, reply) => {
+                let _ = reply.send(self.set_login(change));
+            }
+            Command::DeleteLogin(id, reply) => {
+                let _ = reply.send(self.delete_login(&id));
+            }
             Command::CollectSecrets(found) => self.collect_secrets(found),
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
@@ -1562,6 +1635,91 @@ impl Scheduler {
             }
         }
         Ok(stored)
+    }
+
+    /// Enregistre des identifiants (SPEC §7.14). Tout est vérifié avant le coffre ; le
+    /// nouveau mot de passe est écrit avant sa référence, l'ancien effacé après (SPEC §5.1).
+    fn set_login(&mut self, change: LoginChange) -> Result<LoginView, EngineError> {
+        let site = crate::net::auth::Site::parse(&change.site)
+            .map_err(EngineError::BadRequest)?
+            .text();
+        let username = change.username.trim();
+        if username.is_empty()
+            || username.len() > MAX_USERNAME
+            || username.contains(':')
+            || username.chars().any(char::is_control)
+        {
+            return Err(EngineError::BadRequest(format!(
+                "nom d'utilisateur : de 1 à {MAX_USERNAME} octets, sans « : » ni caractère \
+                 de contrôle"
+            )));
+        }
+        if change
+            .password
+            .as_ref()
+            .is_some_and(|p| p.is_empty() || p.chars().any(char::is_control))
+        {
+            return Err(EngineError::BadRequest(
+                "mot de passe vide, ou avec un caractère de contrôle".into(),
+            ));
+        }
+        let existing = match &change.id {
+            Some(id) => Some(
+                store::logins::load(&self.conn, id)?
+                    .ok_or_else(|| EngineError::LoginNotFound(id.clone()))?,
+            ),
+            None => None,
+        };
+        if let Some(other) = store::logins::by_site(&self.conn, &site)?
+            && existing.as_ref().is_none_or(|e| e.id != other.id)
+        {
+            return Err(EngineError::BadRequest(format!(
+                "des identifiants sont déjà enregistrés pour {site} : les modifier"
+            )));
+        }
+        if existing.is_none() && change.password.is_none() {
+            return Err(EngineError::BadRequest(
+                "mot de passe manquant pour de nouveaux identifiants".into(),
+            ));
+        }
+        let secret = match &change.password {
+            Some(password) => Some(self.vault().put(password)?),
+            None => None,
+        };
+        let saved = match &existing {
+            None => store::logins::insert(
+                &self.conn,
+                &site,
+                username,
+                secret.as_deref().expect("vérifié plus haut"),
+            )
+            .map(|id| (id, None)),
+            Some(row) => {
+                store::logins::update(&self.conn, &row.id, &site, username, secret.as_deref())
+                    .map(|old| (row.id.clone(), old))
+            }
+        };
+        let (id, replaced) = match saved {
+            Ok(saved) => saved,
+            Err(e) => {
+                self.vault().forget(secret.into_iter().collect());
+                return Err(e.into());
+            }
+        };
+        self.vault().forget(replaced.into_iter().collect());
+        Ok(LoginView {
+            id,
+            site,
+            username: username.to_owned(),
+        })
+    }
+
+    /// Retire des identifiants : la référence d'abord, puis le mot de passe du coffre.
+    fn delete_login(&mut self, id: &str) -> Result<(), EngineError> {
+        let secret = store::logins::delete(&self.conn, id)?
+            .ok_or_else(|| EngineError::LoginNotFound(id.to_owned()))?;
+        self.vault().forget(vec![secret]);
+        Ok(())
     }
 
     /// Retire de la base les secrets d'une tâche terminée, puis les efface du coffre.
@@ -1910,10 +2068,19 @@ impl Scheduler {
         let task = self.idle(task_id, "changement d'adresse")?;
         let old = tasks::primary_source(&self.conn, task_id)?;
         let other_host = transfer::host_of(&old.url) != transfer::host_of(url);
-        let headers = headers::load(&self.conn, task_id)?
+        let headers: Vec<StoredHeader> = headers::load(&self.conn, task_id)?
             .into_iter()
             .filter(|(_, s)| !other_host || matches!(s, Stored::Plain(_)))
             .collect();
+        // Identifiants du site de la nouvelle adresse (SPEC §7.14), sauf `Authorization`
+        // propre à la tâche.
+        let explicit = headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+        let login = match explicit {
+            true => None,
+            false => store::logins::best_for(&self.conn, url)?,
+        };
         // Une tâche terminée ou annulée ne reprendra pas : son retéléchargement
         // réapprendra tout.
         let resumable = !matches!(task.state, TaskState::Completed | TaskState::Cancelled);
@@ -1921,6 +2088,7 @@ impl Scheduler {
             expect_bytes: task.total_bytes.filter(|_| resumable),
             headers,
             other_host,
+            login,
         })
     }
 
@@ -2102,6 +2270,30 @@ fn check_file_name(name: &str) -> Result<(), EngineError> {
         )));
     }
     Ok(())
+}
+
+/// Identifiants d'un site, mot de passe lu dans le coffre, hors de la boucle (SPEC §7.14).
+async fn reveal_site_login(
+    login: Option<store::logins::LoginRow>,
+    vault: &Vault,
+) -> Result<Option<crate::net::auth::Auth>, EngineError> {
+    let Some(login) = login else {
+        return Ok(None);
+    };
+    let Ok(site) = crate::net::auth::Site::parse(&login.site) else {
+        return Ok(None);
+    };
+    let (vault, id) = (vault.clone(), login.secret_ref.clone());
+    let password = tokio::task::spawn_blocking(move || vault.get(&id))
+        .await
+        .map_err(|_| EngineError::Stopped)??;
+    Ok(password.map(|password| {
+        crate::net::auth::Auth::new(crate::net::auth::Login {
+            site,
+            username: login.username,
+            password,
+        })
+    }))
 }
 
 /// En-têtes à envoyer, secrets lus dans le coffre, hors de la boucle. Un secret absent du

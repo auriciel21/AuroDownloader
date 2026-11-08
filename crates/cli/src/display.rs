@@ -190,6 +190,14 @@ impl Speed {
     }
 }
 
+/// Une ligne lue sur l'entrée standard, sans son retour à la ligne (mot de passe d'un
+/// script, `--password-stdin`).
+pub fn read_line_stdin() -> anyhow::Result<String> {
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

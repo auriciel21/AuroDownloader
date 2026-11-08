@@ -11,7 +11,9 @@ use super::{
     PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
 };
 use crate::schedule::Rules;
-use crate::scheduler::{AddTask, EngineError, Include, QueueChange, TaskDetails, TaskUpdate};
+use crate::scheduler::{
+    AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
+};
 use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
@@ -237,6 +239,24 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let queue = ctx.engine.update_queue(&id, change).await?;
             Ok(queue_json(&queue))
         }
+        // Identifiants de sites (SPEC §7.14) : le mot de passe entre, il ne ressort jamais.
+        "login.list" => {
+            let items = ctx.engine.logins().await?;
+            Ok(json!({"items": items.iter().map(login_json).collect::<Vec<_>>()}))
+        }
+        "login.set" => {
+            let change = LoginChange {
+                id: p.str("loginId")?,
+                site: p.required_str("site")?,
+                username: p.required_str("username")?,
+                password: p.str("password")?,
+            };
+            Ok(login_json(&ctx.engine.set_login(change).await?))
+        }
+        "login.delete" => {
+            ctx.engine.delete_login(&p.required_str("loginId")?).await?;
+            Ok(json!({}))
+        }
         "settings.get" => settings(ctx).await,
         "settings.set" => {
             let values = p
@@ -379,6 +399,11 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
 async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
     let download = ctx.engine.download_limit().await?;
     Ok(json!({"downloadBps": download, "uploadBps": null}))
+}
+
+/// Identifiants d'un site tels que le protocole les montre, sans mot de passe.
+fn login_json(l: &LoginView) -> Value {
+    json!({"loginId": l.id, "site": l.site, "username": l.username})
 }
 
 /// `task.update` : limite de débit, nouvelle adresse (SPEC §7.13), ou nouveau dossier et

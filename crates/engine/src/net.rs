@@ -7,8 +7,12 @@
 //! (`rustls-platform-verifier`). En-têtes d'une tâche ([`check_task_headers`]) : ceux de
 //! la page transmis par l'extension, cookies compris (F-06).
 //!
-//! À faire : FTP, proxies (F-07), authentification Basic et Digest (F-06), HTTP/3 (F-05).
+//! Authentification Basic et Digest avec les identifiants d'un site ([`auth`], F-06,
+//! SPEC §7.14).
+//!
+//! À faire : FTP, proxies (F-07), HTTP/3 (F-05).
 
+pub mod auth;
 pub mod filename;
 pub mod headers;
 
@@ -17,14 +21,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
-    ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LENGTH,
-    CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_RANGE, LAST_MODIFIED, RANGE,
-    RETRY_AFTER,
+    ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_ENCODING,
+    CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_RANGE,
+    LAST_MODIFIED, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
 };
 use reqwest::{Method, Response, StatusCode, Url, redirect};
 
 pub use bytes::Bytes;
 
+use auth::{Answer, Auth};
 use filename::NameRules;
 
 /// `User-Agent` par défaut ; un en-tête de la tâche le remplace (F-06).
@@ -96,6 +101,19 @@ pub enum NetError {
 
     #[error("réponse incohérente du serveur : {0}")]
     BadResponse(&'static str),
+
+    #[error(
+        "le serveur demande un nom d'utilisateur et un mot de passe : les enregistrer pour \n         ce site (identifiants de sites)"
+    )]
+    AuthRequired,
+
+    #[error("le serveur refuse les identifiants enregistrés pour ce site")]
+    AuthRefused,
+
+    #[error(
+        "le serveur demande le mot de passe en clair (Basic) sur une connexion non \n         chiffrée : refusé, il pourrait être lu en chemin"
+    )]
+    AuthInsecure,
 }
 
 impl NetError {
@@ -132,6 +150,8 @@ impl NetError {
             NetError::Unreachable(_) => Some("NET_UNREACHABLE"),
             NetError::FileChanged => Some("FILE_CHANGED"),
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
+            NetError::AuthRequired => Some("AUTH_REQUIRED"),
+            NetError::AuthRefused | NetError::AuthInsecure => Some("AUTH_FAILED"),
         }
     }
 
@@ -373,10 +393,20 @@ impl Client {
         url: &str,
         task_headers: &[(String, String)],
     ) -> Result<Probe, NetError> {
+        self.probe_as(url, task_headers, None).await
+    }
+
+    /// Comme [`Client::probe`], en répondant aux demandes d'identification avec `auth`.
+    pub async fn probe_as(
+        &self,
+        url: &str,
+        task_headers: &[(String, String)],
+        auth: Option<&Auth>,
+    ) -> Result<Probe, NetError> {
         let url = parse_url(url)?;
         let extra = header_map(task_headers)?;
 
-        let head = self.send(Method::HEAD, &url, &extra, None).await?;
+        let head = self.send(Method::HEAD, &url, &extra, None, auth).await?;
         let head_url = head.url().clone();
         let from_head = head
             .status()
@@ -397,7 +427,7 @@ impl Client {
         }
 
         let get = self
-            .send(Method::GET, &url, &extra, Some("bytes=0-0"))
+            .send(Method::GET, &url, &extra, Some("bytes=0-0"), auth)
             .await?;
         let status = get.status();
         let get_url = get.url().clone();
@@ -455,6 +485,17 @@ impl Client {
         task_headers: &[(String, String)],
         req: &RangeRequest<'_>,
     ) -> Result<Body, NetError> {
+        self.get_range_as(url, task_headers, req, None).await
+    }
+
+    /// Comme [`Client::get_range`], en répondant aux demandes d'identification avec `auth`.
+    pub async fn get_range_as(
+        &self,
+        url: &str,
+        task_headers: &[(String, String)],
+        req: &RangeRequest<'_>,
+        auth: Option<&Auth>,
+    ) -> Result<Body, NetError> {
         let url = parse_url(url)?;
         let mut extra = header_map(task_headers)?;
         if let Some(validator) = req.if_range {
@@ -463,7 +504,9 @@ impl Client {
             extra.insert(IF_RANGE, value);
         }
         let range = format!("bytes={}-{}", req.first, req.last);
-        let response = self.send(Method::GET, &url, &extra, Some(&range)).await?;
+        let response = self
+            .send(Method::GET, &url, &extra, Some(&range), auth)
+            .await?;
         let seen = Observed::from_headers(response.headers());
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {
@@ -504,9 +547,21 @@ impl Client {
         task_headers: &[(String, String)],
         expected_total: Option<u64>,
     ) -> Result<Body, NetError> {
+        self.get_all_as(url, task_headers, expected_total, None)
+            .await
+    }
+
+    /// Comme [`Client::get_all`], en répondant aux demandes d'identification avec `auth`.
+    pub async fn get_all_as(
+        &self,
+        url: &str,
+        task_headers: &[(String, String)],
+        expected_total: Option<u64>,
+        auth: Option<&Auth>,
+    ) -> Result<Body, NetError> {
         let url = parse_url(url)?;
         let extra = header_map(task_headers)?;
-        let response = self.send(Method::GET, &url, &extra, None).await?;
+        let response = self.send(Method::GET, &url, &extra, None, auth).await?;
         if response.status() != StatusCode::OK {
             return Err(if response.status().is_success() {
                 NetError::BadResponse("statut inattendu")
@@ -550,7 +605,50 @@ impl Client {
         *entry = (*entry).min(cap);
     }
 
+    /// Envoie une requête ; à une demande d'identification (`401` avec
+    /// `WWW-Authenticate`), répond avec `auth` et recommence, à l'adresse qui l'a demandée.
     async fn send(
+        &self,
+        method: Method,
+        url: &Url,
+        extra: &HeaderMap,
+        range: Option<&str>,
+        auth: Option<&Auth>,
+    ) -> Result<Response, NetError> {
+        let mut target = url.clone();
+        // Défi initial, puis au plus un nonce périmé (Digest).
+        for _ in 0..3 {
+            let mut headers = extra.clone();
+            let authorization = auth.and_then(|a| a.authorization(&method, &target));
+            let sent = authorization.is_some();
+            if let Some(value) = authorization {
+                headers.insert(AUTHORIZATION, value);
+            }
+            let response = self
+                .send_once(method.clone(), &target, &headers, range)
+                .await?;
+            if response.status() != StatusCode::UNAUTHORIZED
+                || !response.headers().contains_key(WWW_AUTHENTICATE)
+            {
+                return Ok(response);
+            }
+            let Some(auth) = auth else {
+                return Err(NetError::AuthRequired);
+            };
+            let challenged = response.url().clone();
+            // Après une redirection vers un autre hôte, rien n'a été envoyé à celui-ci.
+            let refused = sent && challenged == target;
+            match auth.on_challenge(&challenged, response.headers(), refused) {
+                Answer::Retry => target = challenged,
+                Answer::Insecure => return Err(NetError::AuthInsecure),
+                Answer::Unanswered if refused => return Err(NetError::AuthRefused),
+                Answer::Unanswered => return Err(NetError::AuthRequired),
+            }
+        }
+        Err(NetError::AuthRefused)
+    }
+
+    async fn send_once(
         &self,
         method: Method,
         url: &Url,

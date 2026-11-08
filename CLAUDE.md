@@ -48,6 +48,8 @@ téléchargement.
   (« Déplacer/Renommer », SPEC 7.12 : renommage, copie vers un autre volume, reprise au
   démarrage) et `store::moves` (emplacement d'une tâche, journal `file_moves`) ;
   « Actualiser l'adresse » (SPEC 7.13) : `Engine::set_url`, `store::tasks::replace_url`.
+  Identifiants de sites (F-06, SPEC 7.14) : `net::auth` (Basic, Digest, portée d'un site,
+  réponse au `401`), `store::logins` (table `site_logins`, mot de passe au coffre).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -140,6 +142,7 @@ cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ;
 cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depuis le début
 cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
 cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
+cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
@@ -189,7 +192,11 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   d'`Options`) ; le coffre réel seulement dans les tests de `secrets`, sur un espace de
   noms d'essai vidé à la fin. Secret Service sous Linux : `AURO_SECRET_SERVICE=1`, dans
   une session D-Bus avec un trousseau d'essai (`gnome-keyring-daemon --unlock`,
-  `XDG_DATA_HOME` à part).
+  `XDG_DATA_HOME` à part). Mots de passe des identifiants de sites : même règle
+  (`site_logins.secret_ref`). Toute nouvelle table qui référence un secret s'ajoute à
+  `store::headers::all_secret_refs`, sinon le ramassage du démarrage efface ses secrets.
+  Un mot de passe ne ressort jamais par le protocole ni dans un journal ; Basic ne part
+  jamais en clair (HTTP).
 - Aléa : aws-lc est compilé sans entropie de gigue (`AWS_LC_SYS_NO_JITTER_ENTROPY`,
   `.cargo/config.toml`, SPEC 8.1) ; il s'amorce sur l'aléa du système.
 - Invariant de couverture (SPEC 5.6, règle 2) : calcul dans `segmenter`, application en

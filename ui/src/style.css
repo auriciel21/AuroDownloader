@@ -590,3 +590,6 @@ dialog .buttons.end { justify-content: flex-end; }
   background: var(--bg);
 }
 .form-error { color: var(--fail); margin: 0 0 8px; }
+
+/* Identifiants de sites (Options) : liste native, accessible au clavier et aux lecteurs d’écran. */
+select.logins { display: block; width: 100%; margin: 0.5em 0; }

@@ -337,6 +337,8 @@ pub struct FileSite {
     /// Au-delà de ce nombre de connexions servies en même temps, une requête par plage
     /// reçoit un 503 : serveur qui plafonne les connexions par client (SPEC §7.3).
     pub max_concurrent: Option<usize>,
+    /// Identification exigée de chaque requête (F-06) ; `None` : aucune.
+    pub auth: Option<SiteAuth>,
 }
 
 impl FileSite {
@@ -350,6 +352,63 @@ impl FileSite {
             cut_after: 0,
             busy_responses: 0,
             max_concurrent: None,
+            auth: None,
+        }
+    }
+}
+
+/// Identification exigée par le serveur de test : Basic, ou Digest avec `qop=auth`.
+#[derive(Debug, Clone)]
+pub struct SiteAuth {
+    pub username: String,
+    pub password: String,
+    /// `None` : Basic ; sinon l'algorithme Digest (`MD5`, `SHA-256`…).
+    pub digest: Option<&'static str>,
+    pub nonce: String,
+}
+
+impl SiteAuth {
+    pub fn basic(username: &str, password: &str) -> Self {
+        SiteAuth {
+            username: username.into(),
+            password: password.into(),
+            digest: None,
+            nonce: String::new(),
+        }
+    }
+
+    pub fn digest(username: &str, password: &str, algorithm: &'static str) -> Self {
+        SiteAuth {
+            username: username.into(),
+            password: password.into(),
+            digest: Some(algorithm),
+            nonce: "nonce-de-test".into(),
+        }
+    }
+
+    fn challenge(&self) -> String {
+        match self.digest {
+            None => "Basic realm=\"essai\"".into(),
+            Some(algorithm) => format!(
+                "Digest realm=\"essai\", qop=\"auth\", nonce=\"{}\", algorithm={algorithm}",
+                self.nonce
+            ),
+        }
+    }
+
+    fn accepts(&self, r: &Request) -> bool {
+        let Some(value) = r.header("authorization") else {
+            return false;
+        };
+        match self.digest {
+            None => crate::net::auth::basic_value(&self.username, &self.password) == value,
+            Some(_) => crate::net::auth::digest_valid(
+                value,
+                &r.method,
+                &self.username,
+                &self.password,
+                &self.nonce,
+            ),
         }
     }
 }
@@ -374,6 +433,19 @@ fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send
     let busy_done = AtomicUsize::new(0);
     move |r: &Request| {
         let site = site.lock().unwrap();
+        if let Some(auth) = &site.auth
+            && !auth.accepts(r)
+        {
+            let challenge = auth.challenge();
+            return reply(
+                "401 Unauthorized",
+                &[
+                    ("WWW-Authenticate", challenge.as_str()),
+                    ("Content-Length", "0"),
+                ],
+                b"",
+            );
+        }
         if r.method == "GET"
             && r.header("range").is_some()
             && site

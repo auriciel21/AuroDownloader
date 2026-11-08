@@ -1803,3 +1803,133 @@ async fn a_move_interrupted_by_a_crash_is_finished_at_start() {
     assert!(!dir.path().join("arrêt.bin").exists());
     engine.shutdown().await;
 }
+
+/// Identifiants de sites (F-06, SPEC §7.14) : demandés, refusés, puis acceptés ; le mot de
+/// passe reste au coffre, survit au ramassage du démarrage et part avec les identifiants.
+#[tokio::test]
+async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
+    const PASSWORD: &str = "s3cr3t-du-site";
+    let dir = tempfile::tempdir().unwrap();
+    let mut protected = FileSite::new(SIZE as u64);
+    protected.auth = Some(crate::testing::SiteAuth::digest("moi", PASSWORD, "SHA-256"));
+    let server = serve_file(Arc::new(Mutex::new(protected)));
+    let config = config(dir.path());
+    let vault = config.transfer.vault.clone();
+    let engine = Engine::start(config.clone()).unwrap();
+    let mut events = engine.subscribe();
+
+    // Sans identifiants : le serveur les demande, échec définitif et explicite.
+    let id = engine
+        .add(add(&server.url("/prive.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Failed).await;
+    assert_eq!(
+        task(dir.path(), &id).error_code.as_deref(),
+        Some("AUTH_REQUIRED")
+    );
+
+    let refused = [
+        ("127.0.0.1", "moi", None),
+        ("ftp://127.0.0.1", "moi", Some("x")),
+        ("127.0.0.1", "a:b", Some("x")),
+        ("127.0.0.1", " ", Some("x")),
+        ("127.0.0.1", "moi", Some("")),
+    ];
+    for (site, username, password) in refused {
+        let change = LoginChange {
+            id: None,
+            site: site.into(),
+            username: username.into(),
+            password: password.map(Into::into),
+        };
+        assert!(
+            matches!(
+                engine.set_login(change).await,
+                Err(EngineError::BadRequest(_))
+            ),
+            "{site} {username} {password:?}"
+        );
+    }
+
+    // Mauvais mot de passe : refusé par le serveur.
+    let saved = engine
+        .set_login(LoginChange {
+            id: None,
+            site: " HTTP://127.0.0.1/ ".into(),
+            username: "moi".into(),
+            password: Some("faux".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved.site, "http://127.0.0.1");
+    let duplicate = LoginChange {
+        id: None,
+        site: "http://127.0.0.1".into(),
+        username: "autre".into(),
+        password: Some("x".into()),
+    };
+    assert!(matches!(
+        engine.set_login(duplicate).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    engine.resume(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Failed).await;
+    assert_eq!(
+        task(dir.path(), &id).error_code.as_deref(),
+        Some("AUTH_FAILED")
+    );
+
+    // Le bon : le téléchargement aboutit.
+    let fixed = engine
+        .set_login(LoginChange {
+            id: Some(saved.id.clone()),
+            site: saved.site.clone(),
+            username: "moi".into(),
+            password: Some(PASSWORD.into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(fixed, saved);
+    engine.resume(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(dir.path(), "prive.bin", SIZE);
+    assert_eq!(engine.logins().await.unwrap(), vec![saved.clone()]);
+
+    // Jamais en base : ni dans le fichier, ni dans son journal.
+    for name in ["auro.db", "auro.db-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.path().join(name)) {
+            let found = bytes
+                .windows(PASSWORD.len())
+                .any(|w| w == PASSWORD.as_bytes());
+            assert!(!found, "mot de passe dans {name}");
+        }
+    }
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let scoped = vault.scoped(&settings::vault_namespace(&conn).unwrap());
+    let secret = store::logins::list(&conn).unwrap()[0].secret_ref.clone();
+    assert_eq!(scoped.get(&secret).unwrap().as_deref(), Some(PASSWORD));
+    // L'ancien mot de passe a quitté le coffre.
+    assert_eq!(scoped.ids().unwrap(), vec![secret.clone()]);
+
+    // Le ramassage du démarrage le garde (un orphelin, lui, part).
+    engine.shutdown().await;
+    let orphan = scoped.put("orphelin").unwrap();
+    let engine = Engine::start(config).unwrap();
+    timeout(WAIT, async {
+        while scoped.get(&orphan).unwrap().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ramassage fait");
+    assert_eq!(scoped.get(&secret).unwrap().as_deref(), Some(PASSWORD));
+
+    engine.delete_login(&saved.id).await.unwrap();
+    assert_eq!(scoped.get(&secret).unwrap(), None);
+    assert!(matches!(
+        engine.delete_login(&saved.id).await,
+        Err(EngineError::LoginNotFound(_))
+    ));
+    engine.shutdown().await;
+}

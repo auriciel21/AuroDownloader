@@ -81,8 +81,6 @@ export const EN = {
   // Déplacer/Renommer
   "Déplacer/Renommer…": "Move/Rename…",
   "Déplacer/Renommer": "Move/Rename",
-  "Nom du fichier": "File name",
-  "Dossier": "Folder",
   "Changer le dossier": "Change the folder",
   "Déplacer": "Move",
   "Le fichier partiel est déplacé maintenant ; le téléchargement se terminera à cet endroit.":
@@ -166,6 +164,24 @@ export const EN = {
   "empreinte différente": "checksum mismatch",
   "erreur interne du moteur": "internal engine error",
   "page vidéo non reconnue": "video page not recognised",
+  "coffre du système indisponible": "system keychain unavailable",
+  "identifiants demandés par le serveur": "the server asks for a user name and password",
+  "identifiants refusés par le serveur": "the server refused the user name or password",
+  // Identifiants de sites
+  "Identifiants de sites": "Site logins",
+  "Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.":
+    "Sent only when a server of the site asks for them (Basic or Digest authentication). Passwords are kept in the system keychain and never shown.",
+  "Aucun identifiant enregistré.": "No login saved.",
+  "Nouveau…": "New…",
+  "Modifier…": "Edit…",
+  "Identifiants d'un site": "Site login",
+  "Site": "Site",
+  "Nom d'utilisateur": "User name",
+  "Mot de passe": "Password",
+  "exemple.org vaut aussi pour ses sous-domaines ; https://exemple.org/dossier ne vaut que pour ce dossier.":
+    "example.org also covers its subdomains; https://example.org/folder covers that folder only.",
+  "Laisser vide pour garder le mot de passe enregistré.": "Leave empty to keep the saved password.",
+  "Identifiants de {0} supprimés": "Login for {0} deleted",
   // Moteur
   "Connexion au moteur…": "Connecting to the engine…",
   "Moteur injoignable : {0}. Nouvel essai automatique.": "Engine unreachable: {0}. Retrying automatically.",
@@ -282,6 +298,9 @@ export const ERRORS = {
   CHECKSUM_MISMATCH: "empreinte différente",
   INTERNAL: "erreur interne du moteur",
   EXTRACTOR_FAILED: "page vidéo non reconnue",
+  SECRET_UNAVAILABLE: "coffre du système indisponible",
+  AUTH_REQUIRED: "identifiants demandés par le serveur",
+  AUTH_FAILED: "identifiants refusés par le serveur",
 };
 
 /// Cause d'un échec, lisible ; le code lui-même s'il est inconnu.

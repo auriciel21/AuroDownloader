@@ -1380,3 +1380,65 @@ async fn task_update_moves_renames_and_replaces_the_address() {
     .await;
     engine.shutdown().await;
 }
+
+/// Identifiants de sites (SPEC §7.14) : portée `admin`, mot de passe jamais rendu.
+#[tokio::test]
+async fn site_logins_are_managed_by_admins_and_never_show_their_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    let saved = c
+        .result(
+            "login.set",
+            json!({"site": "https://Exemple.org/", "username": "moi", "password": "s3cr3t"}),
+        )
+        .await;
+    assert_eq!(saved["site"], "https://exemple.org");
+    assert_eq!(saved["username"], "moi");
+    let id = saved["loginId"].clone();
+    let list = c.result("login.list", json!({})).await;
+    assert_eq!(list["items"], json!([saved]));
+    assert!(!list.to_string().contains("s3cr3t"));
+    // Sans mot de passe : le nom change, le mot de passe reste.
+    let renamed = c
+        .result(
+            "login.set",
+            json!({"loginId": id, "site": "exemple.org", "username": "toi"}),
+        )
+        .await;
+    assert_eq!(renamed["site"], "exemple.org");
+    assert_eq!(
+        c.error_code("login.set", json!({"site": "exemple.org", "username": "x"}))
+            .await,
+        "INVALID_PARAMS"
+    );
+    assert_eq!(
+        c.error_code(
+            "login.set",
+            json!({"loginId": "inconnu", "site": "a.org", "username": "x"})
+        )
+        .await,
+        "LOGIN_NOT_FOUND"
+    );
+
+    let mut control = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("control");
+    control.result("engine.hello", params).await;
+    for method in ["login.list", "login.set", "login.delete"] {
+        assert_eq!(
+            control.error_code(method, json!({})).await,
+            "UNAUTHORIZED",
+            "{method}"
+        );
+    }
+
+    c.result("login.delete", json!({"loginId": id})).await;
+    assert_eq!(c.result("login.list", json!({})).await["items"], json!([]));
+    assert_eq!(
+        c.error_code("login.delete", json!({"loginId": id})).await,
+        "LOGIN_NOT_FOUND"
+    );
+    engine.shutdown().await;
+}

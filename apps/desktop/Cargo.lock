@@ -280,10 +280,12 @@ dependencies = [
 name = "auro-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "dirs 7.0.0",
  "httpdate",
  "libc",
+ "md-5",
  "percent-encoding",
  "rcgen",
  "reqwest",
@@ -291,6 +293,7 @@ dependencies = [
  "rustls",
  "secret-service",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
@@ -2313,6 +2316,16 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
 ]
 
 [[package]]

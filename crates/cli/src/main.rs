@@ -188,6 +188,12 @@ enum Command {
         #[command(subcommand)]
         action: QueueAction,
     },
+    /// Identifiants de sites (Basic, Digest) : envoyés quand un serveur du site les demande ;
+    /// le mot de passe va au coffre du système
+    Login {
+        #[command(subcommand)]
+        action: LoginAction,
+    },
     /// Plages horaires d'une file et action de fin (veille, extinction)
     Schedule {
         #[command(subcommand)]
@@ -243,6 +249,28 @@ enum QueueAction {
         #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
         limit: Option<Limit>,
     },
+}
+
+#[derive(Subcommand)]
+enum LoginAction {
+    /// Liste les sites et leurs noms d'utilisateur (jamais les mots de passe)
+    List,
+    /// Enregistre ou modifie les identifiants d'un site. Le mot de passe est demandé sans
+    /// écho ; il n'est jamais un argument, qui resterait dans l'historique du terminal
+    Set {
+        /// Site : exemple.org (ses sous-domaines compris), ou https://exemple.org/dossier
+        site: String,
+        #[arg(short = 'u', long)]
+        username: String,
+        /// Lire le mot de passe sur l'entrée standard (une ligne), pour un script
+        #[arg(long, conflicts_with = "keep_password")]
+        password_stdin: bool,
+        /// Garder le mot de passe déjà enregistré (changer seulement le nom d'utilisateur)
+        #[arg(long)]
+        keep_password: bool,
+    },
+    /// Retire les identifiants d'un site
+    Remove { site: String },
 }
 
 #[derive(Subcommand)]
@@ -481,6 +509,26 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Dir { path, reset } => {
                     remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }
+                Command::Login { action } => match action {
+                    LoginAction::List => remote::logins(&mut rpc).await,
+                    LoginAction::Set {
+                        site,
+                        username,
+                        password_stdin,
+                        keep_password,
+                    } => {
+                        let password = match (keep_password, password_stdin) {
+                            (true, _) => None,
+                            (false, true) => Some(display::read_line_stdin()?),
+                            (false, false) => Some(
+                                rpassword::prompt_password("Mot de passe : ")
+                                    .context("lecture du mot de passe")?,
+                            ),
+                        };
+                        remote::login_set(&mut rpc, &site, &username, password).await
+                    }
+                    LoginAction::Remove { site } => remote::login_remove(&mut rpc, &site).await,
+                },
                 Command::Schedule { action } => match action {
                     ScheduleAction::List => remote::schedules(&mut rpc).await,
                     ScheduleAction::Set {

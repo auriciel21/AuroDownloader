@@ -296,6 +296,31 @@
     </form>
   </dialog>
 
+  <dialog id="login-dialog" aria-labelledby="login-title">
+    <form method="dialog" id="login-form">
+      <h2 id="login-title" data-i18n="Identifiants d'un site">Identifiants d'un site</h2>
+      <label class="field">
+        <span data-i18n="Site">Site</span>
+        <input id="login-site" type="text" spellcheck="false" autocomplete="off" required aria-describedby="login-site-note">
+      </label>
+      <p class="note flush" id="login-site-note" data-i18n="exemple.org vaut aussi pour ses sous-domaines ; https://exemple.org/dossier ne vaut que pour ce dossier.">exemple.org vaut aussi pour ses sous-domaines ; https://exemple.org/dossier ne vaut que pour ce dossier.</p>
+      <label class="field">
+        <span data-i18n="Nom d'utilisateur">Nom d'utilisateur</span>
+        <input id="login-user" type="text" spellcheck="false" autocomplete="off" required>
+      </label>
+      <label class="field">
+        <span data-i18n="Mot de passe">Mot de passe</span>
+        <input id="login-password" type="password" autocomplete="new-password" aria-describedby="login-keep-note">
+      </label>
+      <p class="note flush" id="login-keep-note" data-i18n="Laisser vide pour garder le mot de passe enregistré.">Laisser vide pour garder le mot de passe enregistré.</p>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="login-save" class="primary" data-i18n="Enregistrer">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="settings" class="wide" aria-labelledby="settings-title">
     <form method="dialog">
       <h2 id="settings-title" data-i18n="Options">Options</h2>
@@ -303,6 +328,7 @@
         <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true" data-i18n="Général">Général</button>
         <button type="button" role="tab" id="tab-save" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
         <button type="button" role="tab" id="tab-connection" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
+        <button type="button" role="tab" id="tab-logins" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
@@ -335,6 +361,17 @@
           <select id="pref-limit"></select>
         </label>
         <p class="note flush" data-i18n="Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.">Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.</p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-logins" aria-labelledby="tab-logins" hidden>
+        <p class="note flush" id="logins-note" data-i18n="Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.">Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.</p>
+        <select id="logins" size="6" class="logins" aria-labelledby="tab-logins" aria-describedby="logins-note"></select>
+        <p id="logins-empty" class="note" data-i18n="Aucun identifiant enregistré.">Aucun identifiant enregistré.</p>
+        <div class="row">
+          <button type="button" id="login-new" data-i18n="Nouveau…">Nouveau…</button>
+          <button type="button" id="login-edit" data-i18n="Modifier…">Modifier…</button>
+          <button type="button" id="login-delete" data-i18n="Supprimer">Supprimer</button>
+        </div>
+        <p id="logins-error" class="form-error" role="alert" hidden></p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
         <p id="about"></p>

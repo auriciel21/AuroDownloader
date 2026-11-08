@@ -97,6 +97,7 @@ impl From<EngineError> for RpcError {
             }
             EngineError::QueueNotFound(_) => Self::new(-32012, "QUEUE_NOT_FOUND", message),
             EngineError::ScheduleNotFound(_) => Self::new(-32013, "SCHEDULE_NOT_FOUND", message),
+            EngineError::LoginNotFound(_) => Self::new(-32014, "LOGIN_NOT_FOUND", message),
             EngineError::Url(_) => Self::new(-32020, "URL_INVALID", message),
             EngineError::DestDir(_) => Self::new(-32021, "DEST_NOT_WRITABLE", message),
             EngineError::BadRequest(_) => Self::invalid_params(message),

@@ -258,7 +258,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 ## 5. Modèle de données
 
-Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 15 tables (14 à l'origine, plus `file_moves` depuis le 2026-11-08) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
+Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 16 tables (14 à l'origine, plus `file_moves` et `site_logins` depuis le 2026-11-08) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
 
 ### 5.1 Conventions
 
@@ -268,7 +268,7 @@ Tout l'état durable tient dans une base SQLite unique, dont le moteur est le se
 - Tailles et débits : octets et octets par seconde, entiers de 64 bits.
 - Les chemins sont stockés tels que le système les fournit ; sur Android, `dest_dir` peut être une URI du sélecteur de stockage.
 - Aucun secret en base : mots de passe, jetons et cookies sensibles sont rangés dans le coffre du système (Gestionnaire d'identification sous Windows, Secret Service sous Linux, Keystore sous Android) ; la base ne garde qu'une référence.
-  - Mise en œuvre (module `secrets`, depuis le 2026-11-07) : les en-têtes `Cookie`, `Authorization` et `Proxy-Authorization` d'une tâche vont au coffre ; `task_headers.secret_ref` en garde la référence.
+  - Mise en œuvre (module `secrets`, depuis le 2026-11-07) : les en-têtes `Cookie`, `Authorization` et `Proxy-Authorization` d'une tâche vont au coffre ; `task_headers.secret_ref` en garde la référence. Depuis le 2026-11-08, les mots de passe des identifiants de sites aussi (`site_logins.secret_ref`, section 7.14).
   - Windows : identifiants génériques de l'utilisateur, gardés sur la machine (`CRED_PERSIST_LOCAL_MACHINE`), nommés `AuroDownloader:<espace>:<référence>:<n>` ; un secret de plus de 2 560 octets est réparti sur plusieurs.
   - Linux : élément de la collection par défaut, reconnu par ses attributs (`application`, `namespace`, `id`). Le moteur ne déverrouille jamais un trousseau : verrouillé, c'est une erreur temporaire. Sans Secret Service à la première utilisation (serveur sans session graphique, WSL), le moteur garde les secrets en mémoire, perdus à son arrêt, et le dit dans son journal. Décision du 2026-11-07, à confirmer.
   - Android : la mémoire, jusqu'au Keystore (phase 4).
@@ -411,6 +411,16 @@ CREATE TABLE file_moves (
   file_name  TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('moving', 'moved')),
   started_at INTEGER NOT NULL
+);
+
+-- Migration 0004 (2026-11-08) : identifiants de sites (section 7.14).
+CREATE TABLE site_logins (
+  id         TEXT PRIMARY KEY,
+  site       TEXT NOT NULL UNIQUE,  -- [protocole://]hôte[:port][chemin], normalisé
+  username   TEXT NOT NULL,
+  secret_ref TEXT NOT NULL,         -- mot de passe, au coffre
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE task_headers (
@@ -582,6 +592,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `queue.list` / `queue.create` / `queue.update` / `queue.delete` | `name`, `maxActive`, `speedLimitBps`, `scheduleId` | File ou liste de files |
 | `limits.get` / `limits.set` | `downloadBps`, `uploadBps` | Limites globales |
 | `schedule.list` / `schedule.set` / `schedule.delete` | `scheduleId`, `name`, `enabled`, `rules` | Planification, avec son ouverture (section 7.11) |
+| `login.list` / `login.set` / `login.delete` | `loginId`, `site`, `username`, `password` | Identifiants de sites, sans mot de passe (section 7.14, depuis le 2026-11-08) |
 | `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
@@ -613,7 +624,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
   - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
@@ -716,6 +727,7 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32011 | `INVALID_STATE` | Transition interdite depuis l'état actuel de la tâche |
 | -32012 | `QUEUE_NOT_FOUND` | Identifiant de file inconnu |
 | -32013 | `SCHEDULE_NOT_FOUND` | Identifiant de planification inconnu (depuis le 2026-11-07) |
+| -32014 | `LOGIN_NOT_FOUND` | Identifiants de site inconnus (depuis le 2026-11-08, section 7.14) |
 | -32020 | `URL_INVALID` | Adresse non reconnue ou schéma non pris en charge |
 | -32021 | `DEST_NOT_WRITABLE` | Dossier de destination inaccessible en écriture |
 | -32022 | `INSUFFICIENT_SPACE` | Espace disque insuffisant pour la taille annoncée |
@@ -747,6 +759,8 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `DISK_IO` | non | Autre erreur de lecture, d'écriture ou de renommage sur le disque |
 | `CHECKSUM_MISMATCH` | non | L'empreinte du fichier final diffère de celle attendue |
 | `SECRET_UNAVAILABLE` | oui | Le coffre du système n'a pas rendu un secret de la tâche (trousseau verrouillé ; depuis le 2026-11-07) |
+| `AUTH_REQUIRED` | non | Le serveur demande une identification (`401` avec `WWW-Authenticate`) et aucun identifiant de site ne convient (depuis le 2026-11-08, section 7.14) |
+| `AUTH_FAILED` | non | Le serveur refuse les identifiants du site, ou demande Basic sur une connexion non chiffrée (section 7.14) |
 | `INTERNAL` | non | Erreur du moteur lui-même (base illisible, incohérence, panique d'une exécution) ; détail dans `error_detail`. La tâche ne repart qu'à la demande de l'utilisateur |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 
@@ -767,7 +781,7 @@ Mise en œuvre (décision du 2026-11-07, phase 3) :
   - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
   - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` ;
   - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction` ;
-  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine).
+  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 
@@ -1013,6 +1027,39 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
 - **Échecs** : les échecs comptés de la source sont oubliés. L'état de la tâche ne change pas ; l'application relance d'elle-même une tâche en échec après l'actualisation.
 - **Annonce** : `task.updated` avec `displayName`.
 - **Pas encore** : la capture du nouveau lien par l'extension (IDM ouvre la page d'origine et attend le prochain clic) ; aujourd'hui, l'adresse se colle.
+
+### 7.14 Identifiants de sites (F-06, depuis le 2026-11-08)
+
+Comme l'onglet « Logins de sites » d'IDM : un nom d'utilisateur et un mot de passe par site, envoyés quand un serveur de ce site les demande. Cela sert aux serveurs qui demandent une identification HTTP (`401` avec `WWW-Authenticate`), par exemple un dossier protégé, certains liens directs de services de débridage, un serveur privé. Un site qui identifie par un formulaire et des cookies se télécharge par l'extension, qui transmet les cookies (section 4.5).
+
+- **Enregistrement** : table `site_logins` (migration 0004). Le mot de passe va au coffre du système (section 5.1), la base n'en garde que la référence ; il ne ressort jamais par le protocole.
+- **Site** : une adresse ou un nom d'hôte, normalisé à l'enregistrement (`[protocole://]hôte[:port][chemin]`, sans `/` final, hôte en minuscules ; ni identifiants, ni paramètres, ni ancre).
+  - `exemple.org` vaut pour HTTP et HTTPS, pour l'hôte et ses sous-domaines (`dl.exemple.org`), sur tous les ports.
+  - Un protocole, un port ou un chemin précisés restreignent la portée. Un chemin couvre ce qui est dessous : `/prive` couvre `/prive/a`, pas `/privee`.
+  - Si plusieurs sites conviennent, le plus précis l'emporte : le chemin le plus long, puis l'hôte exact, puis le protocole précisé.
+  - Un site n'a qu'un jeu d'identifiants.
+- **Choix pour une tâche** : au départ de chaque exécution, les identifiants du site de son adresse, mot de passe lu au coffre. Si la tâche porte son propre en-tête `Authorization` (section 6.5, en-têtes), il passe avant, et aucun identifiant de site n'est utilisé. Un mot de passe absent du coffre : la tâche part sans.
+- **Envoi** : rien d'avance.
+  - À la première demande du serveur, le moteur répond et recommence la requête, à l'adresse qui l'a demandée. Il refuse si cette adresse n'est pas du site : après une redirection vers un autre hôte, rien n'est envoyé à celui-ci.
+  - Ensuite, toutes les requêtes de l'exécution, toutes connexions confondues, portent l'identification.
+  - Digest (RFC 7616) est préféré à Basic (RFC 7617), et SHA-256 à MD5. Variantes prises en charge : `MD5`, `MD5-sess`, `SHA-256`, `SHA-256-sess`, avec `qop=auth` ou sans `qop`. Ne sont pas prises en charge : `auth-int`, `SHA-512-256`, NTLM et Negotiate.
+  - Un nonce Digest périmé (`stale=true`) est renouvelé sans compter comme un refus.
+- **Basic sur une connexion non chiffrée** : refusé, car le mot de passe y circulerait en clair. Le moteur n'envoie rien, et la tâche échoue avec `AUTH_FAILED`, avec un message qui le dit. Digest reste permis en HTTP : le mot de passe n'y circule pas. Décision du 2026-11-08, à confirmer (IDM, lui, envoie).
+- **Échecs** (section 6.8) :
+  - `AUTH_REQUIRED` : le serveur demande une identification, et aucun identifiant ne convient à cette adresse, ou le schéma demandé n'est pas pris en charge ;
+  - `AUTH_FAILED` : les identifiants envoyés sont refusés, ou Basic est demandé en clair ;
+  - les deux sont définitifs : la tâche se relance une fois les identifiants corrigés.
+  - Un `401` sans `WWW-Authenticate` reste `HTTP_STATUS`.
+- **Actualiser l'adresse** (section 7.13) : la vérification de la nouvelle adresse utilise les identifiants de son site.
+- **Protocole** : `login.list` (`items[]` : `loginId`, `site`, `username`) ; `login.set` (`loginId` pour modifier, `site`, `username`, `password`), qui rend les identifiants enregistrés ; `login.delete` (`loginId`). Les trois demandent la portée `admin` (section 6.9), même la liste, qui montre les noms d'utilisateur.
+  - Pour de nouveaux identifiants, `password` est obligatoire ; pour une modification, absent, il garde celui enregistré.
+  - Refus `INVALID_PARAMS` : site invalide, site déjà enregistré, nom vide, de plus de 256 octets, avec `:` (interdit par Basic) ou un caractère de contrôle, ou mot de passe vide.
+  - Refus `LOGIN_NOT_FOUND` : identifiant inconnu.
+  - Pas de notification : un client relit la liste quand il l'affiche.
+- **Coffre** : le nouveau mot de passe est écrit avant sa référence, l'ancien effacé après ; un retrait efface la référence, puis le mot de passe. Le ramassage du démarrage garde les mots de passe des identifiants (`store::headers::all_secret_refs`).
+- **CLI** : `auro login list`, `auro login set <site> -u <nom>` (mot de passe saisi sans écho, ou `--password-stdin`, jamais en argument), `auro login remove <site>`.
+- **Application** : onglet « Identifiants de sites » des options, avec une liste, « Nouveau… », « Modifier… » et « Supprimer ». Le champ du mot de passe reste vide à la modification, et vide garde celui enregistré.
+- **Bearer** (F-06) : un jeton se donne par l'en-tête `Authorization` de la tâche (`auro add -H "Authorization: Bearer …"`), qui va au coffre (section 5.1).
 
 ## 8. Sécurité, vie privée et cadre légal
 

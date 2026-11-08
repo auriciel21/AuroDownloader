@@ -1338,6 +1338,7 @@ function renderDest() {
   const dir = store.settings["downloads.dir"] ?? "";
   for (const id of ["dest", "pref-dest"]) $(id).textContent = dir || t("(aucun)");
   for (const id of ["dest-change", "pref-dest-change"]) $(id).disabled = !connected;
+  syncLoginButtons();
 }
 
 function openAdd() {
@@ -1416,6 +1417,96 @@ async function changeLimit(event) {
     showError(refused(e));
   }
   renderLimit();
+}
+
+// ---------- Identifiants de sites ----------
+
+/// Identifiants enregistrés (`login.list`, SPEC §7.14) : site et nom, jamais le mot de passe.
+let logins = [];
+/// Identifiants en cours de modification ; `null` : nouveaux.
+let editingLogin = null;
+
+async function loadLogins() {
+  $("logins-error").hidden = true;
+  try {
+    logins = (await host.call("login.list")).items ?? [];
+  } catch (e) {
+    logins = [];
+    $("logins-error").textContent = refused(e);
+    $("logins-error").hidden = false;
+  }
+  renderLogins();
+}
+
+function renderLogins(select) {
+  const list = $("logins");
+  const keep = select ?? list.value;
+  list.replaceChildren(...logins.map((login) => {
+    const option = document.createElement("option");
+    option.value = login.loginId;
+    option.textContent = `${login.site} — ${login.username}`;
+    return option;
+  }));
+  if (logins.some((login) => login.loginId === keep)) list.value = keep;
+  list.hidden = !logins.length;
+  $("logins-empty").hidden = logins.length > 0;
+  syncLoginButtons();
+}
+
+function syncLoginButtons() {
+  const chosen = !!$("logins").value;
+  $("login-new").disabled = !connected;
+  $("login-edit").disabled = !connected || !chosen;
+  $("login-delete").disabled = !connected || !chosen;
+}
+
+function openLogin(login) {
+  editingLogin = login?.loginId ?? null;
+  $("login-site").value = login?.site ?? "";
+  $("login-user").value = login?.username ?? "";
+  $("login-password").value = "";
+  // Nouveaux identifiants : un mot de passe ; sinon, vide garde celui enregistré.
+  $("login-password").required = !login;
+  $("login-keep-note").hidden = !login;
+  $("login-error").hidden = true;
+  const dialog = $("login-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  (login ? $("login-password") : $("login-site")).focus();
+}
+
+async function saveLogin() {
+  const params = { site: $("login-site").value, username: $("login-user").value };
+  if (editingLogin) params.loginId = editingLogin;
+  const password = $("login-password").value;
+  if (password) params.password = password;
+  $("login-save").disabled = true;
+  try {
+    const saved = await host.call("login.set", params);
+    $("login-dialog").close();
+    await loadLogins();
+    renderLogins(saved.loginId);
+    $("logins").focus();
+  } catch (e) {
+    $("login-error").textContent = e?.message ?? String(e);
+    $("login-error").hidden = false;
+  } finally {
+    $("login-save").disabled = false;
+  }
+}
+
+async function deleteLogin() {
+  const login = logins.find((l) => l.loginId === $("logins").value);
+  if (!login) return;
+  try {
+    await host.call("login.delete", { loginId: login.loginId });
+    announce(t("Identifiants de {0} supprimés", login.site));
+  } catch (e) {
+    $("logins-error").textContent = refused(e);
+    $("logins-error").hidden = false;
+  }
+  await loadLogins();
+  (logins.length ? $("logins") : $("login-new")).focus();
 }
 
 // ---------- Options ----------
@@ -1530,6 +1621,29 @@ function wire() {
   $("tb-settings").addEventListener("click", () => {
     selectTab($("tab-general"));
     $("settings").showModal();
+    if (connected) loadLogins();
+  });
+  $("logins").addEventListener("change", syncLoginButtons);
+  $("logins").addEventListener("dblclick", () => {
+    const login = logins.find((l) => l.loginId === $("logins").value);
+    if (login) openLogin(login);
+  });
+  $("login-new").addEventListener("click", () => openLogin(null));
+  $("login-edit").addEventListener("click", () => {
+    const login = logins.find((l) => l.loginId === $("logins").value);
+    if (login) openLogin(login);
+  });
+  $("login-delete").addEventListener("click", deleteLogin);
+  $("login-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    // Enregistrés d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    saveLogin();
+  });
+  $("login-dialog").addEventListener("close", () => {
+    // Le mot de passe ne reste pas dans la page.
+    $("login-password").value = "";
+    editingLogin = null;
   });
 
   body.addEventListener("click", onGridClick);

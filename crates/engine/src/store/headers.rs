@@ -90,10 +90,14 @@ pub fn drop_secrets(conn: &Connection, task_id: &str) -> Result<Vec<String>, Sto
     Ok(refs)
 }
 
-/// Références de tous les secrets de la base.
+/// Références de tous les secrets de la base : en-têtes de toutes les tâches et mots de
+/// passe des identifiants de sites (`store::logins`). Le ramassage du démarrage efface du
+/// coffre ce qui n'y est pas.
 pub fn all_secret_refs(conn: &Connection) -> Result<HashSet<String>, StoreError> {
-    let mut statement =
-        conn.prepare("SELECT secret_ref FROM task_headers WHERE secret_ref IS NOT NULL")?;
+    let mut statement = conn.prepare(
+        "SELECT secret_ref FROM task_headers WHERE secret_ref IS NOT NULL
+         UNION SELECT secret_ref FROM site_logins",
+    )?;
     let refs = statement
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;

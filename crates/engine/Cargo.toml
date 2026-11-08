@@ -11,10 +11,14 @@ publish.workspace = true
 testing = ["dep:rcgen", "rustls/aws_lc_rs"]
 
 [dependencies]
+# Authentification Basic (F-06, module `net::auth`).
+base64 = "0.22.1"
 bytes = "1.12.1"
 # Dossier « Téléchargements » du système, dossier par défaut des ajouts.
 dirs = "7.0.0"
 httpdate = "1.0.3"
+# Authentification Digest (RFC 7616, module `net::auth`) : MD5 et SHA-256.
+md-5 = "0.10.6"
 percent-encoding = "2.3.2"
 # Seulement pour la fonctionnalité `testing` : autorité de certification du serveur HTTPS.
 rcgen = { version = "0.14.7", optional = true, default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
@@ -24,9 +28,10 @@ rustls = { version = "0.23.46", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Protocole JSON-RPC (module `rpc`).
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-uuid = { version = "1.26.1", features = ["v7"] }
+uuid = { version = "1.26.1", features = ["v4", "v7"] }
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

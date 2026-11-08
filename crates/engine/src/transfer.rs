@@ -33,12 +33,14 @@ use crate::io::{
     segments_beyond,
 };
 use crate::limit::Throttle;
+use crate::net::auth::{Auth, Login, Site};
 use crate::net::{Client, NetError, RangeRequest, headers};
 use crate::secrets::{Vault, VaultError};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
 };
 use crate::store::headers::{self as stored_headers, Stored, StoredHeader};
+use crate::store::logins::{self, LoginRow};
 use crate::store::segments::{
     check_task_coverage, load_segments, reset_segments, save_progress, save_split,
 };
@@ -431,6 +433,50 @@ async fn request_headers(
     Ok(Ok(list))
 }
 
+/// Identifiants enregistrés pour le site de `url` (SPEC §7.14). Aucun si la tâche porte
+/// son propre en-tête `Authorization` : il passe avant.
+fn site_login(
+    conn: &Connection,
+    url: &str,
+    task_headers: &[(String, String)],
+) -> Result<Option<LoginRow>, TransferError> {
+    if task_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+    {
+        return Ok(None);
+    }
+    Ok(logins::best_for(conn, url)?)
+}
+
+/// Lit dans le coffre le mot de passe de `login`. Absent du coffre (coffre en mémoire après
+/// un redémarrage) : la tâche part sans, et le serveur dira s'il en avait besoin. Un coffre
+/// qui ne répond pas : échec temporaire, comme pour les en-têtes.
+async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Auth>> {
+    let Some(login) = login else {
+        return Ok(Ok(None));
+    };
+    let Ok(site) = Site::parse(&login.site) else {
+        return Ok(Ok(None));
+    };
+    let (vault, id) = (vault.clone(), login.secret_ref.clone());
+    match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
+        Ok(Some(password)) => Ok(Ok(Some(Auth::new(Login {
+            site,
+            username: login.username,
+            password,
+        })))),
+        Ok(None) => {
+            eprintln!(
+                "aurod : identifiants de {} : mot de passe absent du coffre, non envoyé",
+                login.site
+            );
+            Ok(Ok(None))
+        }
+        Err(e) => fail(Failure::Vault(e)),
+    }
+}
+
 async fn execute(
     conn: &mut Connection,
     client: &Client,
@@ -446,10 +492,19 @@ async fn execute(
         Ok(list) => list,
         Err(stop) => return Ok(Err(stop)),
     };
+    // Identifiants du site (SPEC §7.14), sauf si la tâche porte son propre `Authorization`.
+    let login = site_login(conn, &source.url, &task_headers)?;
+    let auth = match reveal_login(login, &opts.vault).await? {
+        Ok(auth) => auth.map(Arc::new),
+        Err(stop) => return Ok(Err(stop)),
+    };
 
     // Préparation (SPEC §7.1), une seule fois par tâche.
     if task.file_name.is_none() {
-        let probe = match client.probe(&source.url, &task_headers).await {
+        let probe = match client
+            .probe_as(&source.url, &task_headers, auth.as_deref())
+            .await
+        {
             Ok(probe) => probe,
             Err(e) => return fail(Failure::Net(e)),
         };
@@ -547,7 +602,7 @@ async fn execute(
     let part = Arc::new(part);
     let ctx = Pool {
         client,
-        target: Arc::new(Target::new(source.url.clone(), task_headers)),
+        target: Arc::new(Target::new(source.url.clone(), task_headers, auth)),
         fetch,
         plan,
         host: host_of(&source.url),
@@ -801,6 +856,8 @@ fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u3
 struct Target {
     url: String,
     headers: Vec<(String, String)>,
+    /// Identifiants du site, s'il en a (SPEC §7.14).
+    auth: Option<Arc<Auth>>,
     /// Connexions acceptées et ouvertes en ce moment.
     open: AtomicUsize,
     /// Le plus de connexions acceptées en même temps pendant l'exécution : ce que le
@@ -809,10 +866,11 @@ struct Target {
 }
 
 impl Target {
-    fn new(url: String, headers: Vec<(String, String)>) -> Self {
+    fn new(url: String, headers: Vec<(String, String)>, auth: Option<Arc<Auth>>) -> Self {
         Target {
             url,
             headers,
+            auth,
             open: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
         }
@@ -1231,10 +1289,14 @@ async fn pump(
                         total: *total,
                         if_range: if_range.as_deref(),
                     };
-                    client.get_range(&target.url, &target.headers, &req).await
+                    client
+                        .get_range_as(&target.url, &target.headers, &req, target.auth.as_deref())
+                        .await
                 }
                 Fetch::Whole { total } => {
-                    client.get_all(&target.url, &target.headers, *total).await
+                    client
+                        .get_all_as(&target.url, &target.headers, *total, target.auth.as_deref())
+                        .await
                 }
             }
         };

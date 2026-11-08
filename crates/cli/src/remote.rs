@@ -748,3 +748,70 @@ pub async fn refresh(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// Identifiants enregistrés, sans mots de passe (SPEC §7.14).
+pub async fn logins(rpc: &mut Rpc) -> Result<()> {
+    let list = rpc.call("login.list", json!({})).await?;
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Aucun identifiant de site.");
+    }
+    for item in items {
+        println!(
+            "{:<40} {}",
+            item["site"].as_str().unwrap_or_default(),
+            item["username"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// Identifiants déjà enregistrés pour ce site (même forme normalisée), s'il y en a.
+async fn login_of(rpc: &mut Rpc, site: &str) -> Result<Option<Value>> {
+    let wanted = auro_engine::net::auth::Site::parse(site)
+        .map_err(|e| anyhow::anyhow!(e))?
+        .text();
+    let list = rpc.call("login.list", json!({})).await?;
+    Ok(list["items"]
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["site"] == wanted.as_str()))
+        .cloned())
+}
+
+/// Enregistre ou modifie les identifiants d'un site ; `password` absent : celui déjà
+/// enregistré reste.
+pub async fn login_set(
+    rpc: &mut Rpc,
+    site: &str,
+    username: &str,
+    password: Option<String>,
+) -> Result<()> {
+    let mut params = json!({"site": site, "username": username});
+    if let Some(existing) = login_of(rpc, site).await? {
+        params["loginId"] = existing["loginId"].clone();
+    }
+    if let Some(password) = password {
+        params["password"] = json!(password);
+    }
+    let saved = rpc.call("login.set", params).await?;
+    println!(
+        "Identifiants de {} enregistrés ({}) ; le mot de passe est dans le coffre du système.",
+        saved["site"].as_str().unwrap_or(site),
+        saved["username"].as_str().unwrap_or(username)
+    );
+    Ok(())
+}
+
+/// Retire les identifiants d'un site.
+pub async fn login_remove(rpc: &mut Rpc, site: &str) -> Result<()> {
+    let Some(existing) = login_of(rpc, site).await? else {
+        bail!("aucun identifiant enregistré pour {site}");
+    };
+    rpc.call("login.delete", json!({"loginId": existing["loginId"]}))
+        .await?;
+    println!(
+        "Identifiants de {} retirés.",
+        existing["site"].as_str().unwrap_or(site)
+    );
+    Ok(())
+}

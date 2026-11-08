@@ -79,6 +79,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "limits.set"
         | "engine.cancelEndAction" => Scope::Control,
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
+        // Identifiants de sites (SPEC §7.14) : même la liste (noms d'utilisateur).
+        "login.list" | "login.set" | "login.delete" => Scope::Admin,
         _ => return None,
     })
 }
