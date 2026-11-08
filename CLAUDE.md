@@ -276,7 +276,8 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   l'utilisateur le 2026-11-08 sur l'application installée, Historique et Empreinte
   compris : fonctionnel) ; 6. plages horaires (F-16, fait le 2026-11-07 : SPEC 7.11, `auro schedule`,
   boîte « Planification »). Porte : utilisation quotidienne
-  sans perte de données.
+  sans perte de données, franchie le 2026-11-08 (déclarée par l'utilisateur après un
+  usage quotidien de l'application installée depuis le 2026-11-07, sans perte).
 - Phase 3, plan du 2026-11-07 : 1. portée déclarée à l'ouverture, sans jeton sur le canal
   local (fait, SPEC 6.9) ; 2. `idempotencyKey` (fait) et dossier des téléchargements dans
   le moteur (fait) ; 3. relais `auro-relay` et sa déclaration aux navigateurs (fait) ;
@@ -286,8 +287,8 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   confirmer).
 - Porte de la phase 3 (SPEC 9.3), franchie le 2026-11-08 : les 9 essais de
   `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que
-  CCleaner Browser (Chromium). La porte de la phase 2 (usage quotidien sans perte)
-  reste en observation.
+  CCleaner Browser (Chromium). Porte de la phase 2 franchie
+  le même jour.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
