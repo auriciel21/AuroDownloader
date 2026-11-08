@@ -2,9 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Dossier public des téléchargements sous Android 8 à 10 ; inutile ensuite. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
 
     <application
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:label="AuroDownloader"
         android:supportsRtl="true">
 

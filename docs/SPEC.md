@@ -205,7 +205,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 - Le moteur est compilé comme bibliothèque native et appelé directement, avec les mêmes messages JSON-RPC que partout ailleurs.
 - Un service au premier plan héberge le moteur et affiche une notification avec la progression, la pause et la reprise.
 - Le menu « Partager » d'Android et les liens ouverts depuis d'autres applications appellent `task.add`.
-- Le dossier de destination est choisi par l'utilisateur dans le sélecteur de stockage, avec une permission conservée entre les sessions.
+- Le dossier de destination est choisi par l'utilisateur dans le sélecteur de stockage, avec une permission conservée entre les sessions. Révisé le 2026-11-08 (décision de l'utilisateur) : par défaut, `Download/AuroDownloader` dans le dossier public des téléchargements, écrit par des chemins ordinaires (voir la mise en œuvre ci-dessous) ; le sélecteur viendra ensuite pour les autres emplacements (carte SD, Google Drive), avec le repli de la section 7.5.
 - Options : Wi-Fi seulement, respect de l'économiseur de batterie, reprise au redémarrage de l'appareil si l'utilisateur l'autorise.
 - L'application peut aussi servir de simple télécommande d'un moteur distant (un NAS, par exemple), sans moteur local.
 - Les contraintes d'Android sur les tâches longues sont le principal risque de cette plateforme (section 9.2).
@@ -214,6 +214,8 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
   - `start` initialise d'abord la vérification des certificats d'Android (`rustls-platform-verifier`, dont la partie Kotlin vient du dépôt Maven du projet rustls, à la version de `Cargo.lock`) : HTTPS est permis dès lors (section 7.5).
   - Application : `apps/android` (Gradle, Kotlin) ; la construction compile la bibliothèque par Cargo et le NDK. Base dans le stockage privé de l'application ; téléchargements, en attendant le sélecteur de stockage, dans le dossier de l'application (`Android/data/org.aurodownloader/files/Download`).
   - Essai du 2026-11-08 sur une tablette Teclast T70 (Android 15) : HTTPS, empreinte voisine, 82 Mo en 4 s ; ISO Debian de 756 Mio, application tuée au bout de 8 s, reprise seule au démarrage suivant et empreinte publiée.
+  - Dossier des téléchargements (étape 2, 2026-11-08) : `Download/AuroDownloader` dans le dossier public, créé et réglé (`downloads.dir`) au premier démarrage, ou s'il a disparu ; un dossier choisi ensuite n'est pas remplacé. Depuis Android 11, une application y crée, écrit et renomme ses fichiers par leur chemin, sans permission : le moteur y travaille comme sur un disque ordinaire (écritures positionnées en parallèle, réservation de la place, renommage final), essai du même jour sur la tablette. Android 8 à 10 : permission d'écriture (`maxSdkVersion` 29) et `requestLegacyExternalStorage`, pas encore essayés sur un appareil. À la fin de chaque téléchargement, l'application demande l'indexation du fichier (`MediaScannerConnection`), sans laquelle il manque aux recherches de l'application Fichiers.
+  - Fichiers d'autres applications : un fichier déposé par adb dans le dossier est vu, et le moteur en évite le nom (`README (1)`). Pour un fichier ordinaire (non multimédia) d'une autre application, que la vue limitée d'Android peut cacher, ce n'est pas vérifié : le renommage final pourrait ne pas le voir. Le sous-dossier propre à l'application rend le cas rare ; à vérifier.
 
 ### 4.5 Extension navigateur
 

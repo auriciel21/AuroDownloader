@@ -142,8 +142,10 @@ téléchargement.
   hors de l'espace de travail Cargo). `app/build.gradle.kts` compile la bibliothèque par
   Cargo et le NDK (tâche `cargoBuild`) et prend la partie Kotlin de
   rustls-platform-verifier (groupe `org.rustls`) à la version de `Cargo.lock`.
-  `local.properties` (chemin du SDK, non versionné). Phase 4, étape 1 : `MainActivity`
-  d'essai (journal des messages ; `--es url <adresse>` ajoute un téléchargement).
+  `local.properties` (chemin du SDK, non versionné). `engine/EngineClient` : client JSON-RPC
+  Kotlin (réponses par identifiant, notifications). `MainActivity` d'essai (étapes 1 et 2 :
+  journal des messages ; `--es url <adresse>` ajoute, `--es dir <dossier>` impose le dossier).
+  Dossier par défaut `Download/AuroDownloader` ; indexation par `MediaScannerConnection`.
 - Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
   téléphone Galaxy S25 Ultra (Android 16) ; messages du moteur par
   `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
@@ -313,8 +315,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   CCleaner Browser (Chromium). Porte de la phase 2 franchie
   le même jour.
 - Phase 4, plan du 2026-11-08 (validé par l'utilisateur) : 1. moteur dans l'application
-  (`crates/android`, `apps/android`, HTTPS ; fait le 2026-11-08) ; 2. écriture dans le
-  dossier du sélecteur de stockage, repli par un fichier interne copié à la fin ;
+  (`crates/android`, `apps/android`, HTTPS ; fait le 2026-11-08) ; 2. dossier public
+  `Download/AuroDownloader` par chemins ordinaires (fait le 2026-11-08, décision de
+  l'utilisateur ; le sélecteur de stockage, avec son repli, vient plus tard) ;
   3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages,
   TalkBack) ; 4. arrière-plan : service au premier plan et notification, transferts
   lancés par l'utilisateur à partir d'Android 14, Wi-Fi seulement, reprise au redémarrage ;
