@@ -79,6 +79,7 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "queue.delete"
         | "limits.set"
         | "engine.cancelEndAction"
+        | "engine.setNetwork"
         // Effacer l'historique ne touche ni aux tâches ni aux fichiers (F-35).
         | "history.clear" => Scope::Control,
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,

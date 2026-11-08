@@ -910,6 +910,19 @@ pub struct Candidate {
     pub state: TaskState,
 }
 
+/// Réseau revenu (SPEC §7.15) : les tâches qui attendent un nouvel essai après une erreur de
+/// réseau (`NET_UNREACHABLE`, `NET_TIMEOUT`) peuvent repartir tout de suite, au lieu
+/// d'attendre leur délai (jusqu'à 5 minutes). Un serveur qui a demandé d'attendre garde le
+/// sien. Rend le nombre de tâches concernées ; leur état ne change pas.
+pub fn retry_network_waits(conn: &Connection, now: i64) -> Result<usize, StoreError> {
+    Ok(conn.execute(
+        "UPDATE tasks SET next_retry_at = ?1
+         WHERE state = 'retry_wait' AND error_code IN ('NET_UNREACHABLE', 'NET_TIMEOUT')
+           AND COALESCE(next_retry_at, 0) > ?1",
+        [now],
+    )?)
+}
+
 /// Tâches qui peuvent partir à `now` (millisecondes Unix), dans l'ordre où le planificateur
 /// les démarre : files dans leur ordre ; dans une file, d'abord les tâches `active`
 /// (interrompues par un arrêt du moteur, SPEC §7.4), puis par priorité décroissante et
@@ -1513,5 +1526,47 @@ mod tests {
             Err(StoreError::NoSource { .. })
         ));
         assert_eq!(load_task(&conn, &id).unwrap().state, TaskState::Cancelled);
+    }
+
+    /// Réseau revenu (SPEC §7.15) : une erreur de réseau repart tout de suite, un serveur qui a
+    /// demandé d'attendre garde son délai.
+    #[test]
+    fn network_waits_are_retried_now_when_the_network_returns() {
+        let mut conn = open_in_memory().unwrap();
+        let mut waiting = Vec::new();
+        for code in ["NET_UNREACHABLE", "NET_TIMEOUT", "HTTP_STATUS"] {
+            let (id, _) = new_http_task(&mut conn);
+            change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+            let retry = Change {
+                error: Some((code, "détail")),
+                next_retry_at: Some(1_000_000),
+                ..Change::to(TaskState::RetryWait)
+            };
+            change_state(&mut conn, &id, &retry).unwrap();
+            waiting.push(id);
+        }
+        let runnable = |conn: &Connection| -> Vec<String> {
+            runnable_tasks(conn, 500)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.task_id)
+                .collect()
+        };
+        assert!(runnable(&conn).is_empty(), "délais pas encore passés");
+        assert_eq!(retry_network_waits(&conn, 500).unwrap(), 2);
+        let now = runnable(&conn);
+        assert!(
+            now.contains(&waiting[0]) && now.contains(&waiting[1]),
+            "{now:?}"
+        );
+        assert!(
+            !now.contains(&waiting[2]),
+            "le serveur a demandé d'attendre"
+        );
+        for id in &waiting {
+            assert_eq!(load_task(&conn, id).unwrap().state, TaskState::RetryWait);
+        }
+        // Déjà dues : rien de plus.
+        assert_eq!(retry_network_waits(&conn, 500).unwrap(), 0);
     }
 }

@@ -2,6 +2,7 @@ package org.aurodownloader.ui
 
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -191,10 +192,23 @@ private fun ListScreen(
         LaunchedEffect(first) {
             if (listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
         }
+        // Réseau qui ne convient pas : les téléchargements attendent (SPEC §7.15).
+        val waiting = app.background.waiting.value
+        Column(Modifier.padding(padding)) {
+        if (waiting != null) {
+            Text(
+                stringResource(waiting),
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
         if (app.downloads.loaded.value && tasks.isEmpty()) {
-            Text(stringResource(R.string.empty), Modifier.padding(padding).padding(24.dp))
+            Text(stringResource(R.string.empty), Modifier.padding(24.dp))
         } else {
-            LazyColumn(Modifier.padding(padding), state = listState, contentPadding = PaddingValues(bottom = 96.dp)) {
+            LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 96.dp)) {
                 items(tasks, key = { it.id }) { task ->
                     TaskRow(
                         task,
@@ -208,6 +222,7 @@ private fun ListScreen(
                     HorizontalDivider()
                 }
             }
+        }
         }
     }
 }
@@ -414,6 +429,27 @@ private fun SettingsScreen(app: AuroApp, back: () -> Unit, report: (Throwable?) 
                 note = stringResource(R.string.preallocate_note),
                 on = settings["downloads.preallocate"] != false,
                 change = { app.setSetting("downloads.preallocate", it, report) },
+            )
+            // Préférences de l'application Android (arrière-plan, SPEC §7.15).
+            var wifiOnly by remember { mutableStateOf(app.background.wifiOnly) }
+            Toggle(
+                label = stringResource(R.string.wifi_only),
+                note = stringResource(R.string.wifi_only_note),
+                on = wifiOnly,
+                change = {
+                    app.background.wifiOnly = it
+                    wifiOnly = it
+                },
+            )
+            var afterBoot by remember { mutableStateOf(app.background.resumeAfterBoot) }
+            Toggle(
+                label = stringResource(R.string.resume_boot),
+                note = stringResource(R.string.resume_boot_note),
+                on = afterBoot,
+                change = {
+                    app.background.resumeAfterBoot = it
+                    afterBoot = it
+                },
             )
         }
     }

@@ -357,6 +357,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": null},
                 "settings": settings_json(s.download_dir, &s.flags),
+                "networkUsable": s.network_usable,
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -390,6 +391,15 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "engine.cancelEndAction" => {
             let cancelled = ctx.engine.cancel_end_action().await?;
             Ok(json!({"cancelled": cancelled}))
+        }
+        // Réseau utilisable ou non (SPEC §7.15, depuis le 2026-11-09) : dit par l'application.
+        "engine.setNetwork" => {
+            let usable = match p.get("usable") {
+                Some(Value::Bool(usable)) => *usable,
+                _ => return Err(Params::wrong("usable", "booléen")),
+            };
+            ctx.engine.set_network(usable).await?;
+            Ok(json!({"usable": usable}))
         }
         _ => Err(RpcError::method_not_found(method)),
     }

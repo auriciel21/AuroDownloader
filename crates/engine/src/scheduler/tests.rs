@@ -566,6 +566,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::LimitsChanged { rev, .. }
                 | Event::DownloadDirChanged { rev, .. }
                 | Event::FlagChanged { rev, .. }
+                | Event::NetworkChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),
@@ -905,6 +906,7 @@ mod planning {
                 check_every: Duration::from_millis(20),
                 end_delay: Duration::from_millis(300),
                 power,
+                ..Planning::default()
             },
             ..config(dir)
         }
@@ -2099,6 +2101,70 @@ mod checksums {
         .await;
         assert!(done.is_ok(), "{:?}", task(dir.path(), &id).state);
         assert_file(dir.path(), "f.bin", LEN);
+        engine.shutdown().await;
+    }
+}
+
+/// Réseau qui ne convient pas (SPEC §7.15) : les tâches en cours retournent en file, rien
+/// ne démarre ; au retour du réseau, tout reprend et se termine.
+mod network {
+    use super::*;
+
+    #[tokio::test]
+    async fn without_a_usable_network_tasks_wait_then_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let len = 2 * 1024 * 1024;
+        let server = slow_site(len);
+        let engine = Engine::start(config(dir.path())).unwrap();
+        let mut events = engine.subscribe();
+        let first = engine
+            .add(add(&server.url("/a.bin"), dir.path()))
+            .await
+            .unwrap();
+        wait_state(&mut events, &first, TaskState::Active).await;
+
+        engine.set_network(false).await.unwrap();
+        wait_state(&mut events, &first, TaskState::Queued).await;
+        let snapshot = engine.snapshot().await.unwrap();
+        assert!(!snapshot.network_usable);
+        // Ajoutée sans réseau : elle attend.
+        let second = engine
+            .add(add(&server.url("/b.bin"), dir.path()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for id in [&first, &second] {
+            assert_eq!(task(dir.path(), id).state, TaskState::Queued, "{id}");
+        }
+        // Le même état redit : rien à annoncer.
+        engine.set_network(false).await.unwrap();
+
+        engine.set_network(true).await.unwrap();
+        let mut left: HashSet<String> = [first.clone(), second.clone()].into();
+        let mut announced = 0;
+        timeout(WAIT, async {
+            while !left.is_empty() {
+                match events.recv().await {
+                    Ok(Event::StateChanged {
+                        task_id,
+                        to: TaskState::Completed,
+                        ..
+                    }) => {
+                        left.remove(&task_id);
+                    }
+                    Ok(Event::NetworkChanged { usable, .. }) => {
+                        assert!(usable);
+                        announced += 1;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("les deux tâches finissent au retour du réseau");
+        assert_eq!(announced, 1, "le retour du réseau est annoncé une fois");
+        assert_file(dir.path(), "a.bin", len);
+        assert_file(dir.path(), "b.bin", len);
         engine.shutdown().await;
     }
 }

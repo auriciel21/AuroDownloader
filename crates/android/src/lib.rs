@@ -56,7 +56,13 @@ impl Host {
                 ..Options::default()
             },
             disk_recheck: DISK_RECHECK,
-            planning: Planning::default(),
+            // Rien ne part avant que l'application dise le réseau utilisable (SPEC §7.15) :
+            // démarré par Android en arrière-plan (redémarrage de l'appareil), le processus
+            // ne télécharge pas sans la protection d'un transfert ou d'un service.
+            planning: Planning {
+                network_usable: false,
+                ..Planning::default()
+            },
         };
         let engine = runtime
             .block_on(async { Engine::start(config) })

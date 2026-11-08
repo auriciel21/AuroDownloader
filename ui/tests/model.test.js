@@ -375,3 +375,12 @@ test("le détail d'une tâche lu pendant le téléchargement se relit une fois l
     assert.ok(!detailsOutdated({ taskId: "a", state }, "a"), state);
   }
 });
+
+test("l'annonce du réseau (Android) avance la révision sans recharger", () => {
+  const store = new TaskStore();
+  store.load(snapshot(10, [task("a")]));
+  assert.ok(!store.apply("engine.network", { rev: 11, usable: false }).resync);
+  assert.equal(store.rev, 11);
+  const next = store.apply("task.stateChanged", { rev: 12, taskId: "a", from: "queued", to: "active" });
+  assert.ok(!next.resync, "pas de trou dans les révisions");
+});

@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         askLegacyStorage()
+        askNotifications()
         if (savedInstanceState == null) addFrom(intent)
         setContent {
             AuroTheme {
@@ -37,22 +38,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // À l'écran, l'application protège elle-même ses téléchargements ; elle demande aussi la
+    // protection d'Android pour la suite ([Background]).
+    override fun onStart() {
+        super.onStart()
+        if (app.running) app.background.visible = true
+    }
+
+    override fun onStop() {
+        if (app.running) app.background.visible = false
+        super.onStop()
+    }
+
     // Fenêtre déjà ouverte : la nouvelle demande lui arrive ici.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         addFrom(intent)
     }
 
-    /** Lien reçu : `--es url`, texte partagé (première adresse http(s)), ou lien ouvert. */
+    /** Adresse donnée par adb (`--es url`, essais) ; les liens partagés ou ouverts passent par [ShareActivity]. */
     private fun addFrom(intent: Intent) {
         if (!app.running) return
-        val url = intent.getStringExtra("url")
-            ?: intent.takeIf { it.action == Intent.ACTION_SEND }
-                ?.getStringExtra(Intent.EXTRA_TEXT)
-                ?.let { LINK.find(it)?.value }
-            ?: intent.takeIf { it.action == Intent.ACTION_VIEW }?.data
-                ?.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
-            ?: return
+        val url = intent.getStringExtra("url") ?: return
         app.add(url) { error ->
             val text = if (error == null) getString(R.string.added) else getString(R.string.refused, error.message ?: "")
             Toast.makeText(this, text, Toast.LENGTH_LONG).show()
@@ -93,9 +100,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    companion object {
-        private val LINK = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
+    /** Android 13 et plus : la notification de progression demande la permission. */
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+    }
 
+    companion object {
         /** Programmes et paquets d'installation : jamais ouverts depuis l'application. */
         private val EXECUTABLE = setOf("apk", "apks", "xapk", "apkm", "aab", "exe", "msi", "bat", "cmd", "sh", "jar")
     }

@@ -75,6 +75,12 @@ class Downloads(private val engine: EngineClient) {
     /** Appelé quand une tâche se termine (indexation du fichier). */
     var onCompleted: (Task) -> Unit = {}
 
+    /** Appelé quand une tâche se termine en échec (notification). */
+    var onFailed: (Task) -> Unit = {}
+
+    /** Appelé après chaque changement de l'état (arrière-plan, notification). */
+    var onChanged: () -> Unit = {}
+
     private var rev: Long? = null
     private val waiting = mutableListOf<Pair<String, JSONObject>>()
 
@@ -110,9 +116,15 @@ class Downloads(private val engine: EngineClient) {
         val pending = waiting.toList()
         waiting.clear()
         for ((method, params) in pending) apply(method, params)
+        onChanged()
     }
 
     private fun apply(method: String, params: JSONObject) {
+        update(method, params)
+        if (rev != null) onChanged()
+    }
+
+    private fun update(method: String, params: JSONObject) {
         val current = rev
         if (current == null) {
             waiting.add(method to params)
@@ -161,6 +173,7 @@ class Downloads(private val engine: EngineClient) {
                 if (to == "completed" && (next.totalBytes ?: 0) > 0) next = next.copy(doneBytes = next.totalBytes!!)
                 tasks[task.id] = next
                 if (to == "completed") onCompleted(next)
+                if (to == "failed") onFailed(next)
             }
             "task.updated" -> {
                 val task = tasks[params.optString("taskId")] ?: return reload()
@@ -188,7 +201,7 @@ class Downloads(private val engine: EngineClient) {
         private val REVISED = setOf(
             "task.added", "task.stateChanged", "task.updated", "task.removed", "queue.updated",
             "limits.updated", "settings.updated", "schedule.updated", "schedule.removed",
-            "engine.endAction",
+            "engine.endAction", "engine.network",
         )
     }
 }

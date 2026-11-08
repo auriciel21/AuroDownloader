@@ -383,6 +383,10 @@ async fn describe(
             "settings.updated",
             json!({"rev": rev, "values": {flag.key(): on}}),
         )),
+        Event::NetworkChanged { rev, usable } if topics.queues => Some(notification(
+            "engine.network",
+            json!({"rev": rev, "usable": usable}),
+        )),
         Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
             "settings.updated",
             json!({"rev": rev, "values": {DOWNLOAD_DIR: download_dir}}),

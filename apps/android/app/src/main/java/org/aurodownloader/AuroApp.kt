@@ -25,6 +25,8 @@ class AuroApp : Application() {
         private set
     lateinit var downloads: Downloads
         private set
+    lateinit var background: Background
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -36,7 +38,11 @@ class AuroApp : Application() {
         }
         engine = EngineClient()
         downloads = Downloads(engine)
-        downloads.onCompleted = { task -> index(task) }
+        background = Background(this)
+        downloads.onCompleted = { task ->
+            index(task)
+            if (!background.visible) background.notifyEnd(task, failed = false)
+        }
         chooseFolder()
     }
 

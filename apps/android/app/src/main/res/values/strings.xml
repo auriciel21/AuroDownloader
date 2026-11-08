@@ -103,4 +103,24 @@
     <string name="neighbor_note">Quand vous n\'en donnez pas, AuroDownloader cherche l\'empreinte publiée à côté du fichier, puis la vérifie à la fin.</string>
     <string name="preallocate">Réserver la place de chaque fichier dès le départ</string>
     <string name="preallocate_note">Un stockage trop petit se voit avant le téléchargement.</string>
+
+    <!-- Arrière-plan (SPEC §7.15) -->
+    <string name="wifi_only">Wi-Fi seulement</string>
+    <string name="wifi_only_note">Pas de téléchargement sur une connexion facturée au volume (données mobiles, partage de connexion).</string>
+    <string name="resume_boot">Reprendre après le redémarrage de l\'appareil</string>
+    <string name="resume_boot_note">Les téléchargements inachevés reprennent, ou une notification propose de les reprendre (Android 14 et plus).</string>
+    <string name="wait_network">En attente du réseau</string>
+    <string name="wait_wifi">En attente du Wi-Fi</string>
+    <string name="channel_running">Téléchargements en cours</string>
+    <string name="channel_done">Téléchargements terminés</string>
+    <plurals name="notice_title">
+        <item quantity="one">%1$d téléchargement</item>
+        <item quantity="other">%1$d téléchargements</item>
+    </plurals>
+    <string name="notice_progress">%1$d %% · %2$s sur %3$s</string>
+    <string name="pause_all">Tout mettre en pause</string>
+    <string name="notice_done">Téléchargement terminé</string>
+    <string name="notice_failed">Échec du téléchargement</string>
+    <string name="notice_resume_title">Téléchargements à reprendre</string>
+    <string name="notice_resume_text">Touchez pour reprendre les téléchargements inachevés.</string>
 </resources>

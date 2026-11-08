@@ -66,6 +66,9 @@ fn the_engine_answers_downloads_and_keeps_its_tasks_across_restarts() {
     host.send("{\"jsonrpc\": \"2.0\",\n \"id\": 1,\n \"method\": \"settings.get\"}");
     assert!(inbox.reply(1)["values"].is_object());
 
+    // Le moteur de l'application démarre sans réseau : elle le dit utilisable.
+    call(&host, 9, "engine.setNetwork", json!({"usable": true}));
+    assert_eq!(inbox.reply(9)["usable"], true);
     call(&host, 2, "events.subscribe", json!({"topics": ["tasks"]}));
     inbox.reply(2);
     call(

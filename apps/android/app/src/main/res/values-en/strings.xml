@@ -88,4 +88,23 @@
     <string name="neighbor_note">When you give none, AuroDownloader looks for the checksum published next to the file, then checks it at the end.</string>
     <string name="preallocate">Reserve each file\'s space from the start</string>
     <string name="preallocate_note">Storage that is too small shows up before the download.</string>
+
+    <string name="wifi_only">Wi-Fi only</string>
+    <string name="wifi_only_note">No downloading on a metered connection (mobile data, hotspot).</string>
+    <string name="resume_boot">Resume after the device restarts</string>
+    <string name="resume_boot_note">Unfinished downloads resume, or a notification offers to resume them (Android 14 and later).</string>
+    <string name="wait_network">Waiting for the network</string>
+    <string name="wait_wifi">Waiting for Wi-Fi</string>
+    <string name="channel_running">Downloads in progress</string>
+    <string name="channel_done">Finished downloads</string>
+    <plurals name="notice_title">
+        <item quantity="one">%1$d download</item>
+        <item quantity="other">%1$d downloads</item>
+    </plurals>
+    <string name="notice_progress">%1$d %% · %2$s of %3$s</string>
+    <string name="pause_all">Pause all</string>
+    <string name="notice_done">Download completed</string>
+    <string name="notice_failed">Download failed</string>
+    <string name="notice_resume_title">Downloads to resume</string>
+    <string name="notice_resume_text">Tap to resume unfinished downloads.</string>
 </resources>

@@ -148,11 +148,22 @@ téléchargement.
   JSON-RPC Kotlin), `Downloads` (état des tâches pour Compose, mêmes règles de révision que
   `ui/src/model.js`) ; `ui/` : `Screens` (liste, détails, réglages, ajout ; Material 3),
   `Format` ; textes dans `res/values` (français) et `values-en`. `MainActivity` : Compose,
-  liens partagés ou ouverts, `--es url <adresse>` (essais), ouverture par `FileProvider`.
+  `--es url <adresse>` (essais), ouverture par `FileProvider`. `ShareActivity` : liens
+  partagés ou ouverts (activité sans fenêtre, toujours neuve). `Background` (SPEC 7.15) :
+  dit au moteur si le réseau est utilisable (`engine.setNetwork`), demande la protection
+  d'Android (`Transfers.kt` : `TransferJob`, transfert lancé par l'utilisateur, Android 14
+  et plus ; `TransferService`, Android 8 à 13), notifications, « Wi-Fi seulement »,
+  redémarrage (`BootReceiver`). Le moteur Android démarre sans réseau utilisable.
 - Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
   téléphone Galaxy S25 Ultra (Android 16) ; messages du moteur par
   `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
   passés à `adb shell`.
+  Liens d'essai : `am start -a android.intent.action.VIEW -d <adresse> -t
+  application/octet-stream`, une adresse différente à chaque fois (paramètre `?essai=…`).
+  `cmd netpolicy set metered-network <SSID> true` simule « Wi-Fi seulement » : relever
+  avant (`cmd netpolicy list wifi-networks`) et remettre ensuite (`undefined`). adb ne peut
+  pas envoyer `BOOT_COMPLETED` sur la tablette. Finir par `pm clear org.aurodownloader` et
+  supprimer `Download/AuroDownloader`.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
@@ -322,9 +333,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   `Download/AuroDownloader` par chemins ordinaires (fait le 2026-11-08, décision de
   l'utilisateur ; le sélecteur de stockage, avec son repli, vient plus tard) ;
   3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages ;
-  fait le 2026-11-08, essai TalkBack à faire) ; 4. arrière-plan : service au premier
-  plan et notification, transferts lancés par l'utilisateur à partir d'Android 14, Wi-Fi
-  seulement, reprise au redémarrage ; 5. porte : téléchargements longs sur deux appareils
+  fait le 2026-11-08, essai TalkBack à faire) ; 4. arrière-plan (fait le
+  2026-11-09, SPEC 7.15 : transfert lancé par l'utilisateur à partir d'Android 14, service
+  avant, notification, Wi-Fi seulement, redémarrage ; restent à essayer : vrai redémarrage,
+  « Tout mettre en pause », téléphone) ; 5. porte : téléchargements longs sur deux appareils
   réels, Android 15 et 16 (décision de l'utilisateur).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

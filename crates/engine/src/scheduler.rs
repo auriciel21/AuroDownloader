@@ -96,6 +96,10 @@ pub struct Planning {
     /// Exécute une action de fin. Par défaut, aucune : seul `aurod` branche la mise en
     /// veille et l'extinction réelles (`power::system`).
     pub power: fn(EndAction) -> std::io::Result<()>,
+    /// Le réseau convient aux téléchargements dès le démarrage (SPEC §7.15) ; vrai par
+    /// défaut. Faux pour l'application Android : rien ne part avant qu'elle le dise
+    /// (`Engine::set_network`), une fois les téléchargements protégés par Android.
+    pub network_usable: bool,
 }
 
 impl Default for Planning {
@@ -105,6 +109,7 @@ impl Default for Planning {
             check_every: SCHEDULE_CHECK,
             end_delay: END_ACTION_DELAY,
             power: crate::power::unplugged,
+            network_usable: true,
         }
     }
 }
@@ -237,6 +242,11 @@ pub enum Event {
         flag: Flag,
         on: bool,
     },
+    /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15).
+    NetworkChanged {
+        rev: u64,
+        usable: bool,
+    },
     /// Dossier des téléchargements changé : le dossier retenu désormais.
     DownloadDirChanged {
         rev: u64,
@@ -295,6 +305,8 @@ pub struct Snapshot {
     pub download_dir: Option<String>,
     /// Réglages oui ou non (F-10, F-11), dans l'ordre de [`Flag::ALL`].
     pub flags: Vec<(Flag, bool)>,
+    /// Le réseau convient aux téléchargements (SPEC §7.15).
+    pub network_usable: bool,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -521,6 +533,7 @@ enum Command {
     SetDownloadDir(Option<String>, Reply<Option<String>>),
     Flag(Flag, Reply<bool>),
     SetFlag(Flag, bool, Reply<()>),
+    SetNetwork(bool, Reply<()>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
         schedule_id: Option<String>,
@@ -756,6 +769,13 @@ impl Engine {
     /// Change un réglage oui ou non ; vaut pour les exécutions qui démarrent ensuite.
     pub async fn set_flag(&self, flag: Flag, on: bool) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetFlag(flag, on, reply)).await
+    }
+
+    /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) : sans lui, les tâches
+    /// en cours retournent en file et rien ne démarre. Dit par l'application ; vrai au
+    /// démarrage du moteur.
+    pub async fn set_network(&self, usable: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetNetwork(usable, reply)).await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -1018,6 +1038,10 @@ struct Scheduler {
     /// Les copies vers un autre volume (SPEC §7.12) y signalent leur fin.
     moved: mpsc::UnboundedSender<(String, std::io::Result<()>)>,
     moved_rx: Option<mpsc::UnboundedReceiver<(String, std::io::Result<()>)>>,
+    /// Le réseau convient aux téléchargements (SPEC §7.15) : faux, aucune tâche ne démarre
+    /// et celles en cours retournent en file. Dit par l'application (Android : réseau
+    /// perdu, ou facturé avec « Wi-Fi seulement ») ; vrai au démarrage.
+    network_usable: bool,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -1038,6 +1062,7 @@ impl Scheduler {
         prepared: mpsc::UnboundedSender<RunNote>,
     ) -> Self {
         let (moved, moved_rx) = mpsc::unbounded_channel();
+        let network_usable = config.planning.network_usable;
         Scheduler {
             conn,
             config,
@@ -1059,6 +1084,7 @@ impl Scheduler {
             planning: planning::State::default(),
             moved,
             moved_rx: Some(moved_rx),
+            network_usable,
         }
     }
 
@@ -1220,6 +1246,24 @@ impl Scheduler {
         }
         for c in candidates {
             if self.running.contains_key(&c.task_id) || self.broken.contains(&c.task_id) {
+                continue;
+            }
+            // Réseau qui ne convient pas (SPEC §7.15) : rien ne démarre, sauf le calcul d'une
+            // empreinte, qui n'en a pas besoin ; une tâche restée `active` (arrêt brutal)
+            // retourne en file.
+            if !self.network_usable && c.state != TaskState::Verifying {
+                if c.state == TaskState::Active {
+                    let paused = Change {
+                        pause_reason: Some(PauseReason::Network),
+                        ..Change::to(TaskState::Paused)
+                    };
+                    let requeued = self
+                        .set_state(&c.task_id, &paused)
+                        .and_then(|()| self.set_state(&c.task_id, &Change::to(TaskState::Queued)));
+                    if requeued.is_err() {
+                        self.broken.insert(c.task_id);
+                    }
+                }
                 continue;
             }
             // Hors de ses plages horaires, une file attend (F-16). Une tâche restée
@@ -1470,6 +1514,10 @@ impl Scheduler {
             Command::Flag(flag, reply) => {
                 let _ = reply.send(settings::flag(&self.conn, flag).map_err(Into::into));
             }
+            Command::SetNetwork(usable, reply) => {
+                self.set_network(usable);
+                let _ = reply.send(Ok(()));
+            }
             Command::SetFlag(flag, on, reply) => {
                 let result = settings::set_flag(&self.conn, flag, on);
                 if result.is_ok() {
@@ -1505,6 +1553,7 @@ impl Scheduler {
                 .into_iter()
                 .map(|f| Ok((f, settings::flag(&self.conn, f)?)))
                 .collect::<Result<_, StoreError>>()?,
+            network_usable: self.network_usable,
         })
     }
 
@@ -2299,6 +2348,33 @@ impl Scheduler {
         let id = task_id.to_owned();
         self.emit(|rev| Event::Removed { rev, task_id: id });
         Ok(())
+    }
+
+    /// Réseau utilisable ou non (SPEC §7.15) : sans lui, les tâches en cours retournent en
+    /// file, sauf le calcul d'une empreinte, et rien ne démarre ; avec lui, elles repartent.
+    fn set_network(&mut self, usable: bool) {
+        if self.network_usable == usable {
+            return;
+        }
+        self.network_usable = usable;
+        if usable {
+            // Une erreur de réseau survenue avant que l'application dise la coupure : la tâche
+            // repart maintenant, sans attendre son délai (SPEC §7.15).
+            let _ = tasks::retry_network_waits(&self.conn, now_ms());
+        }
+        if !usable {
+            for run in self.running.values_mut() {
+                // Une tâche que l'utilisateur arrête ou annule garde sa suite.
+                if run.shown != TaskState::Verifying
+                    && run.then == Then::Keep
+                    && !*run.stop.borrow()
+                {
+                    run.then = Then::Requeue;
+                    let _ = run.stop.send(true);
+                }
+            }
+        }
+        self.emit(|rev| Event::NetworkChanged { rev, usable });
     }
 
     fn begin_shutdown(&mut self, done: Option<oneshot::Sender<()>>) {

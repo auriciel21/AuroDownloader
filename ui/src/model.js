@@ -267,6 +267,8 @@ export class TaskStore {
       case "schedule.updated":
       case "schedule.removed":
       case "engine.endAction":
+      // Réseau utilisable ou non (SPEC §7.15, application Android) : numérotée, sans effet ici.
+      case "engine.network":
         break;
       default:
         return result;

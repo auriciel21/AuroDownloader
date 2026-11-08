@@ -1807,3 +1807,35 @@ async fn neighbor_checksums_follow_the_setting_and_are_announced_with_their_orig
     assert_eq!(asked.len(), 6, "{asked:?}");
     engine.shutdown().await;
 }
+
+/// Réseau utilisable ou non (SPEC §7.15) : dit par l'application, annoncé, dans
+/// l'instantané.
+#[tokio::test]
+async fn the_network_state_is_set_announced_and_in_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    assert_eq!(
+        c.result("sync.snapshot", json!({})).await["networkUsable"],
+        true
+    );
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let set = c
+        .result("engine.setNetwork", json!({"usable": false}))
+        .await;
+    assert_eq!(set, json!({"usable": false}));
+    let note = c.notification("engine.network", |_| true).await;
+    assert_eq!(note["usable"], false);
+    assert!(note["rev"].as_u64().is_some());
+    assert_eq!(
+        c.result("sync.snapshot", json!({})).await["networkUsable"],
+        false
+    );
+    assert_eq!(
+        c.error_code("engine.setNetwork", json!({"usable": "non"}))
+            .await,
+        "INVALID_PARAMS"
+    );
+    engine.shutdown().await;
+}
