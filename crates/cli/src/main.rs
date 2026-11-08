@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use auro_engine::io::checksum::Checksum;
 use auro_engine::net::Client;
 use auro_engine::paths;
 use clap::{Parser, Subcommand};
@@ -78,6 +79,10 @@ enum Command {
         /// l'historique du terminal
         #[arg(short = 'H', long = "header", value_name = "EN-TÊTE", value_parser = display::parse_header)]
         headers: Vec<(String, String)>,
+        /// Empreinte attendue du fichier (une seule adresse), vérifiée avant qu'il prenne
+        /// son nom : « sha256:… », « sha1:… », « md5:… », ou la valeur seule
+        #[arg(long, value_name = "EMPREINTE", value_parser = display::parse_checksum)]
+        checksum: Option<Checksum>,
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
@@ -98,6 +103,9 @@ enum Command {
         /// En-tête HTTP « Nom: valeur », à répéter (voir `add`)
         #[arg(short = 'H', long = "header", value_name = "EN-TÊTE", value_parser = display::parse_header)]
         headers: Vec<(String, String)>,
+        /// Empreinte attendue du fichier (voir `add`)
+        #[arg(long, value_name = "EMPREINTE", value_parser = display::parse_checksum)]
+        checksum: Option<Checksum>,
     },
     /// Liste les tâches
     List {
@@ -158,6 +166,19 @@ enum Command {
     /// Remplace l'adresse d'une tâche qui ne tourne pas, par exemple un lien expiré ; pour
     /// une tâche commencée, la nouvelle adresse doit donner le même fichier
     Refresh { task_id: String, url: String },
+    /// Donne, change ou retire l'empreinte attendue du fichier d'une tâche pas encore
+    /// terminée ; après un échec CHECKSUM_MISMATCH, `auro resume` vérifie de nouveau le
+    /// fichier reçu, sans le retélécharger
+    Checksum {
+        task_id: String,
+        /// « sha256:… », « sha1:… », « md5:… », ou la valeur seule
+        #[arg(value_name = "EMPREINTE", value_parser = display::parse_checksum,
+              required_unless_present = "clear")]
+        checksum: Option<Checksum>,
+        /// Retirer l'empreinte
+        #[arg(long, conflicts_with = "checksum")]
+        clear: bool,
+    },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
     /// Limite de débit, globale par défaut, ou d'une tâche ou d'une file ; sans débit,
@@ -427,6 +448,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             queue,
             limit,
             headers,
+            checksum,
         } => {
             let opts = AddOptions {
                 dir: &dir,
@@ -435,6 +457,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 limit: limit.and_then(|l| l.0),
                 paused: false,
                 headers: &headers,
+                checksum: checksum.as_ref(),
             };
             remote::get(target, &url, &opts).await
         }
@@ -450,7 +473,11 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     limit,
                     paused,
                     headers,
+                    checksum,
                 } => {
+                    if checksum.is_some() && urls.len() > 1 {
+                        bail!("--checksum : une seule adresse, l'empreinte est celle d'un fichier");
+                    }
                     let opts = AddOptions {
                         dir: &dir,
                         connections,
@@ -458,6 +485,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         limit: limit.and_then(|l| l.0),
                         paused,
                         headers: &headers,
+                        checksum: checksum.as_ref(),
                     };
                     remote::add(&mut rpc, &urls, &opts).await
                 }
@@ -497,6 +525,10 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Refresh { task_id, url } => {
                     remote::refresh(&mut rpc, &task_id, &url).await
                 }
+                // `--clear` exclut une empreinte : sans elle, c'est un retrait.
+                Command::Checksum {
+                    task_id, checksum, ..
+                } => remote::set_checksum(&mut rpc, &task_id, checksum.as_ref()).await,
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
                 Command::Limit { rate, task, queue } => {
                     let to = match (task.as_deref(), queue.as_deref()) {

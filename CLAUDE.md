@@ -50,6 +50,9 @@ téléchargement.
   « Actualiser l'adresse » (SPEC 7.13) : `Engine::set_url`, `store::tasks::replace_url`.
   Identifiants de sites (F-06, SPEC 7.14) : `net::auth` (Basic, Digest, portée d'un site,
   réponse au `401`), `store::logins` (table `site_logins`, mot de passe au coffre).
+  Empreinte du fichier (F-11, SPEC 7.9, 2026-11-08) : `io::checksum` (SHA-256, SHA-1,
+  MD5 ; lecture du `.part` fermé), état `verifying` durable (`transfer::finish_part`,
+  reprise par `resume_verifying`).
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -143,6 +146,8 @@ cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depu
 cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
 cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
+cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
+cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
@@ -216,6 +221,10 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   emplacement que quand le fichier y est, et l'original d'une copie n'est effacé
   qu'ensuite. Un nom choisi par l'utilisateur est vérifié tel quel (`sanitize` doit le
   rendre inchangé), jamais corrigé en silence.
+- Empreinte (SPEC 7.9) : le `.part` est vidé et fermé (`PartFile::seal`) avant le passage
+  à `verifying`, et ne prend son nom (`SealedPart::finish`) qu'après une empreinte juste ;
+  une empreinte différente le laisse sous son nom provisoire, tâche `failed`
+  `CHECKSUM_MISMATCH`.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
   Toute modification de `scheduler`, `rpc` ou du daemon passe aussi celui d'`aurod`

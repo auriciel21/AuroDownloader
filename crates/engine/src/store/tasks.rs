@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use super::headers::{self, StoredHeader};
 use super::segments::set_size_and_segments;
 use super::{StoreError, new_id, now_ms};
+use crate::io::checksum::Checksum;
 use crate::segmenter::Segment;
 
 /// État d'une tâche (SPEC §5.5).
@@ -70,7 +71,8 @@ impl TaskState {
                 )
                 | (Paused, Queued | Cancelled)
                 | (RetryWait, Active | Paused | Failed | Cancelled)
-                | (Verifying, PostProcessing | Completed | Failed)
+                // `paused` : arrêt pendant le calcul de l'empreinte (depuis le 2026-11-08).
+                | (Verifying, Paused | PostProcessing | Completed | Failed)
                 | (PostProcessing, Completed | Failed)
                 | (Seeding, Completed | Cancelled)
                 | (Failed, Queued)
@@ -132,6 +134,8 @@ pub struct TaskRow {
     /// Son fichier est en cours de déplacement (SPEC §7.12) : elle ne démarre pas, et ne
     /// se retire, ne s'annule ni ne se retélécharge avant la fin.
     pub moving: bool,
+    /// Empreinte attendue du fichier (F-11), vérifiée avant le renommage du `.part`.
+    pub checksum: Option<Checksum>,
 }
 
 /// Une source de téléchargement.
@@ -182,6 +186,31 @@ pub fn set_task_speed_limit(
     Ok(())
 }
 
+/// Change l'empreinte attendue d'une tâche (F-11) ; `None` la retire. L'appelant vérifie
+/// l'état : l'empreinte se lit à la fin du téléchargement.
+pub fn set_checksum(
+    conn: &Connection,
+    task_id: &str,
+    checksum: Option<&Checksum>,
+) -> Result<(), StoreError> {
+    let updated = conn.execute(
+        "UPDATE tasks SET checksum_algo = ?2, checksum_value = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![
+            task_id,
+            checksum.map(|c| c.algo().as_sql()),
+            checksum.map(Checksum::value),
+            now_ms()
+        ],
+    )?;
+    if updated == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// File nommée `name`, créée si elle n'existe pas ; renvoie son identifiant.
 pub fn ensure_queue(conn: &Connection, name: &str) -> Result<String, StoreError> {
     let found: Option<String> = conn
@@ -217,6 +246,8 @@ pub struct NewTask<'a> {
     /// Nom choisi par l'utilisateur (`fileName` de `task.add`), déjà vérifié ; `None` :
     /// celui du serveur, appris à la préparation.
     pub requested_name: Option<&'a str>,
+    /// Empreinte attendue du fichier (F-11).
+    pub checksum: Option<&'a Checksum>,
     /// En-têtes HTTP de la tâche ; les secrets sont déjà dans le coffre.
     pub headers: &'a [StoredHeader],
 }
@@ -232,10 +263,10 @@ pub fn create_task(
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
                             max_connections, speed_limit_bps, idempotency_key, requested_name,
-                            created_at, updated_at)
+                            checksum_algo, checksum_value, created_at, updated_at)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?7, ?8, ?9, ?6, ?6)",
+                 ?3, ?4, ?5, ?7, ?8, ?9, ?10, ?11, ?6, ?6)",
         params![
             task_id,
             new.queue_id,
@@ -245,7 +276,9 @@ pub fn create_task(
             now,
             limit,
             new.idempotency_key,
-            new.requested_name
+            new.requested_name,
+            new.checksum.map(|c| c.algo().as_sql()),
+            new.checksum.map(Checksum::value)
         ],
     )?;
     tx.execute(
@@ -260,7 +293,8 @@ pub fn create_task(
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
      queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
-     EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id)";
+     EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id), checksum_algo, \
+     checksum_value";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -283,6 +317,8 @@ struct RawTask {
     finished_at: Option<i64>,
     requested_name: Option<String>,
     moving: bool,
+    checksum_algo: Option<String>,
+    checksum_value: Option<String>,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -306,6 +342,8 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         finished_at: row.get(16)?,
         requested_name: row.get(17)?,
         moving: row.get(18)?,
+        checksum_algo: row.get(19)?,
+        checksum_value: row.get(20)?,
     })
 }
 
@@ -314,7 +352,15 @@ impl TryFrom<RawTask> for TaskRow {
 
     fn try_from(raw: RawTask) -> Result<Self, StoreError> {
         let bad = |what: &str| StoreError::BadValue(format!("tâche {} : {what}", raw.id));
+        let checksum = match (&raw.checksum_algo, &raw.checksum_value) {
+            (Some(algo), Some(value)) => {
+                Some(Checksum::parse(algo, value).map_err(|_| bad("empreinte invalide"))?)
+            }
+            (None, None) => None,
+            _ => return Err(bad("empreinte incomplète")),
+        };
         Ok(TaskRow {
+            checksum,
             state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
             total_bytes: to_u64(raw.total_bytes, "taille")?,
             done_bytes: u64::try_from(raw.done_bytes).map_err(|_| bad("octets écrits négatifs"))?,
@@ -658,8 +704,8 @@ pub fn change_state(
 /// une seule transaction ; les sources (l'adresse) restent jusqu'au retrait. À appeler
 /// après le renommage du fichier.
 ///
-/// `verifying` n'est pas encore un état durable : sans empreinte à contrôler (F-11, à
-/// venir), il est traversé dans cette transaction.
+/// Sans empreinte à contrôler, `verifying` est traversé dans cette transaction ; avec une
+/// empreinte (F-11), la tâche y est déjà, pendant le calcul.
 pub fn complete_task(
     conn: &mut Connection,
     task_id: &str,
@@ -853,7 +899,8 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
     let mut stmt = conn.prepare(
         "SELECT t.id, t.queue_id, q.max_active, t.state
          FROM tasks t JOIN queues q ON q.id = t.queue_id
-         WHERE (t.state IN ('queued', 'active')
+         -- `verifying` : arrêt brutal pendant le calcul de l'empreinte, qui reprend.
+         WHERE (t.state IN ('queued', 'active', 'verifying')
                 OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1))
            -- Pendant le déplacement de son fichier, une tâche attend (SPEC §7.12).
            AND NOT EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = t.id)
@@ -1055,6 +1102,7 @@ mod tests {
                 speed_limit_bps: None,
                 idempotency_key: None,
                 requested_name: None,
+                checksum: None,
                 headers: &[],
             },
         )

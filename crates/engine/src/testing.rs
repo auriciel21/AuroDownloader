@@ -318,6 +318,24 @@ pub fn content(len: usize) -> Vec<u8> {
     content_range(0, len)
 }
 
+/// Empreinte SHA-256 (hexadécimal) des `len` premiers octets du contenu servi, calculée
+/// par morceaux : un fichier de banc peut être gros.
+pub fn content_sha256(len: u64) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut first = 0;
+    while first < len {
+        let n = (len - first).min(1 << 20);
+        hasher.update(content_range(first, n as usize));
+        first += n;
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Comportement d'un serveur de fichier, modifiable pendant le test.
 pub struct FileSite {
     /// Taille du fichier ; son contenu est [`content`].
@@ -566,6 +584,9 @@ pub struct Checker {
     /// Arrêts entre le renommage du `.part` et l'enregistrement de la fin : la reprise
     /// termine la tâche (SPEC §7.4).
     pub renamed_unrecorded: usize,
+    /// Arrêts brutaux pendant le calcul de l'empreinte (`verifying`, F-11) : la reprise
+    /// le refait.
+    pub checking: usize,
 }
 
 /// Découpages initiaux possibles (connexions imposées ou 4 au départ en automatique).
@@ -580,6 +601,7 @@ impl Checker {
             verified: Default::default(),
             split_layouts: 0,
             renamed_unrecorded: 0,
+            checking: 0,
         }
     }
 
@@ -627,7 +649,22 @@ impl Checker {
                     std::fs::remove_file(&path).unwrap();
                     self.verified.insert(task.id.clone());
                 }
-                tasks::TaskState::Queued | tasks::TaskState::Active => {
+                // `verifying` : arrêt brutal pendant le calcul de l'empreinte ; le `.part`
+                // est complet (ou déjà renommé), et se contrôle comme celui d'une tâche en
+                // cours.
+                tasks::TaskState::Queued
+                | tasks::TaskState::Active
+                | tasks::TaskState::Verifying => {
+                    if task.state == tasks::TaskState::Verifying {
+                        let all_done = segs
+                            .iter()
+                            .all(|s| s.state == crate::segmenter::SegmentState::Done);
+                        assert!(
+                            all_done && !segs.is_empty(),
+                            "verifying : segments inachevés"
+                        );
+                        self.checking += 1;
+                    }
                     let sum: u64 = segs.iter().map(|s| s.written).sum();
                     let ranges: Vec<(u64, u64)> = segs.iter().map(|s| (s.start, s.end)).collect();
                     let initial = INITIAL_WIDTHS.iter().any(|&n| {

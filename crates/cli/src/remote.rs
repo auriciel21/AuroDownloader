@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::display::{self, Limit, Line, Status, size};
 use auro_cli::client::{EngineRefused, Rpc, Target};
+use auro_engine::io::checksum::Checksum;
 
 /// Dossier de destination en chemin absolu, qui doit exister.
 fn dest_dir(dir: &Path) -> Result<String> {
@@ -54,6 +55,8 @@ pub struct AddOptions<'a> {
     pub paused: bool,
     /// En-têtes HTTP de la tâche.
     pub headers: &'a [(String, String)],
+    /// Empreinte attendue du fichier (F-11).
+    pub checksum: Option<&'a Checksum>,
 }
 
 async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<String> {
@@ -67,6 +70,9 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
     }
     if let Some(l) = opts.limit {
         params["speedLimitBps"] = json!(l);
+    }
+    if let Some(c) = opts.checksum {
+        params["checksum"] = checksum_json(c);
     }
     if let Some(queue) = opts.queue {
         params["queueId"] = json!(queue_id(rpc, queue).await?);
@@ -137,6 +143,12 @@ fn report(task: &Value) -> Result<()> {
             ),
             other => bail!("tâche en pause ({})", other.unwrap_or("?")),
         },
+        "failed" if task["errorCode"] == "CHECKSUM_MISMATCH" => bail!(
+            "le fichier reçu n'a pas l'empreinte attendue ; il reste sous son nom provisoire \
+             (.part). Empreinte à corriger : auro checksum {id} … puis auro resume {id} ; \
+             fichier à retélécharger : auro restart {id} --delete-files. {}",
+            detail(task)
+        ),
         "failed" => bail!("échec : {}", detail(task)),
         "cancelled" => bail!("tâche annulée"),
         other => bail!("la tâche s'est arrêtée dans l'état {other}"),
@@ -542,6 +554,8 @@ struct Followed {
     name: String,
     state: String,
     line: Option<Line>,
+    /// Octets lus par la vérification de l'empreinte (`verifying`).
+    checked: Option<u64>,
 }
 
 /// Suivi de tâches par les notifications : abonnement, puis instantané, puis
@@ -592,6 +606,7 @@ impl Follow {
                 name: name.clone(),
                 state: state.clone(),
                 line: None,
+                checked: None,
             });
             entry.name = name;
             entry.state = state;
@@ -615,6 +630,16 @@ impl Follow {
                 match (&t.line, t.state.as_str()) {
                     (_, "queued") => format!("{name:<32}  en file"),
                     (_, "retry_wait") => format!("{name:<32}  nouvelle tentative bientôt"),
+                    (line, "verifying") => {
+                        let total = line.as_ref().and_then(|l| l.total).filter(|&n| n > 0);
+                        match (t.checked, total) {
+                            (Some(read), Some(total)) => format!(
+                                "{name:<32}  vérification de l'empreinte {} %",
+                                read.min(total) * 100 / total
+                            ),
+                            _ => format!("{name:<32}  vérification de l'empreinte"),
+                        }
+                    }
                     (Some(line), _) => format!("{name:<32}  {}", line.render()),
                     (None, state) => format!("{name:<32}  {state}"),
                 }
@@ -660,6 +685,7 @@ impl Follow {
                             name: t["displayName"].as_str().unwrap_or_default().to_owned(),
                             state: t["state"].as_str().unwrap_or_default().to_owned(),
                             line: None,
+                            checked: None,
                         },
                     );
                 }
@@ -680,6 +706,7 @@ impl Follow {
                     for item in params["items"].as_array().into_iter().flatten() {
                         let id = item["taskId"].as_str().unwrap_or_default();
                         if let Some(t) = self.tasks.get_mut(id) {
+                            t.checked = item["verifiedBytes"].as_u64();
                             t.line = Some(Line {
                                 done: item["doneBytes"].as_u64().unwrap_or(0),
                                 total: item["totalBytes"].as_u64(),
@@ -745,6 +772,29 @@ pub async fn refresh(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
             println!("Adresse de {name} remplacée. Pour reprendre : auro resume {id}")
         }
         _ => println!("Adresse de {name} remplacée."),
+    }
+    Ok(())
+}
+
+/// Empreinte au format du protocole.
+fn checksum_json(c: &Checksum) -> Value {
+    json!({"algo": c.algo().as_sql(), "value": c.value()})
+}
+
+/// Donne, change (`Some`) ou retire (`None`) l'empreinte attendue d'une tâche (F-11).
+pub async fn set_checksum(rpc: &mut Rpc, id: &str, checksum: Option<&Checksum>) -> Result<()> {
+    let value = checksum.map_or(Value::Null, checksum_json);
+    let task = rpc
+        .call("task.update", json!({"taskId": id, "checksum": value}))
+        .await?;
+    let name = task["displayName"].as_str().unwrap_or(id);
+    match (checksum, task["state"].as_str()) {
+        (None, _) => println!("Empreinte de {name} retirée."),
+        (Some(c), Some("failed" | "paused")) => println!(
+            "Empreinte {} de {name} enregistrée. Pour vérifier le fichier reçu : auro resume {id}",
+            c.algo().label()
+        ),
+        (Some(c), _) => println!("Empreinte {} de {name} enregistrée.", c.algo().label()),
     }
     Ok(())
 }

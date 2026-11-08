@@ -61,6 +61,7 @@ fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
             speed_limit_bps: None,
             idempotency_key: None,
             requested_name: None,
+            checksum: None,
             headers: &[],
         },
     )
@@ -934,6 +935,7 @@ mod names {
                 speed_limit_bps: None,
                 idempotency_key: None,
                 requested_name: None,
+                checksum: None,
                 headers: &[],
             },
         )
@@ -1058,6 +1060,7 @@ async fn a_secret_missing_from_the_vault_is_left_out() {
             speed_limit_bps: None,
             idempotency_key: None,
             requested_name: None,
+            checksum: None,
             headers: &stored,
         },
     )
@@ -1108,6 +1111,7 @@ async fn an_unreachable_vault_is_a_temporary_failure() {
             speed_limit_bps: None,
             idempotency_key: None,
             requested_name: None,
+            checksum: None,
             headers: &stored,
         },
     )
@@ -1126,4 +1130,254 @@ async fn an_unreachable_vault_is_a_temporary_failure() {
         server.requests().is_empty(),
         "rien n'est demandé sans le secret"
     );
+}
+
+/// Empreinte du fichier complet (F-11, SPEC §7.9) : vérifiée en `verifying` avant le
+/// renommage, interruptible, reprise après un arrêt brutal.
+mod checksums {
+    use super::*;
+    use crate::io::checksum::{Algo, Checksum};
+    use crate::store::tasks::set_checksum;
+    use sha2::{Digest, Sha256};
+
+    fn sha256(data: &[u8]) -> Checksum {
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Checksum::new(Algo::Sha256, &hex).unwrap()
+    }
+
+    fn wrong() -> Checksum {
+        Checksum::new(Algo::Md5, "00000000000000000000000000000000").unwrap()
+    }
+
+    fn gets(server: &Server) -> usize {
+        server
+            .requests()
+            .iter()
+            .filter(|r| r.method == "GET")
+            .count()
+    }
+
+    /// Exécution qui relève l'avancement de la vérification, et demande l'arrêt au début
+    /// de celle-ci si `stop_on_verify`.
+    async fn run_watching(case: &mut Case, stop_on_verify: bool) -> (Outcome, Vec<u64>) {
+        let (stop_tx, stop) = watch::channel(false);
+        let mut verified = Vec::new();
+        let outcome = run(
+            &mut case.conn,
+            &client(),
+            &case.task_id,
+            &opts(),
+            stop,
+            &mut |p| {
+                if let Some(n) = p.verified {
+                    verified.push(n);
+                    if stop_on_verify {
+                        let _ = stop_tx.send(true);
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        (outcome, verified)
+    }
+
+    #[tokio::test]
+    async fn a_matching_checksum_completes_the_task() {
+        let data = content(SIZE);
+        let (_, server) = site(data.clone());
+        let mut case = new_case(&server.url("/a.bin"));
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        let (outcome, verified) = run_watching(&mut case, false).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert_eq!(verified.first(), Some(&0));
+        assert_eq!(verified.last(), Some(&(SIZE as u64)), "tout le fichier lu");
+        assert_eq!(
+            case.task().checksum,
+            Some(sha256(&data)),
+            "empreinte gardée"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_checksum_fails_and_keeps_the_part_until_it_is_corrected() {
+        let data = content(SIZE);
+        let (_, server) = site(data.clone());
+        let mut case = new_case(&server.url("/a.bin"));
+        set_checksum(&case.conn, &case.task_id, Some(&wrong())).unwrap();
+        let outcome = case.run().await;
+        assert!(
+            matches!(&outcome, Outcome::Failed { code: "CHECKSUM_MISMATCH", detail }
+                if detail.contains("MD5") && detail.contains(&"0".repeat(32))),
+            "{outcome:?}"
+        );
+        let task = case.task();
+        assert_eq!(task.state, TaskState::Failed);
+        assert_eq!(task.error_code.as_deref(), Some("CHECKSUM_MISMATCH"));
+        // Le fichier fautif ne prend jamais son nom ; le `.part` complet reste.
+        assert!(!case.dir.path().join("a.bin").exists());
+        assert_eq!(std::fs::read(case.part("a.bin")).unwrap(), data);
+
+        // Empreinte corrigée, tâche relancée : le `.part` se vérifie, sans réseau.
+        let before = gets(&server);
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        change_state(
+            &mut case.conn,
+            &case.task_id,
+            &Change::to(TaskState::Queued),
+        )
+        .unwrap();
+        let outcome = case.run().await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert_eq!(gets(&server), before, "rien de retéléchargé");
+    }
+
+    #[tokio::test]
+    async fn a_stream_of_unknown_size_is_verified_too() {
+        let data = content(SIZE);
+        let (site, server) = site(data.clone());
+        {
+            let mut s = site.lock().unwrap();
+            s.ranges = false;
+            s.send_length = false;
+        }
+        let mut case = new_case(&server.url("/flux"));
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        let outcome = case.run().await;
+        assert_completed(&case, &outcome, "flux", &data);
+
+        let mut case = new_case(&server.url("/flux"));
+        set_checksum(&case.conn, &case.task_id, Some(&wrong())).unwrap();
+        let outcome = case.run().await;
+        assert!(matches!(
+            outcome,
+            Outcome::Failed {
+                code: "CHECKSUM_MISMATCH",
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(case.part("flux")).unwrap(), data);
+    }
+
+    /// Arrêt demandé pendant le calcul : pause ; à la reprise, le `.part` complet se
+    /// vérifie de nouveau, sans rien retélécharger, même d'un serveur sans plages.
+    #[tokio::test]
+    async fn a_stop_during_the_check_pauses_and_the_resume_downloads_nothing() {
+        // Plusieurs lectures de calcul : l'arrêt tombe avant la fin.
+        let data = content(3 * 1024 * 1024 + 5);
+        let (site, server) = site(data.clone());
+        site.lock().unwrap().ranges = false;
+        let mut case = new_case(&server.url("/a.bin"));
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        let (outcome, verified) = run_watching(&mut case, true).await;
+        assert_eq!(outcome, Outcome::Paused);
+        assert!(
+            verified.iter().all(|&n| n < data.len() as u64),
+            "{verified:?}"
+        );
+        let task = case.task();
+        assert_eq!(task.state, TaskState::Paused);
+        assert_eq!(task.pause_reason.as_deref(), Some("user"));
+        assert!(!case.dir.path().join("a.bin").exists());
+        let before = gets(&server);
+
+        requeue(&mut case.conn, &case.task_id).unwrap();
+        let (outcome, verified) = run_watching(&mut case, false).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert_eq!(verified.last(), Some(&(data.len() as u64)));
+        assert_eq!(gets(&server), before, "le flux n'est pas redemandé");
+    }
+
+    /// Tâche préparée dont le `.part` complet est écrit et enregistré, laissée en
+    /// `verifying` comme par un arrêt brutal du moteur pendant le calcul. Son adresse est
+    /// un port fermé : toute requête échouerait.
+    fn left_verifying(data: &[u8], checksum: &Checksum) -> Case {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut case = new_case(&format!("http://127.0.0.1:{port}/f.bin"));
+        let len = data.len() as u64;
+        let source = primary_source(&case.conn, &case.task_id).unwrap();
+        let segments = initial_split(len, 2, 1);
+        let prep = Preparation {
+            source_id: &source.id,
+            accepts_ranges: true,
+            etag: Some("\"v1\""),
+            last_modified: None,
+            total_bytes: Some(len),
+            file_name: "f.bin",
+        };
+        save_preparation(&mut case.conn, &case.task_id, &prep, &segments).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(checksum)).unwrap();
+        for to in [TaskState::Active, TaskState::Verifying] {
+            change_state(&mut case.conn, &case.task_id, &Change::to(to)).unwrap();
+        }
+        let dest = case.dir.path().join("f.bin");
+        let part = PartFile::create(&dest).unwrap();
+        let progress: Vec<_> = segments
+            .iter()
+            .map(|s| {
+                let mut w = part.writer(s, 1024);
+                w.write(&data[s.start as usize..=s.end as usize]).unwrap();
+                w.finish().unwrap()
+            })
+            .collect();
+        save_progress(&mut case.conn, &case.task_id, &progress).unwrap();
+        part.seal().unwrap();
+        case
+    }
+
+    #[tokio::test]
+    async fn a_crash_during_the_check_resumes_it_without_network() {
+        let data = content(5000);
+        let mut case = left_verifying(&data, &sha256(&data));
+        let (outcome, verified) = run_watching(&mut case, false).await;
+        assert_completed(&case, &outcome, "f.bin", &data);
+        assert_eq!(verified.last(), Some(&5000));
+
+        // Empreinte fausse : échec, `.part` gardé.
+        let mut case = left_verifying(&data, &wrong());
+        let outcome = case.run().await;
+        assert!(matches!(
+            outcome,
+            Outcome::Failed {
+                code: "CHECKSUM_MISMATCH",
+                ..
+            }
+        ));
+        assert!(case.part("f.bin").exists());
+    }
+
+    /// Arrêt brutal entre le renommage, qui ne suit qu'une empreinte juste, et
+    /// l'enregistrement de la fin : la tâche se termine.
+    #[tokio::test]
+    async fn a_crash_after_the_rename_of_a_checked_file_completes_it() {
+        let data = content(5000);
+        let mut case = left_verifying(&data, &sha256(&data));
+        SealedPart::existing(&case.dir.path().join("f.bin"))
+            .finish()
+            .unwrap();
+        let outcome = case.run().await;
+        assert_completed(&case, &outcome, "f.bin", &data);
+
+        // Ni `.part` ni fichier : échec, rien d'inventé.
+        let mut case = left_verifying(&data, &sha256(&data));
+        std::fs::remove_file(case.part("f.bin")).unwrap();
+        let outcome = case.run().await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed {
+                    code: "DISK_IO",
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+    }
 }

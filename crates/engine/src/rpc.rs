@@ -10,6 +10,7 @@
 
 use serde_json::{Value, json};
 
+use crate::io::checksum::Checksum;
 use crate::scheduler::{EngineError, PendingEnd, ScheduleView};
 use crate::store::StoreError;
 use crate::store::tasks::{QueueRow, TaskRow};
@@ -149,7 +150,16 @@ pub fn task_json(t: &TaskRow) -> Value {
         "createdAt": t.created_at,
         "finishedAt": t.finished_at,
         "moving": t.moving,
+        "checksum": checksum_json(t.checksum.as_ref()),
     })
+}
+
+/// Empreinte attendue d'une tâche (F-11) : `{algo, value}`, ou `null`.
+pub fn checksum_json(c: Option<&Checksum>) -> Value {
+    match c {
+        Some(c) => json!({"algo": c.algo().as_sql(), "value": c.value()}),
+        None => Value::Null,
+    }
 }
 
 /// Une file telle que le protocole la décrit.

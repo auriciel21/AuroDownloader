@@ -126,6 +126,11 @@
         <span data-i18n="Adresses, une par ligne">Adresses, une par ligne</span>
         <textarea id="urls" rows="4" spellcheck="false" autocomplete="off"></textarea>
       </label>
+      <label class="field">
+        <span data-i18n="Empreinte attendue (facultatif)">Empreinte attendue (facultatif)</span>
+        <input id="add-checksum" type="text" spellcheck="false" autocomplete="off" aria-describedby="add-checksum-note">
+      </label>
+      <p class="note flush" id="add-checksum-note" data-i18n="SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.">SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.</p>
       <div class="field">
         <span data-i18n="Enregistrer dans">Enregistrer dans</span>
         <span class="row"><span id="dest" class="path"></span>
@@ -260,6 +265,7 @@
         <div id="f-eta"><dt data-i18n="Temps restant">Temps restant</dt><dd id="d-eta"></dd></div>
         <div id="f-connections"><dt data-i18n="Connexions">Connexions</dt><dd id="d-connections"></dd></div>
         <div id="f-resume"><dt data-i18n="Reprise possible">Reprise possible</dt><dd id="d-resume"></dd></div>
+        <div id="f-checksum"><dt data-i18n="Empreinte">Empreinte</dt><dd id="d-checksum" class="path"></dd></div>
         <div id="f-added"><dt data-i18n="Ajouté le">Ajouté le</dt><dd id="d-added"></dd></div>
         <div id="f-finished"><dt data-i18n="Fini le">Fini le</dt><dd id="d-finished"></dd></div>
       </dl>
@@ -283,6 +289,12 @@
         <span class="row"><select id="d-limit"></select>
           <button type="button" id="d-limit-apply" data-i18n="Appliquer">Appliquer</button></span>
         <span class="note" data-i18n="La limite globale s'applique aussi : la plus basse l'emporte.">La limite globale s'applique aussi : la plus basse l'emporte.</span>
+      </div>
+      <div class="field" id="d-checksum-field">
+        <label for="d-checksum-input" data-i18n="Empreinte attendue">Empreinte attendue</label>
+        <span class="row"><input id="d-checksum-input" type="text" spellcheck="false" autocomplete="off" aria-describedby="d-checksum-note">
+          <button type="button" id="d-checksum-apply" data-i18n="Enregistrer">Enregistrer</button></span>
+        <span class="note" id="d-checksum-note" data-i18n="SHA-256, SHA-1 ou MD5 ; vide pour n'en vérifier aucune. Après un échec, Relancer vérifie de nouveau le fichier reçu, sans le retélécharger.">SHA-256, SHA-1 ou MD5 ; vide pour n'en vérifier aucune. Après un échec, Relancer vérifie de nouveau le fichier reçu, sans le retélécharger.</span>
       </div>
       <div class="buttons">
         <span class="row">

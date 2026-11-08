@@ -805,10 +805,16 @@ async fn unsupported_or_invalid_additions_are_refused() {
         p
     };
     let cases = [
+        // Empreinte (F-11) : valeur trop courte, algorithme inconnu, forme inattendue.
         (
             json!({"checksum": {"algo": "sha256", "value": "00"}}),
-            "CAPABILITY_MISSING",
+            "INVALID_PARAMS",
         ),
+        (
+            json!({"checksum": {"algo": "crc32", "value": "00000000"}}),
+            "INVALID_PARAMS",
+        ),
+        (json!({"checksum": "sha256:00"}), "INVALID_PARAMS"),
         (
             json!({"sources": [{"url": "http://a/f"}, {"url": "http://b/f"}]}),
             "CAPABILITY_MISSING",
@@ -1439,6 +1445,97 @@ async fn site_logins_are_managed_by_admins_and_never_show_their_password() {
     assert_eq!(
         c.error_code("login.delete", json!({"loginId": id})).await,
         "LOGIN_NOT_FOUND"
+    );
+    engine.shutdown().await;
+}
+
+/// Empreinte (F-11) : `checksum` de `task.add` et `task.update`, montrée par `task.get`,
+/// annoncée par `task.updated` ; la vérification passe par `verifying` (son avancement,
+/// `verifiedBytes` : test de `session`).
+#[tokio::test]
+async fn checksums_are_given_checked_and_announced() {
+    use sha2::{Digest, Sha256};
+    let len = 512 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(len);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result(
+        "events.subscribe",
+        json!({"topics": ["tasks", "progress"], "progressIntervalMs": 50}),
+    )
+    .await;
+    let hex: String = Sha256::digest(crate::testing::content(len as usize))
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/f.bin")}], "destDir": dir_text(dir.path()),
+                   "checksum": {"algo": "SHA256", "value": hex.to_uppercase()}}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    let checking = c
+        .notification("task.stateChanged", |p| p["to"] == "verifying")
+        .await;
+    assert_eq!(checking["from"], "active");
+    let done = c
+        .notification("task.stateChanged", |p| p["to"] == "completed")
+        .await;
+    assert_eq!(done["from"], "verifying");
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["checksum"], json!({"algo": "sha256", "value": hex}));
+    assert_eq!(
+        std::fs::metadata(dir.path().join("f.bin")).unwrap().len(),
+        len
+    );
+
+    // Tâche sans empreinte, en pause : on la donne, puis on la retire.
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/g.bin")}], "destDir": dir_text(dir.path()),
+                   "startPaused": true}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    assert!(c.result("task.get", json!({"taskId": id})).await["checksum"].is_null());
+    let md5 = json!({"algo": "md5", "value": "d41d8cd98f00b204e9800998ecf8427e"});
+    let updated = c
+        .result("task.update", json!({"taskId": id, "checksum": md5}))
+        .await;
+    assert_eq!(updated["checksum"], md5);
+    let note = c
+        .notification("task.updated", |p| p["taskId"] == json!(id))
+        .await;
+    assert_eq!(note["checksum"], md5);
+    let cleared = c
+        .result("task.update", json!({"taskId": id, "checksum": null}))
+        .await;
+    assert!(cleared["checksum"].is_null());
+    let note = c
+        .notification("task.updated", |p| p["taskId"] == json!(id))
+        .await;
+    assert!(note.as_object().unwrap().contains_key("checksum"));
+    assert!(note["checksum"].is_null());
+    assert_eq!(
+        c.error_code(
+            "task.update",
+            json!({"taskId": id, "checksum": md5, "speedLimitBps": 10})
+        )
+        .await,
+        "INVALID_PARAMS"
+    );
+    assert_eq!(
+        c.error_code(
+            "task.update",
+            json!({"taskId": id, "checksum": {"algo": "md5", "value": "xyz"}})
+        )
+        .await,
+        "INVALID_PARAMS"
     );
     engine.shutdown().await;
 }

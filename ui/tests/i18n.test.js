@@ -39,6 +39,11 @@ test("états avec leur cause", () => {
   assert.equal(stateText({ state: "failed", errorCode: "NET_TIMEOUT" }, en), "Failed: timed out");
   assert.equal(stateText({ state: "failed", errorCode: "NOUVEAU_CODE" }, fr), "Échec : NOUVEAU_CODE");
   assert.equal(stateText({ state: "inconnu" }, fr), "inconnu");
+  // F-11 : part du fichier lue par la vérification de l'empreinte.
+  assert.equal(stateText({ state: "verifying" }, fr), "Vérification de l'empreinte");
+  assert.equal(stateText({ state: "verifying", verifiedBytes: 50, totalBytes: 200 }, fr), "Vérification de l'empreinte (25 %)");
+  assert.equal(stateText({ state: "verifying", verifiedBytes: 50, totalBytes: 200 }, en), "Verifying the checksum (25%)");
+  assert.equal(stateText({ state: "failed", errorCode: "CHECKSUM_MISMATCH" }, fr), "Échec : empreinte différente de celle attendue");
 });
 
 test("tailles et durées", () => {

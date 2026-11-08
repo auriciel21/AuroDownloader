@@ -28,6 +28,9 @@ rustls = { version = "0.23.46", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Protocole JSON-RPC (module `rpc`).
 serde_json = "1.0.154"
+# Empreinte du fichier complet (F-11, `io::checksum`) : SHA-1 ; SHA-256 et MD5 servent
+# aussi à Digest.
+sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }

@@ -501,12 +501,14 @@ CREATE INDEX idx_event_log_task    ON event_log (task_id, ts);
 | `active` | Des connexions transfèrent des données | `paused`, `retry_wait`, `verifying`, `seeding`, `failed`, `cancelled` |
 | `paused` | Arrêtée, avec une cause dans `pause_reason` | `queued`, `cancelled` |
 | `retry_wait` | Échec temporaire, nouvelle tentative à `next_retry_at` | `active`, `paused`, `failed`, `cancelled` |
-| `verifying` | Vérification de l'empreinte du fichier complet | `post_processing`, `completed`, `failed` |
+| `verifying` | Vérification de l'empreinte du fichier complet | `paused`, `post_processing`, `completed`, `failed` |
 | `post_processing` | Rangement, renommage, extraction, commande externe | `completed`, `failed` |
 | `seeding` | Torrent terminé, partage en cours | `completed`, `cancelled` |
 | `completed` | Fichier final en place | état terminal |
 | `failed` | Échec définitif, cause dans `error_code` | `queued` (relance manuelle) |
 | `cancelled` | Annulée par l'utilisateur | état terminal |
+
+`verifying` → `paused` (depuis le 2026-11-08) : un arrêt demandé pendant le calcul de l'empreinte, ou l'arrêt du moteur, interrompt le calcul ; la tâche en pause le refait depuis le début à sa reprise (section 7.9). Une annulation passe par cette pause, comme pour `active`.
 
 Retéléchargement (`task.restart`, depuis le 2026-11-07) : hors de cette table, qui décrit le cours d'un téléchargement, une tâche `completed`, `failed`, `cancelled`, `paused` (quelle qu'en soit la cause, `file_changed` compris : c'est le « repartir de zéro » de F-13) ou `retry_wait` repart à zéro en `queued`. Sa préparation est oubliée (nom, taille, segments, validateurs des sources), comme ses erreurs et ses tentatives ; son adresse, sa file, ses réglages et ses en-têtes restent. Une tâche `queued` ou `active` est refusée (`INVALID_STATE`).
 
@@ -610,7 +612,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `task.added` | Tâche complète |
 | `task.updated` | `taskId` et seulement les champs modifiés |
 | `task.stateChanged` | `taskId`, ancien et nouvel état, `pauseReason` ou `errorCode` |
-| `task.progress` | Lot de `{taskId, doneBytes, totalBytes, bps, connections, etaS}`, regroupé selon `progressIntervalMs` (500 ms par défaut) |
+| `task.progress` | Lot de `{taskId, doneBytes, totalBytes, bps, connections, etaS}`, regroupé selon `progressIntervalMs` (500 ms par défaut) ; pendant `verifying`, `verifiedBytes` en plus : octets du fichier déjà lus par le calcul de l'empreinte (depuis le 2026-11-08) |
 | `task.removed` | `taskId` |
 | `queue.updated` | File modifiée |
 | `limits.updated` | Limites globales, comme `limits.get` (depuis le 2026-11-07) |
@@ -638,8 +640,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une redirection vers un autre hôte n'emporte pas ces trois en-têtes. Le moteur n'ajoute jamais de `Referer` de lui-même : avant le 2026-11-07, après une redirection, la bibliothèque HTTP y mettait l'adresse qui redirige, signature comprise, à l'intention de l'hôte suivant.
   - La portée `add` suffit (relais de l'extension, section 4.5). `task.get` ne rend pas les en-têtes.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
-  - dans `task.add` : `checksum` et plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12) ;
-  - dans `task.update` : `maxConnections` et `checksum`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08). Chacun de ces trois groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
+  - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
+  - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
   - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
   - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
@@ -682,6 +684,11 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une tâche porte `moving`, vrai pendant une copie vers un autre volume.
   - Annonce : `task.updated` avec `destDir`, `fileName`, `displayName` et `moving` ; avec `moveError` en plus si une copie échoue (la tâche est restée à sa place).
   - L'application : « Déplacer/Renommer… » dans le menu contextuel ; nom et dossier, l'erreur éventuelle dans la boîte.
+- **Empreinte attendue** (`checksum` de `task.add` et de `task.update`, depuis le 2026-11-08 ; portée `add` pour l'ajout, `control` pour la modification) : section 7.9.
+  - Forme : `{"algo": "sha256" | "sha1" | "md5", "value": "…"}`, valeur en hexadécimal (64, 40 ou 32 chiffres), majuscules acceptées et rendues en minuscules ; une forme fausse est refusée par `INVALID_PARAMS`.
+  - Une tâche, telle que la décrivent `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `checksum` : cet objet, ou `null`.
+  - `task.update` avec `checksum` à `null` la retire. Refusé par `INVALID_STATE` pendant `verifying`, et pour une tâche terminée ou annulée. Annonce : `task.updated` avec `checksum`.
+  - Les clients acceptent aussi « sha256:… », « sha1:… », « md5:… », ou la valeur seule, dont la longueur donne l'algorithme (`auro add --checksum`, `auro checksum`, champ « Empreinte attendue » de l'application), et envoient la forme du protocole.
 - **Actualiser l'adresse** (`task.update` avec `url`, depuis le 2026-11-08 ; portée `control`) : section 7.13. Annonce : `task.updated` avec `displayName`. L'application : « Actualiser l'adresse… » ; elle relance une tâche en échec une fois l'adresse acceptée.
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
@@ -937,7 +944,18 @@ Après un échec temporaire, la tâche passe en `retry_wait` et le délai avant 
 
 ### 7.9 Vérification d'intégrité
 
-En flux unique, l'empreinte se calcule au fil de l'eau. Pour un fichier segmenté, elle se calcule à la fin, par une lecture séquentielle du fichier, pendant l'état `verifying`. Si des empreintes par segment existent (torrent, Metalink), chaque segment est contrôlé dès qu'il est terminé et seul le segment fautif est téléchargé de nouveau (F-12).
+Pour un fichier segmenté, l'empreinte se calcule à la fin, par une lecture séquentielle du fichier, pendant l'état `verifying`. En flux unique, la spécification prévoyait un calcul au fil de l'eau ; il n'est pas écrit (décision du 2026-11-08, à confirmer) : un calcul en cours ne survit pas à un arrêt, et la lecture finale, à la vitesse du disque, coûte peu face au téléchargement. Le flux unique se vérifie donc comme le reste.
+
+Déroulement (F-11, depuis le 2026-11-08) :
+
+- **Ordre** : le `.part` complet est vidé sur disque et fermé, la tâche passe en `verifying` (le passage est annoncé par `task.stateChanged`), puis le moteur lit le fichier. Le `.part` ne prend son nom qu'après une empreinte juste ; la tâche passe alors en `completed`.
+- **Empreinte différente** : la tâche passe en `failed`, code `CHECKSUM_MISMATCH`, avec dans `errorDetail` l'empreinte obtenue et celle attendue. Le fichier reste sous son nom provisoire (`.part`) : un fichier faux ne prend jamais le nom attendu (décision du 2026-11-08, à confirmer). L'utilisateur corrige l'empreinte (`task.update`) et relance la tâche : le `.part`, complet, se vérifie de nouveau sans rien retélécharger, même d'un serveur sans plages (sauf taille inconnue, plus bas). Sinon, `task.restart` repart de zéro.
+- **Arrêt pendant le calcul** : section 5.5 ; à la reprise, le calcul recommence depuis le début. Une tâche de taille inconnue (flux sans `Content-Length`) n'a pas de segments enregistrés : relancée après une pause ou une empreinte différente, elle se retélécharge.
+- **Arrêt brutal pendant le calcul** : au démarrage, une tâche restée en `verifying` refait le calcul sur son `.part`. Si le `.part` a disparu et que le fichier final est là, l'arrêt a eu lieu entre le renommage, qui ne suit qu'une empreinte juste, et l'enregistrement de la fin : la tâche se termine. Si les deux manquent, elle passe en `failed`, code `DISK_IO`.
+- **Empreinte changée en cours de route** : elle se relit au moment du calcul ; on peut la donner pendant le téléchargement.
+- **Pas encore** : l'empreinte lue dans un fichier voisin (`.sha256`, `SHA256SUMS`) ; la vérification d'un fichier déjà terminé.
+
+Si des empreintes par segment existent (torrent, Metalink), chaque segment est contrôlé dès qu'il est terminé et seul le segment fautif est téléchargé de nouveau (F-12).
 
 ### 7.10 Paramètres par défaut
 

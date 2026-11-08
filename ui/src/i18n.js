@@ -90,6 +90,21 @@ export const EN = {
   "Copie de « {0} » vers l'autre disque en cours": "Copying “{0}” to the other disk",
   "Déplacement de « {0} » impossible : {1}": "Could not move “{0}”: {1}",
   "Déplacement du fichier…": "Moving the file…",
+  // Empreinte attendue (F-11).
+  "Empreinte": "Checksum",
+  "Empreinte attendue": "Expected checksum",
+  "Empreinte attendue (facultatif)": "Expected checksum (optional)",
+  "SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.":
+    "SHA-256, SHA-1 or MD5, for a single address: the file only gets its name if it matches.",
+  "SHA-256, SHA-1 ou MD5 ; vide pour n'en vérifier aucune. Après un échec, Relancer vérifie de nouveau le fichier reçu, sans le retélécharger.":
+    "SHA-256, SHA-1 or MD5; empty to check none. After a failure, Retry checks the received file again, without downloading it again.",
+  "{0} {1}": "{0} {1}",
+  "{0} {1} (vérifiée)": "{0} {1} (verified)",
+  "Empreinte illisible : 64 (SHA-256), 40 (SHA-1) ou 32 (MD5) chiffres hexadécimaux, ou « sha256:… »":
+    "Unreadable checksum: 64 (SHA-256), 40 (SHA-1) or 32 (MD5) hexadecimal digits, or “sha256:…”",
+  "Empreinte enregistrée": "Checksum saved",
+  "Empreinte retirée": "Checksum removed",
+  "Une empreinte ne vaut que pour une seule adresse.": "A checksum applies to a single address only.",
   // Actualiser l'adresse
   "Actualiser l'adresse…": "Refresh address…",
   "Actualiser l'adresse": "Refresh address",
@@ -139,7 +154,8 @@ export const EN = {
   "En cours": "Downloading",
   "En pause": "Paused",
   "Nouvel essai bientôt": "Retrying soon",
-  "Vérification": "Verifying",
+  "Vérification de l'empreinte": "Verifying the checksum",
+  "Vérification de l'empreinte ({0} %)": "Verifying the checksum ({0}%)",
   "Finition": "Finishing",
   "Partage": "Seeding",
   "Terminé": "Completed",
@@ -161,7 +177,7 @@ export const EN = {
   "reprise impossible": "cannot resume",
   "écriture refusée dans le dossier": "writing to the folder was refused",
   "erreur du disque": "disk error",
-  "empreinte différente": "checksum mismatch",
+  "empreinte différente de celle attendue": "the file does not match its expected checksum",
   "erreur interne du moteur": "internal engine error",
   "page vidéo non reconnue": "video page not recognised",
   "coffre du système indisponible": "system keychain unavailable",
@@ -269,7 +285,7 @@ export const STATES = {
   active: "En cours",
   paused: "En pause",
   retry_wait: "Nouvel essai bientôt",
-  verifying: "Vérification",
+  verifying: "Vérification de l'empreinte",
   post_processing: "Finition",
   seeding: "Partage",
   completed: "Terminé",
@@ -295,7 +311,7 @@ export const ERRORS = {
   DISK_FULL: "disque plein",
   DEST_PERMISSION: "écriture refusée dans le dossier",
   DISK_IO: "erreur du disque",
-  CHECKSUM_MISMATCH: "empreinte différente",
+  CHECKSUM_MISMATCH: "empreinte différente de celle attendue",
   INTERNAL: "erreur interne du moteur",
   EXTRACTOR_FAILED: "page vidéo non reconnue",
   SECRET_UNAVAILABLE: "coffre du système indisponible",
@@ -312,6 +328,10 @@ export function errorText(code, t) {
 /// celle d'un échec.
 export function stateText(task, t) {
   if (task.moving) return t("Déplacement du fichier…");
+  // Calcul de l'empreinte (F-11) : part du fichier déjà lue.
+  if (task.state === "verifying" && task.verifiedBytes != null && task.totalBytes > 0) {
+    return t("Vérification de l'empreinte ({0} %)", Math.floor((Math.min(task.verifiedBytes, task.totalBytes) * 100) / task.totalBytes));
+  }
   const state = STATES[task.state] ? t(STATES[task.state]) : task.state;
   const reason = task.pauseReason;
   if (task.state === "paused" && reason && reason !== "user") {

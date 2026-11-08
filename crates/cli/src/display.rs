@@ -24,6 +24,12 @@ pub fn size(bytes: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limit(pub Option<u64>);
 
+/// Lit une empreinte (`--checksum`, `auro checksum`) : « sha256:… », « sha1:… »,
+/// « md5:… », ou la valeur seule, dont la longueur donne l'algorithme.
+pub fn parse_checksum(text: &str) -> Result<auro_engine::io::checksum::Checksum, String> {
+    auro_engine::io::checksum::Checksum::from_text(text).map_err(|e| e.to_string())
+}
+
 /// Lit un en-tête « Nom: valeur » (`auro add -H`) ; le moteur vérifie le reste.
 pub fn parse_header(text: &str) -> Result<(String, String), String> {
     let (name, value) = text

@@ -3,7 +3,8 @@
 //! aléatoire (`TerminateProcess` sous Windows, `SIGKILL` ailleurs), puis relancé, encore
 //! et encore. À chaque lancement, le banc ajoute des tâches par le protocole pour en
 //! garder toujours plusieurs en cours ; un cycle sur cinq se termine par un arrêt
-//! demandé (`engine.shutdown`) au lieu d'un arrêt brutal.
+//! demandé (`engine.shutdown`) au lieu d'un arrêt brutal. Une tâche sur deux porte
+//! l'empreinte du fichier (F-11) : des arrêts tombent pendant son calcul (`verifying`).
 //!
 //! Après chaque arrêt, le banc vérifie les règles de la SPEC §5.6 sur la base et les
 //! `.part` (`testing::Checker`), et compare chaque fichier terminé octet par octet.
@@ -23,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use auro_engine::testing::{Checker, FileSite, Pace, serve_file_paced};
+use auro_engine::testing::{Checker, FileSite, Pace, content_sha256, serve_file_paced};
 use serde_json::{Value, json};
 
 const MIB: u64 = 1024 * 1024;
@@ -96,6 +97,8 @@ struct Bench {
     base_url: String,
     checker: Checker,
     added: u64,
+    /// Empreinte du fichier servi.
+    sha256: String,
 }
 
 impl Bench {
@@ -118,6 +121,7 @@ impl Bench {
             base_url,
             dir,
             added: 0,
+            sha256: content_sha256(size),
         }
     }
 
@@ -169,6 +173,11 @@ impl Bench {
             self.added += 1;
             let url = format!("{}/f{}.bin", self.base_url, self.added);
             let mut params = json!({"sources": [{"url": url}], "destDir": dest});
+            // Une tâche sur deux a son empreinte (F-11) : des arrêts tombent pendant son
+            // calcul.
+            if self.added % 2 == 0 {
+                params["checksum"] = json!({"algo": "sha256", "value": self.sha256});
+            }
             if let Some(n) = CONNECTION_CHOICES[rng.below(CONNECTION_CHOICES.len() as u64) as usize]
             {
                 params["maxConnections"] = json!(n);
@@ -276,11 +285,12 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
     eprintln!(
         "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} tâches ajoutées, \
          {} arrêts sur un découpage redécoupé, {} arrêts entre le renommage et \
-         l'enregistrement de la fin, {} fichiers terminés et vérifiés octet par octet \
-         (dossier {})",
+         l'enregistrement de la fin, {} arrêts pendant le calcul de l'empreinte, {} fichiers \
+         terminés et vérifiés octet par octet (dossier {})",
         bench.added,
         bench.checker.split_layouts,
         bench.checker.renamed_unrecorded,
+        bench.checker.checking,
         bench.checker.verified.len(),
         bench.dir().display()
     );

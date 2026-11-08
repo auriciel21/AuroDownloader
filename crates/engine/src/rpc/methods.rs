@@ -10,6 +10,7 @@ use super::session::{Ctx, Topics};
 use super::{
     PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
 };
+use crate::io::checksum::Checksum;
 use crate::schedule::Rules;
 use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
@@ -81,6 +82,26 @@ impl Params {
                 _ => Err(Self::wrong(name, "entier strictement positif ou null")),
             },
         }
+    }
+
+    /// Empreinte attendue (F-11) : `{"algo": "sha256" | "sha1" | "md5", "value": hex}` ;
+    /// absente `None`, `null` `Some(None)` (retirée).
+    fn checksum(&self, name: &str) -> Result<Option<Option<Checksum>>, RpcError> {
+        let object = match self.0.get(name) {
+            None => return Ok(None),
+            Some(Value::Null) => return Ok(Some(None)),
+            Some(Value::Object(object)) => object,
+            Some(_) => return Err(Self::wrong(name, "objet {algo, value} ou null")),
+        };
+        let field = |key: &str| {
+            object
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::invalid_params(format!("{name}.{key} manquant")))
+        };
+        Checksum::parse(field("algo")?, field("value")?)
+            .map(|c| Some(Some(c)))
+            .map_err(|e| RpcError::invalid_params(format!("{name} : {e}")))
     }
 
     /// Texte facultatif qu'on peut effacer : absent `None`, `null` `Some(None)`.
@@ -406,24 +427,32 @@ fn login_json(l: &LoginView) -> Value {
     json!({"loginId": l.id, "site": l.site, "username": l.username})
 }
 
-/// `task.update` : limite de débit, nouvelle adresse (SPEC §7.13), ou nouveau dossier et
-/// nouveau nom (SPEC §7.12). L'adresse se change à part : chaque opération est vérifiée
-/// en entier avant de changer quoi que ce soit, pas leur combinaison.
+/// `task.update` : limite de débit, empreinte (F-11), nouvelle adresse (SPEC §7.13), ou
+/// nouveau dossier et nouveau nom (SPEC §7.12). Chacun se change à part : chaque
+/// opération est vérifiée en entier avant de changer quoi que ce soit, pas leur
+/// combinaison.
 async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&["maxConnections", "checksum"])?;
+    p.refuse(&["maxConnections"])?;
     let id = p.required_str("taskId")?;
     let url = p.str("url")?;
     let dest_dir = p.str("destDir")?;
     let file_name = p.str("fileName")?;
     let speed_limit_bps = p.limit("speedLimitBps")?;
+    let checksum = p.checksum("checksum")?;
     let relocate = dest_dir.is_some() || file_name.is_some();
-    let several = [url.is_some(), relocate, speed_limit_bps.is_some()]
-        .iter()
-        .filter(|b| **b)
-        .count();
+    let several = [
+        url.is_some(),
+        relocate,
+        speed_limit_bps.is_some(),
+        checksum.is_some(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
     if several > 1 {
         return Err(RpcError::invalid_params(
-            "url, destDir et fileName, et speedLimitBps se changent par des appels séparés",
+            "url, destDir et fileName, speedLimitBps, et checksum se changent par des appels \
+             séparés",
         ));
     }
     let task = if let Some(url) = url {
@@ -431,14 +460,16 @@ async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     } else if relocate {
         ctx.engine.relocate(&id, dest_dir, file_name).await?
     } else {
-        let update = TaskUpdate { speed_limit_bps };
+        let update = TaskUpdate {
+            speed_limit_bps,
+            checksum,
+        };
         ctx.engine.update_task(&id, update).await?
     };
     Ok(task_json(&task))
 }
 
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&["checksum"])?;
     let idempotency_key = p.str("idempotencyKey")?;
     if idempotency_key
         .as_ref()
@@ -484,6 +515,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             idempotency_key,
             headers: p.string_map("headers")?,
             file_name: p.str("fileName")?,
+            checksum: p.checksum("checksum")?.flatten(),
         })
         .await?;
     Ok(json!({"taskId": task_id}))

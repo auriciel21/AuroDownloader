@@ -4,7 +4,8 @@
 import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
-  canPause, canResume, canCancel, canRemove, canRestart, canRelocate,
+  canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum,
+  parseChecksum, ALGO_LABELS,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -837,6 +838,8 @@ function openDetails(taskId, { focusLimit = false } = {}) {
   detailsTimer = setInterval(refreshDetails, 1000);
   refreshDetails();
   fillLimits($("d-limit"), task.speedLimitBps ?? null);
+  // Rempli à l'ouverture seulement : l'affichage se refait chaque seconde.
+  $("d-checksum-input").value = task.checksum ? `${task.checksum.algo}:${task.checksum.value}` : "";
   renderDetails();
   const dialog = $("details");
   dialog.returnValue = "";
@@ -872,6 +875,16 @@ function renderDetails() {
       ? t("Non : ce serveur ne permet pas de reprendre ; un arrêt ou une coupure fait repartir de zéro")
       : "");
   $("d-resume").classList.toggle("warn", source?.acceptsRanges === false);
+  // F-11 : empreinte attendue ; celle d'un fichier terminé a été vérifiée.
+  const sum = task.checksum;
+  set("checksum", !sum
+    ? ""
+    : task.state === "completed"
+      ? t("{0} {1} (vérifiée)", ALGO_LABELS[sum.algo] ?? sum.algo, sum.value)
+      : t("{0} {1}", ALGO_LABELS[sum.algo] ?? sum.algo, sum.value));
+  $("d-checksum").classList.toggle("warn", task.errorCode === "CHECKSUM_MISMATCH");
+  $("d-checksum-field").hidden = !canSetChecksum(task);
+  $("d-checksum-apply").disabled = !connected;
   set("added", dateText(task.createdAt));
   set("finished", dateText(task.finishedAt));
   $("d-progress").setAttribute("aria-label", t("Avancement de {0}", name));
@@ -946,6 +959,28 @@ function closeDetails() {
   detailsFull = null;
   clearInterval(detailsTimer);
   (id && rows.get(id)?.isConnected ? rows.get(id) : null)?.focus();
+}
+
+/// Message d'une empreinte mal écrite.
+function checksumError() {
+  return t("Empreinte illisible : 64 (SHA-256), 40 (SHA-1) ou 32 (MD5) chiffres hexadécimaux, ou « sha256:… »");
+}
+
+/// Empreinte attendue d'un téléchargement (F-11) : donnée, changée, ou retirée (champ vide).
+async function applyChecksum() {
+  const { checksum, error } = parseChecksum($("d-checksum-input").value);
+  if (error) {
+    showError(checksumError());
+    $("d-checksum-input").focus();
+    return;
+  }
+  try {
+    await host.call("task.update", { taskId: detailsTask, checksum });
+    showError("");
+    announce(checksum ? t("Empreinte enregistrée") : t("Empreinte retirée"));
+  } catch (e) {
+    showError(refused(e));
+  }
 }
 
 async function applyTaskLimit() {
@@ -1359,18 +1394,29 @@ async function closeAdd() {
   const field = $("urls");
   const urls = field.value.split(/\s+/).filter(Boolean);
   if (!urls.length || !connected) return;
+  // F-11 : l'empreinte est celle d'un seul fichier.
+  const { checksum, error } = parseChecksum($("add-checksum").value);
+  if (error || (checksum && urls.length > 1)) {
+    showError(error ? checksumError() : t("Une empreinte ne vaut que pour une seule adresse."));
+    openAdd();
+    $("add-checksum").focus();
+    return;
+  }
   const failed = [];
   let firstError = null;
   for (const url of urls) {
     try {
       // Sans destDir : le dossier des téléchargements du moteur.
-      await host.call("task.add", { sources: [{ url }], startPaused: choice === "later" });
+      const params = { sources: [{ url }], startPaused: choice === "later" };
+      if (checksum) params.checksum = checksum;
+      await host.call("task.add", params);
     } catch (e) {
       failed.push(url);
       firstError ??= e;
     }
   }
   field.value = failed.join("\n");
+  if (!failed.length) $("add-checksum").value = "";
   if (failed.length) {
     showError(t("{0} adresse(s) refusée(s) : {1}", failed.length, firstError?.message ?? ""));
     openAdd();
@@ -1696,6 +1742,19 @@ function wire() {
       $("add-dialog").close("start");
     }
   });
+  // Sans cela, Entrée dans un champ actionnerait le premier bouton du formulaire.
+  $("add-checksum").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      $("add-dialog").close("start");
+    }
+  });
+  $("d-checksum-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyChecksum();
+    }
+  });
   $("dest-change").addEventListener("click", () => chooseFolder("dest-change"));
   $("remove-dialog").addEventListener("close", closeRemove);
   $("restart-dialog").addEventListener("close", closeRestart);
@@ -1734,6 +1793,7 @@ function wire() {
   $("d-open").addEventListener("click", () => detailsTask && withFile(detailsTask, host.openFile));
   $("d-reveal").addEventListener("click", () => detailsTask && withFile(detailsTask, host.revealFile));
   $("d-limit-apply").addEventListener("click", applyTaskLimit);
+  $("d-checksum-apply").addEventListener("click", applyChecksum);
 
   for (const tab of document.querySelectorAll('#settings [role="tab"]')) {
     tab.addEventListener("click", () => selectTab(tab));

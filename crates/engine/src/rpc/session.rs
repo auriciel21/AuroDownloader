@@ -10,8 +10,8 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use super::{
-    MAX_MESSAGE, RpcError, Scope, end_action_json, methods, notification, queue_json, response,
-    schedule_json, task_json,
+    MAX_MESSAGE, RpcError, Scope, checksum_json, end_action_json, methods, notification,
+    queue_json, response, schedule_json, task_json,
 };
 use crate::scheduler::{Engine, Event};
 use crate::store::settings::DOWNLOAD_DIR;
@@ -293,6 +293,9 @@ async fn describe(
             if let Some(limit) = update.speed_limit_bps {
                 params["speedLimitBps"] = json!(limit);
             }
+            if let Some(checksum) = &update.checksum {
+                params["checksum"] = checksum_json(checksum.as_ref());
+            }
             Some(notification("task.updated", params))
         }
         Event::Prepared {
@@ -499,14 +502,19 @@ impl ProgressBatch {
                 (Some(total), bps) if bps > 0 => Some(total.saturating_sub(p.received) / bps),
                 _ => None,
             };
-            items.push(json!({
+            let mut item = json!({
                 "taskId": task_id,
                 "doneBytes": p.received,
                 "totalBytes": p.total,
                 "bps": bps,
                 "connections": p.connections,
                 "etaS": eta,
-            }));
+            });
+            // Calcul de l'empreinte en cours (`verifying`, F-11) : octets du fichier lus.
+            if let Some(verified) = p.verified {
+                item["verifiedBytes"] = json!(verified);
+            }
+            items.push(item);
         }
         Some(notification(
             "task.progress",
@@ -525,6 +533,7 @@ mod tests {
             total: Some(100 << 20),
             connections: 1,
             segments: std::sync::Arc::from([]),
+            verified: None,
         }
     }
 
@@ -587,5 +596,23 @@ mod tests {
         assert_eq!(rate(&mut batch, t0, 13_000, 51_000), 100_000);
         batch.forget("a");
         assert!(batch.sent.is_empty());
+    }
+
+    #[test]
+    fn the_check_of_the_checksum_reports_the_bytes_read() {
+        let mut batch = ProgressBatch::default();
+        batch.latest.insert("a".into(), progress(10));
+        let message = batch.flush_at(1, Instant::now()).unwrap();
+        let item = &message["params"]["items"][0];
+        assert!(item.get("verifiedBytes").is_none(), "{item}");
+        let checking = Progress {
+            verified: Some(4 << 20),
+            ..progress(100 << 20)
+        };
+        batch.latest.insert("a".into(), checking);
+        let message = batch.flush_at(2, Instant::now()).unwrap();
+        let item = &message["params"]["items"][0];
+        assert_eq!(item["verifiedBytes"], 4 << 20);
+        assert_eq!(item["doneBytes"], 100 << 20);
     }
 }

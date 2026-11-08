@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
 
+pub mod checksum;
 mod space;
 pub use space::{allocated, free_space, space_needed};
 
@@ -406,6 +407,14 @@ impl PartFile {
     /// Refuse si un écrivain est encore ouvert, ou si `dest` existe : un fichier déjà
     /// présent n'est jamais écrasé. En cas de refus, le `.part` reste en place.
     pub fn finish(self) -> Result<PathBuf, IoError> {
+        self.seal()?.finish()
+    }
+
+    /// Vide le `.part` complet et le ferme, sans le renommer : il ne change plus, et son
+    /// empreinte peut se calculer avant qu'il prenne son nom (F-11, SPEC §7.9).
+    ///
+    /// Refuse si un écrivain est encore ouvert.
+    pub fn seal(self) -> Result<SealedPart, IoError> {
         let PartFile {
             file, part, dest, ..
         } = self;
@@ -413,7 +422,35 @@ impl PartFile {
         file.sync_data().map_err(file_error(&part))?;
         // Windows refuse de renommer un fichier ouvert.
         drop(file);
+        Ok(SealedPart { part, dest })
+    }
+}
 
+/// `.part` complet, vidé sur disque et fermé, en attente de son renommage.
+#[derive(Debug)]
+pub struct SealedPart {
+    part: PathBuf,
+    dest: PathBuf,
+}
+
+impl SealedPart {
+    /// `.part` de `dest`, déjà complet et vidé (tâche reprise en `verifying`).
+    pub fn existing(dest: &Path) -> Self {
+        SealedPart {
+            part: part_path(dest),
+            dest: dest.to_owned(),
+        }
+    }
+
+    /// Chemin du `.part`.
+    pub fn path(&self) -> &Path {
+        &self.part
+    }
+
+    /// Renomme le `.part` en `dest`. Refuse si `dest` existe : un fichier déjà présent
+    /// n'est jamais écrasé. En cas de refus, le `.part` reste en place.
+    pub fn finish(self) -> Result<PathBuf, IoError> {
+        let SealedPart { part, dest } = self;
         // Le moteur est seul à écrire dans ses dossiers de destination ; la fenêtre entre
         // ce test et le renommage ne concerne qu'un autre programme.
         if dest.try_exists().map_err(file_error(&dest))? {

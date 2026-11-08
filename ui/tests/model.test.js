@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
-  canRelocate,
+  canRelocate, canSetChecksum, parseChecksum,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -306,4 +306,38 @@ test("déplacement : nouvel emplacement suivi, échec d'une copie annoncé sans 
   assert.deepEqual(moved.moveErrors, []);
   assert.equal(store.tasks.get("a").destDir, "/autre");
   assert.ok(moved.list, "le nom change l'ordre et les vues");
+});
+
+test("empreinte (F-11) : lue comme auro --checksum, modifiable tant que le fichier n'est pas fini", () => {
+  const sha256 = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
+  const sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+  const md5 = "d41d8cd98f00b204e9800998ecf8427e";
+  assert.deepEqual(parseChecksum(` ${sha256} `), { checksum: { algo: "sha256", value: sha256.toLowerCase() } });
+  assert.deepEqual(parseChecksum(sha1), { checksum: { algo: "sha1", value: sha1 } });
+  assert.deepEqual(parseChecksum(md5).checksum.algo, "md5");
+  assert.deepEqual(parseChecksum(`SHA-1:${sha1}`).checksum, { algo: "sha1", value: sha1 });
+  assert.deepEqual(parseChecksum(""), { checksum: null });
+  assert.deepEqual(parseChecksum("   "), { checksum: null });
+  assert.equal(parseChecksum("abcdef").error, "length");
+  assert.equal(parseChecksum(`crc32:${md5}`).error, "algo");
+  assert.equal(parseChecksum(`sha256:${sha1}`).error, "value");
+  assert.equal(parseChecksum(`${md5.slice(1)}g`).error, "value");
+
+  for (const s of ["queued", "active", "paused", "retry_wait", "failed"]) assert.ok(canSetChecksum({ state: s }), s);
+  for (const s of ["verifying", "completed", "cancelled"]) assert.ok(!canSetChecksum({ state: s }), s);
+  // La vérification s'interrompt et s'annule comme un téléchargement.
+  assert.ok(canPause("verifying") && canCancel("verifying") && !canResume("verifying"));
+});
+
+test("l'avancement de la vérification de l'empreinte ne survit pas à la vérification", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "active")]));
+  store.apply("task.stateChanged", { rev: 2, taskId: "a", from: "active", to: "verifying" });
+  store.apply("task.progress", { rev: 2, items: [{ taskId: "a", doneBytes: 100, verifiedBytes: 40 }] });
+  assert.equal(store.tasks.get("a").verifiedBytes, 40);
+  store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "verifying", to: "failed", errorCode: "CHECKSUM_MISMATCH" });
+  assert.equal(store.tasks.get("a").verifiedBytes, null);
+  const changed = store.apply("task.updated", { rev: 4, taskId: "a", checksum: { algo: "md5", value: "0".repeat(32) } });
+  assert.ok(changed.changed.has("a"));
+  assert.equal(store.tasks.get("a").checksum.algo, "md5");
 });

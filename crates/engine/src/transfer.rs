@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -28,9 +28,10 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
+use crate::io::checksum::{self, Algo, Checksum};
 use crate::io::{
-    self, DEFAULT_WRITE_BUFFER, IoError, PartFile, ProgressHandle, SegmentWriter, SyncedProgress,
-    segments_beyond,
+    self, DEFAULT_WRITE_BUFFER, IoError, PartFile, ProgressHandle, SealedPart, SegmentWriter,
+    SyncedProgress, segments_beyond,
 };
 use crate::limit::Throttle;
 use crate::net::auth::{Auth, Login, Site};
@@ -157,6 +158,9 @@ pub struct Progress {
     pub connections: usize,
     /// Segments en cours de réception, par numéro croissant.
     pub segments: Arc<[LiveSegment]>,
+    /// Pendant la vérification de l'empreinte (`verifying`, F-11) : octets du fichier déjà
+    /// lus ; `None` pendant la réception.
+    pub verified: Option<u64>,
 }
 
 /// Un segment qu'une connexion reçoit en ce moment.
@@ -225,6 +229,12 @@ enum Failure {
     },
     /// Le coffre du système n'a pas rendu un secret de la tâche (trousseau verrouillé…).
     Vault(VaultError),
+    /// L'empreinte du fichier complet n'est pas celle attendue (F-11) ; le `.part` reste.
+    Checksum {
+        algo: Algo,
+        expected: String,
+        got: String,
+    },
 }
 
 impl Failure {
@@ -240,13 +250,14 @@ impl Failure {
             Failure::Truncated => "NET_UNREACHABLE",
             Failure::NoSpace { .. } => "DISK_FULL",
             Failure::Vault(_) => "SECRET_UNAVAILABLE",
+            Failure::Checksum { .. } => "CHECKSUM_MISMATCH",
         }
     }
 
     fn retryable(&self) -> bool {
         match self {
             Failure::Net(e) => e.retryable(),
-            Failure::Io(_) | Failure::NoSpace { .. } => false,
+            Failure::Io(_) | Failure::NoSpace { .. } | Failure::Checksum { .. } => false,
             Failure::Truncated => true,
             Failure::Vault(_) => true,
         }
@@ -268,6 +279,14 @@ impl Failure {
             Failure::Io(e) => e.to_string(),
             Failure::Vault(e) => e.to_string(),
             Failure::Truncated => "le serveur a fermé la connexion avant la fin".into(),
+            Failure::Checksum {
+                algo,
+                expected,
+                got,
+            } => format!(
+                "empreinte {} du fichier : {got}, attendue : {expected}",
+                algo.label()
+            ),
             Failure::NoSpace { needed, free, keep } => format!(
                 "espace disque insuffisant : {} encore à écrire et {} à laisser libres, \
                  {} libres",
@@ -309,8 +328,8 @@ fn jitter() -> Duration {
 
 /// Exécute la tâche `task_id` jusqu'à sa fin, un échec ou `stop`, et enregistre l'issue.
 ///
-/// La tâche doit être `queued` ou `retry_wait`, ou `active` après un arrêt brutal du
-/// moteur (SPEC §7.4). `on_progress` est appelé régulièrement pour l'affichage.
+/// La tâche doit être `queued` ou `retry_wait`, ou `active` ou `verifying` après un arrêt
+/// brutal du moteur (SPEC §7.4 et §7.9). `on_progress` est appelé régulièrement pour l'affichage.
 pub async fn run(
     conn: &mut Connection,
     client: &Client,
@@ -324,7 +343,8 @@ pub async fn run(
         TaskState::Queued | TaskState::RetryWait => {
             change_state(conn, task_id, &Change::to(TaskState::Active))?;
         }
-        TaskState::Active => {}
+        // `verifying` : arrêt brutal pendant le calcul de l'empreinte, qui reprend (F-11).
+        TaskState::Active | TaskState::Verifying => {}
         other => {
             return Err(TransferError::NotRunnable {
                 task_id: task_id.to_owned(),
@@ -486,6 +506,9 @@ async fn execute(
     on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Step<PathBuf> {
     let mut task = load_task(conn, task_id)?;
+    if task.state == TaskState::Verifying {
+        return resume_verifying(conn, &task, stop, on_progress).await;
+    }
     let source = primary_source(conn, task_id)?;
     let stored = stored_headers::load(conn, task_id)?;
     let task_headers = match request_headers(stored, task_id, &opts.vault).await? {
@@ -611,9 +634,13 @@ async fn execute(
         part: Arc::clone(&part),
         persist: total.is_some(),
     };
-    let received = match pool(conn, task_id, &ctx, todo, stop, on_progress).await? {
-        Ok(received) => received,
-        Err(stop) => return Ok(Err(stop)),
+    // Rien à recevoir : le `.part` était complet (arrêt pendant le calcul de l'empreinte).
+    let received = match (todo.is_empty(), total) {
+        (true, Some(total)) => total,
+        _ => match pool(conn, task_id, &ctx, todo, stop, on_progress).await? {
+            Ok(received) => received,
+            Err(stop) => return Ok(Err(stop)),
+        },
     };
     drop(ctx);
 
@@ -631,17 +658,158 @@ async fn execute(
     let part = Arc::try_unwrap(part).map_err(|_| TransferError::Incomplete {
         task_id: task_id.to_owned(),
     })?;
-    let path = match tokio::task::spawn_blocking(move || part.finish()).await? {
+    let sealed = match tokio::task::spawn_blocking(move || part.seal()).await? {
+        Ok(sealed) => sealed,
+        Err(e) => return fail(Failure::Io(e)),
+    };
+    finish_part(
+        conn,
+        task_id,
+        sealed,
+        total.unwrap_or(received),
+        stop,
+        on_progress,
+    )
+    .await
+}
+
+/// Fin d'une tâche dont le `.part` est complet et vidé sur disque : son empreinte, s'il
+/// en a une, est vérifiée en `verifying` (F-11, SPEC §7.9) ; puis le `.part` prend son
+/// nom et la tâche se termine. Une empreinte différente laisse le `.part` à sa place,
+/// sous son nom provisoire, et la tâche en échec `CHECKSUM_MISMATCH`.
+async fn finish_part(
+    conn: &mut Connection,
+    task_id: &str,
+    sealed: SealedPart,
+    total: u64,
+    stop: &mut watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Step<PathBuf> {
+    // Relue ici : l'empreinte a pu changer pendant le téléchargement (`task.update`).
+    let task = load_task(conn, task_id)?;
+    if let Some(expected) = task.checksum {
+        // Les octets sont déjà vidés (`seal`) : `verifying` décrit un `.part` complet.
+        if task.state != TaskState::Verifying {
+            change_state(conn, task_id, &Change::to(TaskState::Verifying))?;
+        }
+        let got = match verify(sealed.path(), &expected, total, stop, on_progress).await? {
+            Ok(got) => got,
+            Err(stop) => return Ok(Err(stop)),
+        };
+        if got != expected.value() {
+            return fail(Failure::Checksum {
+                algo: expected.algo(),
+                expected: expected.value().to_owned(),
+                got,
+            });
+        }
+    }
+    let path = match tokio::task::spawn_blocking(move || sealed.finish()).await? {
         Ok(path) => path,
         Err(e) => return fail(Failure::Io(e)),
     };
-    complete_task(
-        conn,
-        task_id,
-        &path.to_string_lossy(),
-        total.unwrap_or(received),
-    )?;
+    complete_task(conn, task_id, &path.to_string_lossy(), total)?;
     Ok(Ok(path))
+}
+
+/// Reprise d'une tâche restée en `verifying` (arrêt brutal pendant le calcul) : le
+/// `.part` complet est vérifié de nouveau, depuis le début. S'il n'est plus là mais que le
+/// fichier final l'est, l'arrêt a eu lieu entre le renommage, qui ne suit qu'une
+/// empreinte juste, et l'enregistrement de la fin.
+async fn resume_verifying(
+    conn: &mut Connection,
+    task: &TaskRow,
+    stop: &mut watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Step<PathBuf> {
+    let file_name = task
+        .file_name
+        .as_deref()
+        .ok_or_else(|| StoreError::BadValue(format!("tâche {} : nom absent", task.id)))?;
+    let dest = Path::new(&task.dest_dir).join(file_name);
+    let part = io::part_path(&dest);
+    let len = |path: &Path| std::fs::metadata(path).map(|m| m.len());
+    match len(&part) {
+        Ok(total) => {
+            let sealed = SealedPart::existing(&dest);
+            finish_part(conn, &task.id, sealed, total, stop, on_progress).await
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match len(&dest) {
+            Ok(total) => {
+                complete_task(conn, &task.id, &dest.to_string_lossy(), total)?;
+                Ok(Ok(dest))
+            }
+            Err(_) => fail(Failure::Io(IoError::File {
+                path: part,
+                source: e,
+            })),
+        },
+        Err(source) => fail(Failure::Io(IoError::File { path: part, source })),
+    }
+}
+
+/// Calcule l'empreinte du `.part` complet (`total` octets), hors de la boucle
+/// asynchrone ; l'avancement s'annonce toutes les demi-secondes, et `stop` interrompt le
+/// calcul (la tâche passe alors en pause et recommencera la lecture à la reprise).
+async fn verify(
+    path: &Path,
+    expected: &Checksum,
+    total: u64,
+    stop: &mut watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Step<String> {
+    let report = |read: u64| Progress {
+        received: total,
+        total: Some(total),
+        connections: 0,
+        segments: Arc::from([]),
+        verified: Some(read),
+    };
+    on_progress(report(0));
+    let read = Arc::new(AtomicU64::new(0));
+    // Arrêt déjà demandé : le calcul s'arrête après sa première lecture.
+    let mut stopped = *stop.borrow();
+    let halt = Arc::new(AtomicBool::new(stopped));
+    let mut job = {
+        let (path, algo) = (path.to_owned(), expected.algo());
+        let (read, halt) = (Arc::clone(&read), Arc::clone(&halt));
+        tokio::task::spawn_blocking(move || {
+            checksum::hash_file(&path, algo, |n| {
+                read.store(n, Ordering::Relaxed);
+                !halt.load(Ordering::Relaxed)
+            })
+            .map_err(|source| IoError::File { path, source })
+        })
+    };
+    let mut display = interval_at(
+        Instant::now() + Duration::from_millis(500),
+        Duration::from_millis(500),
+    );
+    display.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Émetteur disparu (exécution sans planificateur) : plus aucun arrêt ne viendra.
+    let mut gone = false;
+    let result = loop {
+        tokio::select! {
+            result = &mut job => break result?,
+            _ = display.tick() => on_progress(report(read.load(Ordering::Relaxed))),
+            asked = async { stop.wait_for(|h| *h).await.is_ok() }, if !stopped && !gone => {
+                if asked {
+                    stopped = true;
+                    halt.store(true, Ordering::Relaxed);
+                } else {
+                    gone = true;
+                }
+            }
+        }
+    };
+    match result {
+        Ok(Some(got)) if !stopped => {
+            on_progress(report(total));
+            Ok(Ok(got))
+        }
+        Ok(_) => Ok(Err(Stop::User)),
+        Err(e) => fail(Failure::Io(e)),
+    }
 }
 
 enum Resume {
@@ -689,7 +857,12 @@ fn resume_part(
         Err(e) => return Ok(Resume::Failed(Failure::Io(e))),
     };
     let segments = load_segments(conn, task_id)?;
-    let lost = if source.accepts_ranges == Some(true) {
+    // Tous les segments finis, donc vidés (règle 1) : le `.part` est complet, même sans
+    // plages (arrêt pendant le calcul de l'empreinte, F-11).
+    let complete = size >= total && segments.iter().all(|s| s.state == SegmentState::Done);
+    let lost = if complete {
+        Vec::new()
+    } else if source.accepts_ranges == Some(true) {
         segments_beyond(size, &segments)
     } else {
         // Sans plages, aucune reprise : le flux repart du début.
@@ -1231,6 +1404,7 @@ fn progress(
         total,
         connections,
         segments: segments.into(),
+        verified: None,
     }
 }
 

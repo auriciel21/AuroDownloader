@@ -31,6 +31,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
+use crate::io::checksum::Checksum;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::net::{self, Client, NetError};
@@ -130,11 +131,13 @@ pub struct PendingEnd {
 pub struct TaskUpdate {
     /// `Some(None)` : retire la limite.
     pub speed_limit_bps: Option<Option<u64>>,
+    /// Empreinte attendue (F-11) ; `Some(None)` : la retire.
+    pub checksum: Option<Option<Checksum>>,
 }
 
 impl TaskUpdate {
     fn is_empty(&self) -> bool {
-        self.speed_limit_bps.is_none()
+        self.speed_limit_bps.is_none() && self.checksum.is_none()
     }
 }
 
@@ -373,6 +376,8 @@ pub struct AddTask {
     pub headers: Vec<(String, String)>,
     /// Nom du fichier choisi (SPEC §7.12) ; `None` : celui du serveur.
     pub file_name: Option<String>,
+    /// Empreinte attendue du fichier (F-11), vérifiée avant son renommage.
+    pub checksum: Option<Checksum>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -931,6 +936,18 @@ struct Running {
     then: Then,
     /// Segments en cours de réception, publiés par l'exécution à chaque avancement.
     live: watch::Receiver<Arc<[LiveSegment]>>,
+    /// Dernier état annoncé de l'exécution : `active`, ou `verifying` pendant le calcul de
+    /// l'empreinte (F-11). Le changement d'état de sa fin part de lui.
+    shown: TaskState,
+}
+
+/// Ce qu'une exécution signale à la boucle, en plus de son issue.
+#[derive(Debug)]
+enum RunNote {
+    /// Préparation enregistrée (premier avancement).
+    Prepared(String),
+    /// Passage à `verifying` enregistré (F-11).
+    Verifying(String),
 }
 
 struct Scheduler {
@@ -954,7 +971,7 @@ struct Scheduler {
     next_disk_check: Instant,
     /// Les exécutions y signalent leur préparation enregistrée ; la boucle l'annonce
     /// (`Event::Prepared`), car elle seule augmente la révision.
-    prepared: mpsc::UnboundedSender<String>,
+    prepared: mpsc::UnboundedSender<RunNote>,
     /// Plages horaires et action de fin (F-16).
     planning: planning::State,
     /// Les copies vers un autre volume (SPEC §7.12) y signalent leur fin.
@@ -977,7 +994,7 @@ impl Scheduler {
         rev: Arc<AtomicU64>,
         default_queue: String,
         download_limit: Option<u64>,
-        prepared: mpsc::UnboundedSender<String>,
+        prepared: mpsc::UnboundedSender<RunNote>,
     ) -> Self {
         let (moved, moved_rx) = mpsc::unbounded_channel();
         Scheduler {
@@ -1007,7 +1024,7 @@ impl Scheduler {
     async fn run(
         mut self,
         mut inbox: mpsc::Receiver<Command>,
-        mut prepared: mpsc::UnboundedReceiver<String>,
+        mut prepared: mpsc::UnboundedReceiver<RunNote>,
     ) {
         let mut moved = self
             .moved_rx
@@ -1039,7 +1056,7 @@ impl Scheduler {
                         Err(e) => self.forget_panicked(e),
                     }
                 }
-                Some(task_id) = prepared.recv() => self.announce_prepared(&task_id),
+                Some(note) = prepared.recv() => self.noted(note),
                 Some((task_id, result)) = moved.recv() => self.moved(&task_id, result),
                 _ = tokio::time::sleep(wake), if self.shutdown.is_none() => {}
             }
@@ -1097,6 +1114,23 @@ impl Scheduler {
         let _ = self.events.send(event(rev));
     }
 
+    fn noted(&mut self, note: RunNote) {
+        match note {
+            RunNote::Prepared(task_id) => self.announce_prepared(&task_id),
+            // Arrivé après la fin de l'exécution : son issue, déjà annoncée depuis
+            // `active`, suffit.
+            RunNote::Verifying(task_id) => {
+                let Some(run) = self.running.get_mut(&task_id) else {
+                    return;
+                };
+                if run.shown == TaskState::Active {
+                    run.shown = TaskState::Verifying;
+                    self.changed(&task_id, TaskState::Active, TaskState::Verifying);
+                }
+            }
+        }
+    }
+
     /// Annonce le nom et la taille qu'une exécution vient d'enregistrer. Peut arriver après
     /// la fin de l'exécution : l'annonce reste due, le nom servant à ouvrir le fichier.
     fn announce_prepared(&self, task_id: &str) {
@@ -1146,9 +1180,10 @@ impl Scheduler {
                 continue;
             }
             // Hors de ses plages horaires, une file attend (F-16). Une tâche restée
-            // `active` (arrêt brutal du moteur) y retourne en file, comme à la fermeture.
+            // `active` ou `verifying` (arrêt brutal du moteur) y retourne en file, comme à
+            // la fermeture.
             if self.planning.closed.contains(&c.queue_id) {
-                if c.state == TaskState::Active {
+                if matches!(c.state, TaskState::Active | TaskState::Verifying) {
                     let paused = Change {
                         pause_reason: Some(PauseReason::Schedule),
                         ..Change::to(TaskState::Paused)
@@ -1174,13 +1209,19 @@ impl Scheduler {
     fn launch(&mut self, task_id: String, queue_id: String, from: TaskState) {
         // L'état `active` est enregistré ici, avant d'être annoncé : un instantané pris à
         // la révision de l'annonce le montre déjà (SPEC §6.10). `transfer::run` accepte
-        // une tâche `active`.
-        if from != TaskState::Active
+        // une tâche `active`, ou `verifying` (arrêt brutal pendant le calcul de
+        // l'empreinte), qui reste dans son état.
+        let resumed = matches!(from, TaskState::Active | TaskState::Verifying);
+        if !resumed
             && change_state(&mut self.conn, &task_id, &Change::to(TaskState::Active)).is_err()
         {
             self.broken.insert(task_id);
             return;
         }
+        let shown = match from {
+            TaskState::Verifying => TaskState::Verifying,
+            _ => TaskState::Active,
+        };
         let throttle = self.throttle_for(&task_id, &queue_id);
         let (stop, stopped) = watch::channel(false);
         let (live_tx, live) = watch::channel(Arc::from([]));
@@ -1191,9 +1232,10 @@ impl Scheduler {
                 stop,
                 then: Then::Keep,
                 live,
+                shown,
             },
         );
-        self.changed(&task_id, from, TaskState::Active);
+        self.changed(&task_id, from, shown);
         let mut config = self.config.clone();
         config.transfer.throttle = throttle;
         let events = self.events.clone();
@@ -1449,6 +1491,22 @@ impl Scheduler {
     }
 
     fn update_task(&mut self, task_id: &str, update: TaskUpdate) -> Result<TaskRow, EngineError> {
+        // Tout est vérifié avant de changer quoi que ce soit.
+        if let Some(limit) = update.speed_limit_bps {
+            Self::check_speed_limit(limit)?;
+        }
+        if let Some(checksum) = &update.checksum {
+            // L'empreinte se lit à la fin du téléchargement, en cours compris ; pas pendant
+            // son calcul, ni sur un fichier déjà terminé.
+            let task = load_task(&self.conn, task_id)?;
+            if matches!(
+                task.state,
+                TaskState::Verifying | TaskState::Completed | TaskState::Cancelled
+            ) {
+                return Err(Self::invalid(&task, "changement d'empreinte"));
+            }
+            tasks::set_checksum(&self.conn, task_id, checksum.as_ref())?;
+        }
         if let Some(limit) = update.speed_limit_bps {
             Self::check_speed_limit(limit)?;
             tasks::set_task_speed_limit(&self.conn, task_id, limit)?;
@@ -1592,6 +1650,7 @@ impl Scheduler {
                 speed_limit_bps: task.speed_limit_bps,
                 idempotency_key: task.idempotency_key.as_deref(),
                 requested_name: task.file_name.as_deref(),
+                checksum: task.checksum.as_ref(),
                 headers: &stored,
             },
         );
@@ -1794,7 +1853,9 @@ impl Scheduler {
                 self.broken.remove(task_id);
                 self.set_state(task_id, &Change::to(TaskState::Queued))
             }
-            TaskState::Queued | TaskState::Active | TaskState::RetryWait => Ok(()),
+            TaskState::Queued | TaskState::Active | TaskState::Verifying | TaskState::RetryWait => {
+                Ok(())
+            }
             _ => Err(Self::invalid(&task, "reprise")),
         }
     }
@@ -2192,6 +2253,7 @@ impl Scheduler {
         if let Ok(Outcome::Completed(_)) = &result {
             self.drop_secrets(task_id);
         }
+        let shown = run.as_ref().map_or(TaskState::Active, |r| r.shown);
         let then = run.map_or(Then::Keep, |r| r.then);
         self.limits.tasks.remove(task_id);
         if let Err(e) = &result {
@@ -2200,7 +2262,7 @@ impl Scheduler {
         let Ok(task) = load_task(&self.conn, task_id) else {
             return;
         };
-        self.changed(task_id, TaskState::Active, task.state);
+        self.changed(task_id, shown, task.state);
         let stopped_here = matches!(result, Ok(Outcome::Paused));
         let _ = match then {
             Then::Keep => Ok(()),
@@ -2240,11 +2302,14 @@ impl Scheduler {
         let Some(task_id) = self.run_ids.remove(&error.id()) else {
             return;
         };
-        self.running.remove(&task_id);
+        let shown = self
+            .running
+            .remove(&task_id)
+            .map_or(TaskState::Active, |r| r.shown);
         self.limits.tasks.remove(&task_id);
         self.record_internal_error(&task_id, &TransferError::Join(error));
         if let Ok(task) = load_task(&self.conn, &task_id) {
-            self.changed(&task_id, TaskState::Active, task.state);
+            self.changed(&task_id, shown, task.state);
         }
     }
 }
@@ -2266,7 +2331,8 @@ fn check_file_name(name: &str) -> Result<(), EngineError> {
     let clean = net::filename::sanitize(name, net::filename::NameRules::native());
     if clean != name {
         return Err(EngineError::BadRequest(format!(
-            "nom de fichier refusé : {name:?} (caractères interdits, nom réservé, points ou \n             espaces en bord, ou trop long) ; proposition : {clean:?}"
+            "nom de fichier refusé : {name:?} (caractères interdits, nom réservé, points ou \
+             espaces en bord, ou trop long) ; proposition : {clean:?}"
         )));
     }
     Ok(())
@@ -2369,16 +2435,21 @@ async fn execute(
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
     rev: Arc<AtomicU64>,
-    prepared: mpsc::UnboundedSender<String>,
+    prepared: mpsc::UnboundedSender<RunNote>,
     live: watch::Sender<Arc<[LiveSegment]>>,
 ) -> Result<Outcome, TransferError> {
     let mut conn = store::open(&config.db_path)?;
     // `transfer::run` enregistre la préparation avant le premier avancement : celui-ci
     // la signale à la boucle.
-    let mut first = true;
+    // Le premier avancement de la vérification de l'empreinte suit le passage à
+    // `verifying` (F-11), qu'il signale de même.
+    let (mut first, mut verifying) = (true, false);
     let mut on_progress = |progress: Progress| {
         if std::mem::take(&mut first) {
-            let _ = prepared.send(task_id.to_owned());
+            let _ = prepared.send(RunNote::Prepared(task_id.to_owned()));
+        }
+        if progress.verified.is_some() && !std::mem::replace(&mut verifying, true) {
+            let _ = prepared.send(RunNote::Verifying(task_id.to_owned()));
         }
         live.send_replace(Arc::clone(&progress.segments));
         let _ = events.send(Event::Progress {

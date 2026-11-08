@@ -98,9 +98,11 @@ export function sortTasks(tasks, column = "added", descending = true) {
 }
 
 // Actions permises par la table des états (SPEC §5.5).
-export const canPause = (state) => ["queued", "active", "retry_wait"].includes(state);
+// `verifying` : le calcul de l'empreinte s'interrompt, et reprend depuis le début (F-11).
+export const canPause = (state) => ["queued", "active", "retry_wait", "verifying"].includes(state);
 export const canResume = (state) => ["paused", "failed"].includes(state);
-export const canCancel = (state) => ["queued", "active", "paused", "retry_wait", "seeding"].includes(state);
+export const canCancel = (state) =>
+  ["queued", "active", "paused", "retry_wait", "verifying", "seeding"].includes(state);
 // Retrait de la liste (`task.remove`) : tâches finies seulement.
 export const canRemove = (state) => ["completed", "failed", "cancelled"].includes(state);
 // Retéléchargement depuis le début (`task.restart`) : tout ce qui ne tourne pas ni n'attend
@@ -110,6 +112,35 @@ export const canRestart = (state) => ["completed", "failed", "cancelled", "pause
 /// tourne pas, et dont le fichier n'est pas déjà en cours de déplacement.
 export const canRelocate = (task) =>
   !task.moving && ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"].includes(task.state);
+/// Empreinte attendue (F-11) : modifiable tant que le fichier n'est ni terminé, ni annulé, ni en
+/// cours de vérification.
+export const canSetChecksum = (task) =>
+  ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+
+const HEX_LENGTHS = { 64: "sha256", 40: "sha1", 32: "md5" };
+
+/// Empreinte écrite par l'utilisateur : « sha256:… », « sha1:… », « md5:… », ou la valeur
+/// seule, dont la longueur donne l'algorithme (comme `auro --checksum`). Rend
+/// `{ checksum: {algo, value} }`, `{ checksum: null }` pour un champ vide, ou `{ error }`.
+export function parseChecksum(text) {
+  let value = (text ?? "").trim();
+  if (!value) return { checksum: null };
+  let algo = null;
+  const colon = value.indexOf(":");
+  if (colon >= 0) {
+    algo = value.slice(0, colon).trim().toLowerCase().replace("-", "");
+    value = value.slice(colon + 1).trim();
+    if (!Object.values(HEX_LENGTHS).includes(algo)) return { error: "algo" };
+  }
+  algo ??= HEX_LENGTHS[value.length] ?? null;
+  if (!algo) return { error: "length" };
+  const length = Number(Object.keys(HEX_LENGTHS).find((n) => HEX_LENGTHS[n] === algo));
+  if (value.length !== length || !/^[0-9a-fA-F]+$/.test(value)) return { error: "value" };
+  return { checksum: { algo, value: value.toLowerCase() } };
+}
+
+/// Nom affiché d'un algorithme d'empreinte.
+export const ALGO_LABELS = { sha256: "SHA-256", sha1: "SHA-1", md5: "MD5" };
 
 /// Ce qu'un changement demande à l'affichage.
 function outcome() {
@@ -259,6 +290,8 @@ export class TaskStore {
           task.etaS = null;
           task.connections = 0;
         }
+        // Octets lus par la vérification de l'empreinte : seulement pendant celle-ci.
+        if (params.to !== "verifying") task.verifiedBytes = null;
         if (params.to === "completed" && task.totalBytes > 0) task.doneBytes = task.totalBytes;
         task.finishedAt = FINAL.has(params.to) ? now : null;
         result.changed.add(params.taskId);

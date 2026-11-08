@@ -306,6 +306,7 @@ async fn higher_priority_starts_first() {
             speed_limit_bps: None,
             idempotency_key: None,
             requested_name: None,
+            checksum: None,
             headers: &[],
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
@@ -475,6 +476,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         speed_limit_bps: None,
         idempotency_key: None,
         requested_name: None,
+        checksum: None,
         headers: &[],
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
@@ -756,6 +758,7 @@ async fn task_and_queue_limits_change_on_the_fly() {
     // Limite de la tâche retirée : celle de la file tient encore.
     let lifted = TaskUpdate {
         speed_limit_bps: Some(None),
+        ..TaskUpdate::default()
     };
     let row = engine.update_task(&id, lifted.clone()).await.unwrap();
     assert_eq!(row.speed_limit_bps, None);
@@ -792,6 +795,7 @@ async fn task_and_queue_limits_change_on_the_fly() {
 
     let zero = TaskUpdate {
         speed_limit_bps: Some(Some(0)),
+        ..TaskUpdate::default()
     };
     assert!(matches!(
         engine.update_task(&id, zero).await,
@@ -1342,6 +1346,7 @@ async fn orphan_secrets_are_collected_at_start() {
             speed_limit_bps: None,
             idempotency_key: None,
             requested_name: None,
+            checksum: None,
             headers: &stored,
         },
     )
@@ -1697,23 +1702,36 @@ async fn an_expired_address_is_replaced_and_the_download_resumes() {
         tasks::primary_source(&conn, &id).unwrap().url,
         fresh.url("/neuf.bin")
     );
+    // Octets déjà enregistrés, segment par segment, avant la reprise.
+    let saved: Vec<(u64, u64)> = load_segments(&conn, &id)
+        .unwrap()
+        .iter()
+        .filter(|s| s.written > 0)
+        .map(|s| (s.start, s.start + s.written))
+        .collect();
+    // La vérification de la nouvelle adresse (`set_url`) en a déjà demandé le début.
+    let checked = fresh.requests().len();
     engine.resume(&id).await.unwrap();
     wait_state(&mut events, &id, TaskState::Completed).await;
     assert_file(dir.path(), "lien.bin", 4 * SIZE);
     // Reprise, pas recommencement : la nouvelle adresse n'a servi que ce qui manquait.
-    let asked: u64 = fresh
-        .requests()
+    // Aucune requête ne commence dans des octets déjà là ; la somme des plages ne le dit
+    // pas, une coupe (SPEC §7.2) redemandant la fin d'une plage déjà demandée.
+    let starts: Vec<u64> = fresh.requests()[checked..]
         .iter()
         .filter(|r| r.method == "GET")
         .filter_map(|r| {
-            let (a, b) = r.header("range")?.strip_prefix("bytes=")?.split_once('-')?;
-            Some(b.parse::<u64>().ok()? - a.parse::<u64>().ok()? + 1)
+            let (a, _) = r.header("range")?.strip_prefix("bytes=")?.split_once('-')?;
+            a.parse().ok()
         })
-        .sum();
-    assert!(
-        asked <= 4 * SIZE as u64 - done,
-        "{asked} octets demandés, {done} déjà là"
-    );
+        .collect();
+    assert!(!starts.is_empty() && !saved.is_empty());
+    for a in &starts {
+        assert!(
+            !saved.iter().any(|&(s, e)| (s..e).contains(a)),
+            "requête depuis l'octet {a}, déjà là : {saved:?} ({done} octets)"
+        );
+    }
     engine.shutdown().await;
 }
 
@@ -1932,4 +1950,153 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
         Err(EngineError::LoginNotFound(_))
     ));
     engine.shutdown().await;
+}
+
+/// Empreinte (F-11) : changements d'état annoncés `active` → `verifying` → issue ;
+/// empreinte modifiable tant que la tâche n'est pas finie ; tâche restée `verifying` au
+/// démarrage : le calcul reprend.
+mod checksums {
+    use super::*;
+    use crate::io::checksum::{Algo, Checksum};
+    use sha2::{Digest, Sha256};
+
+    const LEN: usize = 2 * 1024 * 1024;
+
+    fn sha256(data: &[u8]) -> Checksum {
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Checksum::new(Algo::Sha256, &hex).unwrap()
+    }
+
+    fn wrong() -> Checksum {
+        Checksum::new(Algo::Sha1, &"0".repeat(40)).unwrap()
+    }
+
+    /// Changements d'état annoncés pour `task_id`, jusqu'à un état final.
+    async fn transitions(
+        events: &mut broadcast::Receiver<Event>,
+        task_id: &str,
+    ) -> Vec<(TaskState, TaskState)> {
+        let mut seen = Vec::new();
+        timeout(WAIT, async {
+            loop {
+                if let Ok(Event::StateChanged {
+                    task_id: t,
+                    from,
+                    to,
+                    ..
+                }) = events.recv().await
+                    && t == task_id
+                {
+                    seen.push((from, to));
+                    if matches!(to, TaskState::Completed | TaskState::Failed) {
+                        return;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("la tâche finit");
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_check_is_announced_between_the_transfer_and_the_end() {
+        use TaskState::*;
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(LEN);
+        let engine = Engine::start(config(dir.path())).unwrap();
+        let mut events = engine.subscribe();
+        let good = AddTask {
+            checksum: Some(sha256(&content(LEN))),
+            ..add(&server.url("/bon.bin"), dir.path())
+        };
+        let id = engine.add(good).await.unwrap();
+        assert_eq!(
+            transitions(&mut events, &id).await,
+            [
+                (Queued, Active),
+                (Active, Verifying),
+                (Verifying, Completed)
+            ]
+        );
+        assert_file(dir.path(), "bon.bin", LEN);
+        // Fichier terminé : l'empreinte ne change plus.
+        let late = TaskUpdate {
+            checksum: Some(None),
+            ..TaskUpdate::default()
+        };
+        assert!(matches!(
+            engine.update_task(&id, late).await,
+            Err(EngineError::InvalidState { .. })
+        ));
+
+        let bad = AddTask {
+            checksum: Some(wrong()),
+            ..add(&server.url("/faux.bin"), dir.path())
+        };
+        let id = engine.add(bad).await.unwrap();
+        assert_eq!(
+            transitions(&mut events, &id).await,
+            [(Queued, Active), (Active, Verifying), (Verifying, Failed)]
+        );
+        let row = task(dir.path(), &id);
+        assert_eq!(row.error_code.as_deref(), Some("CHECKSUM_MISMATCH"));
+        assert!(!dir.path().join("faux.bin").exists());
+        assert!(part_path(&dir.path().join("faux.bin")).exists());
+
+        // Empreinte corrigée sur la tâche en échec, puis relance : elle se termine.
+        let fixed = TaskUpdate {
+            checksum: Some(Some(sha256(&content(LEN)))),
+            ..TaskUpdate::default()
+        };
+        let row = engine.update_task(&id, fixed).await.unwrap();
+        assert_eq!(row.checksum, Some(sha256(&content(LEN))));
+        engine.resume(&id).await.unwrap();
+        let seen = transitions(&mut events, &id).await;
+        assert_eq!(seen.last(), Some(&(Verifying, Completed)), "{seen:?}");
+        assert_file(dir.path(), "faux.bin", LEN);
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_task_left_verifying_is_checked_again_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(LEN);
+        let engine = Engine::start(config(dir.path())).unwrap();
+        let mut events = engine.subscribe();
+        let bad = AddTask {
+            checksum: Some(wrong()),
+            ..add(&server.url("/f.bin"), dir.path())
+        };
+        let id = engine.add(bad).await.unwrap();
+        wait_state(&mut events, &id, TaskState::Failed).await;
+        engine.shutdown().await;
+
+        // Comme un arrêt brutal pendant le calcul, avec la bonne empreinte.
+        let conn = store::open(&dir.path().join("auro.db")).unwrap();
+        let sum = sha256(&content(LEN));
+        conn.execute(
+            "UPDATE tasks SET state = 'verifying', error_code = NULL, error_detail = NULL,
+               checksum_algo = 'sha256', checksum_value = ?2
+             WHERE id = ?1",
+            params![id, sum.value()],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Lu dans la base : la fin peut précéder tout abonnement.
+        let engine = Engine::start(config(dir.path())).unwrap();
+        let done = timeout(WAIT, async {
+            while task(dir.path(), &id).state != TaskState::Completed {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(done.is_ok(), "{:?}", task(dir.path(), &id).state);
+        assert_file(dir.path(), "f.bin", LEN);
+        engine.shutdown().await;
+    }
 }
