@@ -141,6 +141,17 @@ function percentText(task) {
 
 const rate = (bps) => t("{0}/s", bytes(bps, lang, t));
 
+/// Barre d'avancement en relief : la `<progress>` qu'elle contient garde l'avancement
+/// pour les lecteurs d'écran, invisible ; la barre dessinée prend sa longueur (`--p`, de 0
+/// à 1) et sa couleur de l'état, et s'anime pendant le téléchargement.
+function paintMeter(meter, task) {
+  const p = percent(task);
+  const unknown = p === null && task.state === "active";
+  meter.dataset.state = task.state;
+  meter.classList.toggle("unknown", unknown);
+  meter.style.setProperty("--p", unknown ? "1" : String((p ?? 0) / 100));
+}
+
 /// État affiché d'une tâche : une tâche en file dont la file est hors de ses plages
 /// horaires le dit.
 function taskStateText(task) {
@@ -315,6 +326,7 @@ function renderRow(taskId) {
     bar.max = 1;
     bar.value = 0;
   }
+  paintMeter(cell("progress").querySelector(".meter"), task);
   cell("pct").textContent = percentText(task);
   cell("state").textContent = taskStateText(task);
   cell("state").title = cell("state").textContent;
@@ -840,6 +852,8 @@ function openDetails(taskId, { focusLimit = false } = {}) {
   fillLimits($("d-limit"), task.speedLimitBps ?? null);
   // Rempli à l'ouverture seulement : l'affichage se refait chaque seconde.
   $("d-checksum-input").value = task.checksum ? `${task.checksum.algo}:${task.checksum.value}` : "";
+  // Une autre tâche : sa carte se dessine à neuf.
+  $("d-map").replaceChildren();
   renderDetails();
   const dialog = $("details");
   dialog.returnValue = "";
@@ -897,6 +911,7 @@ function renderDetails() {
   } else {
     $("d-progress").value = 0;
   }
+  paintMeter($("d-meter"), task);
 
   const toggleButton = $("d-toggle");
   const retry = task.state === "failed";
@@ -926,17 +941,23 @@ function renderSegments(task) {
   if (section.hidden) return;
   const map = $("d-map");
   const pct = (n) => `${(100 * n) / total}%`;
-  map.replaceChildren(...segments.map((s) => {
-    const part = document.createElement("div");
+  // Les segments déjà dessinés sont gardés : leurs reflets continuent d'une lecture à la
+  // suivante au lieu de repartir chaque seconde.
+  while (map.children.length > segments.length) map.lastElementChild.remove();
+  segments.forEach((s, i) => {
+    let part = map.children[i];
+    if (!part) {
+      part = document.createElement("div");
+      const fill = document.createElement("div");
+      fill.className = "fill";
+      part.append(fill);
+      map.append(part);
+    }
     part.className = s.receiving ? "part receiving" : "part";
     part.style.left = pct(s.start);
     part.style.width = pct(size(s));
-    const fill = document.createElement("div");
-    fill.className = "fill";
-    fill.style.width = `${Math.min(100, (100 * s.doneBytes) / size(s))}%`;
-    part.append(fill);
-    return part;
-  }));
+    part.firstElementChild.style.width = `${Math.min(100, (100 * s.doneBytes) / size(s))}%`;
+  });
   const receiving = segments.filter((s) => s.receiving).length;
   map.setAttribute("aria-label", t("{0} segments, {1} en cours de réception", segments.length, receiving));
   $("d-segments").tBodies[0].replaceChildren(...segments.map((s, i) => {
@@ -1719,6 +1740,8 @@ function applyInfo(next) {
   dateFormat = new Intl.DateTimeFormat(lang, { dateStyle: "short", timeStyle: "short" });
   longDateFormat = new Intl.DateTimeFormat(lang, { dateStyle: "full", timeStyle: "short" });
   executables = new Set(info.executableExtensions);
+  // Sous Linux, pas d'animation : la page y est dessinée sans composition (style.css).
+  document.documentElement.dataset.platform = info.platform;
   translatePage();
   renderDest();
   $("pref-lang").value = info.prefs.lang;
