@@ -239,7 +239,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
     - Une option coupe cet envoi (« Transmettre les cookies et la page d'origine », active par défaut).
     - Le moteur range `Cookie` dans le coffre du système (section 5.1) et l'efface quand la tâche est finie.
   - Options : capture oui ou non, taille minimale, sites exclus, navigation privée, cookies ; vérification de la liaison avec le relais.
-- **Pas encore** : cookies partitionnés (CHIPS) et posés pendant une redirection, détection des vidéos, publication dans les boutiques (Firefox n'installe une extension non signée que temporairement), Brave, Vivaldi et Opera. Un autre gestionnaire intégré au navigateur (IDM) peut intercepter un téléchargement avant l'extension.
+- **Pas encore** : cookies partitionnés (CHIPS) et posés pendant une redirection, détection des vidéos, publication dans les boutiques (Firefox n'installe une extension non signée que temporairement), Brave, Vivaldi et Opera (CCleaner Browser, autre navigateur Chromium, a passé les essais de la phase 3 le 2026-11-08 avec la même extension et le même relais). Un autre gestionnaire intégré au navigateur (IDM) peut intercepter un téléchargement avant l'extension.
 
 ### 4.6 Exécution et distribution
 
@@ -1193,7 +1193,7 @@ Les phases s'enchaînent dans l'ordre ; chaque porte (losange) est un critère �
 | 6. Fonctions avancées | Miroirs, analyse de liens, plugins, interface web distante | Revue de sécurité de l'API distante et des plugins |
 | 7. Version 1 | Installateurs signés, mises à jour, documentation, accessibilité | Tous les tests bloquants du plan de la section 9.1 réussis |
 
-État des portes : phase 1 franchie le 2026-10-16. Phase 3 franchie le 2026-11-08 : les 9 essais de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge (et un autre navigateur, non précisé). La porte de la phase 2 (utilisation quotidienne sans perte de données) reste en observation : l'application installée sert tous les jours depuis le 2026-11-07, sans perte constatée à ce jour.
+État des portes : phase 1 franchie le 2026-10-16. Phase 3 franchie le 2026-11-08 : les 9 essais de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que CCleaner Browser (Chromium). La porte de la phase 2 (utilisation quotidienne sans perte de données) reste en observation : l'application installée sert tous les jours depuis le 2026-11-07, sans perte constatée à ce jour.
 
 En phase 1, la ligne de commande appelle le moteur comme une bibliothèque ; l'API JSON-RPC (section 6) arrive en phase 2, avec l'application de bureau.
 

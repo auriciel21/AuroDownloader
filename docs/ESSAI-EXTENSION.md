@@ -87,6 +87,6 @@ Une capture d'écran aide pour tout ce qui est inattendu.
 
 ## Résultat
 
-2026-11-08 : les 9 essais validés par l'utilisateur sous Firefox, Chrome et Edge, et un
-autre navigateur (non précisé) : « tout fonctionne correctement ». Porte de la phase 3
+2026-11-08 : les 9 essais validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que
+CCleaner Browser (Chromium) : « tout fonctionne correctement ». Porte de la phase 3
 franchie (SPEC 9.3).

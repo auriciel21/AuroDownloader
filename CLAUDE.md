@@ -285,8 +285,8 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   SPEC 4.5, 5.1 et 6.5 ; repli en mémoire sous Linux sans Secret Service, à
   confirmer).
 - Porte de la phase 3 (SPEC 9.3), franchie le 2026-11-08 : les 9 essais de
-  `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge (et un
-  autre navigateur, non précisé). La porte de la phase 2 (usage quotidien sans perte)
+  `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que
+  CCleaner Browser (Chromium). La porte de la phase 2 (usage quotidien sans perte)
   reste en observation.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
