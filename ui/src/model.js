@@ -106,6 +106,10 @@ export const canRemove = (state) => ["completed", "failed", "cancelled"].include
 // Retéléchargement depuis le début (`task.restart`) : tout ce qui ne tourne pas ni n'attend
 // son tour.
 export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
+/// « Déplacer/Renommer » et « Actualiser l'adresse » (SPEC §7.12 et §7.13) : une tâche qui ne
+/// tourne pas, et dont le fichier n'est pas déjà en cours de déplacement.
+export const canRelocate = (task) =>
+  !task.moving && ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"].includes(task.state);
 
 /// Ce qu'un changement demande à l'affichage.
 function outcome() {
@@ -126,6 +130,8 @@ function outcome() {
     planning: false,
     /// Le refus d'une action de fin par le système, à montrer.
     endActionError: null,
+    /// Déplacements vers un autre volume qui ont échoué, à montrer : `{taskId, error}`.
+    moveErrors: [],
   };
 }
 
@@ -269,8 +275,10 @@ export class TaskStore {
           result.resync = true;
           break;
         }
-        const { rev: _rev, taskId: _id, ...fields } = params;
+        const { rev: _rev, taskId: _id, moveError, ...fields } = params;
         Object.assign(task, fields);
+        // Échec d'une copie vers un autre volume : annoncé, pas gardé dans la tâche.
+        if (moveError) result.moveErrors.push({ taskId: params.taskId, error: moveError });
         result.changed.add(params.taskId);
         // Un nom change le type de fichier, donc les vues, et l'ordre par nom.
         result.list = "fileName" in fields || "displayName" in fields || "totalBytes" in fields;

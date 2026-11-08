@@ -456,7 +456,9 @@ async fn execute(
         // Le nom est pris sur le disque (`.part` créé) avant d'être enregistré : aucune
         // autre tâche ne peut plus le choisir, ni ouvrir ce `.part` comme le sien.
         let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
-        let name = match io::claim_name(Path::new(&task.dest_dir), &probe.file_name, &reserved) {
+        // Le nom choisi par l'utilisateur passe avant celui du serveur (SPEC §7.12).
+        let wanted = task.requested_name.as_deref().unwrap_or(&probe.file_name);
+        let name = match io::claim_name(Path::new(&task.dest_dir), wanted, &reserved) {
             Ok(name) => name,
             Err(e) => return fail(Failure::Io(e)),
         };
@@ -762,7 +764,7 @@ enum Plan {
     Auto(AutoConnections),
 }
 
-fn host_of(url: &str) -> Option<String> {
+pub(crate) fn host_of(url: &str) -> Option<String> {
     reqwest::Url::parse(url).ok()?.host_str().map(str::to_owned)
 }
 

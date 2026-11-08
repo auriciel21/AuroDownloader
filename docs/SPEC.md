@@ -258,7 +258,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 ## 5. Modèle de données
 
-Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 14 tables ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
+Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 15 tables (14 à l'origine, plus `file_moves` depuis le 2026-11-08) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
 
 ### 5.1 Conventions
 
@@ -364,6 +364,10 @@ CREATE TABLE tasks (
 ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;
 CREATE UNIQUE INDEX tasks_idempotency_key ON tasks (idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+-- Migration 0003 (2026-11-08) : « Déplacer/Renommer » (section 7.12). Nom choisi par
+-- l'utilisateur, que la préparation prend au lieu de celui du serveur ; NULL : celui du
+-- serveur. Il survit au retéléchargement.
+ALTER TABLE tasks ADD COLUMN requested_name TEXT;
 
 CREATE TABLE sources (
   id             TEXT PRIMARY KEY,
@@ -394,6 +398,19 @@ CREATE TABLE segments (
   PRIMARY KEY (task_id, idx),
   CHECK (end_offset >= start_offset),
   CHECK (written_bytes <= end_offset - start_offset + 1)
+);
+
+-- Migration 0003 (2026-11-08) : journal d'un déplacement de fichier en cours (section
+-- 7.12), écrit avant de toucher au disque ; repris au démarrage après un arrêt.
+CREATE TABLE file_moves (
+  task_id    TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  from_path  TEXT NOT NULL,
+  to_path    TEXT NOT NULL,
+  temp_path  TEXT,              -- copie vers un autre volume, avant son renommage
+  dest_dir   TEXT NOT NULL,     -- emplacement de la tâche une fois le fichier déplacé
+  file_name  TEXT NOT NULL,
+  phase      TEXT NOT NULL CHECK (phase IN ('moving', 'moved')),
+  started_at INTEGER NOT NULL
 );
 
 CREATE TABLE task_headers (
@@ -558,7 +575,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `task.cancel` | `taskIds[]`, `deleteFiles` | Liste des tâches modifiées |
 | `task.remove` | `taskIds[]`, `deleteFiles` | Nombre de tâches retirées |
 | `task.restart` | `taskIds[]`, `deleteFiles` | Tâches reparties de zéro, et refus (`errors`) |
-| `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `checksum` | Tâche modifiée |
+| `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `url`, `checksum` | Tâche modifiée |
 | `task.move` | `taskIds[]`, `queueId`, `position`, `priority` | Liste des tâches modifiées |
 | `task.addSource` | `taskId`, `url`, `rank` | `sourceId` |
 | `task.setFiles` | `taskId`, `selected[]` (torrent) | Tâche modifiée |
@@ -610,8 +627,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une redirection vers un autre hôte n'emporte pas ces trois en-têtes. Le moteur n'ajoute jamais de `Referer` de lui-même : avant le 2026-11-07, après une redirection, la bibliothèque HTTP y mettait l'adresse qui redirige, signature comprise, à l'intention de l'hôte suivant.
   - La portée `add` suffit (relais de l'extension, section 4.5). `task.get` ne rend pas les en-têtes.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
-  - dans `task.add` : `fileName`, `checksum` et plusieurs sources ;
-  - dans `task.update` : `maxConnections`, `destDir`, `fileName` et `checksum` (seul `speedLimitBps` y est pris en charge) ;
+  - dans `task.add` : `checksum` et plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12) ;
+  - dans `task.update` : `maxConnections` et `checksum`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08). Chacun de ces trois groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
   - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
   - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
@@ -639,8 +656,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
     préparation). `acceptsRanges` faux signale un téléchargement sans reprise possible
     (F-04). L'adresse peut porter un jeton : un client l'affiche sans la journaliser
     (section 8.2) ;
-  - une tâche terminée n'a plus ni segments ni sources (section 5.6, règle 4) : les deux
-    listes sont vides ;
+  - une tâche terminée n'a plus de segments ; ses sources restent depuis le 2026-11-07
+    (section 5.6, règle 4 ; ce paragraphe disait le contraire jusqu'au 2026-11-08) ;
   - `files` (torrents) est refusé par `CAPABILITY_MISSING`, une valeur inconnue par
     `INVALID_PARAMS`.
 - **Retéléchargement** (`task.restart`, depuis le 2026-11-07 ; portée `control`) : section 5.5 pour les états.
@@ -649,6 +666,12 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une tâche sans adresse (terminée avant le 2026-11-07) est refusée par `INVALID_PARAMS`.
   - Les cookies d'une tâche terminée ont été effacés à sa fin (section 5.1) : un fichier qui demande d'être connecté se relance depuis le navigateur.
   - L'application : « Retélécharger… » dans le menu contextuel, avec une case « Remplacer le fichier déjà téléchargé », cochée par défaut (décision du 2026-11-07).
+  - Un nom choisi par l'utilisateur (section 7.12) est gardé, contrairement au nom appris du serveur.
+- **Déplacer/Renommer** (`task.update` avec `destDir` et `fileName`, depuis le 2026-11-08 ; portée `control`) : section 7.12.
+  - Une tâche porte `moving`, vrai pendant une copie vers un autre volume.
+  - Annonce : `task.updated` avec `destDir`, `fileName`, `displayName` et `moving` ; avec `moveError` en plus si une copie échoue (la tâche est restée à sa place).
+  - L'application : « Déplacer/Renommer… » dans le menu contextuel ; nom et dossier, l'erreur éventuelle dans la boîte.
+- **Actualiser l'adresse** (`task.update` avec `url`, depuis le 2026-11-08 ; portée `control`) : section 7.13. Annonce : `task.updated` avec `displayName`. L'application : « Actualiser l'adresse… » ; elle relance une tâche en échec une fois l'adresse acceptée.
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
     sont refusées par `INVALID_STATE` et s'annulent d'abord ;
@@ -697,6 +720,11 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32021 | `DEST_NOT_WRITABLE` | Dossier de destination inaccessible en écriture |
 | -32022 | `INSUFFICIENT_SPACE` | Espace disque insuffisant pour la taille annoncée |
 | -32023 | `SECRET_UNAVAILABLE` | Le coffre du système a refusé un secret de `task.add` (depuis le 2026-11-07) |
+| -32024 | `FILE_EXISTS` | Un fichier porte déjà ce nom à la destination (depuis le 2026-11-08, section 7.12) |
+| -32025 | `FILE_MISSING` | Le fichier d'une tâche terminée n'existe plus : rien à déplacer (section 7.12) |
+| -32026 | `MOVE_FAILED` | Le système a refusé le déplacement : fichier ouvert par un autre programme, droits (section 7.12) |
+| -32027 | `SOURCE_MISMATCH` | La nouvelle adresse donne un fichier d'une autre taille (section 7.13) |
+| -32028 | `SOURCE_UNREACHABLE` | La nouvelle adresse ne répond pas, ou refuse (section 7.13) |
 | -32030 | `CAPABILITY_MISSING` | Fonction non disponible dans ce moteur (torrent, vidéo) |
 
 `INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
@@ -940,6 +968,51 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
   - Exécution : sous Windows, `SetSuspendState` pour la veille, `%SystemRoot%\System32\shutdown.exe /s /t 0` pour l'extinction ; sous Linux, `systemctl suspend` ou `systemctl poweroff`. Ailleurs (Android), l'action est refusée.
   - Seul `aurod` branche ces actions. La bibliothèque du moteur, ses tests et ses bancs n'en ont aucune, et refusent. `aurod --simulate-power` écrit l'action dans son journal au lieu de l'exécuter, pour les essais.
   - Portée (section 6.9) : créer, modifier, supprimer ou attacher une planification demande la portée `admin` ; annuler une action de fin, `control`.
+
+### 7.12 Déplacer et renommer (depuis le 2026-11-08)
+
+« Déplacer/Renommer » change le dossier ou le nom du fichier d'une tâche qui ne tourne pas : `queued`, `paused`, `retry_wait`, `failed`, `cancelled` ou `completed`. Une tâche `active` est refusée (`INVALID_STATE`) : il faut d'abord l'arrêter. Protocole : `task.update` avec `destDir`, `fileName`, ou les deux.
+
+- **Ce qui bouge** : le fichier final d'une tâche terminée, le `.part` des autres, que le téléchargement continue ensuite au nouvel endroit. Une tâche pas encore préparée n'a pas de fichier : la préparation prendra ce dossier et ce nom.
+- **Nom choisi** : il est gardé dans `tasks.requested_name` (migration 0003) et sert aussi de nom affiché. La préparation le prend au lieu du nom du serveur, avec « nom (1).ext » s'il est déjà pris (section 7.1, étape 3), et il survit au retéléchargement. `task.add` accepte aussi `fileName`.
+- **Vérifications**, avant de toucher au disque :
+  - un nom valide sur ce système, tel quel : `net::filename::sanitize` doit le rendre inchangé. Sinon le refus est `INVALID_PARAMS`, avec une proposition ; le moteur ne corrige pas en silence ;
+  - un dossier existant, en chemin absolu (`DEST_NOT_WRITABLE`) ;
+  - aucun fichier ni `.part` à ce nom, et aucune autre tâche du dossier qui l'a réservé (`FILE_EXISTS`) : le moteur n'écrase jamais un fichier. Sous Windows, changer seulement la casse du nom est permis ;
+  - le fichier d'une tâche terminée existe encore (`FILE_MISSING`). Un `.part` absent n'empêche rien : la reprise le recrée (section 7.4).
+- **Même volume** : un renommage, durable (dossiers vidés sur disque sous Linux). Le fichier est à sa place au retour de `task.update`.
+- **Autre volume** : le renommage échoue (`CrossesDevices`) et le fichier est copié hors de la boucle du planificateur, qui ne se bloque pas.
+  - La copie va d'abord dans `<destination>.auro-move`. Elle est vidée sur disque avec la date de modification d'origine, puis renommée à sa destination.
+  - `task.update` répond dès le début de la copie, avec `moving` à vrai et l'ancien emplacement.
+  - La fin est annoncée par `task.updated`, avec `moving` à faux et le nouvel emplacement. Si la copie échoue, l'annonce porte l'ancien emplacement et `moveError`, et la copie partielle est effacée.
+  - Pendant la copie, la tâche ne démarre pas. Elle ne se retire pas, ne s'annule pas, ne se retélécharge pas et ne se déplace pas ; ces demandes sont refusées par `INVALID_STATE`. Elle peut seulement être mise en pause ou reprise.
+  - Un arrêt du moteur n'attend pas la fin d'une copie : la reprise au démarrage s'en occupe.
+- **Journal** (table `file_moves`, section 5.3) : écrit avant le premier changement sur le disque.
+  - Phase `moving` : la tâche porte encore l'ancien emplacement.
+  - La tâche ne prend le nouveau que quand le fichier y est, dans la même transaction que la fin du journal. Pour une copie, l'original n'est effacé qu'ensuite, en phase `moved`. À tout instant, la tâche désigne donc un fichier complet.
+- **Reprise au démarrage**, avant toute exécution (`moves::recover`) :
+  - phase `moved` : l'original est effacé ;
+  - copie temporaire présente : effacée ;
+  - seule la destination existe : le renommage avait eu lieu, la tâche la suit ;
+  - les deux existent après une copie, de même taille : la copie était complète et renommée ; la tâche la suit, l'original est effacé ;
+  - sinon, la tâche garde son ancien emplacement, et aucun fichier n'est effacé.
+- **Historique** : pour une tâche terminée, le chemin de sa dernière fin (`history.final_path`) suit le fichier.
+- **Tests** : chaque point d'arrêt de la reprise (`moves::tests`) ; un arrêt simulé entre le renommage et l'enregistrement, suivi d'un redémarrage du moteur (`scheduler::tests`). Les copies vers un autre volume sont simulées dans les tests par un dossier `autre-volume`. Un essai sur deux vrais volumes reste à faire.
+
+### 7.13 Actualiser l'adresse (depuis le 2026-11-08)
+
+« Actualiser l'adresse » remplace l'adresse d'une tâche qui ne tourne pas, typiquement un lien expiré ou à usage limité, régénéré sur le site d'origine. Les états permis sont ceux de la section 7.12. Protocole : `task.update` avec `url`.
+
+- **Tâche commencée** (taille connue, ni terminée ni annulée) : le moteur interroge d'abord la nouvelle adresse (préparation, section 7.1), hors de sa boucle, avec les en-têtes de la tâche.
+  - Elle doit annoncer la même taille, sinon `SOURCE_MISMATCH`. Si elle ne répond pas, `SOURCE_UNREACHABLE`, avec la cause classée (section 6.8). Rien ne change alors.
+  - Si elle est acceptée, ses validateurs (`ETag`, `Last-Modified`) et sa prise en charge des plages remplacent ceux de l'ancienne adresse. La suite du téléchargement les vérifie par `If-Range` (section 7.4).
+  - Décision du 2026-11-08, à confirmer : seule la taille relie les octets déjà reçus à la nouvelle adresse. Deux serveurs d'un même fichier ont rarement le même `ETag`, et l'exiger refuserait presque tout lien régénéré. C'est une validation faible (section 7.4, étape 5) ; une empreinte fournie (F-11) restera la seule garantie.
+  - Une nouvelle adresse sans plages fait repartir le téléchargement du début.
+- **Tâche pas encore préparée, terminée ou annulée** : l'adresse est remplacée sans être interrogée ; la prochaine préparation l'interrogera. Le nom affiché, tant que ni le serveur ni l'utilisateur n'en ont donné, suit la nouvelle adresse.
+- **Cookies** : si l'hôte change, les en-têtes secrets de la tâche (`Cookie`, `Authorization`, `Proxy-Authorization`) ne suivent pas. Ils sont effacés, référence d'abord puis coffre (section 5.1), et la vérification se fait sans eux. Les autres en-têtes (`Referer`, `User-Agent`) restent.
+- **Échecs** : les échecs comptés de la source sont oubliés. L'état de la tâche ne change pas ; l'application relance d'elle-même une tâche en échec après l'actualisation.
+- **Annonce** : `task.updated` avec `displayName`.
+- **Pas encore** : la capture du nouveau lien par l'extension (IDM ouvre la page d'origine et attend le prochain clic) ; aujourd'hui, l'adresse se colle.
 
 ## 8. Sécurité, vie privée et cadre légal
 

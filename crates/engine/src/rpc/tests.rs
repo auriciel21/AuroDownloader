@@ -1261,3 +1261,122 @@ async fn schedules_are_set_attached_announced_and_removed() {
     );
     engine.shutdown().await;
 }
+
+/// « Déplacer/Renommer » et « Actualiser l'adresse » par `task.update` (SPEC §7.12 et
+/// §7.13), et `fileName` de `task.add`.
+#[tokio::test]
+async fn task_update_moves_renames_and_replaces_the_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let server = site(64 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/r.bin")}], "destDir": dir_text(dir.path()),
+                   "fileName": "donné.bin"}),
+        )
+        .await["taskId"]
+        .clone();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id && p["to"] == "completed"
+    })
+    .await;
+    assert!(dir.path().join("donné.bin").exists());
+
+    let moved = c
+        .result(
+            "task.update",
+            json!({"taskId": id, "destDir": dir_text(&elsewhere), "fileName": "rangé.bin"}),
+        )
+        .await;
+    assert_eq!(moved["destDir"], json!(dir_text(&elsewhere)));
+    assert_eq!(moved["fileName"], "rangé.bin");
+    assert_eq!(moved["moving"], false);
+    let note = c
+        .notification("task.updated", |p| {
+            p["taskId"] == id && p["destDir"].is_string()
+        })
+        .await;
+    assert_eq!(note["fileName"], "rangé.bin");
+    assert_eq!(note["displayName"], "rangé.bin");
+    assert_eq!(note["moving"], false);
+    assert!(elsewhere.join("rangé.bin").exists());
+
+    std::fs::write(elsewhere.join("pris.bin"), b"x").unwrap();
+    let refused = [
+        (json!({"taskId": id, "fileName": "pris.bin"}), "FILE_EXISTS"),
+        (json!({"taskId": id, "fileName": "a/b"}), "INVALID_PARAMS"),
+        (
+            json!({"taskId": id, "fileName": "c.bin", "url": server.url("/s.bin")}),
+            "INVALID_PARAMS",
+        ),
+        (json!({"taskId": id, "url": "ftp://h/f"}), "URL_INVALID"),
+    ];
+    for (params, code) in refused {
+        assert_eq!(
+            c.error_code("task.update", params.clone()).await,
+            code,
+            "{params}"
+        );
+    }
+
+    // Tâche commencée : la nouvelle adresse doit donner le même fichier.
+    let size = 1024 * 1024;
+    let slow = serve_file_paced(
+        Arc::new(Mutex::new(FileSite::new(size))),
+        Some(Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(10),
+        }),
+    );
+    let started = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": slow.url("/l.bin")}], "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .clone();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == started && p["to"] == "active"
+    })
+    .await;
+    c.result("task.pause", json!({"taskIds": [started]})).await;
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == started && p["to"] == "paused"
+    })
+    .await;
+    let other = site(1000);
+    let cases = [
+        (other.url("/x"), "SOURCE_MISMATCH"),
+        ("http://127.0.0.1:1/x".to_owned(), "SOURCE_UNREACHABLE"),
+    ];
+    for (url, code) in cases {
+        let params = json!({"taskId": started, "url": url});
+        assert_eq!(c.error_code("task.update", params).await, code, "{url}");
+    }
+    let same = site(size);
+    c.result(
+        "task.update",
+        json!({"taskId": started, "url": same.url("/l.bin")}),
+    )
+    .await;
+    let detail = c
+        .result(
+            "task.get",
+            json!({"taskId": started, "include": ["sources"]}),
+        )
+        .await;
+    assert_eq!(detail["sources"][0]["url"], json!(same.url("/l.bin")));
+    c.result("task.resume", json!({"taskIds": [started]})).await;
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == started && p["to"] == "completed"
+    })
+    .await;
+    engine.shutdown().await;
+}

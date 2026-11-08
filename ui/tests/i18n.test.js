@@ -34,6 +34,7 @@ test("états avec leur cause", () => {
   assert.equal(stateText({ state: "paused", pauseReason: "user" }, fr), "En pause");
   assert.equal(stateText({ state: "paused", pauseReason: "disk_full" }, fr), "En pause (disque plein)");
   assert.equal(stateText({ state: "paused", pauseReason: "disk_full" }, en), "Paused (disk full)");
+  assert.equal(stateText({ state: "completed", moving: true }, en), "Moving the file…");
   assert.equal(stateText({ state: "failed", errorCode: "NET_TIMEOUT" }, fr), "Échec : délai dépassé");
   assert.equal(stateText({ state: "failed", errorCode: "NET_TIMEOUT" }, en), "Failed: timed out");
   assert.equal(stateText({ state: "failed", errorCode: "NOUVEAU_CODE" }, fr), "Échec : NOUVEAU_CODE");

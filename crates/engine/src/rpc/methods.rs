@@ -176,17 +176,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "task.add" => task_add(ctx, &p).await,
         "task.get" => task_get(ctx, &p).await,
         "task.list" => task_list(ctx, &p).await,
-        "task.update" => {
-            p.refuse(&["maxConnections", "destDir", "fileName", "checksum"])?;
-            let update = TaskUpdate {
-                speed_limit_bps: p.limit("speedLimitBps")?,
-            };
-            let task = ctx
-                .engine
-                .update_task(&p.required_str("taskId")?, update)
-                .await?;
-            Ok(task_json(&task))
-        }
+        "task.update" => task_update(ctx, &p).await,
         "task.pause" => for_each(ctx, &p, Action::Pause).await,
         "task.resume" => for_each(ctx, &p, Action::Resume).await,
         "task.cancel" => {
@@ -391,8 +381,39 @@ async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
     Ok(json!({"downloadBps": download, "uploadBps": null}))
 }
 
+/// `task.update` : limite de débit, nouvelle adresse (SPEC §7.13), ou nouveau dossier et
+/// nouveau nom (SPEC §7.12). L'adresse se change à part : chaque opération est vérifiée
+/// en entier avant de changer quoi que ce soit, pas leur combinaison.
+async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    p.refuse(&["maxConnections", "checksum"])?;
+    let id = p.required_str("taskId")?;
+    let url = p.str("url")?;
+    let dest_dir = p.str("destDir")?;
+    let file_name = p.str("fileName")?;
+    let speed_limit_bps = p.limit("speedLimitBps")?;
+    let relocate = dest_dir.is_some() || file_name.is_some();
+    let several = [url.is_some(), relocate, speed_limit_bps.is_some()]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if several > 1 {
+        return Err(RpcError::invalid_params(
+            "url, destDir et fileName, et speedLimitBps se changent par des appels séparés",
+        ));
+    }
+    let task = if let Some(url) = url {
+        ctx.engine.set_url(&id, &url).await?
+    } else if relocate {
+        ctx.engine.relocate(&id, dest_dir, file_name).await?
+    } else {
+        let update = TaskUpdate { speed_limit_bps };
+        ctx.engine.update_task(&id, update).await?
+    };
+    Ok(task_json(&task))
+}
+
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
-    p.refuse(&["fileName", "checksum"])?;
+    p.refuse(&["checksum"])?;
     let idempotency_key = p.str("idempotencyKey")?;
     if idempotency_key
         .as_ref()
@@ -437,6 +458,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             start_paused: p.bool("startPaused")?,
             idempotency_key,
             headers: p.string_map("headers")?,
+            file_name: p.str("fileName")?,
         })
         .await?;
     Ok(json!({"taskId": task_id}))

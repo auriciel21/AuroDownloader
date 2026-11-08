@@ -305,6 +305,7 @@ async fn higher_priority_starts_first() {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &[],
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
@@ -473,6 +474,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         max_connections: None,
         speed_limit_bps: None,
         idempotency_key: None,
+        requested_name: None,
         headers: &[],
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
@@ -557,6 +559,8 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::Prepared { rev, .. }
                 | Event::Removed { rev, .. }
                 | Event::Restarted { rev, .. }
+                | Event::Relocated { rev, .. }
+                | Event::SourceChanged { rev, .. }
                 | Event::LimitsChanged { rev, .. }
                 | Event::DownloadDirChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
@@ -1337,6 +1341,7 @@ async fn orphan_secrets_are_collected_at_start() {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &stored,
         },
     )
@@ -1435,5 +1440,366 @@ async fn a_running_or_queued_task_is_not_restarted() {
     .expect("retéléchargement annoncé");
     wait_state(&mut events, &id, TaskState::Queued).await;
     engine.cancel(&id, true).await.unwrap();
+    engine.shutdown().await;
+}
+
+/// Attend la fin annoncée d'un déplacement de `task_id` ; renvoie son erreur éventuelle.
+async fn wait_relocated(events: &mut broadcast::Receiver<Event>, task_id: &str) -> Option<String> {
+    timeout(WAIT, async {
+        loop {
+            if let Ok(Event::Relocated {
+                task_id: t,
+                moving: false,
+                error,
+                ..
+            }) = events.recv().await
+                && t == task_id
+            {
+                return error;
+            }
+        }
+    })
+    .await
+    .expect("fin du déplacement annoncée")
+}
+
+fn dir_text(path: &Path) -> String {
+    path.to_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_paused_task_is_moved_and_renamed_then_finishes_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let server = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/avant.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+    assert!(part_path(&dir.path().join("avant.bin")).exists());
+
+    let moved = engine
+        .relocate(&id, Some(dir_text(&elsewhere)), Some("après.bin".into()))
+        .await
+        .unwrap();
+    assert_eq!(moved.dest_dir, dir_text(&elsewhere));
+    assert_eq!(moved.file_name.as_deref(), Some("après.bin"));
+    assert_eq!(moved.display_name, "après.bin");
+    assert!(!moved.moving, "même volume : fini au retour");
+    assert!(!part_path(&dir.path().join("avant.bin")).exists());
+    assert!(part_path(&elsewhere.join("après.bin")).exists());
+
+    engine.resume(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(&elsewhere, "après.bin", 4 * SIZE);
+
+    // Le nom choisi survit au retéléchargement.
+    engine.restart(&id, true).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(&elsewhere, "après.bin", 4 * SIZE);
+    assert_eq!(
+        task(dir.path(), &id).file_name.as_deref(),
+        Some("après.bin")
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_completed_file_is_copied_to_another_volume() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join(crate::moves::SIMULATED_VOLUME);
+    std::fs::create_dir(&other).unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/fini.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+
+    let started = engine
+        .relocate(&id, Some(dir_text(&other)), None)
+        .await
+        .unwrap();
+    assert!(started.moving, "copie en cours au retour");
+    assert_eq!(
+        started.dest_dir,
+        dir_text(dir.path()),
+        "pas encore déplacée"
+    );
+    assert!(matches!(
+        engine.remove(&id, true).await,
+        Err(EngineError::Moving(_))
+    ));
+    assert_eq!(wait_relocated(&mut events, &id).await, None);
+
+    let t = task(dir.path(), &id);
+    assert_eq!((t.dest_dir, t.moving), (dir_text(&other), false));
+    assert!(!dir.path().join("fini.bin").exists(), "original effacé");
+    assert_file(&other, "fini.bin", SIZE);
+    assert!(!crate::moves::temp_for(&other.join("fini.bin")).exists());
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let final_path: String = conn
+        .query_row(
+            "SELECT final_path FROM history WHERE task_id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(final_path, other.join("fini.bin").to_string_lossy());
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_task_not_yet_prepared_takes_the_chosen_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    // Nom donné à l'ajout.
+    let given = engine
+        .add(AddTask {
+            file_name: Some("donné.bin".into()),
+            ..add(&server.url("/serveur.bin"), dir.path())
+        })
+        .await
+        .unwrap();
+    assert_eq!(task(dir.path(), &given).display_name, "donné.bin");
+    wait_state(&mut events, &given, TaskState::Completed).await;
+    assert_file(dir.path(), "donné.bin", SIZE);
+
+    // Nom changé avant la préparation.
+    let later = engine
+        .add(AddTask {
+            start_paused: true,
+            ..add(&server.url("/serveur.bin"), dir.path())
+        })
+        .await
+        .unwrap();
+    let t = engine
+        .relocate(&later, None, Some("choisi.bin".into()))
+        .await
+        .unwrap();
+    assert_eq!((t.file_name, t.display_name.as_str()), (None, "choisi.bin"));
+    engine.resume(&later).await.unwrap();
+    wait_state(&mut events, &later, TaskState::Completed).await;
+    assert_file(dir.path(), "choisi.bin", SIZE);
+    assert!(!dir.path().join("serveur.bin").exists());
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn moves_that_would_lose_or_overwrite_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/garde.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    assert!(matches!(
+        engine.relocate(&id, None, Some("x.bin".into())).await,
+        Err(EngineError::InvalidState { .. })
+    ));
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+
+    std::fs::write(dir.path().join("pris.bin"), b"autre").unwrap();
+    assert!(matches!(
+        engine.relocate(&id, None, Some("pris.bin".into())).await,
+        Err(EngineError::FileExists(_))
+    ));
+    assert_eq!(
+        std::fs::read(dir.path().join("pris.bin")).unwrap(),
+        b"autre"
+    );
+    for bad in ["a/b.bin", "..", " ", "nom "] {
+        assert!(
+            matches!(
+                engine.relocate(&id, None, Some(bad.into())).await,
+                Err(EngineError::BadRequest(_))
+            ),
+            "{bad:?} refusé"
+        );
+    }
+    assert!(matches!(
+        engine.relocate(&id, Some("relatif".into()), None).await,
+        Err(EngineError::DestDir(_))
+    ));
+    let t = task(dir.path(), &id);
+    assert_eq!(t.file_name.as_deref(), Some("garde.bin"), "rien n'a changé");
+    assert!(part_path(&dir.path().join("garde.bin")).exists());
+    engine.cancel(&id, true).await.unwrap();
+
+    // Fichier terminé disparu : rien à déplacer.
+    let (_, fast) = fast_site(SIZE);
+    let done = engine
+        .add(add(&fast.url("/parti.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &done, TaskState::Completed).await;
+    std::fs::remove_file(dir.path().join("parti.bin")).unwrap();
+    assert!(matches!(
+        engine.relocate(&done, None, Some("ici.bin".into())).await,
+        Err(EngineError::FileMissing(_))
+    ));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_expired_address_is_replaced_and_the_download_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&old.url("/lien.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+    let done = task(dir.path(), &id).done_bytes;
+    assert!(done > 0, "commencée");
+
+    // Pas le même fichier, ou injoignable : refusé, rien ne change.
+    let (_, smaller) = fast_site(3 * SIZE);
+    assert!(matches!(
+        engine.set_url(&id, &smaller.url("/autre.bin")).await,
+        Err(EngineError::SourceMismatch { .. })
+    ));
+    assert!(matches!(
+        engine.set_url(&id, "http://127.0.0.1:1/mort.bin").await,
+        Err(EngineError::SourceUnreachable(_))
+    ));
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    assert_eq!(
+        tasks::primary_source(&conn, &id).unwrap().url,
+        old.url("/lien.bin")
+    );
+
+    // Le même fichier, ailleurs, avec un autre ETag : ses validateurs remplacent les
+    // anciens, sinon la reprise y verrait un fichier changé.
+    let (site, fresh) = fast_site(4 * SIZE);
+    site.lock().unwrap().etag = Some("\"v2\"".into());
+    engine.set_url(&id, &fresh.url("/neuf.bin")).await.unwrap();
+    assert_eq!(
+        tasks::primary_source(&conn, &id).unwrap().url,
+        fresh.url("/neuf.bin")
+    );
+    engine.resume(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_file(dir.path(), "lien.bin", 4 * SIZE);
+    // Reprise, pas recommencement : la nouvelle adresse n'a servi que ce qui manquait.
+    let asked: u64 = fresh
+        .requests()
+        .iter()
+        .filter(|r| r.method == "GET")
+        .filter_map(|r| {
+            let (a, b) = r.header("range")?.strip_prefix("bytes=")?.split_once('-')?;
+            Some(b.parse::<u64>().ok()? - a.parse::<u64>().ok()? + 1)
+        })
+        .sum();
+    assert!(
+        asked <= 4 * SIZE as u64 - done,
+        "{asked} octets demandés, {done} déjà là"
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cookies_do_not_follow_an_address_to_another_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let id = engine
+        .add(AddTask {
+            start_paused: true,
+            headers: vec![
+                ("Referer".into(), "https://exemple.org/page".into()),
+                ("Cookie".into(), "session=s3cr3t".into()),
+            ],
+            ..add(&server.url("/c.bin"), dir.path())
+        })
+        .await
+        .unwrap();
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    // Même hôte : le cookie reste ; le nom affiché suit l'adresse.
+    let t = engine.set_url(&id, &server.url("/d.bin")).await.unwrap();
+    assert_eq!(t.display_name, "d.bin");
+    assert_eq!(headers::secret_refs(&conn, &id).unwrap().len(), 1);
+    // Autre hôte : le cookie est effacé, le Referer reste.
+    let other = server.url("/e.bin").replace("127.0.0.1", "localhost");
+    assert_ne!(other, server.url("/e.bin"));
+    engine.set_url(&id, &other).await.unwrap();
+    assert!(headers::secret_refs(&conn, &id).unwrap().is_empty());
+    assert_eq!(headers::load(&conn, &id).unwrap().len(), 1);
+    engine.shutdown().await;
+}
+
+/// Un déplacement interrompu par un arrêt du moteur est fini au démarrage suivant, avant
+/// que la tâche ne reparte (SPEC §7.12).
+#[tokio::test]
+async fn a_move_interrupted_by_a_crash_is_finished_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let server = slow_site(4 * SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/arrêt.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Paused).await;
+    engine.shutdown().await;
+
+    // Arrêt simulé entre le renommage du `.part` et l'enregistrement : journal en phase
+    // `moving`, fichier déjà à sa nouvelle place ; la tâche, remise en file, attend.
+    let from = part_path(&dir.path().join("arrêt.bin"));
+    let to = part_path(&elsewhere.join("déplacé.bin"));
+    std::fs::rename(&from, &to).unwrap();
+    {
+        let conn = store::open(&dir.path().join("auro.db")).unwrap();
+        store::moves::begin(
+            &conn,
+            &store::moves::FileMove {
+                task_id: id.clone(),
+                from_path: from.to_string_lossy().into_owned(),
+                to_path: to.to_string_lossy().into_owned(),
+                temp_path: None,
+                dest_dir: dir_text(&elsewhere),
+                file_name: "déplacé.bin".into(),
+                phase: store::moves::Phase::Moving,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tasks SET state = 'queued', pause_reason = NULL WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    }
+
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    let t = task(dir.path(), &id);
+    assert_eq!(t.dest_dir, dir_text(&elsewhere));
+    assert!(!t.moving);
+    assert_file(&elsewhere, "déplacé.bin", 4 * SIZE);
+    assert!(!dir.path().join("arrêt.bin").exists());
     engine.shutdown().await;
 }

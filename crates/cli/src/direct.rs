@@ -47,6 +47,7 @@ pub fn get(
             max_connections: connections,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &[],
         },
     )?;

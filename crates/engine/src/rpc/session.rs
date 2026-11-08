@@ -330,6 +330,37 @@ async fn describe(
                 )
             })
         }
+        Event::Relocated {
+            rev,
+            task_id,
+            dest_dir,
+            file_name,
+            display_name,
+            moving,
+            error,
+        } if topics.tasks => {
+            let mut params = json!({
+                "rev": rev,
+                "taskId": task_id,
+                "destDir": dest_dir,
+                "fileName": file_name,
+                "displayName": display_name,
+                "moving": moving,
+            });
+            // Échec d'une copie vers un autre volume : la tâche est restée à sa place.
+            if let Some(error) = error {
+                params["moveError"] = json!(error);
+            }
+            Some(notification("task.updated", params))
+        }
+        Event::SourceChanged {
+            rev,
+            task_id,
+            display_name,
+        } if topics.tasks => Some(notification(
+            "task.updated",
+            json!({"rev": rev, "taskId": task_id, "displayName": display_name}),
+        )),
         Event::Removed { rev, task_id } if topics.tasks => Some(notification(
             "task.removed",
             json!({"rev": rev, "taskId": task_id}),

@@ -126,6 +126,12 @@ pub struct TaskRow {
     pub created_at: i64,
     /// Fin (terminée, en échec ou annulée), en millisecondes Unix ; `None` avant.
     pub finished_at: Option<i64>,
+    /// Nom choisi par l'utilisateur (« Déplacer/Renommer », `fileName` de `task.add`) ;
+    /// `None` : celui du serveur.
+    pub requested_name: Option<String>,
+    /// Son fichier est en cours de déplacement (SPEC §7.12) : elle ne démarre pas, et ne
+    /// se retire, ne s'annule ni ne se retélécharge avant la fin.
+    pub moving: bool,
 }
 
 /// Une source de téléchargement.
@@ -208,6 +214,9 @@ pub struct NewTask<'a> {
     pub speed_limit_bps: Option<u64>,
     /// Clé d'idempotence de `task.add` ; unique parmi les tâches présentes.
     pub idempotency_key: Option<&'a str>,
+    /// Nom choisi par l'utilisateur (`fileName` de `task.add`), déjà vérifié ; `None` :
+    /// celui du serveur, appris à la préparation.
+    pub requested_name: Option<&'a str>,
     /// En-têtes HTTP de la tâche ; les secrets sont déjà dans le coffre.
     pub headers: &'a [StoredHeader],
 }
@@ -222,11 +231,11 @@ pub fn create_task(
     let limit = limit_to_sql(new.speed_limit_bps)?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
-                            max_connections, speed_limit_bps, idempotency_key, created_at,
-                            updated_at)
+                            max_connections, speed_limit_bps, idempotency_key, requested_name,
+                            created_at, updated_at)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?7, ?8, ?6, ?6)",
+                 ?3, ?4, ?5, ?7, ?8, ?9, ?6, ?6)",
         params![
             task_id,
             new.queue_id,
@@ -235,7 +244,8 @@ pub fn create_task(
             new.max_connections,
             now,
             limit,
-            new.idempotency_key
+            new.idempotency_key,
+            new.requested_name
         ],
     )?;
     tx.execute(
@@ -249,7 +259,8 @@ pub fn create_task(
 
 const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_bytes, \
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
-     queue_id, priority, speed_limit_bps, created_at, finished_at";
+     queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
+     EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id)";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -270,6 +281,8 @@ struct RawTask {
     speed_limit_bps: Option<i64>,
     created_at: i64,
     finished_at: Option<i64>,
+    requested_name: Option<String>,
+    moving: bool,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -291,6 +304,8 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         speed_limit_bps: row.get(14)?,
         created_at: row.get(15)?,
         finished_at: row.get(16)?,
+        requested_name: row.get(17)?,
+        moving: row.get(18)?,
     })
 }
 
@@ -321,6 +336,8 @@ impl TryFrom<RawTask> for TaskRow {
             error_detail: raw.error_detail,
             created_at: raw.created_at,
             finished_at: raw.finished_at,
+            requested_name: raw.requested_name,
+            moving: raw.moving,
         })
     }
 }
@@ -400,8 +417,8 @@ pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, Sto
     source_row(raw)
 }
 
-/// Sources d'une tâche, de la préférée à la dernière ; aucune pour une tâche terminée
-/// (elles partent avec sa fin, section 5.6, règle 4).
+/// Sources d'une tâche, de la préférée à la dernière. Elles restent après sa fin, jusqu'à
+/// son retrait (section 5.6, règle 4) ; une tâche terminée avant le 2026-11-07 n'en a plus.
 pub fn load_sources(conn: &Connection, task_id: &str) -> Result<Vec<SourceRow>, StoreError> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {SOURCE_COLUMNS} FROM sources WHERE task_id = ?1 ORDER BY rank, id"
@@ -475,6 +492,71 @@ pub fn save_preparation(
         params![task_id, prep.file_name],
     )?;
     set_size_and_segments(&tx, task_id, prep.total_bytes, segments)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ce que le moteur a appris de la nouvelle adresse d'une tâche préparée (« Actualiser
+/// l'adresse », SPEC §7.13).
+#[derive(Debug, Clone, Copy)]
+pub struct Revalidation<'a> {
+    pub accepts_ranges: bool,
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+    pub total_bytes: Option<u64>,
+}
+
+/// Remplace l'adresse de la source préférée d'une tâche, et oublie ses échecs. Avec
+/// `check`, les validateurs de la source deviennent ceux de la nouvelle adresse, que les
+/// requêtes suivantes vérifieront (`If-Range`) ; sans (tâche pas encore préparée), la
+/// préparation les apprendra. `display_name` : nouveau nom affiché, s'il change.
+pub fn replace_url(
+    conn: &mut Connection,
+    task_id: &str,
+    url: &str,
+    check: Option<&Revalidation<'_>>,
+    display_name: Option<&str>,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let source_id: String = tx
+        .query_row(
+            "SELECT id FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::NoSource {
+            task_id: task_id.to_owned(),
+        })?;
+    tx.execute(
+        "UPDATE sources SET url = ?2, fail_count = 0, last_error = NULL WHERE id = ?1",
+        params![source_id, url],
+    )?;
+    if let Some(check) = check {
+        let length = check.total_bytes.map(|t| to_i64(t, "taille")).transpose()?;
+        tx.execute(
+            "UPDATE sources SET accepts_ranges = ?2, etag = ?3, last_modified = ?4,
+                                content_length = ?5, state = 'ok'
+             WHERE id = ?1",
+            params![
+                source_id,
+                check.accepts_ranges,
+                check.etag,
+                check.last_modified,
+                length
+            ],
+        )?;
+    }
+    if let Some(name) = display_name {
+        tx.execute(
+            "UPDATE tasks SET display_name = ?2 WHERE id = ?1",
+            params![task_id, name],
+        )?;
+    }
+    tx.execute(
+        "UPDATE tasks SET updated_at = ?2 WHERE id = ?1",
+        params![task_id, now_ms()],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -771,8 +853,10 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
     let mut stmt = conn.prepare(
         "SELECT t.id, t.queue_id, q.max_active, t.state
          FROM tasks t JOIN queues q ON q.id = t.queue_id
-         WHERE t.state IN ('queued', 'active')
-            OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1)
+         WHERE (t.state IN ('queued', 'active')
+                OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1))
+           -- Pendant le déplacement de son fichier, une tâche attend (SPEC §7.12).
+           AND NOT EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = t.id)
          ORDER BY q.position, t.state = 'active' DESC, t.priority DESC, t.position, t.id",
     )?;
     let rows = stmt.query_map([now], |r| {
@@ -970,6 +1054,7 @@ mod tests {
                 max_connections: None,
                 speed_limit_bps: None,
                 idempotency_key: None,
+                requested_name: None,
                 headers: &[],
             },
         )

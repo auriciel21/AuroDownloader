@@ -193,6 +193,24 @@ pub enum Event {
         rev: u64,
         task_id: String,
     },
+    /// Dossier ou nom d'une tâche changé (« Déplacer/Renommer », SPEC §7.12) ; aussi au
+    /// début d'un déplacement vers un autre volume (`moving`), et à sa fin, réussie ou non
+    /// (`error`).
+    Relocated {
+        rev: u64,
+        task_id: String,
+        dest_dir: String,
+        file_name: Option<String>,
+        display_name: String,
+        moving: bool,
+        error: Option<String>,
+    },
+    /// Adresse d'une tâche remplacée (« Actualiser l'adresse », SPEC §7.13).
+    SourceChanged {
+        rev: u64,
+        task_id: String,
+        display_name: String,
+    },
     /// Tâche retirée (`task.remove`) : elle n'existe plus.
     Removed {
         rev: u64,
@@ -307,6 +325,26 @@ pub enum EngineError {
 
     #[error(transparent)]
     Vault(#[from] VaultError),
+
+    #[error("la tâche {0} : déplacement de son fichier en cours, attendre sa fin")]
+    Moving(String),
+
+    #[error("{} existe déjà : le moteur n'écrase jamais un fichier", .0.display())]
+    FileExists(PathBuf),
+
+    #[error("{} n'existe plus : rien à déplacer", .0.display())]
+    FileMissing(PathBuf),
+
+    #[error("déplacement impossible : {0}")]
+    Move(#[source] std::io::Error),
+
+    #[error(
+        "la nouvelle adresse donne un fichier de {found} au lieu de {expected} octets : ce \n         n'est pas le même fichier"
+    )]
+    SourceMismatch { expected: u64, found: String },
+
+    #[error("nouvelle adresse injoignable : {0}")]
+    SourceUnreachable(#[source] NetError),
 }
 
 /// Tâche à ajouter.
@@ -330,9 +368,32 @@ pub struct AddTask {
     /// En-têtes HTTP de la tâche (`Referer`, `Cookie`…) ; les secrets vont au coffre du
     /// système (SPEC §5.1).
     pub headers: Vec<(String, String)>,
+    /// Nom du fichier choisi (SPEC §7.12) ; `None` : celui du serveur.
+    pub file_name: Option<String>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
+
+/// Ce que la boucle donne pour vérifier une nouvelle adresse (SPEC §7.13).
+#[derive(Debug, Clone)]
+pub struct SourceCheck {
+    /// Taille à retrouver à la nouvelle adresse ; `None` : rien à vérifier (tâche pas
+    /// encore préparée, de taille inconnue, terminée ou annulée).
+    expect_bytes: Option<u64>,
+    /// En-têtes à envoyer ; sans les secrets si l'hôte change.
+    headers: Vec<StoredHeader>,
+    /// L'hôte change : les secrets de la tâche (cookies) ne suivent pas.
+    other_host: bool,
+}
+
+/// Ce que le moteur a appris de la nouvelle adresse.
+#[derive(Debug, Clone)]
+pub struct SourceFacts {
+    total_bytes: u64,
+    accepts_ranges: bool,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
 
 enum Command {
     Add(AddTask, Reply<String>),
@@ -352,6 +413,24 @@ enum Command {
         task_id: String,
         delete_files: bool,
         reply: Reply<()>,
+    },
+    Relocate {
+        task_id: String,
+        dest_dir: Option<String>,
+        file_name: Option<String>,
+        reply: Reply<TaskRow>,
+    },
+    /// Ce qu'il faut pour vérifier une nouvelle adresse, hors de la boucle.
+    CheckSource {
+        task_id: String,
+        url: String,
+        reply: Reply<SourceCheck>,
+    },
+    ReplaceUrl {
+        task_id: String,
+        url: String,
+        facts: Option<SourceFacts>,
+        reply: Reply<TaskRow>,
     },
     Get(String, Reply<TaskRow>),
     Details(String, Include, Reply<TaskDetails>),
@@ -398,6 +477,9 @@ enum Command {
 #[derive(Debug, Clone)]
 pub struct Engine {
     commands: mpsc::Sender<Command>,
+    /// Pour vérifier une nouvelle adresse hors de la boucle (`set_url`).
+    client: Client,
+    vault: Vault,
     events: broadcast::Sender<Event>,
     default_queue: String,
     rev: Arc<AtomicU64>,
@@ -409,7 +491,10 @@ impl Engine {
     /// reprend aussitôt les tâches interrompues par un arrêt du moteur (SPEC §7.4).
     /// Demande un environnement d'exécution `tokio`.
     pub fn start(mut config: Config) -> Result<Engine, EngineError> {
-        let conn = store::open(&config.db_path)?;
+        let mut conn = store::open(&config.db_path)?;
+        // Déplacements interrompus par un arrêt : finis ou annulés avant toute exécution
+        // (SPEC §7.12).
+        crate::moves::recover(&mut conn)?;
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
         let download_limit = settings::download_limit(&conn)?;
         // Les secrets de cette base seulement (voir `secrets`).
@@ -418,6 +503,7 @@ impl Engine {
             .vault
             .scoped(&settings::vault_namespace(&conn)?);
         config.transfer.vault = vault.clone();
+        let vault_for_handle = vault.clone();
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
@@ -432,6 +518,7 @@ impl Engine {
             download_limit,
             prepared_tx,
         );
+        let client = state.config.client.clone();
         tokio::spawn(async move {
             state.run(inbox, prepared).await;
             let _ = stopped_tx.send(true);
@@ -450,6 +537,8 @@ impl Engine {
         });
         Ok(Engine {
             commands,
+            client,
+            vault: vault_for_handle,
             events,
             default_queue,
             rev,
@@ -638,6 +727,76 @@ impl Engine {
         .await
     }
 
+    /// Déplace ou renomme le fichier d'une tâche qui ne tourne pas (SPEC §7.12) : le
+    /// fichier final d'une tâche terminée, le `.part` des autres ; une tâche pas encore
+    /// préparée prendra ce dossier et ce nom. Sur le même volume, le fichier est à sa place
+    /// au retour. Vers un autre volume, la copie continue après le retour (`moving`) ; sa
+    /// fin est annoncée par [`Event::Relocated`].
+    pub async fn relocate(
+        &self,
+        task_id: &str,
+        dest_dir: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<TaskRow, EngineError> {
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::Relocate {
+            task_id,
+            dest_dir,
+            file_name,
+            reply,
+        })
+        .await
+    }
+
+    /// Remplace l'adresse d'une tâche qui ne tourne pas (« Actualiser l'adresse », SPEC
+    /// §7.13), par exemple un lien expiré. Pour une tâche commencée, la nouvelle adresse
+    /// est d'abord interrogée : elle doit donner un fichier de même taille. Les cookies de
+    /// la tâche ne suivent pas vers un autre hôte.
+    pub async fn set_url(&self, task_id: &str, url: &str) -> Result<TaskRow, EngineError> {
+        net::check_url(url)?;
+        let (id, address) = (task_id.to_owned(), url.to_owned());
+        let check = self
+            .ask(|reply| Command::CheckSource {
+                task_id: id,
+                url: address,
+                reply,
+            })
+            .await?;
+        let facts = match check.expect_bytes {
+            None => None,
+            Some(expected) => {
+                let headers = reveal(check.headers, &self.vault).await?;
+                let probe = self
+                    .client
+                    .probe(url, &headers)
+                    .await
+                    .map_err(EngineError::SourceUnreachable)?;
+                if probe.total_bytes != Some(expected) {
+                    return Err(EngineError::SourceMismatch {
+                        expected,
+                        found: probe
+                            .total_bytes
+                            .map_or_else(|| "taille inconnue".into(), |n| n.to_string()),
+                    });
+                }
+                Some(SourceFacts {
+                    total_bytes: expected,
+                    accepts_ranges: probe.accepts_ranges,
+                    etag: probe.etag,
+                    last_modified: probe.last_modified,
+                })
+            }
+        };
+        let (task_id, url) = (task_id.to_owned(), url.to_owned());
+        self.ask(|reply| Command::ReplaceUrl {
+            task_id,
+            url,
+            facts,
+            reply,
+        })
+        .await
+    }
+
     /// Retire une tâche finie (terminée, en échec ou annulée) ; avec `delete_files`,
     /// supprime d'abord son fichier : le fichier final d'une tâche terminée, le `.part`
     /// des autres.
@@ -738,6 +897,9 @@ struct Scheduler {
     prepared: mpsc::UnboundedSender<String>,
     /// Plages horaires et action de fin (F-16).
     planning: planning::State,
+    /// Les copies vers un autre volume (SPEC §7.12) y signalent leur fin.
+    moved: mpsc::UnboundedSender<(String, std::io::Result<()>)>,
+    moved_rx: Option<mpsc::UnboundedReceiver<(String, std::io::Result<()>)>>,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -757,6 +919,7 @@ impl Scheduler {
         download_limit: Option<u64>,
         prepared: mpsc::UnboundedSender<String>,
     ) -> Self {
+        let (moved, moved_rx) = mpsc::unbounded_channel();
         Scheduler {
             conn,
             config,
@@ -776,6 +939,8 @@ impl Scheduler {
             next_disk_check: Instant::now(),
             prepared,
             planning: planning::State::default(),
+            moved,
+            moved_rx: Some(moved_rx),
         }
     }
 
@@ -784,6 +949,10 @@ impl Scheduler {
         mut inbox: mpsc::Receiver<Command>,
         mut prepared: mpsc::UnboundedReceiver<String>,
     ) {
+        let mut moved = self
+            .moved_rx
+            .take()
+            .expect("la boucle ne tourne qu'une fois");
         loop {
             if self.shutdown.is_none() {
                 self.recheck_disk();
@@ -811,6 +980,7 @@ impl Scheduler {
                     }
                 }
                 Some(task_id) = prepared.recv() => self.announce_prepared(&task_id),
+                Some((task_id, result)) = moved.recv() => self.moved(&task_id, result),
                 _ = tokio::time::sleep(wake), if self.shutdown.is_none() => {}
             }
         }
@@ -1041,6 +1211,29 @@ impl Scheduler {
                 reply,
             } => {
                 let _ = reply.send(self.restart(&task_id, delete_files));
+            }
+            Command::Relocate {
+                task_id,
+                dest_dir,
+                file_name,
+                reply,
+            } => {
+                let _ = reply.send(self.relocate(&task_id, dest_dir, file_name));
+            }
+            Command::CheckSource {
+                task_id,
+                url,
+                reply,
+            } => {
+                let _ = reply.send(self.check_source(&task_id, &url));
+            }
+            Command::ReplaceUrl {
+                task_id,
+                url,
+                facts,
+                reply,
+            } => {
+                let _ = reply.send(self.replace_url(&task_id, &url, facts));
             }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
@@ -1290,6 +1483,9 @@ impl Scheduler {
         net::check_task_headers(&task.headers)
             .map_err(|e| EngineError::BadRequest(e.to_string()))?;
         Self::check_speed_limit(task.speed_limit_bps)?;
+        if let Some(name) = &task.file_name {
+            check_file_name(name)?;
+        }
         let dest_dir = match task.dest_dir {
             Some(dir) => dir,
             None => self.download_dir()?.ok_or_else(|| {
@@ -1305,7 +1501,10 @@ impl Scheduler {
         if !tasks::queue_exists(&self.conn, &queue_id)? {
             return Err(EngineError::QueueNotFound(queue_id));
         }
-        let display_name = transfer::display_name_for(&task.url);
+        let display_name = task
+            .file_name
+            .clone()
+            .unwrap_or_else(|| transfer::display_name_for(&task.url));
         // Les secrets d'abord, leurs références ensuite (SPEC §5.1) ; si la tâche n'est
         // pas créée, ils sont effacés.
         let stored = self.store_secrets(task.headers)?;
@@ -1319,6 +1518,7 @@ impl Scheduler {
                 max_connections: task.max_connections,
                 speed_limit_bps: task.speed_limit_bps,
                 idempotency_key: task.idempotency_key.as_deref(),
+                requested_name: task.file_name.as_deref(),
                 headers: &stored,
             },
         );
@@ -1448,6 +1648,9 @@ impl Scheduler {
             return Ok(());
         }
         let task = load_task(&self.conn, task_id)?;
+        if task.moving {
+            return Err(EngineError::Moving(task_id.to_owned()));
+        }
         match task.state {
             TaskState::Queued | TaskState::Paused | TaskState::RetryWait => {
                 self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
@@ -1500,6 +1703,9 @@ impl Scheduler {
     /// Retéléchargement : l'état et l'adresse d'abord, puis les fichiers, puis la base.
     fn restart(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
         let task = load_task(&self.conn, task_id)?;
+        if task.moving {
+            return Err(EngineError::Moving(task_id.to_owned()));
+        }
         let allowed = matches!(
             task.state,
             TaskState::Completed
@@ -1529,10 +1735,248 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Une tâche qui ne tourne pas et dont le fichier ne bouge pas : ce qu'exigent un
+    /// déplacement et un changement d'adresse.
+    fn idle(&self, task_id: &str, action: &'static str) -> Result<TaskRow, EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        if task.moving {
+            return Err(EngineError::Moving(task_id.to_owned()));
+        }
+        let allowed = matches!(
+            task.state,
+            TaskState::Queued
+                | TaskState::Paused
+                | TaskState::RetryWait
+                | TaskState::Failed
+                | TaskState::Cancelled
+                | TaskState::Completed
+        );
+        if !allowed || self.running.contains_key(task_id) {
+            return Err(Self::invalid(&task, action));
+        }
+        Ok(task)
+    }
+
+    /// Annonce le dossier, le nom et le déplacement en cours d'une tâche.
+    fn relocated(&self, task_id: &str, error: Option<String>) -> Result<TaskRow, EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        let t = task.clone();
+        self.emit(|rev| Event::Relocated {
+            rev,
+            task_id: t.id,
+            dest_dir: t.dest_dir,
+            file_name: t.file_name,
+            display_name: t.display_name,
+            moving: t.moving,
+            error,
+        });
+        Ok(task)
+    }
+
+    /// « Déplacer/Renommer » (SPEC §7.12). Tout est vérifié avant de toucher au disque ;
+    /// le journal est écrit avant le premier changement.
+    fn relocate(
+        &mut self,
+        task_id: &str,
+        dest_dir: Option<String>,
+        name: Option<String>,
+    ) -> Result<TaskRow, EngineError> {
+        let task = self.idle(task_id, "déplacement")?;
+        if let Some(name) = &name {
+            check_file_name(name)?;
+        }
+        let dir = dest_dir.unwrap_or_else(|| task.dest_dir.clone());
+        check_dest_dir(&dir)?;
+        let Some(current) = task.file_name.clone() else {
+            // Pas encore préparée : aucun fichier, la préparation prendra ce dossier et ce
+            // nom.
+            store::moves::set_location(&self.conn, task_id, &dir, name.as_deref())?;
+            return self.relocated(task_id, None);
+        };
+        let new_name = name.unwrap_or_else(|| current.clone());
+        let old_final = Path::new(&task.dest_dir).join(&current);
+        let new_final = Path::new(&dir).join(&new_name);
+        if old_final == new_final {
+            return Ok(task);
+        }
+        // Sous Windows, changer la casse du nom désigne le même fichier.
+        let same_file = dir == task.dest_dir && crate::io::same_name(&current, &new_name);
+        if !same_file {
+            for path in [&new_final, &part_path(&new_final)] {
+                if path.exists() {
+                    return Err(EngineError::FileExists(path.clone()));
+                }
+            }
+            let reserved = tasks::reserved_names(&self.conn, &dir, task_id)?;
+            if reserved.iter().any(|r| crate::io::same_name(r, &new_name)) {
+                return Err(EngineError::FileExists(new_final));
+            }
+        }
+        let completed = task.state == TaskState::Completed;
+        let (from, to) = if completed {
+            (old_final, new_final)
+        } else {
+            (part_path(&old_final), part_path(&new_final))
+        };
+        if !from.exists() {
+            if completed {
+                return Err(EngineError::FileMissing(from));
+            }
+            // `.part` absent : la reprise le recréera au nouvel endroit (SPEC §7.4).
+            store::moves::set_location(&self.conn, task_id, &dir, Some(&new_name))?;
+            return self.relocated(task_id, None);
+        }
+        let journal = store::moves::FileMove {
+            task_id: task_id.to_owned(),
+            from_path: from.to_string_lossy().into_owned(),
+            to_path: to.to_string_lossy().into_owned(),
+            temp_path: None,
+            dest_dir: dir,
+            file_name: new_name,
+            phase: store::moves::Phase::Moving,
+        };
+        store::moves::begin(&self.conn, &journal)?;
+        match crate::moves::rename(&from, &to) {
+            Ok(true) => {
+                store::moves::commit(&mut self.conn, task_id, store::moves::Phase::Moving)?;
+                self.relocated(task_id, None)
+            }
+            Ok(false) => self.copy_across(task_id, from, to),
+            Err(e) => {
+                store::moves::forget(&self.conn, task_id)?;
+                Err(EngineError::Move(e))
+            }
+        }
+    }
+
+    /// Vers un autre volume : la copie se fait hors de la boucle ; sa fin revient par
+    /// `moved`.
+    fn copy_across(
+        &mut self,
+        task_id: &str,
+        from: PathBuf,
+        to: PathBuf,
+    ) -> Result<TaskRow, EngineError> {
+        let temp = crate::moves::temp_for(&to);
+        if temp.exists() {
+            store::moves::forget(&self.conn, task_id)?;
+            return Err(EngineError::FileExists(temp));
+        }
+        store::moves::set_temp(&self.conn, task_id, &temp.to_string_lossy())?;
+        let done = self.moved.clone();
+        let id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let result = crate::moves::copy_across(&from, &temp, &to);
+            let _ = done.send((id, result));
+        });
+        self.relocated(task_id, None)
+    }
+
+    /// Fin d'une copie vers un autre volume : la base passe au nouvel emplacement, puis
+    /// l'original est effacé. Un échec laisse la tâche à sa place, copie partielle effacée.
+    fn moved(&mut self, task_id: &str, result: std::io::Result<()>) {
+        let Ok(Some(journal)) = store::moves::load(&self.conn, task_id) else {
+            return;
+        };
+        let error = match result {
+            Ok(()) => {
+                match store::moves::commit(&mut self.conn, task_id, store::moves::Phase::Moved) {
+                    Ok(()) => {
+                        crate::moves::remove_quietly(
+                            Path::new(&journal.from_path),
+                            "fin d'un déplacement",
+                        );
+                        None
+                    }
+                    Err(e) => Some(e.to_string()),
+                }
+            }
+            Err(e) => {
+                if let Some(temp) = &journal.temp_path {
+                    crate::moves::remove_quietly(Path::new(temp), "copie abandonnée");
+                }
+                Some(EngineError::Move(e).to_string())
+            }
+        };
+        if store::moves::forget(&self.conn, task_id).is_err() {
+            return;
+        }
+        let _ = self.relocated(task_id, error);
+    }
+
+    /// Avant d'interroger une nouvelle adresse (SPEC §7.13) : la taille à retrouver et les
+    /// en-têtes à envoyer.
+    fn check_source(&self, task_id: &str, url: &str) -> Result<SourceCheck, EngineError> {
+        let task = self.idle(task_id, "changement d'adresse")?;
+        let old = tasks::primary_source(&self.conn, task_id)?;
+        let other_host = transfer::host_of(&old.url) != transfer::host_of(url);
+        let headers = headers::load(&self.conn, task_id)?
+            .into_iter()
+            .filter(|(_, s)| !other_host || matches!(s, Stored::Plain(_)))
+            .collect();
+        // Une tâche terminée ou annulée ne reprendra pas : son retéléchargement
+        // réapprendra tout.
+        let resumable = !matches!(task.state, TaskState::Completed | TaskState::Cancelled);
+        Ok(SourceCheck {
+            expect_bytes: task.total_bytes.filter(|_| resumable),
+            headers,
+            other_host,
+        })
+    }
+
+    /// Enregistre la nouvelle adresse, vérifiée par `set_url`. La tâche a pu changer
+    /// pendant la vérification : elle est relue.
+    fn replace_url(
+        &mut self,
+        task_id: &str,
+        url: &str,
+        facts: Option<SourceFacts>,
+    ) -> Result<TaskRow, EngineError> {
+        let check = self.check_source(task_id, url)?;
+        if check.expect_bytes != facts.as_ref().map(|f| f.total_bytes) {
+            return Err(EngineError::BadRequest(format!(
+                "la tâche {task_id} a changé pendant la vérification de l'adresse : réessayer"
+            )));
+        }
+        let task = load_task(&self.conn, task_id)?;
+        // Nom tiré de l'adresse, tant que ni le serveur ni l'utilisateur n'en ont donné.
+        let display_name = (task.file_name.is_none() && task.requested_name.is_none())
+            .then(|| transfer::display_name_for(url));
+        // Les cookies de l'ancien hôte n'iront pas au nouveau (référence effacée avant le
+        // secret, SPEC §5.1).
+        if check.other_host {
+            self.drop_secrets(task_id);
+        }
+        let revalidation = facts.as_ref().map(|f| tasks::Revalidation {
+            accepts_ranges: f.accepts_ranges,
+            etag: f.etag.as_deref(),
+            last_modified: f.last_modified.as_deref(),
+            total_bytes: Some(f.total_bytes),
+        });
+        tasks::replace_url(
+            &mut self.conn,
+            task_id,
+            url,
+            revalidation.as_ref(),
+            display_name.as_deref(),
+        )?;
+        let task = load_task(&self.conn, task_id)?;
+        let (id, name) = (task.id.clone(), task.display_name.clone());
+        self.emit(|rev| Event::SourceChanged {
+            rev,
+            task_id: id,
+            display_name: name,
+        });
+        Ok(task)
+    }
+
     /// Retire une tâche finie. Le fichier demandé est supprimé d'abord : si cela échoue, la
     /// tâche reste, et l'utilisateur peut réessayer.
     fn remove(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
         let task = load_task(&self.conn, task_id)?;
+        if task.moving {
+            return Err(EngineError::Moving(task_id.to_owned()));
+        }
         let finished = matches!(
             task.state,
             TaskState::Completed | TaskState::Failed | TaskState::Cancelled
@@ -1646,6 +2090,42 @@ fn secret_ids(stored: Vec<StoredHeader>) -> Vec<String> {
             Stored::Plain(_) => None,
         })
         .collect()
+}
+
+/// Un nom de fichier choisi par l'utilisateur : tel quel, il doit être un nom valide sur ce
+/// système (SPEC §8.1) ; le moteur ne le corrige pas en silence.
+fn check_file_name(name: &str) -> Result<(), EngineError> {
+    let clean = net::filename::sanitize(name, net::filename::NameRules::native());
+    if clean != name {
+        return Err(EngineError::BadRequest(format!(
+            "nom de fichier refusé : {name:?} (caractères interdits, nom réservé, points ou \n             espaces en bord, ou trop long) ; proposition : {clean:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// En-têtes à envoyer, secrets lus dans le coffre, hors de la boucle. Un secret absent du
+/// coffre n'est pas envoyé, comme pour une exécution.
+async fn reveal(
+    stored: Vec<StoredHeader>,
+    vault: &Vault,
+) -> Result<Vec<(String, String)>, EngineError> {
+    let mut list = Vec::new();
+    for (name, stored) in stored {
+        match stored {
+            Stored::Plain(value) => list.push((name, value)),
+            Stored::Secret(id) => {
+                let vault = vault.clone();
+                let found = tokio::task::spawn_blocking(move || vault.get(&id))
+                    .await
+                    .map_err(|_| EngineError::Stopped)??;
+                if let Some(secret) = found {
+                    list.push((name, secret));
+                }
+            }
+        }
+    }
+    Ok(list)
 }
 
 /// Un dossier de destination : chemin absolu d'un dossier existant.

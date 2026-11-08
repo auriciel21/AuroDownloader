@@ -144,6 +144,20 @@ enum Command {
         #[arg(long)]
         delete_files: bool,
     },
+    /// Déplace ou renomme le fichier d'une tâche qui ne tourne pas (le fichier final d'une
+    /// tâche terminée, le fichier partiel des autres)
+    Move {
+        task_id: String,
+        /// Nouveau dossier (existant)
+        #[arg(short = 'o', long)]
+        dir: Option<PathBuf>,
+        /// Nouveau nom du fichier
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+    },
+    /// Remplace l'adresse d'une tâche qui ne tourne pas, par exemple un lien expiré ; pour
+    /// une tâche commencée, la nouvelle adresse doit donner le même fichier
+    Refresh { task_id: String, url: String },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
     /// Limite de débit, globale par défaut, ou d'une tâche ou d'une file ; sans débit,
@@ -448,6 +462,12 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 } => {
                     let extra = json!({"deleteFiles": delete_files});
                     remote::act(&mut rpc, "task.restart", &task_ids, extra).await
+                }
+                Command::Move { task_id, dir, name } => {
+                    remote::relocate(&mut rpc, &task_id, dir.as_deref(), name.as_deref()).await
+                }
+                Command::Refresh { task_id, url } => {
+                    remote::refresh(&mut rpc, &task_id, &url).await
                 }
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
                 Command::Limit { rate, task, queue } => {

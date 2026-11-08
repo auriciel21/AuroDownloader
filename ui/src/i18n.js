@@ -78,6 +78,30 @@ export const EN = {
     "Otherwise it stays, and the new one gets another name.",
   "Ce qui a déjà été reçu des téléchargements inachevés est supprimé.":
     "What unfinished downloads have already received is deleted.",
+  // Déplacer/Renommer
+  "Déplacer/Renommer…": "Move/Rename…",
+  "Déplacer/Renommer": "Move/Rename",
+  "Nom du fichier": "File name",
+  "Dossier": "Folder",
+  "Changer le dossier": "Change the folder",
+  "Déplacer": "Move",
+  "Le fichier partiel est déplacé maintenant ; le téléchargement se terminera à cet endroit.":
+    "The partial file is moved now; the download will finish there.",
+  "Le téléchargement n'a pas encore commencé : il prendra ce nom et ce dossier.":
+    "The download has not started yet: it will take this name and folder.",
+  "Copie de « {0} » vers l'autre disque en cours": "Copying “{0}” to the other disk",
+  "Déplacement de « {0} » impossible : {1}": "Could not move “{0}”: {1}",
+  "Déplacement du fichier…": "Moving the file…",
+  // Actualiser l'adresse
+  "Actualiser l'adresse…": "Refresh address…",
+  "Actualiser l'adresse": "Refresh address",
+  "Adresse actuelle": "Current address",
+  "Nouvelle adresse": "New address",
+  "Actualiser": "Refresh",
+  "Nouvelle adresse de « {0} », par exemple un lien régénéré sur le site d'origine.":
+    "New address for “{0}”, for example a link generated again on the original site.",
+  "AuroDownloader vérifie que la nouvelle adresse donne un fichier de même taille, puis reprend là où le téléchargement s'était arrêté.":
+    "AuroDownloader checks that the new address gives a file of the same size, then resumes where the download stopped.",
   // Propriétés
   "Fichier": "File",
   "Dossier": "Folder",
@@ -268,6 +292,7 @@ export function errorText(code, t) {
 /// État d'une tâche, avec la cause d'une pause qui ne vient pas de l'utilisateur ou
 /// celle d'un échec.
 export function stateText(task, t) {
+  if (task.moving) return t("Déplacement du fichier…");
   const state = STATES[task.state] ? t(STATES[task.state]) : task.state;
   const reason = task.pauseReason;
   if (task.state === "paused" && reason && reason !== "user") {

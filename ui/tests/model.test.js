@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
+  canRelocate,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -280,4 +281,29 @@ test("le dossier des téléchargements suit l'instantané puis settings.updated"
   // Une révision déjà connue ne change rien.
   assert.ok(!store.apply("settings.updated", { rev: 2, values: { "downloads.dir": "/c" } }).settings);
   assert.equal(store.settings["downloads.dir"], "/b");
+});
+
+test("déplacer et actualiser l'adresse : une tâche qui ne tourne pas, dont le fichier ne bouge pas", () => {
+  for (const s of ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"]) {
+    assert.ok(canRelocate({ state: s }), s);
+  }
+  assert.ok(!canRelocate({ state: "active" }));
+  assert.ok(!canRelocate({ state: "completed", moving: true }));
+});
+
+test("déplacement : nouvel emplacement suivi, échec d'une copie annoncé sans rester dans la tâche", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "completed", { destDir: "/dl" })]));
+  store.apply("task.updated", { rev: 2, taskId: "a", destDir: "/dl", fileName: "a.bin", displayName: "a.bin", moving: true });
+  assert.equal(store.tasks.get("a").moving, true);
+  const out = store.apply("task.updated", {
+    rev: 3, taskId: "a", destDir: "/dl", fileName: "a.bin", displayName: "a.bin", moving: false, moveError: "disque plein",
+  });
+  assert.deepEqual(out.moveErrors, [{ taskId: "a", error: "disque plein" }]);
+  assert.equal(store.tasks.get("a").moving, false);
+  assert.ok(!("moveError" in store.tasks.get("a")));
+  const moved = store.apply("task.updated", { rev: 4, taskId: "a", destDir: "/autre", fileName: "b.bin", displayName: "b.bin", moving: false });
+  assert.deepEqual(moved.moveErrors, []);
+  assert.equal(store.tasks.get("a").destDir, "/autre");
+  assert.ok(moved.list, "le nom change l'ordre et les vues");
 });

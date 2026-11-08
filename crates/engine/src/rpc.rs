@@ -101,6 +101,12 @@ impl From<EngineError> for RpcError {
             EngineError::DestDir(_) => Self::new(-32021, "DEST_NOT_WRITABLE", message),
             EngineError::BadRequest(_) => Self::invalid_params(message),
             EngineError::Vault(_) => Self::new(-32023, "SECRET_UNAVAILABLE", message),
+            EngineError::Moving(_) => Self::new(-32011, "INVALID_STATE", message),
+            EngineError::FileExists(_) => Self::new(-32024, "FILE_EXISTS", message),
+            EngineError::FileMissing(_) => Self::new(-32025, "FILE_MISSING", message),
+            EngineError::Move(_) => Self::new(-32026, "MOVE_FAILED", message),
+            EngineError::SourceMismatch { .. } => Self::new(-32027, "SOURCE_MISMATCH", message),
+            EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
                 Self::internal(message)
             }
@@ -141,6 +147,7 @@ pub fn task_json(t: &TaskRow) -> Value {
         "retryCount": t.retry_count,
         "createdAt": t.created_at,
         "finishedAt": t.finished_at,
+        "moving": t.moving,
     })
 }
 

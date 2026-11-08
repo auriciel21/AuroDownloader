@@ -4,7 +4,7 @@
 import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
-  canPause, canResume, canCancel, canRemove, canRestart,
+  canPause, canResume, canCancel, canRemove, canRestart, canRelocate,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -503,6 +503,8 @@ function openMenu(x, y) {
     open: done && !isExecutable(one.fileName),
     reveal: done,
     restart: chosen.some((task) => canRestart(task.state)),
+    move: one && canRelocate(one),
+    refresh: one && canRelocate(one),
     resume: chosen.some((task) => canResume(task.state)),
     pause: chosen.some((task) => canPause(task.state)),
     limit: one && (canPause(one.state) || canResume(one.state)),
@@ -554,7 +556,7 @@ function onMenuKey(event) {
 function runCommand(command) {
   const chosen = selectedTasks();
   const one = chosen.length === 1 ? chosen[0] : null;
-  closeMenu(!["properties", "limit", "remove", "restart"].includes(command));
+  closeMenu(!["properties", "limit", "remove", "restart", "move", "refresh"].includes(command));
   switch (command) {
     case "open": if (one) withFile(one.taskId, host.openFile); break;
     case "reveal": if (one) withFile(one.taskId, host.revealFile); break;
@@ -563,6 +565,8 @@ function runCommand(command) {
     case "limit": if (one) openDetails(one.taskId, { focusLimit: true }); break;
     case "remove": openRemove(); break;
     case "restart": openRestart(); break;
+    case "move": openMove(); break;
+    case "refresh": openRefresh(); break;
     case "properties": if (one) openDetails(one.taskId); break;
   }
 }
@@ -686,6 +690,117 @@ async function closeRestart() {
     await act("task.restart", { taskIds, deleteFiles: $("restart-files").checked });
   }
   (cursor ? rows.get(cursor) : null)?.focus();
+}
+
+// ---------- Déplacer/Renommer ----------
+
+/// Tâche dont on change l'emplacement, et le dossier choisi : `{taskId, dir}`.
+let moving = null;
+
+/// « Déplacer/Renommer… » (SPEC §7.12) : le moteur déplace le fichier final d'une tâche
+/// terminée, le fichier partiel des autres ; une tâche pas encore commencée prendra ce nom
+/// et ce dossier.
+function openMove() {
+  const [task] = selectedTasks();
+  if (!task || !canRelocate(task) || !connected) return;
+  moving = { taskId: task.taskId, dir: task.destDir };
+  const input = $("move-name");
+  input.value = taskFileName(task);
+  $("move-dir").textContent = task.destDir;
+  $("move-part-note").hidden = !task.fileName || task.state === "completed";
+  $("move-later-note").hidden = !!task.fileName;
+  $("move-error").hidden = true;
+  $("move-dir-change").hidden = typeof host.pickFolder !== "function";
+  const dialog = $("move-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  input.focus();
+  // Le nom sans son extension, prêt à être remplacé, comme dans l'explorateur.
+  const dot = input.value.lastIndexOf(".");
+  input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+}
+
+async function chooseMoveDir() {
+  if (!moving) return;
+  const folder = await host.pickFolder(moving.dir).catch(() => null);
+  if (folder && moving) {
+    moving.dir = folder;
+    $("move-dir").textContent = folder;
+  }
+  $("move-dir-change").focus();
+}
+
+async function saveMove() {
+  if (!moving) return;
+  const task = store.tasks.get(moving.taskId);
+  const params = { taskId: moving.taskId };
+  const name = $("move-name").value.trim();
+  if (name && name !== (task ? taskFileName(task) : "")) params.fileName = name;
+  if (moving.dir !== task?.destDir) params.destDir = moving.dir;
+  if (!params.fileName && !params.destDir) {
+    $("move-dialog").close();
+    return;
+  }
+  $("move-save").disabled = true;
+  try {
+    const result = await host.call("task.update", params);
+    // Vers un autre disque, la copie continue ; sa fin est annoncée par le moteur.
+    if (result.moving) announce(t("Copie de « {0} » vers l'autre disque en cours", taskName(result)));
+    $("move-dialog").close();
+  } catch (e) {
+    $("move-error").textContent = e?.message ?? String(e);
+    $("move-error").hidden = false;
+  } finally {
+    $("move-save").disabled = false;
+  }
+}
+
+// ---------- Actualiser l'adresse ----------
+
+/// Tâche dont on remplace l'adresse.
+let refreshing = null;
+
+/// « Actualiser l'adresse… » (SPEC §7.13) : un lien expiré remplacé par un lien régénéré
+/// sur le site d'origine ; le moteur vérifie qu'il donne le même fichier.
+async function openRefresh() {
+  const [task] = selectedTasks();
+  if (!task || !canRelocate(task) || !connected) return;
+  refreshing = task.taskId;
+  $("refresh-text").textContent = t(
+    "Nouvelle adresse de « {0} », par exemple un lien régénéré sur le site d'origine.",
+    taskName(task),
+  );
+  $("refresh-old").textContent = "";
+  $("refresh-url").value = "";
+  $("refresh-note").hidden = !task.totalBytes || ["completed", "cancelled"].includes(task.state);
+  $("refresh-error").hidden = true;
+  const dialog = $("refresh-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("refresh-url").focus();
+  try {
+    const full = await host.call("task.get", { taskId: task.taskId, include: ["sources"] });
+    if (refreshing === task.taskId) $("refresh-old").textContent = full.sources?.[0]?.url ?? "";
+  } catch {
+    // L'adresse actuelle n'est qu'un rappel.
+  }
+}
+
+async function saveRefresh() {
+  const taskId = refreshing;
+  if (!taskId) return;
+  $("refresh-save").disabled = true;
+  try {
+    const task = await host.call("task.update", { taskId, url: $("refresh-url").value.trim() });
+    $("refresh-dialog").close();
+    // Un téléchargement en échec (lien expiré) repart aussitôt.
+    if (task.state === "failed") await act("task.resume", { taskIds: [taskId] });
+  } catch (e) {
+    $("refresh-error").textContent = e?.message ?? String(e);
+    $("refresh-error").hidden = false;
+  } finally {
+    $("refresh-save").disabled = false;
+  }
 }
 
 // ---------- Propriétés d'un téléchargement ----------
@@ -1191,6 +1306,10 @@ function onEngine(event) {
       if (result.limits) renderLimit();
       if (result.settings) renderDest();
       if (result.planning) renderPlanning();
+      for (const { taskId, error } of result.moveErrors) {
+        const task = store.tasks.get(taskId);
+        showError(t("Déplacement de « {0} » impossible : {1}", task ? taskName(task) : taskId, error));
+      }
       if (result.endActionError) {
         showError(t("Action de fin refusée par le système : {0}", result.endActionError));
       }
@@ -1466,6 +1585,26 @@ function wire() {
   $("dest-change").addEventListener("click", () => chooseFolder("dest-change"));
   $("remove-dialog").addEventListener("close", closeRemove);
   $("restart-dialog").addEventListener("close", closeRestart);
+  $("move-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    // Enregistré d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    saveMove();
+  });
+  $("move-dir-change").addEventListener("click", chooseMoveDir);
+  $("move-dialog").addEventListener("close", () => {
+    moving = null;
+    (cursor ? rows.get(cursor) : null)?.focus();
+  });
+  $("refresh-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    event.preventDefault();
+    saveRefresh();
+  });
+  $("refresh-dialog").addEventListener("close", () => {
+    refreshing = null;
+    (cursor ? rows.get(cursor) : null)?.focus();
+  });
 
   $("details").addEventListener("close", closeDetails);
   $("d-toggle").addEventListener("click", () => {

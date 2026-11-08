@@ -107,6 +107,8 @@
     <button type="button" role="menuitem" data-command="open" data-i18n="Ouvrir">Ouvrir</button>
     <button type="button" role="menuitem" data-command="reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
     <button type="button" role="menuitem" data-command="restart" data-i18n="Retélécharger…">Retélécharger…</button>
+    <button type="button" role="menuitem" data-command="move" data-i18n="Déplacer/Renommer…">Déplacer/Renommer…</button>
+    <button type="button" role="menuitem" data-command="refresh" data-i18n="Actualiser l'adresse…">Actualiser l'adresse…</button>
     <div class="menu-separator" role="separator"></div>
     <button type="button" role="menuitem" data-command="resume" data-i18n="Reprendre">Reprendre</button>
     <button type="button" role="menuitem" data-command="pause" data-i18n="Arrêter">Arrêter</button>
@@ -164,6 +166,49 @@
       <div class="buttons">
         <button value="cancel" data-i18n="Annuler">Annuler</button>
         <button value="confirm" data-i18n="Retélécharger">Retélécharger</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="move-dialog" class="wide" aria-labelledby="move-title">
+    <form method="dialog" id="move-form">
+      <h2 id="move-title" data-i18n="Déplacer/Renommer">Déplacer/Renommer</h2>
+      <label class="field">
+        <span data-i18n="Nom du fichier">Nom du fichier</span>
+        <input id="move-name" type="text" spellcheck="false" autocomplete="off" required>
+      </label>
+      <div class="field">
+        <span data-i18n="Dossier">Dossier</span>
+        <span class="row"><span id="move-dir" class="path"></span>
+          <button type="button" id="move-dir-change" data-i18n="Parcourir…" data-i18n-label="Changer le dossier">Parcourir…</button></span>
+      </div>
+      <p class="note" id="move-part-note" data-i18n="Le fichier partiel est déplacé maintenant ; le téléchargement se terminera à cet endroit.">Le fichier partiel est déplacé maintenant ; le téléchargement se terminera à cet endroit.</p>
+      <p class="note" id="move-later-note" data-i18n="Le téléchargement n'a pas encore commencé : il prendra ce nom et ce dossier.">Le téléchargement n'a pas encore commencé : il prendra ce nom et ce dossier.</p>
+      <p id="move-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="move-save" class="primary" data-i18n="Déplacer">Déplacer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="refresh-dialog" class="wide" aria-labelledby="refresh-title" aria-describedby="refresh-text">
+    <form method="dialog" id="refresh-form">
+      <h2 id="refresh-title" data-i18n="Actualiser l'adresse">Actualiser l'adresse</h2>
+      <p id="refresh-text"></p>
+      <div class="field">
+        <span data-i18n="Adresse actuelle">Adresse actuelle</span>
+        <span id="refresh-old" class="path"></span>
+      </div>
+      <label class="field">
+        <span data-i18n="Nouvelle adresse">Nouvelle adresse</span>
+        <input id="refresh-url" type="url" spellcheck="false" autocomplete="off" required>
+      </label>
+      <p class="note" id="refresh-note" data-i18n="AuroDownloader vérifie que la nouvelle adresse donne un fichier de même taille, puis reprend là où le téléchargement s'était arrêté.">AuroDownloader vérifie que la nouvelle adresse donne un fichier de même taille, puis reprend là où le téléchargement s'était arrêté.</p>
+      <p id="refresh-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="refresh-save" class="primary" data-i18n="Actualiser">Actualiser</button>
       </div>
     </form>
   </dialog>

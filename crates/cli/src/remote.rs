@@ -702,3 +702,49 @@ impl Follow {
         Ok(())
     }
 }
+
+/// Déplace ou renomme le fichier d'une tâche (SPEC §7.12).
+pub async fn relocate(
+    rpc: &mut Rpc,
+    id: &str,
+    dir: Option<&Path>,
+    name: Option<&str>,
+) -> Result<()> {
+    if dir.is_none() && name.is_none() {
+        bail!("préciser le nouveau dossier (-o), le nouveau nom (-n), ou les deux");
+    }
+    let mut params = json!({"taskId": id});
+    if let Some(dir) = dir {
+        params["destDir"] = json!(dest_dir(dir)?);
+    }
+    if let Some(name) = name {
+        params["fileName"] = json!(name);
+    }
+    let task = rpc.call("task.update", params).await?;
+    let place = Path::new(task["destDir"].as_str().unwrap_or_default())
+        .join(task["displayName"].as_str().unwrap_or_default());
+    if task["moving"].as_bool() == Some(true) {
+        println!(
+            "Copie vers l'autre disque en cours ; à la fin, la tâche sera à {}",
+            dest_dir(dir.unwrap_or(Path::new(".")))?
+        );
+    } else {
+        println!("Tâche {id} : {}", place.display());
+    }
+    Ok(())
+}
+
+/// Remplace l'adresse d'une tâche, par exemple un lien expiré (SPEC §7.13).
+pub async fn refresh(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
+    let task = rpc
+        .call("task.update", json!({"taskId": id, "url": url}))
+        .await?;
+    let name = task["displayName"].as_str().unwrap_or(id);
+    match task["state"].as_str() {
+        Some("failed" | "paused") => {
+            println!("Adresse de {name} remplacée. Pour reprendre : auro resume {id}")
+        }
+        _ => println!("Adresse de {name} remplacée."),
+    }
+    Ok(())
+}

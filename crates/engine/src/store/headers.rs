@@ -127,6 +127,7 @@ mod tests {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &headers,
         };
         let (task, _) = create_task(&mut conn, &new).unwrap();

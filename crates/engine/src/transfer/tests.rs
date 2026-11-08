@@ -60,6 +60,7 @@ fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &[],
         },
     )
@@ -932,6 +933,7 @@ mod names {
                 max_connections: None,
                 speed_limit_bps: None,
                 idempotency_key: None,
+                requested_name: None,
                 headers: &[],
             },
         )
@@ -1055,6 +1057,7 @@ async fn a_secret_missing_from_the_vault_is_left_out() {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &stored,
         },
     )
@@ -1104,6 +1107,7 @@ async fn an_unreachable_vault_is_a_temporary_failure() {
             max_connections: None,
             speed_limit_bps: None,
             idempotency_key: None,
+            requested_name: None,
             headers: &stored,
         },
     )

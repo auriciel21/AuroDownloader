@@ -44,7 +44,10 @@ téléchargement.
   exécutée), `power` (veille et extinction ; branchées par `aurod` seulement). Phase 3 :
   `secrets` (coffre du système des cookies et jetons : Gestionnaire d'identification,
   Secret Service, sinon mémoire ; un espace de noms par base), `store::headers`
-  (en-têtes des tâches, secrets par référence).
+  (en-têtes des tâches, secrets par référence). Hors phase (IDM, 2026-11-08) : `moves`
+  (« Déplacer/Renommer », SPEC 7.12 : renommage, copie vers un autre volume, reprise au
+  démarrage) et `store::moves` (emplacement d'une tâche, journal `file_moves`) ;
+  « Actualiser l'adresse » (SPEC 7.13) : `Engine::set_url`, `store::tasks::replace_url`.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -128,6 +131,8 @@ cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 cargo run -p auro-cli -- get https://deb.debian.org/debian/README -o .
 cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ; remove <id>… ; engine stop
 cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depuis le début
+cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
+cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
@@ -192,6 +197,11 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
 - États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
   vérifient la table de la SPEC 5.5, ou `restart_task` (retéléchargement, hors de la
   table, SPEC 5.5). Ne jamais écrire `tasks.state` directement.
+- Fichier d'une tâche déplacé (SPEC 7.12) : seulement par `Scheduler::relocate`, journal
+  `store::moves` écrit avant de toucher au disque ; la tâche ne prend son nouvel
+  emplacement que quand le fichier y est, et l'original d'une copie n'est effacé
+  qu'ensuite. Un nom choisi par l'utilisateur est vérifié tel quel (`sanitize` doit le
+  rendre inchangé), jamais corrigé en silence.
 - Toute modification de `transfer`, `io` ou `store` passe aussi le banc de reprise
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
   Toute modification de `scheduler`, `rpc` ou du daemon passe aussi celui d'`aurod`

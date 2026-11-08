@@ -104,7 +104,7 @@ pub fn part_path(dest: &Path) -> PathBuf {
 
 /// Deux noms désignent-ils le même fichier ? Sous Windows, les noms ne tiennent pas compte
 /// de la casse.
-fn same_name(a: &str, b: &str) -> bool {
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
     if cfg!(windows) {
         a.to_lowercase() == b.to_lowercase()
     } else {
@@ -428,7 +428,7 @@ impl PartFile {
 /// Rend durable une création ou un renommage dans le dossier de `path`. Sous Windows, le
 /// système de fichiers journalise les métadonnées et la bibliothèque standard ne sait pas
 /// ouvrir un dossier : rien à faire.
-fn sync_parent_dir(path: &Path) -> Result<(), IoError> {
+pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), IoError> {
     #[cfg(unix)]
     {
         let dir = match path.parent() {
