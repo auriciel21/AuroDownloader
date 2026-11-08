@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fichiers que l'application peut confier à une autre pour les ouvrir : ceux du dossier
+     public des téléchargements (Download/AuroDownloader et voisins) et du dossier de
+     l'application. -->
+<paths>
+    <external-path name="telechargements" path="Download/" />
+    <external-files-path name="application" path="." />
+</paths>

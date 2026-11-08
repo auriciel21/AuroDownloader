@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Textes de l'interface : français (langue source) ; anglais dans values-en. Libellés
+     communs avec l'application de bureau (ui/src/i18n.js). -->
+<resources>
+    <string name="app_name">AuroDownloader</string>
+    <string name="engine_failed">Le moteur n\'a pas démarré : %1$s</string>
+    <string name="empty">Aucun téléchargement. Touchez « Ajouter », ou partagez un lien vers AuroDownloader depuis une autre application.</string>
+
+    <!-- Actions -->
+    <string name="add">Ajouter</string>
+    <string name="add_title">Ajouter un téléchargement</string>
+    <string name="address">Adresse</string>
+    <string name="address_hint">https://…</string>
+    <string name="address_invalid">Adresse http:// ou https:// attendue.</string>
+    <string name="added">Téléchargement ajouté</string>
+    <string name="cancel">Annuler</string>
+    <string name="close">Fermer</string>
+    <string name="back">Retour</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Reprendre</string>
+    <string name="retry">Relancer</string>
+    <string name="cancel_download">Annuler le téléchargement</string>
+    <string name="remove">Retirer de la liste</string>
+    <string name="restart">Retélécharger</string>
+    <string name="open">Ouvrir</string>
+    <string name="settings">Réglages</string>
+    <string name="refused">Refusé : %1$s</string>
+    <string name="not_opened_program">Programme ou paquet d\'installation : AuroDownloader ne l\'ouvre pas (sécurité).</string>
+    <string name="no_app_to_open">Aucune application pour ouvrir ce fichier.</string>
+    <string name="actions_of">Actions pour %1$s</string>
+
+    <!-- États (SPEC §5.5) -->
+    <string name="state_queued">En attente</string>
+    <string name="state_active">En cours</string>
+    <string name="state_paused">En pause</string>
+    <string name="state_retry_wait">Nouvel essai bientôt</string>
+    <string name="state_verifying">Vérification de l\'empreinte</string>
+    <string name="state_verifying_pct">Vérification de l\'empreinte (%1$d %%)</string>
+    <string name="state_completed">Terminé</string>
+    <string name="state_failed">Échec</string>
+    <string name="state_cancelled">Annulé</string>
+    <string name="state_with_reason">%1$s (%2$s)</string>
+    <string name="state_with_error">%1$s : %2$s</string>
+
+    <!-- Causes de pause -->
+    <string name="reason_schedule">plage horaire</string>
+    <string name="reason_disk_full">disque plein</string>
+    <string name="reason_network">réseau</string>
+    <string name="reason_file_changed">fichier distant modifié</string>
+
+    <!-- Causes d'échec (SPEC §6.8) -->
+    <string name="error_NET_UNREACHABLE">réseau ou serveur injoignable</string>
+    <string name="error_NET_TIMEOUT">délai dépassé</string>
+    <string name="error_HTTP_STATUS">refusé par le serveur</string>
+    <string name="error_TLS_INVALID_CERT">certificat refusé</string>
+    <string name="error_TLS_UNAVAILABLE">HTTPS indisponible</string>
+    <string name="error_RANGE_UNSUPPORTED">reprise impossible</string>
+    <string name="error_FILE_CHANGED">fichier distant modifié</string>
+    <string name="error_DISK_FULL">disque plein</string>
+    <string name="error_DEST_PERMISSION">écriture refusée dans le dossier</string>
+    <string name="error_DISK_IO">erreur du disque</string>
+    <string name="error_CHECKSUM_MISMATCH">empreinte différente de celle attendue</string>
+    <string name="error_INTERNAL">erreur interne du moteur</string>
+    <string name="error_AUTH_REQUIRED">identifiants demandés par le serveur</string>
+    <string name="error_AUTH_FAILED">identifiants refusés par le serveur</string>
+
+    <!-- Tailles, débits, durées -->
+    <string name="unit_b">o</string>
+    <string name="unit_kib">Kio</string>
+    <string name="unit_mib">Mio</string>
+    <string name="unit_gib">Gio</string>
+    <string name="unit_tib">Tio</string>
+    <string name="unknown_size">taille inconnue</string>
+    <string name="done_of">%1$s sur %2$s</string>
+    <string name="per_second">%1$s/s</string>
+    <string name="eta_s">%1$d s</string>
+    <string name="eta_min">%1$d min %2$d s</string>
+    <string name="eta_h">%1$d h %2$d min</string>
+    <string name="eta_d">%1$d j %2$d h</string>
+    <string name="eta_left">reste %1$s</string>
+
+    <!-- Détails -->
+    <string name="details">Détails</string>
+    <string name="f_file">Fichier</string>
+    <string name="f_folder">Dossier</string>
+    <string name="f_state">Statut</string>
+    <string name="f_size">Taille</string>
+    <string name="f_done">Téléchargé</string>
+    <string name="f_rate">Débit</string>
+    <string name="f_eta">Temps restant</string>
+    <string name="f_checksum">Empreinte</string>
+    <string name="f_added">Ajouté le</string>
+    <string name="checksum_value">%1$s %2$s</string>
+    <string name="checksum_from">%1$s %2$s (lue dans %3$s)</string>
+    <string name="checksum_verified">%1$s, vérifiée</string>
+    <string name="progress_of">Avancement de %1$s</string>
+
+    <!-- Réglages -->
+    <string name="folder">Dossier des téléchargements</string>
+    <string name="limit">Limite de débit globale</string>
+    <string name="no_limit">Aucune limite</string>
+    <string name="neighbor">Chercher l\'empreinte à côté du fichier (SHA256SUMS, .sha256…)</string>
+    <string name="neighbor_note">Quand vous n\'en donnez pas, AuroDownloader cherche l\'empreinte publiée à côté du fichier, puis la vérifie à la fin.</string>
+    <string name="preallocate">Réserver la place de chaque fichier dès le départ</string>
+    <string name="preallocate_note">Un stockage trop petit se voit avant le téléchargement.</string>
+</resources>

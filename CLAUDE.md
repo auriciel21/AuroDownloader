@@ -142,10 +142,13 @@ téléchargement.
   hors de l'espace de travail Cargo). `app/build.gradle.kts` compile la bibliothèque par
   Cargo et le NDK (tâche `cargoBuild`) et prend la partie Kotlin de
   rustls-platform-verifier (groupe `org.rustls`) à la version de `Cargo.lock`.
-  `local.properties` (chemin du SDK, non versionné). `engine/EngineClient` : client JSON-RPC
-  Kotlin (réponses par identifiant, notifications). `MainActivity` d'essai (étapes 1 et 2 :
-  journal des messages ; `--es url <adresse>` ajoute, `--es dir <dossier>` impose le dossier).
-  Dossier par défaut `Download/AuroDownloader` ; indexation par `MediaScannerConnection`.
+  `local.properties` (chemin du SDK, non versionné). `AuroApp` (moteur démarré une fois
+  par processus, dossier par défaut `Download/AuroDownloader`, indexation par
+  `MediaScannerConnection`, actions) ; `engine/` : `NativeEngine`, `EngineClient` (client
+  JSON-RPC Kotlin), `Downloads` (état des tâches pour Compose, mêmes règles de révision que
+  `ui/src/model.js`) ; `ui/` : `Screens` (liste, détails, réglages, ajout ; Material 3),
+  `Format` ; textes dans `res/values` (français) et `values-en`. `MainActivity` : Compose,
+  liens partagés ou ouverts, `--es url <adresse>` (essais), ouverture par `FileProvider`.
 - Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
   téléphone Galaxy S25 Ultra (Android 16) ; messages du moteur par
   `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
@@ -318,10 +321,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   (`crates/android`, `apps/android`, HTTPS ; fait le 2026-11-08) ; 2. dossier public
   `Download/AuroDownloader` par chemins ordinaires (fait le 2026-11-08, décision de
   l'utilisateur ; le sélecteur de stockage, avec son repli, vient plus tard) ;
-  3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages,
-  TalkBack) ; 4. arrière-plan : service au premier plan et notification, transferts
-  lancés par l'utilisateur à partir d'Android 14, Wi-Fi seulement, reprise au redémarrage ;
-  5. porte : téléchargements longs sur des appareils réels de plusieurs versions.
+  3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages ;
+  fait le 2026-11-08, essai TalkBack à faire) ; 4. arrière-plan : service au premier
+  plan et notification, transferts lancés par l'utilisateur à partir d'Android 14, Wi-Fi
+  seulement, reprise au redémarrage ; 5. porte : téléchargements longs sur deux appareils
+  réels, Android 15 et 16 (décision de l'utilisateur).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
