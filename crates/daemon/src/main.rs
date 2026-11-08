@@ -5,7 +5,7 @@
 //! interfaces (bureau, CLI) s'y connectent ; les téléchargements continuent sans elles.
 //! Il s'arrête proprement sur Ctrl-C, sur SIGTERM (Unix) ou par `engine.shutdown`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use auro_engine::net::Client;
@@ -45,6 +45,11 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    check_test_setup(
+        args.endpoint.as_deref(),
+        args.db.as_deref(),
+        &paths::endpoint(),
+    )?;
     let db = match args.db {
         Some(db) => db,
         None => paths::database().context("dossier de données introuvable ; préciser --db")?,
@@ -74,6 +79,19 @@ fn main() -> Result<()> {
         ..Planning::default()
     };
     runtime.block_on(run(db, endpoint, client, planning))
+}
+
+/// Un point d'accès autre que celui par défaut sert aux essais : sans `--db`, il ouvrirait
+/// pourtant la base par défaut, celle du moteur réel (incident du 2026-11-08). Refusé avant
+/// toute ouverture de base.
+fn check_test_setup(endpoint: Option<&str>, db: Option<&Path>, default: &str) -> Result<()> {
+    match (endpoint, db) {
+        (Some(e), None) if e != default => anyhow::bail!(
+            "--endpoint {e} sans --db : un point d'accès autre que celui par défaut ne sert \
+             jamais la base par défaut, celle du moteur réel ; préciser --db"
+        ),
+        _ => Ok(()),
+    }
 }
 
 async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) -> Result<()> {
@@ -133,5 +151,19 @@ async fn stop_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_test_endpoint_never_opens_the_default_database() {
+        let default = r"\.\pipe\aurodownloader-alice";
+        assert!(check_test_setup(Some(r"\.\pipe\essai"), None, default).is_err());
+        assert!(check_test_setup(Some(r"\.\pipe\essai"), Some(Path::new("e.db")), default).is_ok());
+        assert!(check_test_setup(Some(default), None, default).is_ok());
+        assert!(check_test_setup(None, None, default).is_ok());
     }
 }

@@ -58,7 +58,14 @@ téléchargement.
   deux bancs l'utilisent, pour mesurer le transfert seul.
 - Essais manuels de la CLI : toujours sur un point d'accès et une base d'essai
   (`--endpoint`, `engine start --db`), jamais sur le moteur réel de l'utilisateur ; finir
-  par `engine stop` et vérifier qu'aucun `aurod` d'essai ne reste.
+  par `engine stop` et vérifier qu'aucun `aurod` d'essai ne reste. Sous Windows,
+  `--endpoint` est un chemin complet (`\\.\pipe\auro-essai-…`) ; `--no-start` sur toutes
+  les commandes d'un script d'essai ; un script qui se trompe s'arrête avant d'en lancer un
+  autre, et un script arrêté se vérifie (`Win32_Process`) : ses processus survivent à
+  l'arrêt de la tâche. Incident du 2026-11-08 : un `auro list` d'essai au point d'accès
+  invalide a démarré `aurod` sur la base réelle, migrée en version 3 (contenu intact,
+  copie `auro.db.bak-v2`). Depuis, `aurod` refuse un point d'accès autre que celui par
+  défaut sans `--db`, et la CLI ne démarre d'elle-même que le moteur par défaut.
 - `apps/desktop` (`auro-desktop`, binaire `aurodownloader`) : application de bureau Tauri 2
   (SPEC 4.3), espace de travail Cargo à part (Tauri demande WebKitGTK 4.1, absent de
   l'Ubuntu 20.04 de WSL). `bridge` : liaison avec le moteur (démarrage d'`aurod`, session,

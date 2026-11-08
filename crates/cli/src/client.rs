@@ -146,6 +146,15 @@ pub async fn connect(target: &Target) -> Result<Rpc> {
             target.endpoint
         );
     }
+    // Démarré ici, `aurod` prendrait la base par défaut, celle du moteur réel : seulement
+    // pour le point d'accès par défaut (incident du 2026-11-08).
+    if target.endpoint != auro_engine::paths::endpoint() {
+        bail!(
+            "aucun moteur sur {0} ; un point d'accès d'essai se démarre avec sa base : « auro \
+             --endpoint {0} engine start --db <base> »",
+            target.endpoint
+        );
+    }
     start_daemon(&target.endpoint, None, target.ca_cert.as_deref())?;
     wait_for(&target.endpoint).await
 }
