@@ -4,7 +4,7 @@
 import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
-  canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum,
+  canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
   parseChecksum, ALGO_LABELS, historyCsv, localStamp,
 } from "./model.js";
 import { tauriHost } from "./host.js";
@@ -816,8 +816,8 @@ let detailsTimer = 0;
 async function refreshDetails() {
   const id = detailsTask;
   if (!id || !connected) return;
-  // Une tâche finie ne change plus : une seule lecture suffit.
-  if (detailsFull?.taskId === id && ["completed", "failed", "cancelled"].includes(store.tasks.get(id)?.state)) return;
+  // Une tâche finie ne change plus : une seule lecture suffit, faite après la fin.
+  if (!detailsOutdated(detailsFull, id)) return;
   let full;
   try {
     full = await host.call("task.get", { taskId: id, include: ["segments", "sources"] });

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
-  canRelocate, canSetChecksum, parseChecksum,
+  canRelocate, canSetChecksum, parseChecksum, detailsOutdated,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -362,4 +362,16 @@ test("historique en CSV (F-35) : champs protégés, dates locales, octets", asyn
   assert.equal(lines[1], '2026-11-08 09:05:07;Terminé;1024;"a;b.iso";exemple.org;"C:\dl\a;b.iso";ab');
   assert.equal(lines[2], "2026-11-08 09:05:07;Annulé;;c.bin;;;");
   assert.equal(lines[3], "", "fin de ligne finale");
+});
+
+test("le détail d'une tâche lu pendant le téléchargement se relit une fois la tâche finie", () => {
+  assert.ok(detailsOutdated(null, "a"), "rien de lu");
+  assert.ok(detailsOutdated({ taskId: "b", state: "completed" }, "a"), "autre tâche");
+  // Lu pendant le téléchargement, avec des segments en réception : la fin ne doit pas
+  // figer cet affichage (segments « Réception des données » sur une tâche terminée).
+  assert.ok(detailsOutdated({ taskId: "a", state: "active" }, "a"));
+  assert.ok(detailsOutdated({ taskId: "a", state: "verifying" }, "a"));
+  for (const state of ["completed", "failed", "cancelled"]) {
+    assert.ok(!detailsOutdated({ taskId: "a", state }, "a"), state);
+  }
 });

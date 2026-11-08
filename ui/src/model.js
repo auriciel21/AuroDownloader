@@ -105,6 +105,11 @@ export const canCancel = (state) =>
   ["queued", "active", "paused", "retry_wait", "verifying", "seeding"].includes(state);
 // Retrait de la liste (`task.remove`) : tâches finies seulement.
 export const canRemove = (state) => ["completed", "failed", "cancelled"].includes(state);
+/// Détail d'une tâche (`task.get` avec segments) à relire : sauf s'il a été lu une fois la
+/// tâche finie. Un détail lu pendant le téléchargement montre encore des segments en
+/// réception, même si la tâche s'est terminée depuis.
+export const detailsOutdated = (details, taskId) =>
+  details?.taskId !== taskId || !["completed", "failed", "cancelled"].includes(details.state);
 // Retéléchargement depuis le début (`task.restart`) : tout ce qui ne tourne pas ni n'attend
 // son tour.
 export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
