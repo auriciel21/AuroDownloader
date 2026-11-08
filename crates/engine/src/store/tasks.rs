@@ -738,8 +738,11 @@ pub fn complete_task(
         .and_then(|u| u.host_str().map(str::to_owned));
     tx.execute(
         "INSERT INTO history (id, task_id, display_name, final_path, total_bytes, source_host,
-                              final_state, finished_at)
-         SELECT ?2, id, display_name, ?3, ?4, ?5, 'completed', ?6 FROM tasks WHERE id = ?1",
+                              final_state, sha256, finished_at)
+         SELECT ?2, id, display_name, ?3, ?4, ?5, 'completed',
+                -- Empreinte vérifiée (F-11) : seule SHA-256 a sa colonne.
+                CASE WHEN checksum_algo = 'sha256' THEN checksum_value END, ?6
+         FROM tasks WHERE id = ?1",
         params![task_id, new_id(), final_path, total, host, now],
     )?;
     tx.execute(

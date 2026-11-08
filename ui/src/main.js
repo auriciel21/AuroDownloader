@@ -5,7 +5,7 @@ import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum,
-  parseChecksum, ALGO_LABELS,
+  parseChecksum, ALGO_LABELS, historyCsv, localStamp,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -1372,7 +1372,7 @@ async function act(method, params) {
 function renderDest() {
   const dir = store.settings["downloads.dir"] ?? "";
   for (const id of ["dest", "pref-dest"]) $(id).textContent = dir || t("(aucun)");
-  for (const id of ["dest-change", "pref-dest-change"]) $(id).disabled = !connected;
+  for (const id of ["dest-change", "pref-dest-change", "tb-history"]) $(id).disabled = !connected;
   syncLoginButtons();
 }
 
@@ -1426,6 +1426,126 @@ async function closeAdd() {
   // Les nouvelles tâches doivent se voir.
   if (view.startsWith("completed")) chooseView("all");
   $("tb-add").focus();
+}
+
+// ---------- Historique (F-35) ----------
+
+const HISTORY_PAGE = 200;
+/// Entrées affichées, curseur de la page suivante, et numéro de la dernière lecture : une
+/// réponse arrivée après une autre recherche est écartée.
+let historyItems = [];
+let historyNext = null;
+let historySeq = 0;
+let historyTimer = null;
+
+function openHistory() {
+  if (!connected || document.querySelector("dialog[open]")) return;
+  $("h-query").value = "";
+  historyItems = [];
+  historyNext = null;
+  renderHistory();
+  const dialog = $("history-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("h-query").focus();
+  loadHistory(true);
+}
+
+/// Lit une page de l'historique : la première pour la recherche en cours (`fresh`), ou la
+/// suivante.
+async function loadHistory(fresh) {
+  const seq = ++historySeq;
+  const query = $("h-query").value.trim();
+  const params = { limit: HISTORY_PAGE };
+  if (query) params.query = query;
+  if (!fresh && historyNext) params.cursor = historyNext;
+  try {
+    const page = await host.call("history.list", params);
+    if (seq !== historySeq) return;
+    historyItems = fresh ? page.items : historyItems.concat(page.items);
+    historyNext = page.nextCursor ?? null;
+    renderHistory();
+  } catch (e) {
+    showError(refused(e));
+  }
+}
+
+function renderHistory() {
+  const body = $("h-table").tBodies[0];
+  body.replaceChildren(...historyItems.map((h) => {
+    const row = document.createElement("tr");
+    row.className = h.finalState;
+    const cell = (className, text, title) => {
+      const td = document.createElement("td");
+      td.className = className;
+      td.textContent = text;
+      if (title) td.title = title;
+      row.append(td);
+    };
+    cell("when", dateText(h.finishedAt));
+    cell("name", h.displayName, h.finalPath ?? "");
+    cell("size", h.totalBytes != null ? bytes(h.totalBytes, lang, t) : "");
+    cell("state", stateText({ state: h.finalState }, t));
+    cell("host", h.sourceHost ?? "");
+    return row;
+  }));
+  const n = historyItems.length;
+  $("h-status").textContent = n === 0
+    ? t("Aucune entrée")
+    : historyNext ? t("{0} entrées affichées, d'autres suivent", n) : t("{0} entrée(s)", n);
+  $("h-more").hidden = !historyNext;
+  for (const id of ["h-more", "h-export", "h-clear"]) $(id).disabled = !connected;
+  $("h-export").disabled ||= n === 0;
+}
+
+/// Toutes les entrées de la recherche en cours, en CSV, dans un fichier choisi par
+/// l'utilisateur.
+async function exportHistory() {
+  const query = $("h-query").value.trim();
+  const items = [];
+  let cursor = null;
+  try {
+    do {
+      const params = { limit: 1000 };
+      if (query) params.query = query;
+      if (cursor) params.cursor = cursor;
+      const page = await host.call("history.list", params);
+      items.push(...page.items);
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+    const csv = historyCsv(items, {
+      headers: [t("Fini le"), t("État"), t("Taille (octets)"), t("Nom"), t("Site"), t("Chemin"), "SHA-256"],
+      stateLabel: (state) => stateText({ state }, t),
+      sep: lang === "fr" ? ";" : ",",
+    });
+    const day = localStamp(Date.now()).slice(0, 10);
+    const saved = await host.saveText(t("historique-{0}.csv", day), csv);
+    if (saved) announce(t("Historique exporté : {0}", saved));
+  } catch (e) {
+    showError(refused(e));
+  }
+}
+
+function openClearHistory() {
+  if (!connected) return;
+  const dialog = $("history-clear-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
+async function closeClearHistory() {
+  if ($("history-clear-dialog").returnValue !== "confirm") {
+    $("h-clear").focus();
+    return;
+  }
+  try {
+    const { removed } = await host.call("history.clear", {});
+    announce(t("{0} entrée(s) effacée(s)", removed));
+  } catch (e) {
+    showError(refused(e));
+  }
+  await loadHistory(true);
+  $("h-query").focus();
 }
 
 // ---------- Limites de débit ----------
@@ -1646,6 +1766,29 @@ function wire() {
   $("tb-clear").addEventListener("click", clearFinished);
   $("tb-properties").addEventListener("click", () => cursor && openDetails(cursor));
   $("tb-schedule").addEventListener("click", openSchedule);
+  $("tb-history").addEventListener("click", openHistory);
+  $("h-query").addEventListener("input", () => {
+    // Recherche pendant la frappe, une fois la saisie posée.
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(() => loadHistory(true), 250);
+  });
+  $("h-query").addEventListener("keydown", (event) => {
+    // Sans cela, Entrée actionnerait le premier bouton du formulaire, qui ferme.
+    if (event.key === "Enter") {
+      event.preventDefault();
+      clearTimeout(historyTimer);
+      loadHistory(true);
+    }
+  });
+  $("h-more").addEventListener("click", () => loadHistory(false));
+  $("h-export").addEventListener("click", exportHistory);
+  $("h-clear").addEventListener("click", openClearHistory);
+  $("history-clear-dialog").addEventListener("close", closeClearHistory);
+  $("history-dialog").addEventListener("close", () => {
+    clearTimeout(historyTimer);
+    historySeq++;
+    $("tb-history").focus();
+  });
   $("sch-queue").addEventListener("change", (e) => fillSchedule(e.target.value));
   $("sch-enabled").addEventListener("change", syncScheduleForm);
   $("sch-add-window").addEventListener("click", () => {

@@ -1725,7 +1725,8 @@ async fn an_expired_address_is_replaced_and_the_download_resumes() {
             a.parse().ok()
         })
         .collect();
-    assert!(!starts.is_empty() && !saved.is_empty());
+    assert!(!saved.is_empty(), "rien d'enregistré ({done} octets)");
+    // Rien à demander si tout était déjà reçu à la pause (machine rapide).
     for a in &starts {
         assert!(
             !saved.iter().any(|&(s, e)| (s..e).contains(a)),

@@ -193,6 +193,26 @@ async fn pick_folder(app: AppHandle, current: String) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Enregistre `text` dans un fichier choisi par l'utilisateur (export CSV de l'historique,
+/// F-35), proposé sous le nom `name` ; rend son chemin, ou `None` s'il renonce. Seule la
+/// boîte d'enregistrement du système désigne le fichier : la page ne choisit aucun chemin.
+#[tauri::command]
+async fn save_text(app: AppHandle, name: String, text: String) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&name)
+        .add_filter("CSV", &["csv"])
+        .save_file(move |path| {
+            let _ = tx.send(path.and_then(|p| p.into_path().ok()));
+        });
+    let Some(path) = rx.await.ok().flatten() else {
+        return Ok(None);
+    };
+    std::fs::write(&path, text).map_err(|e| format!("{} : {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// Ouvre un fichier terminé avec le programme associé ; jamais un exécutable.
 #[tauri::command]
 fn open_file(app: AppHandle, dir: String, name: String) -> Result<(), String> {
@@ -355,6 +375,7 @@ fn main() {
             pick_folder,
             open_file,
             reveal_file,
+            save_text,
             quit
         ])
         .setup(move |app| {

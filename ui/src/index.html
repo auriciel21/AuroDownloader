@@ -32,6 +32,7 @@
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></symbol>
     <symbol id="i-other" viewBox="0 0 24 24"><path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5"/></symbol>
     <symbol id="i-schedule" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v3.5l2.5 1.5"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8M12 8v4.5l3 1.8"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
   </svg>
 
@@ -58,6 +59,8 @@
       <svg aria-hidden="true"><use href="#i-properties"/></svg><span data-i18n="Propriétés">Propriétés</span></button>
     <button type="button" id="tb-schedule" class="tool">
       <svg aria-hidden="true"><use href="#i-schedule"/></svg><span data-i18n="Planification">Planification</span></button>
+    <button type="button" id="tb-history" class="tool">
+      <svg aria-hidden="true"><use href="#i-history"/></svg><span data-i18n="Historique">Historique</span></button>
     <button type="button" id="tb-settings" class="tool">
       <svg aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="Options">Options</span></button>
   </div>
@@ -142,6 +145,48 @@
           <button value="later" id="add-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
           <button value="start" id="add-start" class="primary" data-i18n="Démarrer">Démarrer</button>
         </span>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="history-dialog" class="wide" aria-labelledby="history-title">
+    <form method="dialog">
+      <h2 id="history-title" data-i18n="Historique">Historique</h2>
+      <label class="field">
+        <span data-i18n="Rechercher (nom, dossier ou site)">Rechercher (nom, dossier ou site)</span>
+        <input id="h-query" type="search" spellcheck="false" autocomplete="off">
+      </label>
+      <div class="history-box">
+        <table id="h-table">
+          <thead><tr>
+            <th scope="col" data-i18n="Fini le">Fini le</th>
+            <th scope="col" data-i18n="Nom">Nom</th>
+            <th scope="col" data-i18n="Taille">Taille</th>
+            <th scope="col" data-i18n="État">État</th>
+            <th scope="col" data-i18n="Site">Site</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note flush" id="h-status" role="status"></p>
+      <button type="button" id="h-more" data-i18n="Afficher plus" hidden>Afficher plus</button>
+      <div class="buttons">
+        <span class="row">
+          <button type="button" id="h-export" data-i18n="Exporter en CSV…">Exporter en CSV…</button>
+          <button type="button" id="h-clear" class="danger" data-i18n="Effacer l'historique…">Effacer l'historique…</button>
+        </span>
+        <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="history-clear-dialog" aria-labelledby="hc-title" aria-describedby="hc-text">
+    <form method="dialog">
+      <h2 id="hc-title" data-i18n="Effacer l'historique">Effacer l'historique</h2>
+      <p id="hc-text" data-i18n="Toutes les entrées de l'historique seront effacées. Les téléchargements de la liste et les fichiers sur le disque restent.">Toutes les entrées de l'historique seront effacées. Les téléchargements de la liste et les fichiers sur le disque restent.</p>
+      <div class="buttons">
+        <button value="cancel" data-i18n="Annuler">Annuler</button>
+        <button value="confirm" class="danger" data-i18n="Effacer">Effacer</button>
       </div>
     </form>
   </dialog>

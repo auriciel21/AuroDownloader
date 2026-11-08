@@ -470,6 +470,31 @@ dialog .buttons.end { justify-content: flex-end; }
 #d-segments th:first-child, #d-segments td:first-child { width: 48px; }
 #d-segments tr.receiving td:last-child { color: var(--accent); font-weight: 600; }
 #d-segments tr.finished td:last-child { color: var(--done); }
+
+/* Historique (F-35). */
+.history-box {
+  max-height: min(360px, 50vh);
+  overflow: auto;
+  border: 1px solid var(--row-line);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+#h-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#h-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+#h-table td { padding: 2px 8px; border-top: 1px solid var(--row-line); vertical-align: top; }
+#h-table td.when, #h-table td.size { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#h-table td.size { text-align: right; }
+#h-table td.name { overflow-wrap: anywhere; }
+#h-table tr.failed td.state { color: var(--fail); }
+#h-table tr.completed td.state { color: var(--done); }
 .limit-field { padding-top: 10px; border-top: 1px solid var(--row-line); }
 
 .tabs {

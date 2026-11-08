@@ -409,3 +409,36 @@ export class TaskStore {
     return { active, bps };
   }
 }
+
+// ---------- Historique (F-35) ----------
+
+/// Champ CSV (RFC 4180) : entre guillemets s'il contient le séparateur, un guillemet ou un
+/// saut de ligne, les guillemets doublés.
+export function csvField(text, sep) {
+  const s = text == null ? "" : String(text);
+  return s.includes(sep) || /["\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+}
+
+/// Date et heure locales « 2026-11-08 10:30:12 » : se trie comme du texte, et les tableurs
+/// la reconnaissent.
+export function localStamp(ms) {
+  const d = new Date(ms);
+  const two = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} `
+    + `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+}
+
+/// Historique en CSV : en-têtes `headers` (déjà traduits), une ligne par entrée ; tailles en
+/// octets, états par `stateLabel`. Le point-virgule par défaut est celui qu'attendent les
+/// tableurs réglés en français ; la marque d'ordre des octets leur fait lire l'UTF-8.
+export function historyCsv(items, { headers, stateLabel, sep = ";" }) {
+  const line = (fields) => fields.map((f) => csvField(f, sep)).join(sep);
+  const lines = [line(headers)];
+  for (const h of items) {
+    lines.push(line([
+      localStamp(h.finishedAt), stateLabel(h.finalState), h.totalBytes ?? "", h.displayName,
+      h.sourceHost ?? "", h.finalPath ?? "", h.sha256 ?? "",
+    ]));
+  }
+  return `\ufeff${lines.join("\r\n")}\r\n`;
+}

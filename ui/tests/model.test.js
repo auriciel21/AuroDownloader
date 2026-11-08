@@ -341,3 +341,25 @@ test("l'avancement de la vérification de l'empreinte ne survit pas à la vérif
   assert.ok(changed.changed.has("a"));
   assert.equal(store.tasks.get("a").checksum.algo, "md5");
 });
+
+test("historique en CSV (F-35) : champs protégés, dates locales, octets", async () => {
+  const { historyCsv, csvField, localStamp } = await import("../src/model.js");
+  assert.equal(csvField("a;b", ";"), '"a;b"');
+  assert.equal(csvField("a,b", ";"), "a,b");
+  assert.equal(csvField('dit "oui"', ","), '"dit ""oui"""');
+  assert.equal(csvField(null, ";"), "");
+  const at = new Date(2026, 10, 8, 9, 5, 7).getTime();
+  assert.equal(localStamp(at), "2026-11-08 09:05:07");
+  const csv = historyCsv([
+    { finishedAt: at, finalState: "completed", totalBytes: 1024, displayName: "a;b.iso",
+      sourceHost: "exemple.org", finalPath: "C:\dl\a;b.iso", sha256: "ab" },
+    { finishedAt: at, finalState: "cancelled", totalBytes: null, displayName: "c.bin",
+      sourceHost: null, finalPath: null, sha256: null },
+  ], { headers: ["Date", "État", "Taille", "Nom", "Site", "Chemin", "SHA-256"],
+       stateLabel: (s) => ({ completed: "Terminé", cancelled: "Annulé" })[s] });
+  assert.ok(csv.startsWith("\ufeffDate;État;"), "marque UTF-8 et en-têtes");
+  const lines = csv.slice(1).split("\r\n");
+  assert.equal(lines[1], '2026-11-08 09:05:07;Terminé;1024;"a;b.iso";exemple.org;"C:\dl\a;b.iso";ab');
+  assert.equal(lines[2], "2026-11-08 09:05:07;Annulé;;c.bin;;;");
+  assert.equal(lines[3], "", "fin de ligne finale");
+});

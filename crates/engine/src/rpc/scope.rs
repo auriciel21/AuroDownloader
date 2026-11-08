@@ -60,7 +60,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "engine.hello" => return None,
         "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list"
         | "settings.get" | "events.subscribe" | "events.unsubscribe" | "sync.snapshot"
-        | "engine.stats" => Scope::Read,
+        | "engine.stats"
+        | "history.list" => Scope::Read,
         "task.add" | "task.addBatch" | "media.probe" | "linkscan.run" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
@@ -77,7 +78,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "queue.update"
         | "queue.delete"
         | "limits.set"
-        | "engine.cancelEndAction" => Scope::Control,
+        | "engine.cancelEndAction"
+        // Effacer l'historique ne touche ni aux tâches ni aux fichiers (F-35).
+        | "history.clear" => Scope::Control,
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
         // Identifiants de sites (SPEC §7.14) : même la liste (noms d'utilisateur).
         "login.list" | "login.set" | "login.delete" => Scope::Admin,

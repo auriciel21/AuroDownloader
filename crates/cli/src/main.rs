@@ -194,6 +194,18 @@ enum Command {
         #[arg(short = 'q', long)]
         queue: Option<String>,
     },
+    /// Historique des téléchargements, les plus récents d'abord (terminés, et ceux en
+    /// échec ou annulés une fois retirés de la liste)
+    History {
+        /// Texte cherché dans le nom, le chemin ou le site
+        query: Option<String>,
+        /// Au format CSV (virgules, RFC 4180), pour un tableur ou un script
+        #[arg(long, conflicts_with = "clear")]
+        csv: bool,
+        /// Effacer tout l'historique (ni les tâches ni les fichiers)
+        #[arg(long, conflicts_with = "query")]
+        clear: bool,
+    },
     /// Dossier des téléchargements du moteur, pour les ajouts sans dossier (extension,
     /// application) ; sans argument, l'affiche
     Dir {
@@ -538,6 +550,10 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     };
                     remote::limit(&mut rpc, to, rate).await
                 }
+                Command::History { query, csv, clear } => match clear {
+                    true => remote::clear_history(&mut rpc).await,
+                    false => remote::history(&mut rpc, query.as_deref(), csv).await,
+                },
                 Command::Dir { path, reset } => {
                     remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }

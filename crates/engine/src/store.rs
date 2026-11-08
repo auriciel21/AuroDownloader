@@ -14,6 +14,7 @@ use rusqlite::{Connection, params};
 use crate::segmenter::CoverageError;
 
 pub mod headers;
+pub mod history;
 pub mod logins;
 pub mod moves;
 pub mod schedules;

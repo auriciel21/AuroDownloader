@@ -598,7 +598,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
-| `history.list` / `history.clear` | `query`, `before`, `limit` | Entrées d'historique |
+| `history.list` / `history.clear` | `query`, `before`, `limit`, `cursor` | Entrées d'historique ; nombre d'entrées effacées (section 6.5, depuis le 2026-11-08) |
 | `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages (`values`, par clé) |
 | `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
 | `sync.snapshot` | aucun | État complet (`tasks`, `queues`, `limits`, `settings`, `schedules`, `endAction`) et `rev` |
@@ -626,7 +626,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `history.list`, `history.clear`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
   - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
@@ -690,6 +690,13 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `task.update` avec `checksum` à `null` la retire. Refusé par `INVALID_STATE` pendant `verifying`, et pour une tâche terminée ou annulée. Annonce : `task.updated` avec `checksum`.
   - Les clients acceptent aussi « sha256:… », « sha1:… », « md5:… », ou la valeur seule, dont la longueur donne l'algorithme (`auro add --checksum`, `auro checksum`, champ « Empreinte attendue » de l'application), et envoient la forme du protocole.
 - **Actualiser l'adresse** (`task.update` avec `url`, depuis le 2026-11-08 ; portée `control`) : section 7.13. Annonce : `task.updated` avec `displayName`. L'application : « Actualiser l'adresse… » ; elle relance une tâche en échec une fois l'adresse acceptée.
+- **Historique** (`history.list`, `history.clear`, F-35, depuis le 2026-11-08) :
+  - Une entrée par fin : une tâche terminée a la sienne à sa fin ; une tâche en échec ou annulée, à son retrait de la liste (section 5.6, règle 4). Une tâche retéléchargée puis terminée de nouveau en a deux.
+  - `history.list` rend `items[]`, les plus récentes d'abord : `historyId`, `taskId` (la tâche peut avoir été retirée), `displayName`, `finalPath` (tâche terminée ; il suit « Déplacer/Renommer »), `totalBytes`, `sourceHost` (le nom d'hôte, jamais l'adresse, section 8.2), `finalState`, `sha256` (empreinte SHA-256 vérifiée à la fin, section 7.9, sinon `null`), `finishedAt` (millisecondes Unix).
+  - Paramètres : `query`, texte cherché dans le nom, le chemin et l'hôte, sans égard à la casse des lettres ASCII ; `before`, seulement les entrées finies avant cette date (millisecondes Unix) ; `limit` et `cursor`, comme `task.list` : `nextCursor` vaut `null` sur la dernière page.
+  - `history.clear` efface tout, ou les entrées finies avant `before` ; il rend `removed`, leur nombre. Ni les tâches ni les fichiers ne sont touchés. Rien n'est annoncé : un client relit l'historique quand il l'affiche.
+  - Clients : `auro history [texte] [--csv] [--clear]` ; dans l'application, le bouton « Historique » (recherche, « Exporter en CSV… », « Effacer l'historique… »). L'export de l'application sépare les champs par des points-virgules en français, des virgules en anglais, avec la marque d'ordre des octets UTF-8 (pour les tableurs) ; celui de la CLI, par des virgules (RFC 4180).
+  - Pas encore : la durée de conservation réglable (section 5.6, règle 6) et le mode « sans historique » (section 8.2).
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
     sont refusées par `INVALID_STATE` et s'annulent d'abord ;
@@ -785,9 +792,9 @@ Mise en œuvre (décision du 2026-11-07, phase 3) :
 - **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6).
 - **Portées exigées** :
   - aucune : `engine.hello` ;
-  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
+  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
   - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` ;
-  - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction` ;
+  - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction`, `history.clear` ;
   - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.

@@ -15,6 +15,7 @@ use crate::schedule::Rules;
 use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
 };
+use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
 use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
@@ -59,6 +60,13 @@ impl Params {
     fn required_str(&self, name: &str) -> Result<String, RpcError> {
         self.str(name)?
             .ok_or_else(|| RpcError::invalid_params(format!("{name} manquant")))
+    }
+
+    /// Entier signé (date en millisecondes Unix).
+    fn i64(&self, name: &str) -> Result<Option<i64>, RpcError> {
+        self.get(name)
+            .map(|v| v.as_i64().ok_or_else(|| Self::wrong(name, "entier")))
+            .transpose()
     }
 
     fn u32(&self, name: &str) -> Result<Option<u32>, RpcError> {
@@ -218,6 +226,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "task.restart" => {
             let delete_files = p.bool("deleteFiles")?;
             for_each(ctx, &p, Action::Restart { delete_files }).await
+        }
+        "history.list" => history_list(ctx, &p).await,
+        "history.clear" => {
+            let before = p.i64("before")?;
+            let removed = ctx.engine.clear_history(before).await?;
+            Ok(json!({"removed": removed}))
         }
         "queue.list" => {
             let queues = ctx.engine.queues().await?;
@@ -572,6 +586,54 @@ fn details_json(d: &TaskDetails) -> Value {
             .collect();
     }
     task
+}
+
+/// `history.list` (F-35) : entrées les plus récentes d'abord, filtrées par `query` (nom,
+/// chemin ou hôte) et `before` ; `limit` et `cursor` pour lire page par page.
+async fn history_list(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let cursor = p
+        .str("cursor")?
+        .map(|c| Cursor::parse(&c).ok_or_else(|| RpcError::invalid_params("cursor invalide")))
+        .transpose()?;
+    let limit = p.u32("limit")?;
+    if limit == Some(0) {
+        return Err(RpcError::invalid_params("limit : au moins 1"));
+    }
+    let filter = HistoryFilter {
+        query: p.str("query")?,
+        before: p.i64("before")?,
+        cursor,
+        limit,
+    };
+    let rows = ctx.engine.history(filter).await?;
+    let next = match (limit, rows.last()) {
+        (Some(l), Some(last)) if rows.len() == l as usize => Some(
+            Cursor {
+                finished_at: last.finished_at,
+                id: last.id.clone(),
+            }
+            .text(),
+        ),
+        _ => None,
+    };
+    Ok(json!({
+        "items": rows.iter().map(history_json).collect::<Vec<_>>(),
+        "nextCursor": next,
+    }))
+}
+
+fn history_json(h: &HistoryRow) -> Value {
+    json!({
+        "historyId": h.id,
+        "taskId": h.task_id,
+        "displayName": h.display_name,
+        "finalPath": h.final_path,
+        "totalBytes": h.total_bytes,
+        "sourceHost": h.source_host,
+        "finalState": h.final_state,
+        "sha256": h.sha256,
+        "finishedAt": h.finished_at,
+    })
 }
 
 async fn task_list(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {

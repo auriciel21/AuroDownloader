@@ -7,7 +7,9 @@
 //   `{kind: "message", message}` et `{kind: "resync"}` ;
 // - status() : état courant de la connexion ;
 // - info(), savePrefs(prefs), setAutostart(on), pickFolder(current), openFile(dir, name),
-//   revealFile(dir, name), quit(stopEngine) : services de l'application.
+//   revealFile(dir, name), saveText(name, text), quit(stopEngine) : services de
+//   l'application. saveText enregistre un texte dans un fichier que l'utilisateur choisit,
+//   et rend son chemin, ou null s'il renonce.
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -22,6 +24,7 @@ export function tauriHost() {
     pickFolder: (current) => invoke("pick_folder", { current }),
     openFile: (dir, name) => invoke("open_file", { dir, name }),
     revealFile: (dir, name) => invoke("reveal_file", { dir, name }),
+    saveText: (name, text) => invoke("save_text", { name, text }),
     quit: (stopEngine) => invoke("quit", { stopEngine }),
   };
 }

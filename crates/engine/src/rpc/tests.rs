@@ -1539,3 +1539,140 @@ async fn checksums_are_given_checked_and_announced() {
     );
     engine.shutdown().await;
 }
+
+/// Historique (F-35) : une tâche terminée y entre, avec son empreinte SHA-256 vérifiée ;
+/// une tâche annulée y entre à son retrait ; recherche, pages et effacement ; la portée
+/// `read` lit sans effacer.
+#[tokio::test]
+async fn history_is_listed_searched_paged_and_cleared() {
+    use sha2::{Digest, Sha256};
+    let len = 64 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(len);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let hex: String = Sha256::digest(crate::testing::content(len as usize))
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    for name in ["alpha.bin", "beta.bin"] {
+        let mut params = json!({"sources": [{"url": server.url(&format!("/{name}"))}],
+                                "destDir": dir_text(dir.path())});
+        if name == "alpha.bin" {
+            params["checksum"] = json!({"algo": "sha256", "value": hex});
+        }
+        let id = c.result("task.add", params).await["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        c.notification("task.stateChanged", |p| {
+            p["taskId"] == json!(id) && p["to"] == "completed"
+        })
+        .await;
+    }
+    // Une tâche annulée puis retirée : elle aussi a sa ligne.
+    let cancelled = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/gamma.bin")}], "destDir": dir_text(dir.path()),
+                   "startPaused": true}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.result("task.cancel", json!({"taskIds": [cancelled]}))
+        .await;
+    c.result("task.remove", json!({"taskIds": [cancelled]}))
+        .await;
+
+    let all = c.result("history.list", json!({})).await;
+    let items = all["items"].as_array().unwrap();
+    let names: Vec<&str> = items
+        .iter()
+        .map(|i| i["displayName"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 3, "{all}");
+    assert_eq!(names[0], "gamma.bin", "les plus récentes d'abord");
+    let alpha = items
+        .iter()
+        .find(|i| i["displayName"] == "alpha.bin")
+        .unwrap();
+    assert_eq!(alpha["finalState"], "completed");
+    assert_eq!(alpha["sha256"], json!(hex));
+    assert_eq!(alpha["totalBytes"], len);
+    assert_eq!(alpha["sourceHost"], "127.0.0.1");
+    assert!(alpha["finalPath"].as_str().unwrap().ends_with("alpha.bin"));
+    assert!(alpha["finishedAt"].as_i64().unwrap() > 1_700_000_000_000);
+    assert_eq!(items[0]["finalState"], "cancelled");
+    assert!(all["nextCursor"].is_null());
+
+    // Recherche dans le nom, sans égard à la casse.
+    let found = c.result("history.list", json!({"query": "BETA"})).await;
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["displayName"], "beta.bin");
+
+    // Pages de deux, puis d'une.
+    let first = c.result("history.list", json!({"limit": 2})).await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+    let second = c
+        .result("history.list", json!({"limit": 2, "cursor": cursor}))
+        .await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["nextCursor"].is_null());
+    for params in [
+        json!({"cursor": "rien"}),
+        json!({"limit": 0}),
+        json!({"before": "hier"}),
+    ] {
+        assert_eq!(
+            c.error_code("history.list", params.clone()).await,
+            "INVALID_PARAMS",
+            "{params}"
+        );
+    }
+
+    // Lecture seule : lire oui, effacer non.
+    let mut reader = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("read");
+    reader.result("engine.hello", params).await;
+    assert_eq!(
+        reader.result("history.list", json!({})).await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        reader.error_code("history.clear", json!({})).await,
+        "UNAUTHORIZED"
+    );
+
+    // Effacement de ce qui a fini avant la dernière entrée, puis de tout ; les tâches et
+    // les fichiers restent.
+    let newest = items[0]["finishedAt"].as_i64().unwrap();
+    let cleared = c.result("history.clear", json!({"before": newest})).await;
+    assert_eq!(cleared["removed"], 2);
+    let cleared = c.result("history.clear", json!({})).await;
+    assert_eq!(cleared["removed"], 1);
+    assert!(
+        c.result("history.list", json!({})).await["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        c.result("task.list", json!({})).await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(dir.path().join("alpha.bin").exists());
+    engine.shutdown().await;
+}

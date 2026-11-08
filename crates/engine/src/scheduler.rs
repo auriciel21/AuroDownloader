@@ -39,6 +39,7 @@ use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
 use crate::secrets::{Vault, VaultError};
 use crate::segmenter::Segment;
 use crate::store::headers::{self, Stored, StoredHeader};
+use crate::store::history::{self, HistoryFilter, HistoryRow};
 use crate::store::segments::load_segments;
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
@@ -479,6 +480,8 @@ enum Command {
     Get(String, Reply<TaskRow>),
     Details(String, Include, Reply<TaskDetails>),
     List(TaskFilter, Reply<(Vec<TaskRow>, u64)>),
+    History(HistoryFilter, Reply<Vec<HistoryRow>>),
+    ClearHistory(Option<i64>, Reply<u64>),
     Snapshot(Reply<Snapshot>),
     Queues(Reply<Vec<QueueRow>>),
     UpdateTask {
@@ -624,6 +627,16 @@ impl Engine {
     ) -> Result<TaskDetails, EngineError> {
         let id = task_id.to_owned();
         self.ask(|reply| Command::Details(id, include, reply)).await
+    }
+
+    /// Historique (F-35) selon `filter`, les entrées les plus récentes d'abord.
+    pub async fn history(&self, filter: HistoryFilter) -> Result<Vec<HistoryRow>, EngineError> {
+        self.ask(|reply| Command::History(filter, reply)).await
+    }
+
+    /// Efface l'historique, ou ses entrées finies avant `before` ; renvoie leur nombre.
+    pub async fn clear_history(&self, before: Option<i64>) -> Result<u64, EngineError> {
+        self.ask(|reply| Command::ClearHistory(before, reply)).await
     }
 
     /// Tâches selon `filter`, avec la révision à laquelle la liste a été lue.
@@ -1378,6 +1391,12 @@ impl Scheduler {
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
                 let _ = reply.send(rows.map(|r| (r, self.current_rev())).map_err(Into::into));
+            }
+            Command::History(filter, reply) => {
+                let _ = reply.send(history::list(&self.conn, &filter).map_err(Into::into));
+            }
+            Command::ClearHistory(before, reply) => {
+                let _ = reply.send(history::clear(&self.conn, before).map_err(Into::into));
             }
             Command::Snapshot(reply) => {
                 let _ = reply.send(self.snapshot());

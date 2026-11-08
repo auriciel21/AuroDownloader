@@ -776,6 +776,81 @@ pub async fn refresh(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Historique (F-35), page par page : un tableau, ou du CSV (RFC 4180) avec les dates en
+/// heure locale, les tailles en octets et les états du protocole.
+pub async fn history(rpc: &mut Rpc, query: Option<&str>, csv: bool) -> Result<()> {
+    // L'heure locale, d'après SQLite (modificateur `localtime`), comme le moteur.
+    let clock = rusqlite::Connection::open_in_memory()?;
+    let local = |ms: i64| -> String {
+        clock
+            .query_row(
+                "SELECT strftime('%Y-%m-%d %H:%M:%S', ?1 / 1000, 'unixepoch', 'localtime')",
+                [ms],
+                |r| r.get(0),
+            )
+            .unwrap_or_default()
+    };
+    if csv {
+        println!("date,etat,taille,nom,site,chemin,sha256");
+    }
+    let (mut cursor, mut count): (Option<String>, usize) = (None, 0);
+    loop {
+        let mut params = json!({"limit": 500});
+        if let Some(q) = query {
+            params["query"] = json!(q);
+        }
+        if let Some(c) = &cursor {
+            params["cursor"] = json!(c);
+        }
+        let page = rpc.call("history.list", params).await?;
+        for h in page["items"].as_array().into_iter().flatten() {
+            count += 1;
+            let text = |key: &str| h[key].as_str().unwrap_or_default().to_owned();
+            let when = local(h["finishedAt"].as_i64().unwrap_or(0));
+            let total = h["totalBytes"].as_u64();
+            if csv {
+                let fields = [
+                    when,
+                    text("finalState"),
+                    total.map(|t| t.to_string()).unwrap_or_default(),
+                    text("displayName"),
+                    text("sourceHost"),
+                    text("finalPath"),
+                    text("sha256"),
+                ];
+                let line: Vec<String> = fields.iter().map(|f| display::csv_field(f)).collect();
+                println!("{}", line.join(","));
+            } else {
+                println!(
+                    "{when}  {:<10} {:>10}  {}  ({})",
+                    text("finalState"),
+                    total.map(size).unwrap_or_else(|| "?".into()),
+                    text("displayName"),
+                    text("sourceHost")
+                );
+            }
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    if count == 0 && !csv {
+        println!("Historique vide.");
+    }
+    Ok(())
+}
+
+/// Efface tout l'historique ; les tâches et les fichiers restent.
+pub async fn clear_history(rpc: &mut Rpc) -> Result<()> {
+    let result = rpc.call("history.clear", json!({})).await?;
+    println!(
+        "{} entrée(s) d'historique effacée(s).",
+        result["removed"].as_u64().unwrap_or(0)
+    );
+    Ok(())
+}
+
 /// Empreinte au format du protocole.
 fn checksum_json(c: &Checksum) -> Value {
     json!({"algo": c.algo().as_sql(), "value": c.value()})

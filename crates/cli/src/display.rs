@@ -204,9 +204,28 @@ pub fn read_line_stdin() -> anyhow::Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
+/// Champ CSV (RFC 4180) : entre guillemets s'il contient une virgule, un guillemet ou un
+/// saut de ligne, les guillemets doublés.
+pub fn csv_field(text: &str) -> String {
+    if text.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_fields_are_quoted_only_when_needed() {
+        assert_eq!(csv_field("debian.iso"), "debian.iso");
+        assert_eq!(csv_field(""), "");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("dit \"oui\""), "\"dit \"\"oui\"\"\"");
+        assert_eq!(csv_field("deux\nlignes"), "\"deux\nlignes\"");
+    }
 
     #[test]
     fn limits_are_read_in_binary_units() {

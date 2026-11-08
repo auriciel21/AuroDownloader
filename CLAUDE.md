@@ -53,6 +53,8 @@ téléchargement.
   Empreinte du fichier (F-11, SPEC 7.9, 2026-11-08) : `io::checksum` (SHA-256, SHA-1,
   MD5 ; lecture du `.part` fermé), état `verifying` durable (`transfer::finish_part`,
   reprise par `resume_verifying`).
+  Historique (F-35, 2026-11-08) : `store::history` (recherche, pages par curseur,
+  effacement), méthodes `history.list` et `history.clear`.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -148,6 +150,7 @@ cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear
+cargo run -p auro-cli -- history [texte] [--csv] ; history --clear
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
