@@ -90,6 +90,12 @@ export const EN = {
   "Copie de « {0} » vers l'autre disque en cours": "Copying “{0}” to the other disk",
   "Déplacement de « {0} » impossible : {1}": "Could not move “{0}”: {1}",
   "Déplacement du fichier…": "Moving the file…",
+  // Réservation de la place (F-10).
+  "Réserver la place de chaque fichier dès le départ": "Reserve each file's space from the start",
+  "Un disque trop petit se voit avant le téléchargement, et le fichier se fragmente moins. Sans effet sur les clés et disques en FAT ou exFAT.":
+    "A disk that is too small shows before the download, and the file is less fragmented. No effect on FAT or exFAT drives.",
+  "Place réservée dès le départ": "Space reserved from the start",
+  "Place prise au fil du téléchargement": "Space taken as the download goes",
   // Historique (F-35).
   "Historique": "History",
   "Rechercher (nom, dossier ou site)": "Search (name, folder or site)",

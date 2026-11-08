@@ -846,9 +846,11 @@ mod limits_and_space {
             &server.url("/trop.bin"),
             tempfile::tempdir_in(&volume).unwrap(),
         );
+        // Sans réservation (F-10) : l'échec vient de l'écriture.
         let opts = Options {
             free_space: plenty,
             keep_free: 0,
+            preallocate: false,
             ..opts()
         };
         assert_eq!(case.run_opts(&opts, no_stop()).await, Outcome::DiskFull);
@@ -867,6 +869,74 @@ mod limits_and_space {
         requeue(&mut case.conn, &case.task_id).unwrap();
         let outcome = case.run_opts(&opts, no_stop()).await;
         assert_completed(&case, &outcome, "trop.bin", &content(len));
+    }
+
+    /// Même disque vraiment plein, avec la réservation de la place (F-10) : le manque se
+    /// voit avant le premier octet reçu. Même volume dédié que le test précédent.
+    #[tokio::test]
+    #[ignore = "demande un petit volume dédié (AURO_FULL_DISK_DIR)"]
+    async fn a_really_full_disk_is_seen_before_downloading() {
+        fn plenty(_: &Path) -> std::io::Result<u64> {
+            Ok(u64::MAX)
+        }
+        let volume = PathBuf::from(
+            std::env::var("AURO_FULL_DISK_DIR").expect("AURO_FULL_DISK_DIR : petit volume dédié"),
+        );
+        let filler = volume.join("remplissage-reserve");
+        std::fs::write(&filler, vec![0u8; 2 * 1024 * 1024]).unwrap();
+        let free = crate::io::free_space(&volume).unwrap();
+        let len = usize::try_from(free).unwrap() + 1024 * 1024;
+        let (_, server) = site(content(len));
+        let mut case = new_case_in(
+            &server.url("/trop.bin"),
+            tempfile::tempdir_in(&volume).unwrap(),
+        );
+        let opts = Options {
+            free_space: plenty,
+            keep_free: 0,
+            ..opts()
+        };
+        assert_eq!(case.run_opts(&opts, no_stop()).await, Outcome::DiskFull);
+        assert_eq!(case.task().error_code.as_deref(), Some("DISK_FULL"));
+        let segments = crate::store::segments::load_segments(&case.conn, &case.task_id).unwrap();
+        assert_eq!(segments.iter().map(|s| s.written).sum::<u64>(), 0);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|r| r.method != "GET" || r.header("range").is_none_or(|v| v == "bytes=0-0")),
+            "segments demandés malgré le disque plein"
+        );
+
+        std::fs::remove_file(&filler).unwrap();
+        requeue(&mut case.conn, &case.task_id).unwrap();
+        let outcome = case.run_opts(&opts, no_stop()).await;
+        assert_completed(&case, &outcome, "trop.bin", &content(len));
+    }
+
+    /// Réservation de la place (F-10) : le `.part` a sa taille finale avant le premier
+    /// octet reçu ; sans réservation, rien n'est pris d'avance.
+    #[tokio::test]
+    async fn the_part_file_is_reserved_before_the_first_byte() {
+        let (_, server) = site(content(SIZE));
+        for preallocate in [true, false] {
+            let mut case = new_case(&server.url("/reserve.bin"));
+            let opts = Options {
+                preallocate,
+                ..opts()
+            };
+            // Arrêt demandé dès le départ : la préparation et la réservation ont lieu,
+            // aucun segment n'est reçu.
+            let (stop_tx, stop) = watch::channel(true);
+            assert_eq!(case.run_opts(&opts, stop).await, Outcome::Paused);
+            drop(stop_tx);
+            let len = std::fs::metadata(case.part("reserve.bin")).unwrap().len();
+            let expected = if preallocate { SIZE as u64 } else { 0 };
+            assert_eq!(len, expected, "réservation {preallocate}");
+            requeue(&mut case.conn, &case.task_id).unwrap();
+            let outcome = case.run_opts(&opts, no_stop()).await;
+            assert_completed(&case, &outcome, "reserve.bin", &content(SIZE));
+        }
     }
 }
 

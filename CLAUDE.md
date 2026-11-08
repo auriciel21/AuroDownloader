@@ -24,7 +24,7 @@ téléchargement.
 - `crates/engine` (`auro-engine`) : le moteur. Phase 1 : `store` (SQLite et migrations,
   fait), `segmenter` (couverture et redécoupage faits ; sources et nombre de connexions à
   écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final,
-  espace libre et place occupée ; préallocation à écrire), `net` (préparation, requêtes de segments avec
+  espace libre et place occupée, réservation de la place : F-10), `net` (préparation, requêtes de segments avec
   `If-Range`, noms de fichier, classement des erreurs, autorités de certification
   ajoutées par `--ca-cert` ; FTP, proxies à écrire),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
@@ -55,6 +55,8 @@ téléchargement.
   reprise par `resume_verifying`).
   Historique (F-35, 2026-11-08) : `store::history` (recherche, pages par curseur,
   effacement), méthodes `history.list` et `history.clear`.
+  Réservation de la place (F-10, 2026-11-08) : `io::preallocate` (`fallocate`, NTFS et
+  ReFS), réglage `downloads.preallocate`, vrai par défaut.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.

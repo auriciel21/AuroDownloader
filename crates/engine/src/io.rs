@@ -20,10 +20,9 @@
 //! au lieu de tout recevoir avant le premier vidage (SPEC §7.5).
 //!
 //! L'espace disque (F-18) se mesure par [`free_space`] et [`space_needed`] (module
-//! `space`).
+//! `space`), qui réserve aussi la place d'un fichier ([`preallocate`], F-10).
 //!
-//! Pas encore traités : la préallocation d'espace (F-10, en option) et le stockage Android
-//! par le sélecteur du système (SPEC §7.5).
+//! Pas encore traité : le stockage Android par le sélecteur du système (SPEC §7.5).
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -37,7 +36,7 @@ use crate::segmenter::Segment;
 
 pub mod checksum;
 mod space;
-pub use space::{allocated, free_space, space_needed};
+pub use space::{allocated, free_space, preallocate, space_needed};
 
 /// Taille par défaut du tampon d'un écrivain : 256 Kio (SPEC §7.10).
 pub const DEFAULT_WRITE_BUFFER: usize = 256 * 1024;
@@ -351,6 +350,13 @@ impl PartFile {
     /// Chemin du `.part`.
     pub fn path(&self) -> &Path {
         &self.part
+    }
+
+    /// Réserve la place de tout le fichier, `len` octets (F-10, [`preallocate`]) ;
+    /// `false` si le système de fichiers ne le permet pas. Un manque de place est une
+    /// erreur `StorageFull`, avant tout octet reçu.
+    pub fn preallocate(&self, len: u64) -> Result<bool, IoError> {
+        preallocate(&self.file, len).map_err(file_error(&self.part))
     }
 
     /// Taille actuelle du `.part` sur disque.

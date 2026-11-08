@@ -16,7 +16,7 @@ use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
-use crate::store::settings::DOWNLOAD_DIR;
+use crate::store::settings::{DOWNLOAD_DIR, PREALLOCATE};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -298,10 +298,27 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .get("values")
                 .and_then(Value::as_object)
                 .ok_or_else(|| RpcError::invalid_params("values : objet attendu"))?;
-            if let Some(key) = values.keys().find(|k| *k != DOWNLOAD_DIR) {
+            if let Some(key) = values
+                .keys()
+                .find(|k| *k != DOWNLOAD_DIR && *k != PREALLOCATE)
+            {
                 return Err(RpcError::invalid_params(format!(
-                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR})"
+                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, {PREALLOCATE})"
                 )));
+            }
+            // Vérifiés tous les deux avant d'en changer un.
+            let preallocate = match values.get(PREALLOCATE) {
+                None => None,
+                Some(Value::Bool(on)) => Some(*on),
+                Some(_) => return Err(Params::wrong(PREALLOCATE, "booléen")),
+            };
+            if let Some(value) = values.get(DOWNLOAD_DIR)
+                && !matches!(value, Value::Null | Value::String(_))
+            {
+                return Err(Params::wrong(DOWNLOAD_DIR, "texte ou null"));
+            }
+            if let Some(on) = preallocate {
+                ctx.engine.set_preallocate(on).await?;
             }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
@@ -334,7 +351,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": null},
-                "settings": {DOWNLOAD_DIR: s.download_dir},
+                "settings": {DOWNLOAD_DIR: s.download_dir, PREALLOCATE: s.preallocate},
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -424,10 +441,12 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
 }
 
 /// Réglages du moteur (`settings.get`) : tous ceux qu'il prend en charge, avec la valeur
-/// retenue (pour `downloads.dir`, le dossier du système si aucun n'est enregistré).
+/// retenue (pour `downloads.dir`, le dossier du système si aucun n'est enregistré ; pour
+/// `downloads.preallocate`, vrai).
 async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let dir = ctx.engine.download_dir().await?;
-    Ok(json!({"values": {DOWNLOAD_DIR: dir}}))
+    let preallocate = ctx.engine.preallocate().await?;
+    Ok(json!({"values": {DOWNLOAD_DIR: dir, PREALLOCATE: preallocate}}))
 }
 
 /// Limites globales (`limits.get`) ; le débit montant n'est pas encore limité.

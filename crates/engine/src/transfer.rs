@@ -101,6 +101,8 @@ pub struct Options {
     /// Coffre des en-têtes secrets des tâches (SPEC §5.1) ; la mémoire par défaut, le
     /// coffre du système pour `aurod`.
     pub vault: Vault,
+    /// Réserver la place du fichier au départ (F-10, réglage `downloads.preallocate`).
+    pub preallocate: bool,
 }
 
 impl Default for Options {
@@ -118,6 +120,7 @@ impl Default for Options {
             free_space: io::free_space,
             keep_free: KEEP_FREE,
             vault: Vault::default(),
+            preallocate: true,
         }
     }
 }
@@ -601,6 +604,13 @@ async fn execute(
     let needed = total.map_or(0, |total| io::space_needed(part.path(), total));
     if let Some(f) = opts.short_of_space(dir, needed) {
         return fail(f);
+    }
+    // Réservation de la place (F-10) : un manque se voit maintenant, pas au bout de
+    // plusieurs heures. Après la reprise du `.part`, dont la longueur juge ce qui manque.
+    if let (true, Some(total)) = (opts.preallocate, total)
+        && let Err(e) = part.preallocate(total)
+    {
+        return fail(Failure::Io(e));
     }
 
     let ranged = source.accepts_ranges == Some(true);

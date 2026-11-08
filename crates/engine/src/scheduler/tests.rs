@@ -565,6 +565,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::SourceChanged { rev, .. }
                 | Event::LimitsChanged { rev, .. }
                 | Event::DownloadDirChanged { rev, .. }
+                | Event::PreallocateChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),

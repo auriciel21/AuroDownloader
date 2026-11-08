@@ -103,7 +103,8 @@ pub enum NetError {
     BadResponse(&'static str),
 
     #[error(
-        "le serveur demande un nom d'utilisateur et un mot de passe : les enregistrer pour \n         ce site (identifiants de sites)"
+        "le serveur demande un nom d'utilisateur et un mot de passe : les enregistrer pour \
+         ce site (identifiants de sites)"
     )]
     AuthRequired,
 
@@ -111,7 +112,9 @@ pub enum NetError {
     AuthRefused,
 
     #[error(
-        "le serveur demande le mot de passe en clair (Basic) sur une connexion non \n         chiffrée : refusé, il pourrait être lu en chemin"
+        "le serveur demande le mot de passe en clair (Basic) sur une connexion non \
+         chiffrée : refusé, il pourrait être lu en chemin ; utiliser l'adresse en https:// \
+         si le site la propose"
     )]
     AuthInsecure,
 }

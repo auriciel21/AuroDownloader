@@ -297,7 +297,9 @@ CREATE TABLE settings (
 -- Clés en usage : "limits.downloadBps" (F-15) ; "downloads.dir" (depuis le 2026-11-07) :
 -- dossier des ajouts sans destDir, chemin absolu ou null (dossier « Téléchargements »
 -- du système) ; "vault.namespace" (depuis le 2026-11-07, interne, absent de
--- settings.get) : espace de noms des secrets de cette base dans le coffre (section 5.1).
+-- settings.get) : espace de noms des secrets de cette base dans le coffre (section 5.1) ;
+-- "downloads.preallocate" (depuis le 2026-11-08) : réserver la place des fichiers au
+-- départ, booléen, vrai s'il est absent (section 7.6 bis).
 
 CREATE TABLE schedules (
   id         TEXT PRIMARY KEY,
@@ -629,7 +631,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
 - **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `history.list`, `history.clear`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
-  - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : seule la clé `downloads.dir` est acceptée, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
+  - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : les clés acceptées sont `downloads.dir`, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système, et `downloads.preallocate`, un booléen (section 7.6 bis, depuis le 2026-11-08) ; les valeurs sont vérifiées toutes avant d'en changer une ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
   - Un `destDir` donné à `task.add` doit aussi être un dossier existant, en chemin absolu (`DEST_NOT_WRITABLE`).
   - La CLI garde le dossier courant par défaut (`-o .`), comme les outils en ligne de commande.
 - **En-têtes d'une tâche** (`headers` de `task.add`, depuis le 2026-11-07) : un objet `{nom: valeur}` de textes, envoyé avec chaque requête de la tâche (préparation et segments).
@@ -691,11 +693,11 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Les clients acceptent aussi « sha256:… », « sha1:… », « md5:… », ou la valeur seule, dont la longueur donne l'algorithme (`auro add --checksum`, `auro checksum`, champ « Empreinte attendue » de l'application), et envoient la forme du protocole.
 - **Actualiser l'adresse** (`task.update` avec `url`, depuis le 2026-11-08 ; portée `control`) : section 7.13. Annonce : `task.updated` avec `displayName`. L'application : « Actualiser l'adresse… » ; elle relance une tâche en échec une fois l'adresse acceptée.
 - **Historique** (`history.list`, `history.clear`, F-35, depuis le 2026-11-08) :
-  - Une entrée par fin : une tâche terminée a la sienne à sa fin ; une tâche en échec ou annulée, à son retrait de la liste (section 5.6, règle 4). Une tâche retéléchargée puis terminée de nouveau en a deux.
+  - Une entrée par fin : une tâche terminée a la sienne à sa fin ; une tâche en échec ou annulée, à son retrait de la liste (section 5.6, règle 4), pour ne jamais être à la fois dans la liste et dans l'historique (décision du 2026-11-08, confirmée par l'utilisateur). Une tâche retéléchargée puis terminée de nouveau en a deux.
   - `history.list` rend `items[]`, les plus récentes d'abord : `historyId`, `taskId` (la tâche peut avoir été retirée), `displayName`, `finalPath` (tâche terminée ; il suit « Déplacer/Renommer »), `totalBytes`, `sourceHost` (le nom d'hôte, jamais l'adresse, section 8.2), `finalState`, `sha256` (empreinte SHA-256 vérifiée à la fin, section 7.9, sinon `null`), `finishedAt` (millisecondes Unix).
   - Paramètres : `query`, texte cherché dans le nom, le chemin et l'hôte, sans égard à la casse des lettres ASCII ; `before`, seulement les entrées finies avant cette date (millisecondes Unix) ; `limit` et `cursor`, comme `task.list` : `nextCursor` vaut `null` sur la dernière page.
   - `history.clear` efface tout, ou les entrées finies avant `before` ; il rend `removed`, leur nombre. Ni les tâches ni les fichiers ne sont touchés. Rien n'est annoncé : un client relit l'historique quand il l'affiche.
-  - Clients : `auro history [texte] [--csv] [--clear]` ; dans l'application, le bouton « Historique » (recherche, « Exporter en CSV… », « Effacer l'historique… »). L'export de l'application sépare les champs par des points-virgules en français, des virgules en anglais, avec la marque d'ordre des octets UTF-8 (pour les tableurs) ; celui de la CLI, par des virgules (RFC 4180).
+  - Clients : `auro history [texte] [--csv] [--clear]` ; dans l'application, le bouton « Historique » (recherche, « Exporter en CSV… », « Effacer l'historique… »). L'export de l'application sépare les champs par des points-virgules en français, des virgules en anglais, avec la marque d'ordre des octets UTF-8 (pour les tableurs) ; celui de la CLI, par des virgules (RFC 4180). Décision du 2026-11-08, confirmée par l'utilisateur.
   - Pas encore : la durée de conservation réglable (section 5.6, règle 6) et le mode « sans historique » (section 8.2).
 - **Retrait** (`task.remove`, depuis le 2026-11-07) :
   - seules les tâches finies (`completed`, `failed`, `cancelled`) se retirent ; les autres
@@ -928,6 +930,13 @@ Précisions de mise en œuvre (module `limit`) :
 - **Avant le départ.** Le moteur vérifie qu'il reste de quoi finir le fichier, plus une réserve de 64 Mio laissée libre (section 7.1, étape 5). Pour une tâche de taille inconnue, seule la réserve compte.
   - La place qu'il reste à prendre est la taille totale moins la place que le `.part` occupe déjà. Sous Unix, on compte ses blocs, car un fichier creux occupe moins que sa longueur ; ailleurs, sa longueur.
   - Sans préallocation, cette estimation est prudente sous Windows et optimiste sous Linux. Le contrôle à l'écriture reste donc nécessaire.
+- **Réservation de la place** (F-10, depuis le 2026-11-08 ; réglage `downloads.preallocate`, activé par défaut, décision de l'utilisateur du même jour) : après le contrôle précédent, le moteur réserve la place de tout le fichier, dont le `.part` prend sa taille finale.
+  - Linux : `fallocate`, qui attribue les blocs sans écrire de zéros ; un système de fichiers qui ne le permet pas est laissé tel quel (pas de `posix_fallocate`, qui écrirait des zéros). Windows : seulement sur NTFS et ReFS, où allonger le fichier réserve ses clusters ; rien sur FAT et exFAT, où cela pourrait écrire des zéros pendant des minutes. Ailleurs : rien.
+  - Un manque de place se voit alors avant le premier octet reçu : pause `disk_full`, comme plus bas, et rien n'est demandé au serveur. Il se voit aussi à chaque reprise, la réservation étant refaite (sans coût quand elle est déjà faite).
+  - La réservation suit la reprise du `.part` (section 7.4, étape 2), qui juge les octets perdus d'après sa longueur ; les compteurs, eux, ne changent pas (section 5.6, règle 1).
+  - Tâche de taille inconnue : rien à réserver.
+  - Effet de bord : déplacer vers un autre volume un `.part` réservé copie toute sa taille (section 7.12).
+  - Le contrôle à l'écriture reste nécessaire : sans réservation, ou si un autre programme prend la réserve.
 - **Pendant le téléchargement.** À chaque point de contrôle, le moteur vérifie que la réserve est encore libre. C'est le cas d'un autre programme, ou d'une autre tâche, qui remplit le disque.
 - **À l'écriture.** Une écriture qui échoue faute de place (`ENOSPC`, `ERROR_DISK_FULL`) a le même effet.
 - **Arrêt.** Dans tous ces cas, la tâche s'arrête comme sur une pause : chaque connexion vide ce qu'elle a écrit, et les compteurs sont enregistrés (section 5.6, règle 1). La tâche passe en pause, cause `disk_full`, code `DISK_FULL`, avec en détail la place nécessaire et la place libre.
@@ -937,6 +946,7 @@ Précisions de mise en œuvre (module `limit`) :
   - Un vrai disque plein est essayé sous Linux sur un `tmpfs` de 8 Mio, monté sans droits d'administrateur dans un espace de noms utilisateur. C'est le test ignoré `a_really_full_disk_loses_nothing`, lancé avec `AURO_FULL_DISK_DIR`.
   - Le 2026-11-06, l'écriture a échoué après 6 176 768 octets enregistrés. Chaque octet compté en base était exact sur disque, et la tâche a fini après libération de la place.
   - Sous Windows, le manque de place est simulé (mesure remplacée par les tests) ; l'échec réel d'écriture n'y est pas essayé.
+  - Avec la réservation (depuis le 2026-11-08), le même `tmpfs` voit le manque avant tout octet reçu : test ignoré `a_really_full_disk_is_seen_before_downloading`. Le test précédent tourne sans réservation, pour garder l'essai de l'échec à l'écriture.
 
 ### 7.7 Multi-miroirs
 
@@ -951,12 +961,12 @@ Après un échec temporaire, la tâche passe en `retry_wait` et le délai avant 
 
 ### 7.9 Vérification d'intégrité
 
-Pour un fichier segmenté, l'empreinte se calcule à la fin, par une lecture séquentielle du fichier, pendant l'état `verifying`. En flux unique, la spécification prévoyait un calcul au fil de l'eau ; il n'est pas écrit (décision du 2026-11-08, à confirmer) : un calcul en cours ne survit pas à un arrêt, et la lecture finale, à la vitesse du disque, coûte peu face au téléchargement. Le flux unique se vérifie donc comme le reste.
+Pour un fichier segmenté, l'empreinte se calcule à la fin, par une lecture séquentielle du fichier, pendant l'état `verifying`. En flux unique, la spécification prévoyait un calcul au fil de l'eau ; il n'est pas écrit (décision du 2026-11-08, confirmée par l'utilisateur le même jour) : un calcul en cours ne survit pas à un arrêt, et la lecture finale, à la vitesse du disque, coûte peu face au téléchargement. Le flux unique se vérifie donc comme le reste.
 
 Déroulement (F-11, depuis le 2026-11-08) :
 
 - **Ordre** : le `.part` complet est vidé sur disque et fermé, la tâche passe en `verifying` (le passage est annoncé par `task.stateChanged`), puis le moteur lit le fichier. Le `.part` ne prend son nom qu'après une empreinte juste ; la tâche passe alors en `completed`.
-- **Empreinte différente** : la tâche passe en `failed`, code `CHECKSUM_MISMATCH`, avec dans `errorDetail` l'empreinte obtenue et celle attendue. Le fichier reste sous son nom provisoire (`.part`) : un fichier faux ne prend jamais le nom attendu (décision du 2026-11-08, à confirmer). L'utilisateur corrige l'empreinte (`task.update`) et relance la tâche : le `.part`, complet, se vérifie de nouveau sans rien retélécharger, même d'un serveur sans plages (sauf taille inconnue, plus bas). Sinon, `task.restart` repart de zéro.
+- **Empreinte différente** : la tâche passe en `failed`, code `CHECKSUM_MISMATCH`, avec dans `errorDetail` l'empreinte obtenue et celle attendue. Le fichier reste sous son nom provisoire (`.part`) : un fichier faux ne prend jamais le nom attendu (décision du 2026-11-08, confirmée par l'utilisateur le même jour). L'utilisateur corrige l'empreinte (`task.update`) et relance la tâche : le `.part`, complet, se vérifie de nouveau sans rien retélécharger, même d'un serveur sans plages (sauf taille inconnue, plus bas). Sinon, `task.restart` repart de zéro.
 - **Arrêt pendant le calcul** : section 5.5 ; à la reprise, le calcul recommence depuis le début. Une tâche de taille inconnue (flux sans `Content-Length`) n'a pas de segments enregistrés : relancée après une pause ou une empreinte différente, elle se retélécharge.
 - **Arrêt brutal pendant le calcul** : au démarrage, une tâche restée en `verifying` refait le calcul sur son `.part`. Si le `.part` a disparu et que le fichier final est là, l'arrêt a eu lieu entre le renommage, qui ne suit qu'une empreinte juste, et l'enregistrement de la fin : la tâche se termine. Si les deux manquent, elle passe en `failed`, code `DISK_IO`.
 - **Empreinte changée en cours de route** : elle se relit au moment du calcul ; on peut la donner pendant le téléchargement.
@@ -1045,7 +1055,7 @@ Décisions du 2026-11-07 : une planification s'attache à une file ; ses actions
 - **Tâche commencée** (taille connue, ni terminée ni annulée) : le moteur interroge d'abord la nouvelle adresse (préparation, section 7.1), hors de sa boucle, avec les en-têtes de la tâche.
   - Elle doit annoncer la même taille, sinon `SOURCE_MISMATCH`. Si elle ne répond pas, `SOURCE_UNREACHABLE`, avec la cause classée (section 6.8). Rien ne change alors.
   - Si elle est acceptée, ses validateurs (`ETag`, `Last-Modified`) et sa prise en charge des plages remplacent ceux de l'ancienne adresse. La suite du téléchargement les vérifie par `If-Range` (section 7.4).
-  - Décision du 2026-11-08, à confirmer : seule la taille relie les octets déjà reçus à la nouvelle adresse. Deux serveurs d'un même fichier ont rarement le même `ETag`, et l'exiger refuserait presque tout lien régénéré. C'est une validation faible (section 7.4, étape 5) ; une empreinte fournie (F-11) restera la seule garantie.
+  - **La validation repose uniquement sur la taille annoncée du fichier ; aucune comparaison de contenu ni d'empreinte n'est faite avant la reprise.** Décision du 2026-11-08, confirmée par l'utilisateur à titre provisoire : seule la taille relie les octets déjà reçus à la nouvelle adresse. Deux serveurs d'un même fichier ont rarement le même `ETag`, et l'exiger refuserait presque tout lien régénéré. C'est une validation faible (section 7.4, étape 5) ; une empreinte fournie (F-11, section 7.9) reste la seule garantie : elle est vérifiée à la fin, sur tout le fichier. Plus tard, peut-être : comparer aussi `ETag`, `Last-Modified`, ou une empreinte publiée, quand les deux adresses les donnent.
   - Une nouvelle adresse sans plages fait repartir le téléchargement du début.
 - **Tâche pas encore préparée, terminée ou annulée** : l'adresse est remplacée sans être interrogée ; la prochaine préparation l'interrogera. Le nom affiché, tant que ni le serveur ni l'utilisateur n'en ont donné, suit la nouvelle adresse.
 - **Cookies** : si l'hôte change, les en-têtes secrets de la tâche (`Cookie`, `Authorization`, `Proxy-Authorization`) ne suivent pas. Ils sont effacés, référence d'abord puis coffre (section 5.1), et la vérification se fait sans eux. Les autres en-têtes (`Referer`, `User-Agent`) restent.
@@ -1069,7 +1079,7 @@ Comme l'onglet « Logins de sites » d'IDM : un nom d'utilisateur et un mot de p
   - Ensuite, toutes les requêtes de l'exécution, toutes connexions confondues, portent l'identification.
   - Digest (RFC 7616) est préféré à Basic (RFC 7617), et SHA-256 à MD5. Variantes prises en charge : `MD5`, `MD5-sess`, `SHA-256`, `SHA-256-sess`, avec `qop=auth` ou sans `qop`. Ne sont pas prises en charge : `auth-int`, `SHA-512-256`, NTLM et Negotiate.
   - Un nonce Digest périmé (`stale=true`) est renouvelé sans compter comme un refus.
-- **Basic sur une connexion non chiffrée** : refusé, car le mot de passe y circulerait en clair. Le moteur n'envoie rien, et la tâche échoue avec `AUTH_FAILED`, avec un message qui le dit. Digest reste permis en HTTP : le mot de passe n'y circule pas. Décision du 2026-11-08, à confirmer (IDM, lui, envoie).
+- **Basic sur une connexion non chiffrée** : refusé, car le mot de passe y circulerait en clair. Le moteur n'envoie rien, et la tâche échoue avec `AUTH_FAILED`, avec un message qui le dit. Digest reste permis en HTTP : le mot de passe n'y circule pas. Décision du 2026-11-08, confirmée par l'utilisateur : le moteur n'envoie **jamais** d'en-tête `Authorization: Basic` sur `http://`, même si d'autres outils (IDM) le font ; un site qui l'exige doit passer par HTTPS, et le message de l'échec le dit.
 - **Échecs** (section 6.8) :
   - `AUTH_REQUIRED` : le serveur demande une identification, et aucun identifiant ne convient à cette adresse, ou le schéma demandé n'est pas pris en charge ;
   - `AUTH_FAILED` : les identifiants envoyés sont refusés, ou Basic est demandé en clair ;

@@ -12,6 +12,9 @@ pub const DOWNLOAD_LIMIT: &str = "limits.downloadBps";
 /// « Téléchargements » du système.
 pub const DOWNLOAD_DIR: &str = "downloads.dir";
 
+/// Réserver la place de chaque fichier au départ (F-10, SPEC §7.6 bis) ; vrai par défaut.
+pub const PREALLOCATE: &str = "downloads.preallocate";
+
 /// Espace de noms des secrets de cette base dans le coffre du système (`secrets`), tiré
 /// au hasard au premier démarrage. Interne : `settings.get` ne le montre pas.
 pub const VAULT_NAMESPACE: &str = "vault.namespace";
@@ -45,6 +48,21 @@ pub fn download_dir(conn: &Connection) -> Result<Option<String>, StoreError> {
 /// Enregistre le dossier des téléchargements ; `None` : celui du système.
 pub fn set_download_dir(conn: &Connection, dir: Option<&str>) -> Result<(), StoreError> {
     set(conn, DOWNLOAD_DIR, &dir.map_or(Value::Null, Value::from))
+}
+
+/// Réservation de la place des fichiers au départ ; vraie tant que rien n'est enregistré.
+pub fn preallocate(conn: &Connection) -> Result<bool, StoreError> {
+    match get(conn, PREALLOCATE)? {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::Bool(on)) => Ok(on),
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {PREALLOCATE} : {v} n'est pas un booléen"
+        ))),
+    }
+}
+
+pub fn set_preallocate(conn: &Connection, on: bool) -> Result<(), StoreError> {
+    set(conn, PREALLOCATE, &Value::Bool(on))
 }
 
 /// Valeur d'un réglage ; `None` s'il n'a jamais été enregistré.

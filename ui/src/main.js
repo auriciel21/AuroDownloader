@@ -1372,8 +1372,24 @@ async function act(method, params) {
 function renderDest() {
   const dir = store.settings["downloads.dir"] ?? "";
   for (const id of ["dest", "pref-dest"]) $(id).textContent = dir || t("(aucun)");
-  for (const id of ["dest-change", "pref-dest-change", "tb-history"]) $(id).disabled = !connected;
+  for (const id of ["dest-change", "pref-dest-change", "tb-history", "pref-preallocate"]) {
+    $(id).disabled = !connected;
+  }
+  // F-10 : vrai tant que le moteur ne dit pas le contraire.
+  $("pref-preallocate").checked = store.settings["downloads.preallocate"] !== false;
   syncLoginButtons();
+}
+
+/// Réservation de la place des fichiers (F-10), réglage du moteur.
+async function savePreallocate() {
+  const on = $("pref-preallocate").checked;
+  try {
+    await host.call("settings.set", { values: { "downloads.preallocate": on } });
+    announce(on ? t("Place réservée dès le départ") : t("Place prise au fil du téléchargement"));
+  } catch (e) {
+    showError(refused(e));
+    renderDest();
+  }
 }
 
 function openAdd() {
@@ -1767,6 +1783,7 @@ function wire() {
   $("tb-properties").addEventListener("click", () => cursor && openDetails(cursor));
   $("tb-schedule").addEventListener("click", openSchedule);
   $("tb-history").addEventListener("click", openHistory);
+  $("pref-preallocate").addEventListener("change", savePreallocate);
   $("h-query").addEventListener("input", () => {
     // Recherche pendant la frappe, une fois la saisie posée.
     clearTimeout(historyTimer);

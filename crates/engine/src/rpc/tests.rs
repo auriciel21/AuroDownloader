@@ -1676,3 +1676,43 @@ async fn history_is_listed_searched_paged_and_cleared() {
     assert!(dir.path().join("alpha.bin").exists());
     engine.shutdown().await;
 }
+
+/// Réservation de la place (F-10) : réglage `downloads.preallocate`, vrai par défaut,
+/// changé par `settings.set` et annoncé par `settings.updated`.
+#[tokio::test]
+async fn preallocation_is_an_engine_setting_on_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let got = c.result("settings.get", json!({})).await;
+    assert_eq!(got["values"]["downloads.preallocate"], true);
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["settings"]["downloads.preallocate"], true);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let set = c
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.preallocate": false}}),
+        )
+        .await;
+    assert_eq!(set["values"]["downloads.preallocate"], false);
+    let note = c
+        .notification("settings.updated", |p| {
+            p["values"].get("downloads.preallocate").is_some()
+        })
+        .await;
+    assert_eq!(note["values"]["downloads.preallocate"], false);
+    // Une valeur fausse ne change rien, pas même l'autre réglage de l'appel.
+    assert_eq!(
+        c.error_code(
+            "settings.set",
+            json!({"values": {"downloads.preallocate": "oui", "downloads.dir": null}})
+        )
+        .await,
+        "INVALID_PARAMS"
+    );
+    let got = c.result("settings.get", json!({})).await;
+    assert_eq!(got["values"]["downloads.preallocate"], false);
+    engine.shutdown().await;
+}

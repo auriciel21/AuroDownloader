@@ -225,6 +225,11 @@ pub enum Event {
         rev: u64,
         download_bps: Option<u64>,
     },
+    /// Réservation de la place des fichiers activée ou non (F-10).
+    PreallocateChanged {
+        rev: u64,
+        preallocate: bool,
+    },
     /// Dossier des téléchargements changé : le dossier retenu désormais.
     DownloadDirChanged {
         rev: u64,
@@ -281,6 +286,8 @@ pub struct Snapshot {
     pub download_limit: Option<u64>,
     /// Dossier des ajouts sans `destDir` ; `None` s'il n'y en a aucun.
     pub download_dir: Option<String>,
+    /// Réservation de la place des fichiers au départ (F-10).
+    pub preallocate: bool,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -343,7 +350,8 @@ pub enum EngineError {
     Move(#[source] std::io::Error),
 
     #[error(
-        "la nouvelle adresse donne un fichier de {found} au lieu de {expected} octets : ce \n         n'est pas le même fichier"
+        "la nouvelle adresse donne un fichier de {found} au lieu de {expected} octets : ce \
+         n'est pas le même fichier"
     )]
     SourceMismatch { expected: u64, found: String },
 
@@ -504,6 +512,8 @@ enum Command {
     SetDownloadLimit(Option<u64>, Reply<()>),
     DownloadDir(Reply<Option<String>>),
     SetDownloadDir(Option<String>, Reply<Option<String>>),
+    Preallocate(Reply<bool>),
+    SetPreallocate(bool, Reply<()>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
         schedule_id: Option<String>,
@@ -728,6 +738,17 @@ impl Engine {
         dir: Option<String>,
     ) -> Result<Option<String>, EngineError> {
         self.ask(|reply| Command::SetDownloadDir(dir, reply)).await
+    }
+
+    /// Réservation de la place des fichiers au départ (F-10), vraie par défaut.
+    pub async fn preallocate(&self) -> Result<bool, EngineError> {
+        self.ask(Command::Preallocate).await
+    }
+
+    /// Active ou non la réservation de la place ; vaut pour les exécutions qui démarrent
+    /// ensuite.
+    pub async fn set_preallocate(&self, on: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetPreallocate(on, reply)).await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -1251,6 +1272,8 @@ impl Scheduler {
         self.changed(&task_id, from, shown);
         let mut config = self.config.clone();
         config.transfer.throttle = throttle;
+        // Le réglage, dans la limite de la configuration (les bancs peuvent l'interdire).
+        config.transfer.preallocate &= settings::preallocate(&self.conn).unwrap_or(true);
         let events = self.events.clone();
         let rev = Arc::clone(&self.rev);
         let prepared = self.prepared.clone();
@@ -1432,6 +1455,19 @@ impl Scheduler {
             Command::SetDownloadLimit(limit, reply) => {
                 let _ = reply.send(self.set_download_limit(limit));
             }
+            Command::Preallocate(reply) => {
+                let _ = reply.send(settings::preallocate(&self.conn).map_err(Into::into));
+            }
+            Command::SetPreallocate(on, reply) => {
+                let result = settings::set_preallocate(&self.conn, on);
+                if result.is_ok() {
+                    self.emit(|rev| Event::PreallocateChanged {
+                        rev,
+                        preallocate: on,
+                    });
+                }
+                let _ = reply.send(result.map_err(Into::into));
+            }
             Command::DownloadDir(reply) => {
                 let _ = reply.send(self.download_dir());
             }
@@ -1456,6 +1492,7 @@ impl Scheduler {
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,
             download_dir: self.download_dir()?,
+            preallocate: settings::preallocate(&self.conn)?,
         })
     }
 

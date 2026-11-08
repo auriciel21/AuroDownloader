@@ -14,7 +14,7 @@ use super::{
     queue_json, response, schedule_json, task_json,
 };
 use crate::scheduler::{Engine, Event};
-use crate::store::settings::DOWNLOAD_DIR;
+use crate::store::settings::{DOWNLOAD_DIR, PREALLOCATE};
 use crate::store::tasks::TaskState;
 use crate::transfer::Progress;
 
@@ -371,6 +371,10 @@ async fn describe(
         Event::LimitsChanged { rev, download_bps } if topics.queues => Some(notification(
             "limits.updated",
             json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
+        )),
+        Event::PreallocateChanged { rev, preallocate } if topics.queues => Some(notification(
+            "settings.updated",
+            json!({"rev": rev, "values": {PREALLOCATE: preallocate}}),
         )),
         Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
             "settings.updated",
