@@ -84,3 +84,9 @@ Une capture d'écran aide pour tout ce qui est inattendu.
 
 - Réactiver l'intégration d'IDM si on s'en sert encore.
 - L'extension chargée peut rester (Chrome, Edge) ; sous Firefox, elle part à la fermeture.
+
+## Résultat
+
+2026-11-08 : les 9 essais validés par l'utilisateur sous Firefox, Chrome et Edge, et un
+autre navigateur (non précisé) : « tout fonctionne correctement ». Porte de la phase 3
+franchie (SPEC 9.3).

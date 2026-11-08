@@ -10,8 +10,8 @@ téléchargement.
 - `docs/SPEC.md` : cahier des charges, modèle de données (section 5), protocole du moteur
   (section 6), algorithmes (section 7), tests et feuille de route (section 9). À lire avant
   toute modification du moteur.
-- `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, à
-  faire par l'utilisateur (porte de la phase 3).
+- `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, faite
+  par l'utilisateur le 2026-11-08 (porte de la phase 3, franchie).
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
@@ -280,10 +280,14 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
 - Phase 3, plan du 2026-11-07 : 1. portée déclarée à l'ouverture, sans jeton sur le canal
   local (fait, SPEC 6.9) ; 2. `idempotencyKey` (fait) et dossier des téléchargements dans
   le moteur (fait) ; 3. relais `auro-relay` et sa déclaration aux navigateurs (fait) ;
-  4. extension (écrite, `extension/` ; essai dans un vrai navigateur par l'utilisateur à
-  faire) ; 5. cookies et en-têtes de la page (fait : `headers` de `task.add`, coffre du
-  système, SPEC 4.5, 5.1 et 6.5 ; repli en mémoire sous Linux sans Secret Service, à
+  4. extension (écrite, `extension/` ; essai réel fait par l'utilisateur le 2026-11-08) ;
+  5. cookies et en-têtes de la page (fait : `headers` de `task.add`, coffre du système,
+  SPEC 4.5, 5.1 et 6.5 ; repli en mémoire sous Linux sans Secret Service, à
   confirmer).
+- Porte de la phase 3 (SPEC 9.3), franchie le 2026-11-08 : les 9 essais de
+  `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge (et un
+  autre navigateur, non précisé). La porte de la phase 2 (usage quotidien sans perte)
+  reste en observation.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,

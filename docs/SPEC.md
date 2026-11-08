@@ -1193,6 +1193,8 @@ Les phases s'enchaînent dans l'ordre ; chaque porte (losange) est un critère �
 | 6. Fonctions avancées | Miroirs, analyse de liens, plugins, interface web distante | Revue de sécurité de l'API distante et des plugins |
 | 7. Version 1 | Installateurs signés, mises à jour, documentation, accessibilité | Tous les tests bloquants du plan de la section 9.1 réussis |
 
+État des portes : phase 1 franchie le 2026-10-16. Phase 3 franchie le 2026-11-08 : les 9 essais de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge (et un autre navigateur, non précisé). La porte de la phase 2 (utilisation quotidienne sans perte de données) reste en observation : l'application installée sert tous les jours depuis le 2026-11-07, sans perte constatée à ce jour.
+
 En phase 1, la ligne de commande appelle le moteur comme une bibliothèque ; l'API JSON-RPC (section 6) arrive en phase 2, avec l'application de bureau.
 
 Les deux points les plus incertains, l'écriture sur le stockage Android et la capture dans le navigateur, sont testés dans les phases 1 et 3, avant que le reste du produit ne dépende d'eux.
