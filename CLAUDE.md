@@ -10,6 +10,8 @@ téléchargement.
 - `docs/SPEC.md` : cahier des charges, modèle de données (section 5), protocole du moteur
   (section 6), algorithmes (section 7), tests et feuille de route (section 9). À lire avant
   toute modification du moteur.
+- `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, à
+  faire par l'utilisateur (porte de la phase 3).
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
