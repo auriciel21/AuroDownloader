@@ -133,6 +133,21 @@ téléchargement.
   (`tools/fake_browser.py` du bloc-notes : clé de registre, manifeste, relais) ; l'essai
   dans un vrai navigateur revient à l'utilisateur. IDM, installé, intercepte certains
   téléchargements avant l'extension et ouvre ses propres fenêtres.
+- `crates/android` (`auro-android`, `libauro_android.so`) : le moteur dans le processus de
+  l'application Android (SPEC 4.4) : `Host` (runtime, moteur, connexion JSON-RPC dans le
+  processus, testé partout) et `jni_glue` (Android seulement : `NativeEngine.start`, `send`,
+  `stop`, rappel `onMessage` ; initialise `rustls-platform-verifier`, puis
+  `net::platform_tls_ready`).
+- `apps/android` : application Android (Gradle 8.14.3, AGP 8.10.1, Kotlin ; projet à part,
+  hors de l'espace de travail Cargo). `app/build.gradle.kts` compile la bibliothèque par
+  Cargo et le NDK (tâche `cargoBuild`) et prend la partie Kotlin de
+  rustls-platform-verifier (groupe `org.rustls`) à la version de `Cargo.lock`.
+  `local.properties` (chemin du SDK, non versionné). Phase 4, étape 1 : `MainActivity`
+  d'essai (journal des messages ; `--es url <adresse>` ajoute un téléchargement).
+- Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
+  téléphone Galaxy S25 Ultra (Android 16) ; messages du moteur par
+  `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
+  passés à `adb shell`.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
@@ -189,6 +204,10 @@ node --test extension/tests/
 # Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
 apps/desktop/bundle.ps1   # Windows, NSIS : apps/desktop/target/release/bundle/nsis/
 apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.04)
+# Application Android (dans apps/android ; compile aussi le moteur pour arm64) :
+cd apps/android && ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 ```
 
 ## Règles du projet
@@ -293,6 +312,13 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que
   CCleaner Browser (Chromium). Porte de la phase 2 franchie
   le même jour.
+- Phase 4, plan du 2026-11-08 (validé par l'utilisateur) : 1. moteur dans l'application
+  (`crates/android`, `apps/android`, HTTPS ; fait le 2026-11-08) ; 2. écriture dans le
+  dossier du sélecteur de stockage, repli par un fichier interne copié à la fin ;
+  3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages,
+  TalkBack) ; 4. arrière-plan : service au premier plan et notification, transferts
+  lancés par l'utilisateur à partir d'Android 14, Wi-Fi seulement, reprise au redémarrage ;
+  5. porte : téléchargements longs sur des appareils réels de plusieurs versions.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
@@ -313,9 +339,9 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
     (SPEC 9.1).
   - Essai Android (SPEC 7.5) : stockage interne et sélecteur de stockage (dossier
     « Téléchargements ») validés sur un appareil ; Google Drive refuse `"rw"`, le repli
-    (fichier temporaire interne copié à la fin) y fonctionne. HTTPS y est refusé par `TLS_UNAVAILABLE`
-    (`net::tls_available`) tant que l'application n'initialise pas
-    `rustls-platform-verifier` (phase 4).
+    (fichier temporaire interne copié à la fin) y fonctionne. HTTPS y était refusé par `TLS_UNAVAILABLE`
+    (`net::tls_available`) faute d'initialiser `rustls-platform-verifier` ; l'application
+    le fait depuis le 2026-11-08 (phase 4, étape 1).
 - Compilation Android : NDK du SDK (`ndk/27.2.12479018`), cible `aarch64-linux-android`,
   API 26 ; variables `CC_`, `AR_` et `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` vers
   `aarch64-linux-android26-clang.cmd` et `llvm-ar.exe`. Tests du moteur sur l'appareil :

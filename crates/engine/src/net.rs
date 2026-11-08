@@ -190,12 +190,21 @@ impl NetError {
     }
 }
 
+/// Vérification des certificats initialisée par l'application Android ([`platform_tls_ready`]).
+static PLATFORM_TLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// HTTPS est-il utilisable ? Sous Android, `rustls-platform-verifier` doit d'abord être
 /// initialisé par l'application (JNI et `Context`), sans quoi il panique au premier
-/// certificat. Cette initialisation arrive avec l'application Android (SPEC §7.5, phase 4) :
-/// d'ici là, le moteur refuse HTTPS sous Android par une erreur.
+/// certificat : jusque-là, le moteur refuse HTTPS sous Android par une erreur (SPEC §7.5).
 pub fn tls_available() -> bool {
-    !cfg!(target_os = "android")
+    !cfg!(target_os = "android") || PLATFORM_TLS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Annonce que l'application a initialisé la vérification des certificats du système
+/// (Android, `auro-android`) : HTTPS devient utilisable. À n'appeler qu'après une
+/// initialisation réussie.
+pub fn platform_tls_ready() {
+    PLATFORM_TLS.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Cause posée par la politique de redirection quand elle refuse HTTPS faute de TLS.

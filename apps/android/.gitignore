@@ -1,0 +1,6 @@
+# Construction Gradle et réglages locaux (chemin du SDK).
+.gradle/
+build/
+app/build/
+local.properties
+.kotlin/

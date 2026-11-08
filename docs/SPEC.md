@@ -209,6 +209,11 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 - Options : Wi-Fi seulement, respect de l'économiseur de batterie, reprise au redémarrage de l'appareil si l'utilisateur l'autorise.
 - L'application peut aussi servir de simple télécommande d'un moteur distant (un NAS, par exemple), sans moteur local.
 - Les contraintes d'Android sur les tâches longues sont le principal risque de cette plateforme (section 9.2).
+- Mise en œuvre (phase 4, depuis le 2026-11-08) :
+  - Bibliothèque native `auro-android` (`crates/android`, `libauro_android.so`, arm64, API 26) : le moteur tourne dans le processus de l'application, avec son propre runtime ; l'application lui parle par la classe Kotlin `org.aurodownloader.engine.NativeEngine` : `start(context, base)`, `send(message)`, `stop()`, et `onMessage(message)` en retour, un message JSON-RPC par appel, comme sur le canal local (même session, portée complète).
+  - `start` initialise d'abord la vérification des certificats d'Android (`rustls-platform-verifier`, dont la partie Kotlin vient du dépôt Maven du projet rustls, à la version de `Cargo.lock`) : HTTPS est permis dès lors (section 7.5).
+  - Application : `apps/android` (Gradle, Kotlin) ; la construction compile la bibliothèque par Cargo et le NDK. Base dans le stockage privé de l'application ; téléchargements, en attendant le sélecteur de stockage, dans le dossier de l'application (`Android/data/org.aurodownloader/files/Download`).
+  - Essai du 2026-11-08 sur une tablette Teclast T70 (Android 15) : HTTPS, empreinte voisine, 82 Mo en 4 s ; ISO Debian de 756 Mio, application tuée au bout de 8 s, reprise seule au démarrage suivant et empreinte publiée.
 
 ### 4.5 Extension navigateur
 
@@ -773,7 +778,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `NET_TIMEOUT` | oui | Délai dépassé |
 | `HTTP_STATUS` | selon le statut | Réessai pour 408, 429 et 5xx ; échec définitif pour 401, 403, 404 et 410 |
 | `TLS_INVALID_CERT` | non | Certificat refusé |
-| `TLS_UNAVAILABLE` | non | HTTPS impossible : la vérification des certificats n'est pas initialisée (sous Android, tant que l'application ne l'a pas fait, section 7.5) |
+| `TLS_UNAVAILABLE` | non | HTTPS impossible : la vérification des certificats n'est pas initialisée (sous Android, si le moteur tourne sans l'application, qui l'initialise au démarrage ; section 7.5) |
 | `RANGE_UNSUPPORTED` | non bloquant | Bascule en un seul flux, la reprise sera impossible |
 | `FILE_CHANGED` | non | Le fichier distant a changé ; la tâche attend la décision de l'utilisateur |
 | `DISK_FULL` | après libération | Plus d'espace ; la tâche reprend quand l'espace revient |
@@ -905,7 +910,7 @@ Le planificateur reprend ces tâches avant les autres de leur file. Un arrêt de
 - Sous Android, l'écriture passe par le sélecteur de stockage du système. Je n'ai pas vérifié si les descripteurs de fichier qu'il fournit autorisent les écritures positionnées sur tous les appareils et versions ; c'est un point à valider dans le premier prototype Android, avec une solution de repli (fichier temporaire dans le stockage de l'application, déplacé à la fin).
 - Essai de phase 1, premier relevé (2026-10-15, Galaxy S25 Ultra, Android 16, moteur compilé avec le NDK pour l'API 26) :
   - **Stockage interne de l'application** : tous les tests du moteur passent sur l'appareil, sauf les deux tests HTTPS, ignorés sous Android. Une ISO de 756 Mio téléchargée en HTTP, tuée deux fois puis reprise, garde l'empreinte publiée.
-  - **HTTPS** : `rustls-platform-verifier` exige sous Android une initialisation par l'application (JNI et `Context`). Sans elle, il panique au premier certificat et refuse toute autorité ajoutée. Le moteur refuse donc HTTPS sous Android par l'erreur `TLS_UNAVAILABLE` (section 6.8), même après une redirection. L'application Android devra faire cette initialisation au démarrage du moteur (phase 4).
+  - **HTTPS** : `rustls-platform-verifier` exige sous Android une initialisation par l'application (JNI et `Context`). Sans elle, il panique au premier certificat et refuse toute autorité ajoutée. Le moteur refuse donc HTTPS sous Android par l'erreur `TLS_UNAVAILABLE` (section 6.8), même après une redirection. Depuis le 2026-11-08, l'application fait cette initialisation au démarrage du moteur (`auro-android`, section 4.4), puis l'annonce au moteur (`net::platform_tls_ready`) : HTTPS est permis ; sans elle (tests du moteur sur l'appareil), le refus demeure.
   - **Sélecteur de stockage, dossier « Téléchargements »** (fournisseur `com.android.providers.downloads.documents`, outil `experiments/android-saf`) : tous les essais passent.
     - Le descripteur obtenu en `"rw"` est un fichier ordinaire du stockage partagé, et `lseek` et `ftruncate` fonctionnent.
     - 48 Mio écrits par `pwrite` depuis quatre fils, dans le désordre, à 675 Mio/s, puis `fdatasync` en 44 ms.

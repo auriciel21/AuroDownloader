@@ -1,0 +1,28 @@
+[package]
+name = "auro-android"
+description = "Bibliothèque native de l'application Android : le moteur dans le processus de l'application, piloté par JNI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "auro_android"
+# `cdylib` : chargée par l'application (`System.loadLibrary("auro_android")`) ; `rlib` :
+# `Host` se teste sur la machine de développement.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+auro-engine = { path = "../engine" }
+tokio = { version = "1.53.3", features = ["io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+# Liaison avec la machine virtuelle Java, et vérification des certificats par Android :
+# la même version de rustls-platform-verifier que reqwest, pour initialiser la sienne.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22.4"
+rustls-platform-verifier = "0.7.1"
+
+[dev-dependencies]
+auro-engine = { path = "../engine", features = ["testing"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
