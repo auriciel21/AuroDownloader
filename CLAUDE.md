@@ -269,7 +269,8 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
   et 7.6 bis, commande `auro limit`) ; 5. prototypes Qt Quick et Tauri comparés (faits,
   `experiments/desktop/README.md`), Tauri choisi le 2026-11-06, application de bureau
   (`apps/desktop`, `ui`, fenêtre à la manière d'IDM ; essai NVDA fait par
-  l'utilisateur le 2026-11-08 sur l'application installée : fonctionnel) ; 6. plages horaires (F-16, fait le 2026-11-07 : SPEC 7.11, `auro schedule`,
+  l'utilisateur le 2026-11-08 sur l'application installée, Historique et Empreinte
+  compris : fonctionnel) ; 6. plages horaires (F-16, fait le 2026-11-07 : SPEC 7.11, `auro schedule`,
   boîte « Planification »). Porte : utilisation quotidienne
   sans perte de données.
 - Phase 3, plan du 2026-11-07 : 1. portée déclarée à l'ouverture, sans jeton sur le canal
