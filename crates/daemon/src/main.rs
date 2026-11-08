@@ -98,9 +98,11 @@ async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) 
     let engine = Engine::start(Config {
         db_path: db.clone(),
         client,
-        // Cookies et jetons des tâches : le coffre du système (SPEC §5.1).
+        // Cookies et jetons des tâches : le coffre du système (SPEC §5.1). Empreintes lues
+        // dans les fichiers voisins (F-11), selon le réglage du moteur.
         transfer: Options {
             vault: Vault::system(),
+            neighbor_checksum: true,
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,

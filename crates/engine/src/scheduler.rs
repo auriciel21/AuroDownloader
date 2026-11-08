@@ -41,6 +41,7 @@ use crate::segmenter::Segment;
 use crate::store::headers::{self, Stored, StoredHeader};
 use crate::store::history::{self, HistoryFilter, HistoryRow};
 use crate::store::segments::load_segments;
+use crate::store::settings::Flag;
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
     change_state, load_task, next_retry_at, runnable_tasks,
@@ -190,12 +191,17 @@ pub enum Event {
         task_id: String,
         file_name: Option<String>,
         total_bytes: Option<u64>,
+        /// Empreinte lue dans un fichier voisin (F-11), avec le nom de ce fichier.
+        found_checksum: Option<(Checksum, String)>,
     },
     /// Tâche qui repart de zéro (`task.restart`) : nom, taille, octets et erreur effacés,
     /// avant son passage à `queued`.
     Restarted {
         rev: u64,
         task_id: String,
+        /// Empreinte gardée : celle de l'utilisateur ; une empreinte lue dans un fichier
+        /// voisin est oubliée (F-11).
+        checksum: Option<Checksum>,
     },
     /// Dossier ou nom d'une tâche changé (« Déplacer/Renommer », SPEC §7.12) ; aussi au
     /// début d'un déplacement vers un autre volume (`moving`), et à sa fin, réussie ou non
@@ -225,10 +231,11 @@ pub enum Event {
         rev: u64,
         download_bps: Option<u64>,
     },
-    /// Réservation de la place des fichiers activée ou non (F-10).
-    PreallocateChanged {
+    /// Réglage oui ou non changé (réservation de la place, empreintes voisines).
+    FlagChanged {
         rev: u64,
-        preallocate: bool,
+        flag: Flag,
+        on: bool,
     },
     /// Dossier des téléchargements changé : le dossier retenu désormais.
     DownloadDirChanged {
@@ -286,8 +293,8 @@ pub struct Snapshot {
     pub download_limit: Option<u64>,
     /// Dossier des ajouts sans `destDir` ; `None` s'il n'y en a aucun.
     pub download_dir: Option<String>,
-    /// Réservation de la place des fichiers au départ (F-10).
-    pub preallocate: bool,
+    /// Réglages oui ou non (F-10, F-11), dans l'ordre de [`Flag::ALL`].
+    pub flags: Vec<(Flag, bool)>,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -512,8 +519,8 @@ enum Command {
     SetDownloadLimit(Option<u64>, Reply<()>),
     DownloadDir(Reply<Option<String>>),
     SetDownloadDir(Option<String>, Reply<Option<String>>),
-    Preallocate(Reply<bool>),
-    SetPreallocate(bool, Reply<()>),
+    Flag(Flag, Reply<bool>),
+    SetFlag(Flag, bool, Reply<()>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
         schedule_id: Option<String>,
@@ -740,15 +747,15 @@ impl Engine {
         self.ask(|reply| Command::SetDownloadDir(dir, reply)).await
     }
 
-    /// Réservation de la place des fichiers au départ (F-10), vraie par défaut.
-    pub async fn preallocate(&self) -> Result<bool, EngineError> {
-        self.ask(Command::Preallocate).await
+    /// Réglage oui ou non (réservation de la place F-10, empreintes voisines F-11), vrai
+    /// par défaut.
+    pub async fn flag(&self, flag: Flag) -> Result<bool, EngineError> {
+        self.ask(|reply| Command::Flag(flag, reply)).await
     }
 
-    /// Active ou non la réservation de la place ; vaut pour les exécutions qui démarrent
-    /// ensuite.
-    pub async fn set_preallocate(&self, on: bool) -> Result<(), EngineError> {
-        self.ask(|reply| Command::SetPreallocate(on, reply)).await
+    /// Change un réglage oui ou non ; vaut pour les exécutions qui démarrent ensuite.
+    pub async fn set_flag(&self, flag: Flag, on: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetFlag(flag, on, reply)).await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -1171,11 +1178,13 @@ impl Scheduler {
         let Ok(task) = load_task(&self.conn, task_id) else {
             return;
         };
+        let found_checksum = task.checksum.zip(task.checksum_source);
         self.emit(|rev| Event::Prepared {
             rev,
             task_id: task.id,
             file_name: task.file_name,
             total_bytes: task.total_bytes,
+            found_checksum,
         });
     }
 
@@ -1273,7 +1282,10 @@ impl Scheduler {
         let mut config = self.config.clone();
         config.transfer.throttle = throttle;
         // Le réglage, dans la limite de la configuration (les bancs peuvent l'interdire).
-        config.transfer.preallocate &= settings::preallocate(&self.conn).unwrap_or(true);
+        config.transfer.preallocate &=
+            settings::flag(&self.conn, Flag::Preallocate).unwrap_or(true);
+        config.transfer.neighbor_checksum &=
+            settings::flag(&self.conn, Flag::NeighborChecksum).unwrap_or(true);
         let events = self.events.clone();
         let rev = Arc::clone(&self.rev);
         let prepared = self.prepared.clone();
@@ -1455,16 +1467,13 @@ impl Scheduler {
             Command::SetDownloadLimit(limit, reply) => {
                 let _ = reply.send(self.set_download_limit(limit));
             }
-            Command::Preallocate(reply) => {
-                let _ = reply.send(settings::preallocate(&self.conn).map_err(Into::into));
+            Command::Flag(flag, reply) => {
+                let _ = reply.send(settings::flag(&self.conn, flag).map_err(Into::into));
             }
-            Command::SetPreallocate(on, reply) => {
-                let result = settings::set_preallocate(&self.conn, on);
+            Command::SetFlag(flag, on, reply) => {
+                let result = settings::set_flag(&self.conn, flag, on);
                 if result.is_ok() {
-                    self.emit(|rev| Event::PreallocateChanged {
-                        rev,
-                        preallocate: on,
-                    });
+                    self.emit(|rev| Event::FlagChanged { rev, flag, on });
                 }
                 let _ = reply.send(result.map_err(Into::into));
             }
@@ -1492,7 +1501,10 @@ impl Scheduler {
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,
             download_dir: self.download_dir()?,
-            preallocate: settings::preallocate(&self.conn)?,
+            flags: Flag::ALL
+                .into_iter()
+                .map(|f| Ok((f, settings::flag(&self.conn, f)?)))
+                .collect::<Result<_, StoreError>>()?,
         })
     }
 
@@ -1561,7 +1573,7 @@ impl Scheduler {
             ) {
                 return Err(Self::invalid(&task, "changement d'empreinte"));
             }
-            tasks::set_checksum(&self.conn, task_id, checksum.as_ref())?;
+            tasks::set_checksum(&self.conn, task_id, checksum.as_ref(), None)?;
         }
         if let Some(limit) = update.speed_limit_bps {
             Self::check_speed_limit(limit)?;
@@ -2005,7 +2017,12 @@ impl Scheduler {
         let from = tasks::restart_task(&mut self.conn, task_id)?;
         self.broken.remove(task_id);
         let id = task_id.to_owned();
-        self.emit(|rev| Event::Restarted { rev, task_id: id });
+        let checksum = load_task(&self.conn, task_id).ok().and_then(|t| t.checksum);
+        self.emit(|rev| Event::Restarted {
+            rev,
+            task_id: id,
+            checksum,
+        });
         self.changed(task_id, from, TaskState::Queued);
         Ok(())
     }

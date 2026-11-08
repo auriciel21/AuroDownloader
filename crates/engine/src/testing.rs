@@ -357,6 +357,11 @@ pub struct FileSite {
     pub max_concurrent: Option<usize>,
     /// Identification exigée de chaque requête (F-06) ; `None` : aucune.
     pub auth: Option<SiteAuth>,
+    /// Fichiers voisins (F-11) servis à ces chemins (`/SHA256SUMS`…) ; tout autre chemin
+    /// de fichier voisin reçoit un 404, le reste le fichier.
+    pub neighbors: Vec<(String, Vec<u8>)>,
+    /// Chemins des fichiers voisins demandés, dans l'ordre.
+    pub neighbor_requests: Vec<String>,
 }
 
 impl FileSite {
@@ -371,6 +376,8 @@ impl FileSite {
             busy_responses: 0,
             max_concurrent: None,
             auth: None,
+            neighbors: Vec::new(),
+            neighbor_requests: Vec::new(),
         }
     }
 }
@@ -446,11 +453,37 @@ pub fn serve_file_tls(site: Arc<Mutex<FileSite>>, pace: Option<Pace>, tls: &Test
     serve_with(file_handler(site), pace, Some(tls))
 }
 
+/// Chemin d'un fichier voisin (empreintes, F-11).
+fn is_neighbor(path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    [
+        ".sha256",
+        ".sha1",
+        ".md5",
+        "/SHA256SUMS",
+        "/SHA1SUMS",
+        "/MD5SUMS",
+    ]
+    .iter()
+    .any(|end| path.ends_with(end))
+}
+
 fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
     let cuts_done = AtomicUsize::new(0);
     let busy_done = AtomicUsize::new(0);
     move |r: &Request| {
-        let site = site.lock().unwrap();
+        let mut site = site.lock().unwrap();
+        if is_neighbor(&r.path) {
+            site.neighbor_requests.push(r.path.clone());
+            return match site.neighbors.iter().find(|(path, _)| *path == r.path) {
+                Some((_, body)) => {
+                    let len = body.len().to_string();
+                    let body = if r.method == "HEAD" { &[][..] } else { body };
+                    reply("200 OK", &[("Content-Length", len.as_str())], body)
+                }
+                None => reply("404 Not Found", &[("Content-Length", "0")], b""),
+            };
+        }
         if let Some(auth) = &site.auth
             && !auth.accepts(r)
         {

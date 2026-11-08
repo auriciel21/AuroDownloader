@@ -150,14 +150,15 @@ pub fn task_json(t: &TaskRow) -> Value {
         "createdAt": t.created_at,
         "finishedAt": t.finished_at,
         "moving": t.moving,
-        "checksum": checksum_json(t.checksum.as_ref()),
+        "checksum": checksum_json(t.checksum.as_ref(), t.checksum_source.as_deref()),
     })
 }
 
-/// Empreinte attendue d'une tâche (F-11) : `{algo, value}`, ou `null`.
-pub fn checksum_json(c: Option<&Checksum>) -> Value {
+/// Empreinte attendue d'une tâche (F-11) : `{algo, value, source}`, ou `null`. `source` :
+/// le fichier voisin où le moteur l'a lue, `null` si elle vient de l'utilisateur.
+pub fn checksum_json(c: Option<&Checksum>, source: Option<&str>) -> Value {
     match c {
-        Some(c) => json!({"algo": c.algo().as_sql(), "value": c.value()}),
+        Some(c) => json!({"algo": c.algo().as_sql(), "value": c.value(), "source": source}),
         None => Value::Null,
     }
 }

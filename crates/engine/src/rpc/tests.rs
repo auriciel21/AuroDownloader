@@ -1487,7 +1487,10 @@ async fn checksums_are_given_checked_and_announced() {
         .await;
     assert_eq!(done["from"], "verifying");
     let task = c.result("task.get", json!({"taskId": id})).await;
-    assert_eq!(task["checksum"], json!({"algo": "sha256", "value": hex}));
+    assert_eq!(
+        task["checksum"],
+        json!({"algo": "sha256", "value": hex, "source": null})
+    );
     assert_eq!(
         std::fs::metadata(dir.path().join("f.bin")).unwrap().len(),
         len
@@ -1504,14 +1507,17 @@ async fn checksums_are_given_checked_and_announced() {
     let id = added["taskId"].as_str().unwrap().to_owned();
     assert!(c.result("task.get", json!({"taskId": id})).await["checksum"].is_null());
     let md5 = json!({"algo": "md5", "value": "d41d8cd98f00b204e9800998ecf8427e"});
+    // Rendue avec son origine : `null`, donnée par l'utilisateur.
+    let mut md5_out = md5.clone();
+    md5_out["source"] = Value::Null;
     let updated = c
         .result("task.update", json!({"taskId": id, "checksum": md5}))
         .await;
-    assert_eq!(updated["checksum"], md5);
+    assert_eq!(updated["checksum"], md5_out);
     let note = c
         .notification("task.updated", |p| p["taskId"] == json!(id))
         .await;
-    assert_eq!(note["checksum"], md5);
+    assert_eq!(note["checksum"], md5_out);
     let cleared = c
         .result("task.update", json!({"taskId": id, "checksum": null}))
         .await;
@@ -1714,5 +1720,90 @@ async fn preallocation_is_an_engine_setting_on_by_default() {
     );
     let got = c.result("settings.get", json!({})).await;
     assert_eq!(got["values"]["downloads.preallocate"], false);
+    engine.shutdown().await;
+}
+
+/// Empreinte lue dans un fichier voisin (F-11) : réglage `downloads.neighborChecksum`, vrai
+/// par défaut ; l'empreinte trouvée est annoncée avec le fichier qui la donne.
+#[tokio::test]
+async fn neighbor_checksums_follow_the_setting_and_are_announced_with_their_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(Config {
+        db_path: dir.path().join("auro.db"),
+        client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
+        transfer: Options {
+            neighbor_checksum: true,
+            ..Options::default()
+        },
+        disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
+    })
+    .unwrap();
+    let len: u64 = 200_000;
+    let hex = crate::testing::content_sha256(len);
+    let site = Arc::new(Mutex::new(FileSite::new(len)));
+    for name in ["n.bin", "m.bin"] {
+        site.lock()
+            .unwrap()
+            .neighbors
+            .push((format!("/{name}.sha256"), format!("{hex}\n").into_bytes()));
+    }
+    let server = serve_file(Arc::clone(&site));
+    let mut c = TestClient::connect(&engine);
+    let key = "downloads.neighborChecksum";
+    assert_eq!(
+        c.result("settings.get", json!({})).await["values"][key],
+        true
+    );
+    assert_eq!(
+        c.result("sync.snapshot", json!({})).await["settings"][key],
+        true
+    );
+    c.result("events.subscribe", json!({"topics": ["tasks", "queues"]}))
+        .await;
+
+    let add = |name: &str| {
+        json!({"sources": [{"url": server.url(&format!("/{name}"))}],
+               "destDir": dir_text(dir.path())})
+    };
+    let id = c.result("task.add", add("n.bin")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let expected = json!({"algo": "sha256", "value": hex, "source": "n.bin.sha256"});
+    let note = c
+        .notification("task.updated", |p| {
+            p["taskId"] == json!(id) && p.get("checksum").is_some()
+        })
+        .await;
+    assert_eq!(note["checksum"], expected);
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == json!(id) && p["to"] == "completed"
+    })
+    .await;
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["checksum"], expected);
+
+    // Réglage coupé : le fichier suivant n'a pas d'empreinte, aucun voisin n'est demandé.
+    let set = c
+        .result("settings.set", json!({"values": {key: false}}))
+        .await;
+    assert_eq!(set["values"][key], false);
+    let note = c
+        .notification("settings.updated", |p| p["values"].get(key).is_some())
+        .await;
+    assert_eq!(note["values"][key], false);
+    let id = c.result("task.add", add("m.bin")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == json!(id) && p["to"] == "completed"
+    })
+    .await;
+    assert!(c.result("task.get", json!({"taskId": id})).await["checksum"].is_null());
+    let asked = site.lock().unwrap().neighbor_requests.clone();
+    assert!(asked.iter().all(|p| !p.starts_with("/m.bin")), "{asked:?}");
+    assert_eq!(asked.len(), 6, "{asked:?}");
     engine.shutdown().await;
 }

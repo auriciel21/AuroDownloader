@@ -416,6 +416,9 @@
         <label class="check"><input type="checkbox" id="pref-preallocate" aria-describedby="pref-preallocate-note">
           <span data-i18n="Réserver la place de chaque fichier dès le départ">Réserver la place de chaque fichier dès le départ</span></label>
         <p class="note" id="pref-preallocate-note" data-i18n="Un disque trop petit se voit avant le téléchargement, et le fichier se fragmente moins. Sans effet sur les clés et disques en FAT ou exFAT.">Un disque trop petit se voit avant le téléchargement, et le fichier se fragmente moins. Sans effet sur les clés et disques en FAT ou exFAT.</p>
+        <label class="check"><input type="checkbox" id="pref-neighbor" aria-describedby="pref-neighbor-note">
+          <span data-i18n="Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)">Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)</span></label>
+        <p class="note" id="pref-neighbor-note" data-i18n="Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.">Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.</p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-connection" aria-labelledby="tab-connection" hidden>
         <label class="field">

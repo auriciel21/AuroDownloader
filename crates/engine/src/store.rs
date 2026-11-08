@@ -58,6 +58,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "site_logins",
         sql: include_str!("../migrations/0004_site_logins.sql"),
     },
+    Migration {
+        version: 5,
+        name: "checksum_source",
+        sql: include_str!("../migrations/0005_checksum_source.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

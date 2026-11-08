@@ -14,7 +14,7 @@ use super::{
     queue_json, response, schedule_json, task_json,
 };
 use crate::scheduler::{Engine, Event};
-use crate::store::settings::{DOWNLOAD_DIR, PREALLOCATE};
+use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::TaskState;
 use crate::transfer::Progress;
 
@@ -294,7 +294,7 @@ async fn describe(
                 params["speedLimitBps"] = json!(limit);
             }
             if let Some(checksum) = &update.checksum {
-                params["checksum"] = checksum_json(checksum.as_ref());
+                params["checksum"] = checksum_json(checksum.as_ref(), None);
             }
             Some(notification("task.updated", params))
         }
@@ -303,20 +303,26 @@ async fn describe(
             task_id,
             file_name,
             total_bytes,
+            found_checksum,
         } if topics.tasks => {
             // Le nom du fichier sert aussi de nom affiché depuis la préparation.
-            Some(notification(
-                "task.updated",
-                json!({
-                    "rev": rev,
-                    "taskId": task_id,
-                    "fileName": file_name,
-                    "displayName": file_name,
-                    "totalBytes": total_bytes,
-                }),
-            ))
+            let mut params = json!({
+                "rev": rev,
+                "taskId": task_id,
+                "fileName": file_name,
+                "displayName": file_name,
+                "totalBytes": total_bytes,
+            });
+            if let Some((checksum, source)) = &found_checksum {
+                params["checksum"] = checksum_json(Some(checksum), Some(source));
+            }
+            Some(notification("task.updated", params))
         }
-        Event::Restarted { rev, task_id } => {
+        Event::Restarted {
+            rev,
+            task_id,
+            checksum,
+        } => {
             progress.forget(&task_id);
             topics.tasks.then(|| {
                 notification(
@@ -329,6 +335,7 @@ async fn describe(
                         "doneBytes": 0,
                         "errorCode": null,
                         "errorDetail": null,
+                        "checksum": checksum_json(checksum.as_ref(), None),
                     }),
                 )
             })
@@ -372,9 +379,9 @@ async fn describe(
             "limits.updated",
             json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
         )),
-        Event::PreallocateChanged { rev, preallocate } if topics.queues => Some(notification(
+        Event::FlagChanged { rev, flag, on } if topics.queues => Some(notification(
             "settings.updated",
-            json!({"rev": rev, "values": {PREALLOCATE: preallocate}}),
+            json!({"rev": rev, "values": {flag.key(): on}}),
         )),
         Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
             "settings.updated",

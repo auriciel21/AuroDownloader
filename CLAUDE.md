@@ -55,6 +55,10 @@ téléchargement.
   Empreinte du fichier (F-11, SPEC 7.9, 2026-11-08) : `io::checksum` (SHA-256, SHA-1,
   MD5 ; lecture du `.part` fermé), état `verifying` durable (`transfer::finish_part`,
   reprise par `resume_verifying`).
+  Empreinte lue dans un fichier voisin (F-11, 2026-11-08) : `net::sums` (`.sha256`,
+  `SHA256SUMS`…, cherchés à la préparation, sans en-têtes de la tâche), colonne
+  `tasks.checksum_source` (migration 5), réglage `downloads.neighborChecksum` ; les
+  réglages oui ou non passent par `settings::Flag` (commandes `Engine::flag`, `set_flag`).
   Historique (F-35, 2026-11-08) : `store::history` (recherche, pages par curseur,
   effacement), méthodes `history.list` et `history.clear`.
   Réservation de la place (F-10, 2026-11-08) : `io::preallocate` (`fallocate`, NTFS et

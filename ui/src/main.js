@@ -889,13 +889,16 @@ function renderDetails() {
       ? t("Non : ce serveur ne permet pas de reprendre ; un arrêt ou une coupure fait repartir de zéro")
       : "");
   $("d-resume").classList.toggle("warn", source?.acceptsRanges === false);
-  // F-11 : empreinte attendue ; celle d'un fichier terminé a été vérifiée.
+  // F-11 : empreinte attendue ; celle d'un fichier terminé a été vérifiée. Lue dans un
+  // fichier voisin (`source`), elle le dit.
   const sum = task.checksum;
+  const label = sum ? ALGO_LABELS[sum.algo] ?? sum.algo : "";
+  const verified = task.state === "completed";
   set("checksum", !sum
     ? ""
-    : task.state === "completed"
-      ? t("{0} {1} (vérifiée)", ALGO_LABELS[sum.algo] ?? sum.algo, sum.value)
-      : t("{0} {1}", ALGO_LABELS[sum.algo] ?? sum.algo, sum.value));
+    : sum.source
+      ? t(verified ? "{0} {1} (lue dans {2}, vérifiée)" : "{0} {1} (lue dans {2})", label, sum.value, sum.source)
+      : t(verified ? "{0} {1} (vérifiée)" : "{0} {1}", label, sum.value));
   $("d-checksum").classList.toggle("warn", task.errorCode === "CHECKSUM_MISMATCH");
   $("d-checksum-field").hidden = !canSetChecksum(task);
   $("d-checksum-apply").disabled = !connected;
@@ -1393,11 +1396,13 @@ async function act(method, params) {
 function renderDest() {
   const dir = store.settings["downloads.dir"] ?? "";
   for (const id of ["dest", "pref-dest"]) $(id).textContent = dir || t("(aucun)");
-  for (const id of ["dest-change", "pref-dest-change", "tb-history", "pref-preallocate"]) {
+  for (const id of ["dest-change", "pref-dest-change", "tb-history", "pref-preallocate", "pref-neighbor"]) {
     $(id).disabled = !connected;
   }
   // F-10 : vrai tant que le moteur ne dit pas le contraire.
   $("pref-preallocate").checked = store.settings["downloads.preallocate"] !== false;
+  // F-11 : de même.
+  $("pref-neighbor").checked = store.settings["downloads.neighborChecksum"] !== false;
   syncLoginButtons();
 }
 
@@ -1407,6 +1412,18 @@ async function savePreallocate() {
   try {
     await host.call("settings.set", { values: { "downloads.preallocate": on } });
     announce(on ? t("Place réservée dès le départ") : t("Place prise au fil du téléchargement"));
+  } catch (e) {
+    showError(refused(e));
+    renderDest();
+  }
+}
+
+/// Empreintes lues dans les fichiers voisins (F-11), réglage du moteur.
+async function saveNeighbor() {
+  const on = $("pref-neighbor").checked;
+  try {
+    await host.call("settings.set", { values: { "downloads.neighborChecksum": on } });
+    announce(on ? t("Empreintes cherchées à côté des fichiers") : t("Empreintes non cherchées à côté des fichiers"));
   } catch (e) {
     showError(refused(e));
     renderDest();
@@ -1809,6 +1826,7 @@ function wire() {
   $("tb-schedule").addEventListener("click", openSchedule);
   $("tb-history").addEventListener("click", openHistory);
   $("pref-preallocate").addEventListener("change", savePreallocate);
+  $("pref-neighbor").addEventListener("change", saveNeighbor);
   $("h-query").addEventListener("input", () => {
     // Recherche pendant la frappe, une fois la saisie posée.
     clearTimeout(historyTimer);

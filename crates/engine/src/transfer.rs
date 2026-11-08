@@ -35,7 +35,7 @@ use crate::io::{
 };
 use crate::limit::Throttle;
 use crate::net::auth::{Auth, Login, Site};
-use crate::net::{Client, NetError, RangeRequest, headers};
+use crate::net::{Client, NetError, RangeRequest, headers, sums};
 use crate::secrets::{Vault, VaultError};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
@@ -47,7 +47,7 @@ use crate::store::segments::{
 };
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, TaskRow, TaskState, change_state, complete_task,
-    load_task, primary_source, reserved_names, save_preparation,
+    load_task, primary_source, reserved_names, save_preparation, set_checksum,
 };
 use crate::store::{StoreError, now_ms};
 
@@ -103,6 +103,10 @@ pub struct Options {
     pub vault: Vault,
     /// Réserver la place du fichier au départ (F-10, réglage `downloads.preallocate`).
     pub preallocate: bool,
+    /// Chercher l'empreinte dans les fichiers voisins quand la tâche n'en a pas (F-11, SPEC §7.9,
+    /// réglage `downloads.neighborChecksum`). Faux par défaut : la bibliothèque, ses tests et
+    /// ses bancs n'envoient pas de requêtes de plus ; `aurod` l'active, et le réglage décide.
+    pub neighbor_checksum: bool,
 }
 
 impl Default for Options {
@@ -121,6 +125,7 @@ impl Default for Options {
             keep_free: KEEP_FREE,
             vault: Vault::default(),
             preallocate: true,
+            neighbor_checksum: false,
         }
     }
 }
@@ -534,6 +539,29 @@ async fn execute(
             Ok(probe) => probe,
             Err(e) => return fail(Failure::Net(e)),
         };
+        // Empreinte lue dans un fichier voisin (F-11, SPEC §7.9), enregistrée avant la
+        // préparation : après un arrêt entre les deux, la recherche n'est pas refaite.
+        if opts.neighbor_checksum && task.checksum.is_none() {
+            let names = [probe.file_name.as_str()];
+            let lookup = sums::find(client, &source.url, &names);
+            tokio::pin!(lookup);
+            // Émetteur disparu (exécution sans planificateur) : plus aucun arrêt ne viendra.
+            let mut gone = false;
+            let found = loop {
+                tokio::select! {
+                    found = &mut lookup => break found,
+                    asked = async { stop.wait_for(|h| *h).await.is_ok() }, if !gone => {
+                        if asked {
+                            return Ok(Err(Stop::User));
+                        }
+                        gone = true;
+                    }
+                }
+            };
+            if let Some((checksum, origin)) = found {
+                set_checksum(conn, task_id, Some(&checksum), Some(&origin))?;
+            }
+        }
         // Le nom est pris sur le disque (`.part` créé) avant d'être enregistré : aucune
         // autre tâche ne peut plus le choisir, ni ouvrir ce `.part` comme le sien.
         let reserved = reserved_names(conn, &task.dest_dir, task_id)?;

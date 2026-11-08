@@ -15,6 +15,10 @@ pub const DOWNLOAD_DIR: &str = "downloads.dir";
 /// Réserver la place de chaque fichier au départ (F-10, SPEC §7.6 bis) ; vrai par défaut.
 pub const PREALLOCATE: &str = "downloads.preallocate";
 
+/// Chercher l'empreinte d'un fichier dans ses fichiers voisins (`.sha256`, `SHA256SUMS`…) quand
+/// l'utilisateur n'en a pas donné (F-11, SPEC §7.9) ; vrai par défaut.
+pub const NEIGHBOR_CHECKSUM: &str = "downloads.neighborChecksum";
+
 /// Espace de noms des secrets de cette base dans le coffre du système (`secrets`), tiré
 /// au hasard au premier démarrage. Interne : `settings.get` ne le montre pas.
 pub const VAULT_NAMESPACE: &str = "vault.namespace";
@@ -50,21 +54,46 @@ pub fn set_download_dir(conn: &Connection, dir: Option<&str>) -> Result<(), Stor
     set(conn, DOWNLOAD_DIR, &dir.map_or(Value::Null, Value::from))
 }
 
-/// Réservation de la place des fichiers au départ ; vraie tant que rien n'est enregistré.
-pub fn preallocate(conn: &Connection) -> Result<bool, StoreError> {
-    match get(conn, PREALLOCATE)? {
+/// Réglages oui ou non du moteur, vrais tant que rien n'est enregistré.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Flag {
+    /// Réserver la place de chaque fichier au départ (F-10, SPEC §7.6 bis).
+    Preallocate,
+    /// Chercher l'empreinte d'un fichier dans ses fichiers voisins (F-11, SPEC §7.9).
+    NeighborChecksum,
+}
+
+impl Flag {
+    pub const ALL: [Flag; 2] = [Flag::Preallocate, Flag::NeighborChecksum];
+
+    /// Clé du réglage, dans la base et dans le protocole.
+    pub fn key(self) -> &'static str {
+        match self {
+            Flag::Preallocate => PREALLOCATE,
+            Flag::NeighborChecksum => NEIGHBOR_CHECKSUM,
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Flag> {
+        Flag::ALL.into_iter().find(|f| f.key() == key)
+    }
+}
+
+/// Valeur d'un réglage oui ou non ; vraie tant que rien n'est enregistré.
+pub fn flag(conn: &Connection, flag: Flag) -> Result<bool, StoreError> {
+    let key = flag.key();
+    match get(conn, key)? {
         None | Some(Value::Null) => Ok(true),
         Some(Value::Bool(on)) => Ok(on),
         Some(v) => Err(StoreError::BadValue(format!(
-            "réglage {PREALLOCATE} : {v} n'est pas un booléen"
+            "réglage {key} : {v} n'est pas un booléen"
         ))),
     }
 }
 
-pub fn set_preallocate(conn: &Connection, on: bool) -> Result<(), StoreError> {
-    set(conn, PREALLOCATE, &Value::Bool(on))
+pub fn set_flag(conn: &Connection, flag: Flag, on: bool) -> Result<(), StoreError> {
+    set(conn, flag.key(), &Value::Bool(on))
 }
-
 /// Valeur d'un réglage ; `None` s'il n'a jamais été enregistré.
 pub fn get(conn: &Connection, key: &str) -> Result<Option<Value>, StoreError> {
     let text: Option<String> = conn

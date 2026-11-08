@@ -125,6 +125,13 @@ export const EN = {
     "SHA-256, SHA-1 or MD5; empty to check none. After a failure, Retry checks the received file again, without downloading it again.",
   "{0} {1}": "{0} {1}",
   "{0} {1} (vérifiée)": "{0} {1} (verified)",
+  "{0} {1} (lue dans {2})": "{0} {1} (read from {2})",
+  "{0} {1} (lue dans {2}, vérifiée)": "{0} {1} (read from {2}, verified)",
+  "Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)": "Look for the checksum next to the file (SHA256SUMS, .sha256…)",
+  "Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.":
+    "When you give none, AuroDownloader looks for the checksum published next to the file, then checks it at the end. A few more small requests to the same server.",
+  "Empreintes cherchées à côté des fichiers": "Checksums looked for next to files",
+  "Empreintes non cherchées à côté des fichiers": "Checksums no longer looked for next to files",
   "Empreinte illisible : 64 (SHA-256), 40 (SHA-1) ou 32 (MD5) chiffres hexadécimaux, ou « sha256:… »":
     "Unreadable checksum: 64 (SHA-256), 40 (SHA-1) or 32 (MD5) hexadecimal digits, or “sha256:…”",
   "Empreinte enregistrée": "Checksum saved",

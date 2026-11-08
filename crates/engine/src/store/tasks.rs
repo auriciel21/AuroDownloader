@@ -136,6 +136,9 @@ pub struct TaskRow {
     pub moving: bool,
     /// Empreinte attendue du fichier (F-11), vérifiée avant le renommage du `.part`.
     pub checksum: Option<Checksum>,
+    /// Fichier voisin où le moteur a lu cette empreinte (« SHA256SUMS »…) ; `None` : donnée
+    /// par l'utilisateur (SPEC §7.9).
+    pub checksum_source: Option<String>,
 }
 
 /// Une source de téléchargement.
@@ -186,20 +189,24 @@ pub fn set_task_speed_limit(
     Ok(())
 }
 
-/// Change l'empreinte attendue d'une tâche (F-11) ; `None` la retire. L'appelant vérifie
+/// Change l'empreinte attendue d'une tâche (F-11) ; `None` la retire. `source` : le fichier
+/// voisin où le moteur l'a lue, `None` si elle vient de l'utilisateur. L'appelant vérifie
 /// l'état : l'empreinte se lit à la fin du téléchargement.
 pub fn set_checksum(
     conn: &Connection,
     task_id: &str,
     checksum: Option<&Checksum>,
+    source: Option<&str>,
 ) -> Result<(), StoreError> {
     let updated = conn.execute(
-        "UPDATE tasks SET checksum_algo = ?2, checksum_value = ?3, updated_at = ?4
+        "UPDATE tasks SET checksum_algo = ?2, checksum_value = ?3, checksum_source = ?4,
+           updated_at = ?5
          WHERE id = ?1",
         params![
             task_id,
             checksum.map(|c| c.algo().as_sql()),
             checksum.map(Checksum::value),
+            checksum.and(source),
             now_ms()
         ],
     )?;
@@ -294,7 +301,7 @@ const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
      queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
      EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id), checksum_algo, \
-     checksum_value";
+     checksum_value, checksum_source";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -319,6 +326,7 @@ struct RawTask {
     moving: bool,
     checksum_algo: Option<String>,
     checksum_value: Option<String>,
+    checksum_source: Option<String>,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -344,6 +352,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         moving: row.get(18)?,
         checksum_algo: row.get(19)?,
         checksum_value: row.get(20)?,
+        checksum_source: row.get(21)?,
     })
 }
 
@@ -360,6 +369,7 @@ impl TryFrom<RawTask> for TaskRow {
             _ => return Err(bad("empreinte incomplète")),
         };
         Ok(TaskRow {
+            checksum_source: raw.checksum_source.filter(|_| checksum.is_some()),
             checksum,
             state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
             total_bytes: to_u64(raw.total_bytes, "taille")?,
@@ -761,7 +771,8 @@ pub fn complete_task(
 /// Retéléchargement (SPEC §5.5, depuis le 2026-11-07) : une tâche terminée, en échec,
 /// annulée, en pause ou en attente d'un nouvel essai repart de zéro, en `queued`. Sa
 /// préparation est oubliée (nom, taille, segments, validateurs de ses sources), comme
-/// ses erreurs et ses tentatives ; son adresse, sa file et ses réglages restent. Renvoie
+/// ses erreurs et ses tentatives, et une empreinte lue dans un fichier voisin (F-11) ; son
+/// adresse, sa file, ses réglages et l'empreinte donnée par l'utilisateur restent. Renvoie
 /// l'état quitté. Les fichiers ne sont pas touchés : le moteur supprime avant le `.part`,
 /// et le fichier final si on le lui demande.
 ///
@@ -805,6 +816,11 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
         "UPDATE tasks SET state = 'queued', file_name = NULL, total_bytes = NULL,
            done_bytes = 0, pause_reason = NULL, error_code = NULL, error_detail = NULL,
            retry_count = 0, next_retry_at = NULL, started_at = NULL, finished_at = NULL,
+           -- Une empreinte lue dans un fichier voisin a pu changer avec le fichier (F-11) ;
+           -- celle de l'utilisateur reste.
+           checksum_algo = CASE WHEN checksum_source IS NULL THEN checksum_algo END,
+           checksum_value = CASE WHEN checksum_source IS NULL THEN checksum_value END,
+           checksum_source = NULL,
            updated_at = ?2
          WHERE id = ?1",
         params![task_id, now_ms()],

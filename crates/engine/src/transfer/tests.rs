@@ -821,6 +821,10 @@ mod limits_and_space {
         assert_completed(&case, &outcome, "rempli.bin", &content(len));
     }
 
+    /// Les deux essais du disque vraiment plein partagent le même petit volume, que chacun
+    /// remplit : ils passent l'un après l'autre.
+    static FULL_DISK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Disque vraiment plein : l'écriture échoue (`ENOSPC`), sans contrôle préalable de
     /// la place. Demande un petit volume dédié, désigné par `AURO_FULL_DISK_DIR` ; sous
     /// Linux, un `tmpfs` de 8 Mio monté sans droits d'administrateur :
@@ -829,6 +833,7 @@ mod limits_and_space {
     #[tokio::test]
     #[ignore = "demande un petit volume dédié (AURO_FULL_DISK_DIR)"]
     async fn a_really_full_disk_loses_nothing() {
+        let _alone = FULL_DISK.lock().await;
         fn plenty(_: &Path) -> std::io::Result<u64> {
             Ok(u64::MAX)
         }
@@ -876,6 +881,7 @@ mod limits_and_space {
     #[tokio::test]
     #[ignore = "demande un petit volume dédié (AURO_FULL_DISK_DIR)"]
     async fn a_really_full_disk_is_seen_before_downloading() {
+        let _alone = FULL_DISK.lock().await;
         fn plenty(_: &Path) -> std::io::Result<u64> {
             Ok(u64::MAX)
         }
@@ -1260,7 +1266,7 @@ mod checksums {
         let data = content(SIZE);
         let (_, server) = site(data.clone());
         let mut case = new_case(&server.url("/a.bin"));
-        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data)), None).unwrap();
         let (outcome, verified) = run_watching(&mut case, false).await;
         assert_completed(&case, &outcome, "a.bin", &data);
         assert_eq!(verified.first(), Some(&0));
@@ -1277,7 +1283,7 @@ mod checksums {
         let data = content(SIZE);
         let (_, server) = site(data.clone());
         let mut case = new_case(&server.url("/a.bin"));
-        set_checksum(&case.conn, &case.task_id, Some(&wrong())).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&wrong()), None).unwrap();
         let outcome = case.run().await;
         assert!(
             matches!(&outcome, Outcome::Failed { code: "CHECKSUM_MISMATCH", detail }
@@ -1293,7 +1299,7 @@ mod checksums {
 
         // Empreinte corrigée, tâche relancée : le `.part` se vérifie, sans réseau.
         let before = gets(&server);
-        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data)), None).unwrap();
         change_state(
             &mut case.conn,
             &case.task_id,
@@ -1315,12 +1321,12 @@ mod checksums {
             s.send_length = false;
         }
         let mut case = new_case(&server.url("/flux"));
-        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data)), None).unwrap();
         let outcome = case.run().await;
         assert_completed(&case, &outcome, "flux", &data);
 
         let mut case = new_case(&server.url("/flux"));
-        set_checksum(&case.conn, &case.task_id, Some(&wrong())).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&wrong()), None).unwrap();
         let outcome = case.run().await;
         assert!(matches!(
             outcome,
@@ -1341,7 +1347,7 @@ mod checksums {
         let (site, server) = site(data.clone());
         site.lock().unwrap().ranges = false;
         let mut case = new_case(&server.url("/a.bin"));
-        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data))).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&sha256(&data)), None).unwrap();
         let (outcome, verified) = run_watching(&mut case, true).await;
         assert_eq!(outcome, Outcome::Paused);
         assert!(
@@ -1383,7 +1389,7 @@ mod checksums {
             file_name: "f.bin",
         };
         save_preparation(&mut case.conn, &case.task_id, &prep, &segments).unwrap();
-        set_checksum(&case.conn, &case.task_id, Some(checksum)).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(checksum), None).unwrap();
         for to in [TaskState::Active, TaskState::Verifying] {
             change_state(&mut case.conn, &case.task_id, &Change::to(to)).unwrap();
         }
@@ -1449,5 +1455,149 @@ mod checksums {
             ),
             "{outcome:?}"
         );
+    }
+}
+
+/// Empreinte lue dans un fichier voisin (F-11, SPEC §7.9) : cherchée à la préparation
+/// quand la tâche n'en a pas, puis vérifiée comme celle de l'utilisateur.
+mod neighbor_checksums {
+    use super::*;
+    use crate::io::checksum::{Algo, Checksum};
+    use crate::store::tasks::{restart_task, set_checksum};
+    use crate::testing::content_sha256;
+
+    const ZEROS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    async fn run_neighbors(case: &mut Case, on: bool) -> Outcome {
+        let opts = Options {
+            neighbor_checksum: on,
+            ..opts()
+        };
+        // Émetteur abandonné : aucun arrêt ne sera demandé.
+        let (_, stop) = watch::channel(false);
+        case.run_opts(&opts, stop).await
+    }
+
+    fn asked(site: &Arc<Mutex<FileSite>>) -> Vec<String> {
+        site.lock().unwrap().neighbor_requests.clone()
+    }
+
+    #[tokio::test]
+    async fn a_list_next_to_the_file_gives_its_checksum_which_is_then_checked() {
+        let data = content(SIZE);
+        let (site, server) = site(data.clone());
+        let hex = content_sha256(SIZE as u64);
+        let list = format!("{ZEROS}  autre.bin\n{hex}  a.bin\n");
+        site.lock()
+            .unwrap()
+            .neighbors
+            .push(("/pub/SHA256SUMS".into(), list.into_bytes()));
+        let mut case = new_case(&server.url("/pub/a.bin?jeton=1"));
+        let outcome = run_neighbors(&mut case, true).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        let task = case.task();
+        assert_eq!(
+            task.checksum.as_ref().map(Checksum::value),
+            Some(hex.as_str())
+        );
+        assert_eq!(task.checksum_source.as_deref(), Some("SHA256SUMS"));
+        // Les six fichiers voisins demandés, à côté du fichier, sans la requête.
+        let mut paths = asked(&site);
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                "/pub/MD5SUMS",
+                "/pub/SHA1SUMS",
+                "/pub/SHA256SUMS",
+                "/pub/a.bin.md5",
+                "/pub/a.bin.sha1",
+                "/pub/a.bin.sha256",
+            ]
+        );
+        // L'historique garde l'empreinte vérifiée.
+        let kept: Option<String> = case
+            .conn
+            .query_row("SELECT sha256 FROM history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some(hex.as_str()));
+
+        // Un retéléchargement l'oublie : le fichier a pu changer depuis.
+        restart_task(&mut case.conn, &case.task_id).unwrap();
+        let task = case.task();
+        assert_eq!(task.checksum, None);
+        assert_eq!(task.checksum_source, None);
+    }
+
+    #[tokio::test]
+    async fn sha256_is_preferred_and_a_wrong_value_keeps_the_part() {
+        let data = content(SIZE);
+        let (site, server) = site(data.clone());
+        {
+            let mut site = site.lock().unwrap();
+            // SHA-256 faux dans le compagnon, MD5 de la liste juste ou non : SHA-256 gagne.
+            site.neighbors
+                .push(("/a.bin.sha256".into(), format!("{ZEROS}\n").into_bytes()));
+            site.neighbors.push((
+                "/MD5SUMS".into(),
+                format!("{}  a.bin\n", &ZEROS[..32]).into_bytes(),
+            ));
+        }
+        let mut case = new_case(&server.url("/a.bin"));
+        let outcome = run_neighbors(&mut case, true).await;
+        assert!(
+            matches!(&outcome, Outcome::Failed { code: "CHECKSUM_MISMATCH", detail }
+                if detail.contains("SHA-256")),
+            "{outcome:?}"
+        );
+        let task = case.task();
+        assert_eq!(task.checksum_source.as_deref(), Some("a.bin.sha256"));
+        assert!(!case.dir.path().join("a.bin").exists());
+        assert_eq!(std::fs::read(case.part("a.bin")).unwrap(), data);
+
+        // L'empreinte de l'utilisateur remplace celle du voisin, et un retéléchargement
+        // la garde.
+        let mine = Checksum::new(Algo::Sha256, &content_sha256(SIZE as u64)).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&mine), None).unwrap();
+        restart_task(&mut case.conn, &case.task_id).unwrap();
+        let task = case.task();
+        assert_eq!(task.checksum, Some(mine));
+        assert_eq!(task.checksum_source, None);
+    }
+
+    #[tokio::test]
+    async fn without_neighbors_the_file_completes_without_a_checksum() {
+        let data = content(SIZE);
+        let (site, server) = site(data.clone());
+        let mut case = new_case(&server.url("/a.bin"));
+        let outcome = run_neighbors(&mut case, true).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert_eq!(case.task().checksum, None);
+        assert_eq!(asked(&site).len(), 6, "{:?}", asked(&site));
+    }
+
+    #[tokio::test]
+    async fn nothing_is_asked_when_off_or_when_the_user_gave_a_checksum() {
+        let data = content(SIZE);
+        let (site, server) = site(data.clone());
+        site.lock()
+            .unwrap()
+            .neighbors
+            .push(("/a.bin.sha256".into(), format!("{ZEROS}\n").into_bytes()));
+
+        // Réglage coupé.
+        let mut case = new_case(&server.url("/a.bin"));
+        let outcome = run_neighbors(&mut case, false).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert_eq!(case.task().checksum, None);
+        assert!(asked(&site).is_empty());
+
+        // Empreinte de l'utilisateur : la sienne compte, aucun voisin n'est lu.
+        let mut case = new_case(&server.url("/a.bin"));
+        let mine = Checksum::new(Algo::Sha256, &content_sha256(SIZE as u64)).unwrap();
+        set_checksum(&case.conn, &case.task_id, Some(&mine), None).unwrap();
+        let outcome = run_neighbors(&mut case, true).await;
+        assert_completed(&case, &outcome, "a.bin", &data);
+        assert!(asked(&site).is_empty());
     }
 }

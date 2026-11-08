@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod filename;
 pub mod headers;
+pub mod sums;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -585,6 +586,30 @@ impl Client {
             response,
             read: self.read,
         })
+    }
+
+    /// Petit fichier (empreinte voisine, F-11) : son contenu si le serveur répond `200` avec
+    /// au plus `limit` octets, `None` pour toute autre réponse. Sans en-têtes ni identifiants
+    /// de tâche ([`sums`]).
+    pub async fn fetch_small(&self, url: &Url, limit: usize) -> Result<Option<Vec<u8>>, NetError> {
+        let response = self
+            .send(Method::GET, url, &HeaderMap::new(), None, None)
+            .await?;
+        if response.status() != StatusCode::OK {
+            return Ok(None);
+        }
+        let mut body = Body {
+            response,
+            read: self.read,
+        };
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.chunk().await? {
+            if bytes.len() + chunk.len() > limit {
+                return Ok(None);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Some(bytes))
     }
 
     /// Plafond de connexions retenu pour `host` pendant la session, s'il y en a un.

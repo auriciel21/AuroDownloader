@@ -299,7 +299,9 @@ CREATE TABLE settings (
 -- du système) ; "vault.namespace" (depuis le 2026-11-07, interne, absent de
 -- settings.get) : espace de noms des secrets de cette base dans le coffre (section 5.1) ;
 -- "downloads.preallocate" (depuis le 2026-11-08) : réserver la place des fichiers au
--- départ, booléen, vrai s'il est absent (section 7.6 bis).
+-- départ, booléen, vrai s'il est absent (section 7.6 bis) ;
+-- "downloads.neighborChecksum" (depuis le 2026-11-08) : chercher l'empreinte d'un fichier
+-- dans ses fichiers voisins, booléen, vrai s'il est absent (section 7.9).
 
 CREATE TABLE schedules (
   id         TEXT PRIMARY KEY,
@@ -350,6 +352,8 @@ CREATE TABLE tasks (
   speed_limit_bps INTEGER,
   checksum_algo   TEXT CHECK (checksum_algo IN ('sha256','sha1','md5')),
   checksum_value  TEXT,
+  checksum_source TEXT,          -- fichier voisin où le moteur a lu l'empreinte ; NULL : celle de
+                                 -- l'utilisateur (section 7.9, migration 5, depuis le 2026-11-08)
   pause_reason    TEXT CHECK (pause_reason IN ('user','schedule','disk_full','network','file_changed')),
   error_code      TEXT,
   error_detail    TEXT,
@@ -631,7 +635,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
 - **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `task.add`, `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `history.list`, `history.clear`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
-  - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : les clés acceptées sont `downloads.dir`, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système, et `downloads.preallocate`, un booléen (section 7.6 bis, depuis le 2026-11-08) ; les valeurs sont vérifiées toutes avant d'en changer une ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
+  - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : les clés acceptées sont `downloads.dir`, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système, `downloads.preallocate`, un booléen (section 7.6 bis, depuis le 2026-11-08), et `downloads.neighborChecksum`, un booléen (section 7.9, depuis le 2026-11-08) ; les valeurs sont vérifiées toutes avant d'en changer une ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
   - Un `destDir` donné à `task.add` doit aussi être un dossier existant, en chemin absolu (`DEST_NOT_WRITABLE`).
   - La CLI garde le dossier courant par défaut (`-o .`), comme les outils en ligne de commande.
 - **En-têtes d'une tâche** (`headers` de `task.add`, depuis le 2026-11-07) : un objet `{nom: valeur}` de textes, envoyé avec chaque requête de la tâche (préparation et segments).
@@ -688,8 +692,10 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - L'application : « Déplacer/Renommer… » dans le menu contextuel ; nom et dossier, l'erreur éventuelle dans la boîte.
 - **Empreinte attendue** (`checksum` de `task.add` et de `task.update`, depuis le 2026-11-08 ; portée `add` pour l'ajout, `control` pour la modification) : section 7.9.
   - Forme : `{"algo": "sha256" | "sha1" | "md5", "value": "…"}`, valeur en hexadécimal (64, 40 ou 32 chiffres), majuscules acceptées et rendues en minuscules ; une forme fausse est refusée par `INVALID_PARAMS`.
+  - Rendue, elle porte aussi `source` (depuis le 2026-11-08) : le nom du fichier voisin où le moteur l'a lue (« SHA256SUMS », « image.iso.sha256 »), ou `null` pour une empreinte donnée par l'utilisateur. `source` est ignoré à l'entrée : une empreinte donnée par `task.add` ou `task.update` est celle de l'utilisateur.
   - Une tâche, telle que la décrivent `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `checksum` : cet objet, ou `null`.
   - `task.update` avec `checksum` à `null` la retire. Refusé par `INVALID_STATE` pendant `verifying`, et pour une tâche terminée ou annulée. Annonce : `task.updated` avec `checksum`.
+  - Empreinte trouvée dans un fichier voisin (section 7.9) : annoncée par le `task.updated` de la préparation (avec `fileName` et `totalBytes`), qui porte alors `checksum`. Un retéléchargement l'oublie ; son `task.updated` porte `checksum` (celle de l'utilisateur, ou `null`).
   - Les clients acceptent aussi « sha256:… », « sha1:… », « md5:… », ou la valeur seule, dont la longueur donne l'algorithme (`auro add --checksum`, `auro checksum`, champ « Empreinte attendue » de l'application), et envoient la forme du protocole.
 - **Actualiser l'adresse** (`task.update` avec `url`, depuis le 2026-11-08 ; portée `control`) : section 7.13. Annonce : `task.updated` avec `displayName`. L'application : « Actualiser l'adresse… » ; elle relance une tâche en échec une fois l'adresse acceptée.
 - **Historique** (`history.list`, `history.clear`, F-35, depuis le 2026-11-08) :
@@ -970,7 +976,14 @@ Déroulement (F-11, depuis le 2026-11-08) :
 - **Arrêt pendant le calcul** : section 5.5 ; à la reprise, le calcul recommence depuis le début. Une tâche de taille inconnue (flux sans `Content-Length`) n'a pas de segments enregistrés : relancée après une pause ou une empreinte différente, elle se retélécharge.
 - **Arrêt brutal pendant le calcul** : au démarrage, une tâche restée en `verifying` refait le calcul sur son `.part`. Si le `.part` a disparu et que le fichier final est là, l'arrêt a eu lieu entre le renommage, qui ne suit qu'une empreinte juste, et l'enregistrement de la fin : la tâche se termine. Si les deux manquent, elle passe en `failed`, code `DISK_IO`.
 - **Empreinte changée en cours de route** : elle se relit au moment du calcul ; on peut la donner pendant le téléchargement.
-- **Pas encore** : l'empreinte lue dans un fichier voisin (`.sha256`, `SHA256SUMS`) ; la vérification d'un fichier déjà terminé.
+- **Empreinte lue dans un fichier voisin** (depuis le 2026-11-08 ; réglage `downloads.neighborChecksum`) : quand la tâche n'a pas d'empreinte, le moteur la cherche à la préparation, une seule fois par téléchargement.
+  - Fichiers essayés, à côté de l'adresse de la tâche (celle donnée à l'ajout, pas celle d'arrivée après les redirections, souvent signée ou sur un autre serveur), sans sa requête ni son fragment : `<fichier>.sha256` et `SHA256SUMS`, puis `<fichier>.sha1` et `SHA1SUMS`, puis `<fichier>.md5` et `MD5SUMS`. Tous en même temps, 10 s au plus en tout, 1 Mio au plus chacun ; la meilleure trouvaille dans cet ordre l'emporte.
+  - Lecture : lignes `empreinte  nom`, `empreinte *nom` (GNU) et `SHA256 (nom) = empreinte` (BSD). Une ligne ne compte que si elle nomme exactement le fichier (`./` admis), d'après son adresse ou le nom proposé par le serveur ; une empreinte seule sur sa ligne seulement dans un fichier compagnon (`.sha256`). Deux empreintes différentes pour le même fichier : aucune.
+  - Requêtes sans les en-têtes ni les identifiants de la tâche : un cookie ou un mot de passe ne suit pas une adresse que l'utilisateur n'a pas demandée. Un fichier voisin réservé aux membres n'est donc pas trouvé.
+  - L'empreinte trouvée est enregistrée avec le nom du fichier voisin (`tasks.checksum_source`), avant la préparation : après un arrêt entre les deux, la recherche n'est pas refaite. Elle se vérifie ensuite comme celle de l'utilisateur, y compris une empreinte différente (`CHECKSUM_MISMATCH`, le `.part` gardé). L'utilisateur peut la remplacer ou la retirer (`task.update`) ; un retéléchargement l'oublie (le fichier a pu changer), mais garde celle de l'utilisateur.
+  - L'application l'affiche avec son origine (« lue dans SHA256SUMS ») ; une case des options (« Enregistrement ») coupe la recherche.
+  - Choix à confirmer par l'utilisateur (décisions du 2026-11-08) : réglage activé par défaut ; requêtes sans cookies ni identifiants ; fichiers cherchés à côté de l'adresse de la tâche seulement ; empreinte voisine oubliée au retéléchargement.
+- **Pas encore** : la vérification d'un fichier déjà terminé ; d'autres noms de listes (`sha256sum.txt`, `CHECKSUMS`) et SHA-512.
 
 Si des empreintes par segment existent (torrent, Metalink), chaque segment est contrôlé dès qu'il est terminé et seul le segment fautif est téléchargé de nouveau (F-12).
 

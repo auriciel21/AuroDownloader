@@ -16,7 +16,7 @@ use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
-use crate::store::settings::{DOWNLOAD_DIR, PREALLOCATE};
+use crate::store::settings::{DOWNLOAD_DIR, Flag};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -300,25 +300,30 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .ok_or_else(|| RpcError::invalid_params("values : objet attendu"))?;
             if let Some(key) = values
                 .keys()
-                .find(|k| *k != DOWNLOAD_DIR && *k != PREALLOCATE)
+                .find(|k| *k != DOWNLOAD_DIR && Flag::from_key(k).is_none())
             {
+                let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
-                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, {PREALLOCATE})"
+                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, {})",
+                    known.join(", ")
                 )));
             }
-            // Vérifiés tous les deux avant d'en changer un.
-            let preallocate = match values.get(PREALLOCATE) {
-                None => None,
-                Some(Value::Bool(on)) => Some(*on),
-                Some(_) => return Err(Params::wrong(PREALLOCATE, "booléen")),
-            };
+            // Tous vérifiés avant d'en changer un.
+            let mut flags = Vec::new();
+            for flag in Flag::ALL {
+                match values.get(flag.key()) {
+                    None => {}
+                    Some(Value::Bool(on)) => flags.push((flag, *on)),
+                    Some(_) => return Err(Params::wrong(flag.key(), "booléen")),
+                }
+            }
             if let Some(value) = values.get(DOWNLOAD_DIR)
                 && !matches!(value, Value::Null | Value::String(_))
             {
                 return Err(Params::wrong(DOWNLOAD_DIR, "texte ou null"));
             }
-            if let Some(on) = preallocate {
-                ctx.engine.set_preallocate(on).await?;
+            for (flag, on) in flags {
+                ctx.engine.set_flag(flag, on).await?;
             }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
@@ -351,7 +356,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": null},
-                "settings": {DOWNLOAD_DIR: s.download_dir, PREALLOCATE: s.preallocate},
+                "settings": settings_json(s.download_dir, &s.flags),
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -442,11 +447,23 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
 
 /// Réglages du moteur (`settings.get`) : tous ceux qu'il prend en charge, avec la valeur
 /// retenue (pour `downloads.dir`, le dossier du système si aucun n'est enregistré ; pour
-/// `downloads.preallocate`, vrai).
+/// les réglages oui ou non, vrai).
 async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let dir = ctx.engine.download_dir().await?;
-    let preallocate = ctx.engine.preallocate().await?;
-    Ok(json!({"values": {DOWNLOAD_DIR: dir, PREALLOCATE: preallocate}}))
+    let mut flags = Vec::new();
+    for flag in Flag::ALL {
+        flags.push((flag, ctx.engine.flag(flag).await?));
+    }
+    Ok(json!({"values": settings_json(dir, &flags)}))
+}
+
+/// Valeurs des réglages, telles que `settings.get` et `sync.snapshot` les donnent.
+fn settings_json(download_dir: Option<String>, flags: &[(Flag, bool)]) -> Value {
+    let mut values = json!({DOWNLOAD_DIR: download_dir});
+    for (flag, on) in flags {
+        values[flag.key()] = json!(on);
+    }
+    values
 }
 
 /// Limites globales (`limits.get`) ; le débit montant n'est pas encore limité.
