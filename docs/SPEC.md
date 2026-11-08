@@ -982,7 +982,7 @@ Déroulement (F-11, depuis le 2026-11-08) :
   - Requêtes sans les en-têtes ni les identifiants de la tâche : un cookie ou un mot de passe ne suit pas une adresse que l'utilisateur n'a pas demandée. Un fichier voisin réservé aux membres n'est donc pas trouvé.
   - L'empreinte trouvée est enregistrée avec le nom du fichier voisin (`tasks.checksum_source`), avant la préparation : après un arrêt entre les deux, la recherche n'est pas refaite. Elle se vérifie ensuite comme celle de l'utilisateur, y compris une empreinte différente (`CHECKSUM_MISMATCH`, le `.part` gardé). L'utilisateur peut la remplacer ou la retirer (`task.update`) ; un retéléchargement l'oublie (le fichier a pu changer), mais garde celle de l'utilisateur.
   - L'application l'affiche avec son origine (« lue dans SHA256SUMS ») ; une case des options (« Enregistrement ») coupe la recherche.
-  - Choix à confirmer par l'utilisateur (décisions du 2026-11-08) : réglage activé par défaut ; requêtes sans cookies ni identifiants ; fichiers cherchés à côté de l'adresse de la tâche seulement ; empreinte voisine oubliée au retéléchargement.
+  - Choix du 2026-11-08, confirmés par l'utilisateur le même jour : réglage activé par défaut ; requêtes sans cookies ni identifiants ; fichiers cherchés à côté de l'adresse de la tâche seulement ; empreinte voisine oubliée au retéléchargement.
 - **Pas encore** : la vérification d'un fichier déjà terminé ; d'autres noms de listes (`sha256sum.txt`, `CHECKSUMS`) et SHA-512.
 
 Si des empreintes par segment existent (torrent, Metalink), chaque segment est contrôlé dès qu'il est terminé et seul le segment fautif est téléchargé de nouveau (F-12).
