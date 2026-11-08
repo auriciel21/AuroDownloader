@@ -80,8 +80,10 @@ transmettre l'avancement pendant que la fenêtre est repliée, puis fait recharg
 complet à son retour, le coût replié tombe à 0,39 % (un passage de 20 s). Ce
 rechargement à la réouverture n'a pas été essayé à la main (clic sur l'icône).
 
-**Non mesuré :** Windows 10 (WebView2 à installer s'il manque), essai réel avec NVDA,
-déploiement Qt trié (seuls les modules et le style utilisés).
+**Non mesuré :** Windows 10 (WebView2 à installer s'il manque), déploiement Qt trié
+(seuls les modules et le style utilisés). L'essai réel avec NVDA a été fait plus tard, le
+2026-11-08, par l'utilisateur, sur l'application Tauri installée (`apps/desktop`) :
+fonctionnel.
 
 ## Résultats du 2026-11-06 (Linux, WSLg)
 
