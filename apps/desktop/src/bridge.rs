@@ -81,6 +81,14 @@ pub enum Outgoing {
     Resync,
 }
 
+impl Outgoing {
+    /// Le moteur annonce un nouveau téléchargement (`task.added`), d'où qu'il vienne :
+    /// extension, ligne de commande ou la fenêtre elle-même.
+    pub fn announces_new_task(&self) -> bool {
+        matches!(self, Outgoing::Message { message } if message["method"] == "task.added")
+    }
+}
+
 /// Destination de ce que relaie la liaison.
 pub trait Sink: Send + Sync + 'static {
     fn send(&self, out: Outgoing);

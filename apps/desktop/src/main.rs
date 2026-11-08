@@ -91,7 +91,19 @@ struct WindowSink(AppHandle);
 
 impl Sink for WindowSink {
     fn send(&self, out: Outgoing) {
+        let new_task = out.announces_new_task();
         let _ = self.0.emit_to("main", "engine", out);
+        // Un téléchargement pris par l'extension ou la ligne de commande : la fenêtre passe
+        // au premier plan, pour qu'on le voie commencer (SPEC §4.6). Ajouté depuis la
+        // fenêtre, il la trouve déjà devant.
+        if new_task
+            && self
+                .0
+                .try_state::<App>()
+                .is_some_and(|state| state.prefs.lock().unwrap().show_on_add)
+        {
+            show(&self.0);
+        }
     }
 
     fn hidden(&self) -> bool {

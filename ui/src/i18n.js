@@ -283,6 +283,8 @@ export const EN = {
   "Langue du système": "System language",
   "Dossier des nouveaux téléchargements": "Folder for new downloads",
   "Fermer la fenêtre la replie dans la zone de notification": "Closing the window keeps the app in the notification area",
+  "Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)":
+    "Bring the window to the front when a download is added (browser, command line)",
   "Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent.":
     "No notification area on this desktop: closing the window quits the app, downloads continue.",
   "Démarrer avec la session, dans la zone de notification": "Start with the session, in the notification area",

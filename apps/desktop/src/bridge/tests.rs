@@ -204,6 +204,13 @@ async fn up_is_announced_before_the_notifications_it_carries() {
         up < at,
         "l'annonce de la connexion précède ses notifications"
     );
+    // Seule l'annonce d'un ajout fait apparaître la fenêtre (SPEC §4.6).
+    let log = sink.log();
+    assert!(log[at].announces_new_task());
+    for o in &log {
+        assert_eq!(o.announces_new_task(), is_message(o, "task.added"));
+    }
+    assert!(!Outgoing::Resync.announces_new_task());
 
     // Erreur du moteur : son code stable, pas ENGINE_DOWN.
     let refused = bridge.call("task.nothing", json!({})).await.unwrap_err();

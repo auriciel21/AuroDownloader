@@ -1725,6 +1725,8 @@ function applyInfo(next) {
   $("pref-tray").checked = info.prefs.closeToTray && info.tray;
   $("pref-tray").disabled = !info.tray;
   $("pref-no-tray").hidden = info.tray;
+  // Absente d'un ancien fichier de préférences : activée, comme le défaut de l'application.
+  $("pref-show-on-add").checked = info.prefs.showOnAdd !== false;
   $("pref-autostart").checked = info.autostart;
   $("grid").setAttribute("aria-label", t("Téléchargements : {0}", viewLabel(view)));
   renderAbout();
@@ -1965,6 +1967,7 @@ function wire() {
   $("pref-limit").addEventListener("change", changeLimit);
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));
   $("pref-tray").addEventListener("change", (e) => savePrefs({ closeToTray: e.target.checked }));
+  $("pref-show-on-add").addEventListener("change", (e) => savePrefs({ showOnAdd: e.target.checked }));
   $("pref-autostart").addEventListener("change", async (e) => {
     try {
       e.target.checked = await host.setAutostart(e.target.checked);

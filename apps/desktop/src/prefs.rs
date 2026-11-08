@@ -16,6 +16,9 @@ pub struct Prefs {
     pub lang: String,
     /// Fermer la fenêtre la replie dans la zone de notification, quand il y en a une.
     pub close_to_tray: bool,
+    /// Un téléchargement ajouté (extension, ligne de commande) fait apparaître la fenêtre
+    /// au premier plan (SPEC §4.6).
+    pub show_on_add: bool,
 }
 
 impl Default for Prefs {
@@ -23,6 +26,7 @@ impl Default for Prefs {
         Prefs {
             lang: String::new(),
             close_to_tray: true,
+            show_on_add: true,
         }
     }
 }
@@ -83,6 +87,7 @@ mod tests {
         let prefs = Prefs {
             lang: "en".into(),
             close_to_tray: false,
+            show_on_add: false,
         };
         prefs.save(&path).unwrap();
         assert_eq!(Prefs::load(&path), prefs);
@@ -94,6 +99,8 @@ mod tests {
         let loaded = Prefs::load(&path);
         assert_eq!(loaded.lang, "fr");
         assert!(loaded.close_to_tray);
+        // Fichier d'avant la préférence (2026-11-08) : la fenêtre apparaît aux ajouts.
+        assert!(loaded.show_on_add);
     }
 
     #[test]

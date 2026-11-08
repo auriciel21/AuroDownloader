@@ -243,7 +243,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 ### 4.6 Exécution et distribution
 
-- **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option.
+- **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option. Un téléchargement ajouté par un autre client (extension, ligne de commande) fait apparaître la fenêtre au premier plan, même repliée dans la zone de notification (préférence de l'interface, activée par défaut, depuis le 2026-11-08) : l'utilisateur voit tout de suite que le téléchargement a été pris.
 - **Moteur** : binaire `aurod` (crate `crates/daemon`), sans interface. L'application de bureau le lance s'il ne tourne pas ; `auro` est le client en ligne de commande, et le lance de même, détaché de la console, avec son journal (`aurod.log`) à côté de sa base. `auro direct` exécute une tâche avec la bibliothèque du moteur, sans `aurod`, pour les bancs et le dépannage.
 - **Sans interface** : l'option `--headless` lance le moteur seul, pour un NAS ou un serveur, avec une image Docker et une unité `systemd` utilisateur. L'interface web est servie par le moteur lui-même.
 - **Windows** : installateur signé et version portable.
