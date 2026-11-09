@@ -663,11 +663,19 @@ async fn the_file_name_chosen_at_preparation_is_announced() {
             .await;
         ids.push(added["taskId"].as_str().unwrap().to_owned());
     }
+    // Les deux se préparent en même temps : leurs annonces arrivent dans un ordre
+    // quelconque (`notification` écarte celles qui ne conviennent pas).
     let mut names = Vec::new();
-    for id in &ids {
+    let mut seen: Vec<String> = Vec::new();
+    while seen.len() < ids.len() {
         let note = c
-            .notification("task.updated", |p| p["taskId"] == id.as_str())
+            .notification("task.updated", |p| {
+                ids.iter().any(|id| p["taskId"] == id.as_str())
+                    && !seen.iter().any(|s| p["taskId"] == s.as_str())
+            })
             .await;
+        let id = note["taskId"].as_str().unwrap().to_owned();
+        seen.push(id.clone());
         assert_eq!(note["totalBytes"], 256 * 1024);
         assert_eq!(note["displayName"], note["fileName"]);
         let task = c.result("task.get", json!({"taskId": id})).await;
@@ -1882,6 +1890,72 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
             "{bad}"
         );
     }
+    engine.shutdown().await;
+}
+
+/// Interface réseau des torrents (SPEC §7.16) : `torrent.interface`, son état dans
+/// l'instantané et par `engine.torrentInterface`.
+#[tokio::test]
+async fn the_torrent_interface_goes_through_the_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let values = c.result("settings.get", json!({})).await["values"].clone();
+    assert_eq!(values["torrent.interface"], Value::Null, "{values}");
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["torrentInterfaceUp"], true);
+
+    // Une interface qui n'existe pas : les torrents l'attendent.
+    let absent = "auro-essai-interface-absente";
+    let set = c
+        .result(
+            "settings.set",
+            json!({"values": {"torrent.interface": absent}}),
+        )
+        .await;
+    assert_eq!(set["values"]["torrent.interface"], absent);
+    let note = c.notification("engine.torrentInterface", |_| true).await;
+    assert_eq!(note["up"], false);
+    let note = c
+        .notification("settings.updated", |p| {
+            p["values"].get("torrent.interface").is_some()
+        })
+        .await;
+    assert_eq!(note["values"]["torrent.interface"], absent);
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["torrentInterfaceUp"], false);
+    assert_eq!(snapshot["settings"]["torrent.interface"], absent);
+
+    for bad in [
+        json!(""),
+        json!("  "),
+        json!("a\nb"),
+        json!(5),
+        json!("x".repeat(257)),
+    ] {
+        assert_eq!(
+            c.error_code(
+                "settings.set",
+                json!({"values": {"torrent.interface": bad}})
+            )
+            .await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+
+    c.result(
+        "settings.set",
+        json!({"values": {"torrent.interface": null}}),
+    )
+    .await;
+    let note = c.notification("engine.torrentInterface", |_| true).await;
+    assert_eq!(note["up"], true);
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["torrentInterfaceUp"], true);
+    assert_eq!(snapshot["settings"]["torrent.interface"], Value::Null);
     engine.shutdown().await;
 }
 

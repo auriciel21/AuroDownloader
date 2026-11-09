@@ -17,7 +17,7 @@ mod storage;
 mod tests;
 
 use std::collections::HashSet;
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -73,6 +73,9 @@ pub struct Options {
     /// Pairs ajoutés à chaque torrent, en plus de ceux que trouvent DHT et trackers ; les
     /// tests y mettent leur pair local.
     pub initial_peers: Vec<SocketAddr>,
+    /// Trouve l'interface réseau d'un nom (réglage `torrent.interface`) : [`system_interface`],
+    /// remplacée dans les tests.
+    pub interfaces: fn(&str) -> Option<Binding>,
 }
 
 /// Connexions entrantes (décision de l'utilisateur du 2026-11-09 : port d'écoute, sans
@@ -93,6 +96,7 @@ impl Default for Options {
             dht: true,
             listen: Listen::Setting,
             initial_peers: Vec::new(),
+            interfaces: system_interface,
         }
     }
 }
@@ -104,7 +108,52 @@ impl Options {
             dht: false,
             listen: Listen::Off,
             initial_peers: peers,
+            interfaces: system_interface,
         }
+    }
+}
+
+/// Une interface réseau trouvée (SPEC §7.16, liaison à une interface) : le nom donné à
+/// librqbit, son index et ses adresses utilisables. Une résolution qui change (VPN
+/// reconnecté, adresse changée) demande une nouvelle session : les sockets ouvertes restent
+/// liées à l'ancienne.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub device: String,
+    pub index: u32,
+    pub addrs: Vec<IpAddr>,
+}
+
+/// L'interface du système qui porte ce nom (« wg0 » ; sous Windows, le nom affiché de la
+/// carte, celui du VPN), si elle a une adresse utilisable : un VPN déconnecté n'en a pas,
+/// ou seulement une adresse locale au lien.
+pub fn system_interface(name: &str) -> Option<Binding> {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let nics = NetworkInterface::show().ok()?;
+    let mut found: Option<Binding> = None;
+    // Sous Linux, une entrée par adresse.
+    for nic in nics.iter().filter(|n| n.name == name) {
+        let binding = found.get_or_insert_with(|| Binding {
+            device: name.to_owned(),
+            index: nic.index,
+            addrs: Vec::new(),
+        });
+        binding
+            .addrs
+            .extend(nic.addr.iter().map(|a| a.ip()).filter(usable_addr));
+    }
+    let mut binding = found.filter(|b| !b.addrs.is_empty())?;
+    binding.addrs.sort();
+    binding.addrs.dedup();
+    Some(binding)
+}
+
+/// Une adresse où l'interface est joignable : pas une adresse locale au lien (169.254/16,
+/// fe80::/10), que Windows donne à une carte sans configuration.
+fn usable_addr(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) != 0xfe80 && !v6.is_unspecified(),
     }
 }
 
@@ -130,6 +179,8 @@ struct Inner {
 #[derive(Default)]
 struct Slot {
     session: Option<Arc<Session>>,
+    /// Interface à laquelle elle est liée (`None` : aucune).
+    device: Option<String>,
     /// Exécutions qui s'en servent.
     users: usize,
 }
@@ -146,6 +197,8 @@ struct Limits {
 struct Opening {
     listen: Option<SocketAddr>,
     upnp: bool,
+    /// Interface réseau à laquelle lier la session.
+    bind: Option<String>,
 }
 
 impl std::fmt::Debug for Torrents {
@@ -187,25 +240,44 @@ impl Torrents {
         }
     }
 
-    fn opening(&self, conn: &Connection) -> anyhow::Result<Opening> {
-        Ok(Opening {
+    /// L'interface réseau de ce nom, si elle est là (réglage `torrent.interface`).
+    pub fn resolve(&self, name: &str) -> Option<Binding> {
+        (self.inner.options.interfaces)(name)
+    }
+
+    /// Ce qu'il faut pour ouvrir la session ; `None` si l'interface du réglage est absente.
+    fn opening(&self, conn: &Connection) -> anyhow::Result<Option<Opening>> {
+        let bind = match settings::torrent_interface(conn)? {
+            None => None,
+            Some(name) => match self.resolve(&name) {
+                Some(binding) => Some(binding.device),
+                None => return Ok(None),
+            },
+        };
+        Ok(Some(Opening {
             listen: match self.inner.options.listen {
                 Listen::Off => None,
                 Listen::Setting => Some((Ipv6Addr::UNSPECIFIED, listen_port(conn)?).into()),
                 Listen::Addr(addr) => Some(addr),
             },
             upnp: settings::flag(conn, settings::Flag::TorrentUpnp)?,
-        })
+            bind,
+        }))
     }
 
     /// La session, ouverte si aucune exécution ne s'en sert encore. Chaque `acquire`
-    /// réussi demande son [`Torrents::release`].
-    async fn acquire(&self, opening: Opening) -> anyhow::Result<Arc<Session>> {
+    /// réussi demande son [`Torrents::release`]. `None` : la session ouverte est liée à une
+    /// autre interface (réglage changé) ; elle se fermera quand ses exécutions, que le
+    /// planificateur arrête, l'auront quittée.
+    async fn acquire(&self, opening: Opening) -> anyhow::Result<Option<Arc<Session>>> {
         let mut slot = self.inner.slot.lock().await;
         if let Some(session) = &slot.session {
+            if slot.device != opening.bind {
+                return Ok(None);
+            }
             let session = Arc::clone(session);
             slot.users += 1;
-            return Ok(session);
+            return Ok(Some(session));
         }
         let (download, upload) = self
             .inner
@@ -235,6 +307,10 @@ impl Torrents {
                 // La vérité vient des données (SPEC §7.16).
                 fastresume: false,
                 persistence: None,
+                // Interface réseau du réglage (VPN) : DHT, pairs, trackers et écoute ne
+                // passent que par elle (sous Windows, par les copies corrigées de
+                // third_party).
+                bind_device_name: opening.bind.clone(),
                 disable_local_service_discovery: true,
                 ratelimits: LimitsConfig {
                     download_bps: bps(download),
@@ -256,7 +332,8 @@ impl Torrents {
         }
         slot.session = Some(Arc::clone(&session));
         slot.users = 1;
-        Ok(session)
+        slot.device = opening.bind;
+        Ok(Some(session))
     }
 
     /// Une exécution a fini de se servir de la session ; la dernière la ferme.
@@ -267,6 +344,7 @@ impl Torrents {
             return;
         }
         if let Some(session) = slot.session.take() {
+            slot.device = None;
             if let Ok(mut limits) = self.inner.limits.lock() {
                 limits.open = None;
             }
@@ -543,12 +621,10 @@ pub async fn run(
             End::Stopped
         }
     } else {
-        let opened = match torrents.opening(conn) {
-            Ok(opening) => torrents.acquire(opening).await,
-            Err(e) => Err(e),
-        };
-        match opened {
-            Ok(session) => {
+        match open_session(conn, torrents, &mut stop).await {
+            Ok(None) if seeding => End::SeedingStopped,
+            Ok(None) => End::Stopped,
+            Ok(Some(session)) => {
                 let end = drive(conn, torrents, &session, task_id, &mut stop, on_progress).await;
                 torrents.release().await;
                 end?
@@ -1018,6 +1094,33 @@ async fn resolve(
             Err(e) => Err(format!("métadonnées du lien magnet introuvables : {e:#}")),
         },
         _ = wait_stop(stop) => Ok(None),
+    }
+}
+
+/// La session, liée à l'interface du réglage ; `Ok(None)` si l'arrêt est demandé avant.
+/// Interface absente, ou session encore ouverte sur une autre : l'exécution attend, sans
+/// échouer (décision de l'utilisateur du 2026-11-09). Le planificateur, qui suit
+/// l'interface, l'arrête et la remet en file ; il ne la lance pas tant qu'il la sait
+/// absente.
+async fn open_session(
+    conn: &mut Connection,
+    torrents: &Torrents,
+    stop: &mut watch::Receiver<bool>,
+) -> anyhow::Result<Option<Arc<Session>>> {
+    loop {
+        if stopping(stop) {
+            return Ok(None);
+        }
+        let opening = torrents.opening(conn)?;
+        if let Some(opening) = opening
+            && let Some(session) = torrents.acquire(opening).await?
+        {
+            return Ok(Some(session));
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(POLL) => {}
+            _ = wait_stop(stop) => return Ok(None),
+        }
     }
 }
 

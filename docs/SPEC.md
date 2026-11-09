@@ -636,6 +636,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `limits.updated` | Limites globales, comme `limits.get` (depuis le 2026-11-07) |
 | `settings.updated` | `values` : les réglages changés, comme `settings.get` (depuis le 2026-11-07) |
 | `engine.network` | `usable` : le réseau convient, ou non, aux téléchargements (section 7.15, depuis le 2026-11-09 ; sujet `queues`). `sync.snapshot` porte aussi `networkUsable` |
+| `engine.torrentInterface` | `up` : l'interface réseau des torrents (`torrent.interface`) est là, ou non (section 7.16, depuis le 2026-11-09 ; sujet `queues`). `sync.snapshot` porte aussi `torrentInterfaceUp` |
 | `schedule.updated` | Planification créée, modifiée, ou dont l'ouverture vient de changer, comme `schedule.list` la décrit (depuis le 2026-11-07) |
 | `schedule.removed` | `scheduleId` (depuis le 2026-11-07) |
 | `engine.endAction` | `pending` : action de fin annoncée (`queueId`, `action`, `at`), ou `null` quand elle est exécutée ou annulée ; `error` : refus du système (depuis le 2026-11-07) |
@@ -669,6 +670,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `limits.set` et `limits.get` : `uploadBps`, limite d'envoi globale ; annoncée par `limits.updated`, avec `downloadBps`. La limite globale de réception vaut aussi pour les torrents, par le limiteur de librqbit, à part de celle du HTTP.
   - Réglages (`settings.get`, `settings.set`) : `torrent.ratioLimit` (nombre positif ou nul, `null` pour sans limite ; 1 par défaut ; `settings.updated`) et `torrent.upnp` (booléen, faux par défaut ; vaut à la prochaine ouverture de la session).
   - `engine.setNetwork` accepte `metered` (booléen, faux par défaut) ; `engine.network` et `sync.snapshot` (`networkMetered`) le rendent (section 7.16).
+  - Réglage `torrent.interface` (étape 3d, 2026-11-09) : nom de l'interface réseau des torrents (VPN), 1 à 256 caractères sans caractère de contrôle, ou `null` (aucune, par défaut) ; `settings.updated`. `sync.snapshot` porte `torrentInterfaceUp` (l'interface est là, ou aucune n'est demandée), et la notification `engine.torrentInterface` (`up`, sujet `queues`) en annonce chaque changement (section 7.16).
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -1188,7 +1190,7 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - Connexions entrantes en TCP sur un port fixe : `torrent.listenPort`, tiré au hasard entre 49152 et 65535 au premier démarrage de la session, puis gardé. Sous Windows, le pare-feu demande une fois s'il faut autoriser `aurod`.
 - Pas d'UPnP par défaut (`torrent.upnp`, faux) : le moteur ne modifie pas la box.
 - DHT actif, avec sa table gardée dans le dossier de données du moteur. Échange de pairs (PEX) actif. Pas de découverte sur le réseau local. uTP inactif (expérimental dans librqbit).
-- Liaison à une interface (VPN, section 8.1) : étape 3d, y compris sous Windows, que librqbit ne gère pas.
+- Liaison à une interface (VPN, section 8.1) : étape 3d, y compris sous Windows, que librqbit ne gère pas (mise en œuvre ci-dessous).
 - `engine.setNetwork` (section 7.15) arrête les torrents comme les autres tâches.
 
 **Limites de débit.**
@@ -1252,7 +1254,34 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - **`aurod --torrent-peers`** (essais seulement) : les torrents ne passent que par ces pairs, sans DHT ni connexion entrante.
 - **Campagnes** : voir la section 9.1.
 - **Constaté** : sans dossier de destination explicite, librqbit (9.1.0) range sans son dossier un torrent « à plusieurs fichiers » qui n'en contient qu'un. Le moteur donne toujours le dossier et garde celui du torrent (test `a_folder_torrent_with_one_file_keeps_its_folder`) ; le pair de test, qui ne le donnait pas, ne trouvait pas ses données, d'où des torrents bloqués à 0 octet dans la première campagne.
-- **Reste de l'étape 3** : la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
+- **Reste après l'étape 3c** : la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
+
+**Mise en œuvre de l'étape 3d (2026-11-09) : liaison à une interface réseau.** Décisions de l'utilisateur du même jour : copies corrigées de librqbit pour Windows, torrents en attente quand l'interface manque, liaison des seuls torrents.
+- **Réglage** `torrent.interface` : le nom de l'interface (« wg0 », « tun0 » ; sous Windows, le nom affiché de la carte, celui du VPN), ou `null` pour aucune (section 6.5). Les téléchargements HTTP suivent toujours les routes du système.
+- **Liaison** : la session librqbit reçoit l'interface (`bind_device_name`). DHT, connexions aux pairs, trackers UDP et HTTP, et écoute ne passent que par elle.
+  - Sous Linux et Android : `SO_BINDTODEVICE`, par librqbit. Sous Android, ou sur un noyau Linux antérieur à 5.7, le système peut le refuser à une application : la session ne s'ouvre pas (`TORRENT_SESSION`). Pas encore essayé sur un appareil.
+  - Sous Windows, que librqbit 9.1.0 refuse (`BindDeviceNotSupported`) : copies corrigées de `librqbit-dualstack-sockets` 0.7.0 et de `librqbit` 9.1.0 dans `third_party/` (`[patch.crates-io]`, détail dans `third_party/README.md`).
+    - Chaque socket reçoit `IP_UNICAST_IF` (`IPV6_UNICAST_IF` en IPv6), puis se lie à l'adresse de l'interface : IPv4 d'abord, IPv6 sinon. Par le modèle d'hôte strict de Windows, elle n'envoie et ne reçoit que par l'interface.
+    - Une connexion vers un pair d'une famille d'adresses que l'interface n'a pas est refusée, jamais tentée ailleurs.
+    - Les requêtes HTTP des trackers partent de l'adresse de l'interface.
+  - Les noms des trackers et des nœuds DHT de départ se résolvent par le DNS du système, que règle le VPN.
+- **Surveillance** (`scheduler`) : toutes les 2 s (`INTERFACE_CHECK`), le moteur cherche l'interface par son nom (`torrent::system_interface`, crate `network-interface`). Elle est là si elle a au moins une adresse hors adresses locales au lien (169.254/16, fe80::/10, celles d'une carte VPN déconnectée sous Windows).
+  - Absente : aucun torrent ne démarre, partage compris. Une tâche restée `active` par un arrêt brutal retourne en file.
+  - Disparue, revenue ou changée (index ou adresses : VPN reconnecté) : les torrents en cours s'arrêtent et retournent en file ; un partage reste `seeding`. Ils repartent sur une nouvelle session, liée à l'interface du moment, quand elle est là et que les torrents de la session précédente l'ont tous quittée (génération de l'interface).
+  - Changer le réglage fait de même aussitôt.
+  - Entre deux vérifications, les sockets restent liées à l'interface disparue : rien ne passe par une autre.
+  - Une exécution qui trouve l'interface absente à l'ouverture de la session attend, sans échouer, que le planificateur l'arrête.
+- **Protocole** : `sync.snapshot` porte `torrentInterfaceUp`, et `engine.torrentInterface` en annonce les changements (section 6.5). Les interfaces s'en servent pour montrer pourquoi un torrent attend (étape 5).
+- **Tests** : interfaces simulées, liées en vrai à l'interface de bouclage, où écoute le pair local. Ils couvrent :
+  - un torrent qui attend son interface, puis part quand elle apparaît ;
+  - une interface perdue en plein téléchargement, puis revenue avec un autre index : le torrent s'arrête, attend et finit sans défaut ;
+  - une interface changée sans disparaître : le torrent repart ;
+  - le réglage changé en cours de route, vers une interface absente puis vers aucune ;
+  - la vraie interface de bouclage, trouvée par son nom : le pair local est joint ;
+  - une session liée à une carte réseau : le pair local, qui n'est que sur l'interface de bouclage, n'est jamais joint ;
+  - le protocole (réglage, valeurs refusées, instantané, notification).
+- **Essai réel** (2026-11-09, Windows 11) : VPN de l'utilisateur (« Ma Protection » du Pack Vie Digitale, carte Wintun `FSVpnSDK-HydraTunnel`, une adresse IPv4 et une adresse locale au lien), `aurod` d'essai lié à elle, netinst Debian 13.7 (756 Mio) par lien magnet (DHT seul), ratio 0, envoi limité à 100 Kio/s, réception à 2 Mio/s. Relevé toutes les 5 s : jusqu'à 263 connexions TCP et les deux sockets UDP, toutes sur l'adresse du VPN, aucune ailleurs. À 4,4 %, l'utilisateur a coupé le VPN : le torrent est revenu en file en moins de 5 s, sans plus aucune connexion ; au retour du VPN, il est reparti seul sur une nouvelle session, liée à lui. Terminé en 7 min 20 s, empreinte publiée juste.
+- **Reste de l'étape 3** : la durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie ; la liaison sous Android n'a pas été essayée sur un appareil.
 
 ## 8. Sécurité, vie privée et cadre légal
 
@@ -1270,7 +1299,7 @@ Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ai
 | Fuite de secrets | Mot de passe ou cookie dans la base ou les journaux | Secrets dans le coffre du système, masqués dans les journaux, adresses réduites au nom d'hôte par défaut |
 | Plugin malveillant | Un plugin qui lit des fichiers ou envoie des données | Exécution dans un bac à sable, permissions déclarées (domaines réseau, dossiers) et acceptées par l'utilisateur |
 | Mise à jour compromise | Faux installateur, faux yt-dlp | Mises à jour signées ; yt-dlp téléchargé depuis la source du projet avec contrôle de l'empreinte qu'elle publie |
-| Exposition de l'adresse IP en torrent | Les pairs voient l'adresse de l'utilisateur | Option de liaison à une interface réseau précise (VPN) ; arrêt du torrent si cette interface disparaît |
+| Exposition de l'adresse IP en torrent | Les pairs voient l'adresse de l'utilisateur | Option de liaison à une interface réseau précise (VPN) ; arrêt du torrent si cette interface disparaît (réglage `torrent.interface`, fait le 2026-11-09, section 7.16 : les torrents attendent son retour) |
 
 Aléa cryptographique : TLS repose sur l'aléa du système (`getrandom` sous Linux et Android, le générateur du système sous Windows), sur lequel s'amorce aws-lc, le fournisseur cryptographique de rustls. Depuis le 2026-11-06, aws-lc est compilé sans sa source d'appoint, l'entropie de gigue du processeur (`AWS_LC_SYS_NO_JITTER_ENTROPY=1`, dans `.cargo/config.toml`). Cette source coûtait 56 à 60 ms de processeur au premier tirage de chaque processus (`docs/MESURES.md`). Elle sert surtout aux certifications FIPS, que le projet ne vise pas. L'aléa du système est celui qu'utilisent par défaut OpenSSL, GnuTLS et ring.
 
@@ -1288,6 +1317,7 @@ Ce qui suit n'est pas un avis juridique ; un juriste doit le valider avant la pr
 - **L'outil est légal, l'usage dépend du contenu.** Le projet ne doit pas faciliter le contournement de mesures techniques de protection (DRM), que prohibent la plupart des législations, dont la directive européenne 2001/29/CE et le DMCA américain. La v1 exclut donc ce périmètre (section 1) et le projet ne livre aucun plugin de ce type.
 - **Composants externes.** yt-dlp et ffmpeg sont appelés comme processus séparés, sans être liés au programme, ce qui garde la licence du projet indépendante de la leur. Un contrôle automatique des licences (de type `cargo-deny`) vérifie à chaque build que chaque dépendance est compatible avec la GPL-3.0.
 - **Mise en œuvre du contrôle (2026-11-09, phase 5).** `deny.toml` liste les licences admises : permissives (MIT, MIT-0, 0BSD, ISC, BSD-3-Clause, Zlib, Unicode-3.0, CC0-1.0, Unlicense), Apache-2.0 (avec ou sans l'exception LLVM ; compatible avec la GPL-3.0, pas avec la GPL-2.0 seule), MPL-2.0 (compatible par sa section 3) et CDLA-Permissive-2.0 (licence de données, attribution seule : les certificats racines de Mozilla dans `webpki-root-certs`). `cargo deny check licenses` contrôle l'espace de travail principal et, avec `--manifest-path apps/desktop/Cargo.toml --config deny.toml`, l'application de bureau, toutes cibles comprises (Windows, Linux, Android). Ajouter une licence à la liste demande d'avoir vérifié sa compatibilité et de la noter ici. Sans intégration continue pour l'instant, le contrôle se lance à la main avec les tests ; il rejoindra la CI. Les dépendances Gradle de l'application Android (AndroidX, Jetpack Compose, Kotlin : Apache-2.0 ; partie Kotlin de `rustls-platform-verifier` : MIT ou Apache-2.0) ne passent pas par `cargo-deny` : relevé à la main le même jour.
+- **Copies corrigées de dépendances (2026-11-09, étape 3d de la phase 5).** `third_party/` contient `librqbit` 9.1.0 et `librqbit-dualstack-sockets` 0.7.0, modifiées pour la liaison à une interface sous Windows (section 7.16) et branchées par `[patch.crates-io]`. Leur licence, Apache-2.0, permet de les modifier et de les redistribuer : texte complet dans `third_party/LICENSE-APACHE-2.0`, et chaque fichier modifié le signale en tête (section 4 de la licence). `cargo deny` les contrôle comme les autres dépendances. La crate `network-interface` (MIT ou Apache-2.0), déjà tirée par librqbit, est désormais aussi une dépendance directe du moteur.
 - **Nom et marques.** Le projet porte un nom original ; il n'utilise ni les noms, ni les logos, ni le code d'IDM, JDownloader, FDM ou d'autres produits.
 - **Boutiques d'applications.** Les règles de Google Play limitent les applications qui téléchargent des contenus de plateformes en dehors de leurs conditions d'utilisation ; je ne les ai pas relues pour ce document. La distribution visée en priorité est F-Droid et un APK signé, avec l'étude d'une version Play sans module vidéo, à confirmer après lecture des règles en vigueur.
 

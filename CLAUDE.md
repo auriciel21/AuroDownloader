@@ -71,6 +71,13 @@ téléchargement.
   aiguille selon `TaskRow::kind`. Session ouverte avec le premier torrent en cours, fermée
   avec le dernier ; partage (`seeding`) jusqu'au ratio, hors des places de la file.
   Réglages `torrent.ratioLimit`, `torrent.upnp`, `torrent.listenPort` ; `limits.uploadBps`.
+  Liaison à une interface (étape 3d) : réglage `torrent.interface`, `torrent::Binding` et
+  `system_interface` ; le planificateur la surveille (`INTERFACE_CHECK`) et arrête les
+  torrents quand elle manque ou change (génération de l'interface).
+- `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
+  interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
+  travail, hors de l'espace de travail ; modifications et mise à jour dans
+  `third_party/README.md`.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -387,7 +394,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers,
   réglages, réseau (fait le 2026-11-09, essai réel sous WSL : netinst Debian par magnet,
   DHT seul) ; 3c. banc de reprise et écritures perdues (fait le 2026-11-09,
-  `crash_torrent`) ; 3d. liaison à une interface (VPN), Windows compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
+  `crash_torrent`) ; 3d. liaison à une interface (VPN), Windows compris (faite le 2026-11-09 :
+  copies corrigées de librqbit, torrents en attente sans l'interface, torrents seulement ;
+  décisions de l'utilisateur ; essai réel par son VPN sous Windows le même jour) ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
   essais sur des vidéos sous licence libre ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
@@ -408,6 +417,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   ne s'efface qu'après la fermeture de tous ses accès (`storage::Factory::wait_closed`), et
   se vide sur disque avant son nom final. Ne pas créer de `.torrent` de test par
   `librqbit::create_torrent` (empreinte manquante si le dernier fichier est vide).
+- Copies corrigées (`third_party`) : ne jamais modifier une dépendance ailleurs. Toute
+  modification y est marquée « AuroDownloader » et notée dans `third_party/README.md` ;
+  monter la version d'une de ces crates demande d'y reporter les modifications.
 - Porte de la phase 1 (SPEC 9.3), franchie le 2026-10-16 :
   - N-01 et débit : portes tenues sous Linux (WSL, relevé du 2026-10-16 dans
     `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows (relevé du 2026-10-16) : débit

@@ -580,6 +580,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::DownloadDirChanged { rev, .. }
                 | Event::FlagChanged { rev, .. }
                 | Event::NetworkChanged { rev, .. }
+                | Event::TorrentInterfaceChanged { rev, .. }
                 | Event::SettingChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }

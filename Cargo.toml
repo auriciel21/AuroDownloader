@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/engine", "crates/cli", "crates/daemon", "crates/android"]
+# Copies corrigées de dépendances (third_party/README.md) : hors de l'espace de travail.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,3 +10,9 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 license = "GPL-3.0-or-later"
+
+# Liaison des torrents à une interface sous Windows (SPEC 7.16, étape 3d) :
+# third_party/README.md.
+[patch.crates-io]
+librqbit = { path = "third_party/librqbit" }
+librqbit-dualstack-sockets = { path = "third_party/librqbit-dualstack-sockets" }

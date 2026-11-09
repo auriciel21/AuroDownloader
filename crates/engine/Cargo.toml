@@ -23,6 +23,8 @@ httpdate = "1.0.3"
 # Torrent (SPEC §7.16, module `torrent`, décision du 2026-11-09) : sans ses fonctions par
 # défaut, qui passent par OpenSSL ; `rust-tls` : rustls et ring/aws-lc, comme le moteur.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
+# Interfaces réseau du système (liaison des torrents, SPEC §7.16) ; déjà tirée par librqbit.
+network-interface = "2"
 # Authentification Digest (RFC 7616, module `net::auth`) : MD5 et SHA-256.
 md-5 = "0.10.6"
 percent-encoding = "2.3.2"

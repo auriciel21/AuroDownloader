@@ -35,6 +35,14 @@ pub const DEFAULT_RATIO: f64 = 1.0;
 /// (décision de l'utilisateur du 2026-11-09).
 pub const TORRENT_UPNP: &str = "torrent.upnp";
 
+/// Interface réseau des torrents (VPN, SPEC §7.16 et 8.1) : son nom (« wg0 », nom affiché
+/// sous Windows) ; `null` : aucune, les routes du système. Sans elle, les torrents attendent
+/// (décision de l'utilisateur du 2026-11-09).
+pub const TORRENT_INTERFACE: &str = "torrent.interface";
+
+/// Longueur maximale du nom d'une interface (caractères).
+pub const INTERFACE_NAME_MAX: usize = 256;
+
 /// Espace de noms des secrets de cette base dans le coffre du système (`secrets`), tiré
 /// au hasard au premier démarrage. Interne : `settings.get` ne le montre pas.
 pub const VAULT_NAMESPACE: &str = "vault.namespace";
@@ -200,6 +208,38 @@ pub fn torrent_ratio(conn: &Connection) -> Result<Option<f64>, StoreError> {
 
 pub fn set_torrent_ratio(conn: &Connection, ratio: Option<f64>) -> Result<(), StoreError> {
     set(conn, TORRENT_RATIO, &ratio.map_or(Value::Null, Value::from))
+}
+
+/// Interface réseau des torrents ; `None` : aucune.
+pub fn torrent_interface(conn: &Connection) -> Result<Option<String>, StoreError> {
+    match get(conn, TORRENT_INTERFACE)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(name)) if valid_interface_name(&name) => Ok(Some(name)),
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {TORRENT_INTERFACE} : {v} n'est pas un nom d'interface"
+        ))),
+    }
+}
+
+pub fn set_torrent_interface(conn: &Connection, name: Option<&str>) -> Result<(), StoreError> {
+    if let Some(name) = name.filter(|n| !valid_interface_name(n)) {
+        return Err(StoreError::BadValue(format!(
+            "réglage {TORRENT_INTERFACE} : {name:?} n'est pas un nom d'interface"
+        )));
+    }
+    set(
+        conn,
+        TORRENT_INTERFACE,
+        &name.map_or(Value::Null, Value::from),
+    )
+}
+
+/// Un nom d'interface : non vide, sans caractère de contrôle, [`INTERFACE_NAME_MAX`]
+/// caractères au plus.
+pub fn valid_interface_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.chars().count() <= INTERFACE_NAME_MAX
+        && !name.chars().any(char::is_control)
 }
 
 #[cfg(test)]

@@ -399,6 +399,11 @@ async fn describe(
             "engine.network",
             json!({"rev": rev, "usable": usable, "metered": metered}),
         )),
+        // Interface réseau des torrents (SPEC §7.16) là ou non.
+        Event::TorrentInterfaceChanged { rev, up } if topics.queues => Some(notification(
+            "engine.torrentInterface",
+            json!({"rev": rev, "up": up}),
+        )),
         Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
             "settings.updated",
             json!({"rev": rev, "values": {DOWNLOAD_DIR: download_dir}}),

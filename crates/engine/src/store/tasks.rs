@@ -946,6 +946,8 @@ pub struct Candidate {
     /// Tâches simultanées permises dans la file (F-14).
     pub max_active: u32,
     pub state: TaskState,
+    /// Torrent ou HTTP : un torrent attend son interface réseau (SPEC §7.16).
+    pub kind: TaskKind,
 }
 
 /// Réseau revenu (SPEC §7.15) : les tâches qui attendent un nouvel essai après une erreur de
@@ -967,7 +969,7 @@ pub fn retry_network_waits(conn: &Connection, now: i64) -> Result<usize, StoreEr
 /// position. Une tâche `retry_wait` part quand sa date est passée (SPEC §7.8).
 pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.queue_id, q.max_active, t.state
+        "SELECT t.id, t.queue_id, q.max_active, t.state, t.kind
          FROM tasks t JOIN queues q ON q.id = t.queue_id
          -- `verifying` : arrêt brutal pendant le calcul de l'empreinte, qui reprend.
          -- `seeding` : partage d'un torrent interrompu (arrêt du moteur, réseau), qui
@@ -984,14 +986,16 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
             r.get::<_, String>(1)?,
             r.get::<_, i64>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
         ))
     })?;
     rows.map(|row| {
-        let (task_id, queue_id, max_active, state) = row?;
+        let (task_id, queue_id, max_active, state, kind) = row?;
         let bad = |what: &str| StoreError::BadValue(format!("tâche {task_id} : {what}"));
         Ok(Candidate {
             max_active: u32::try_from(max_active).map_err(|_| bad("limite de file invalide"))?,
             state: TaskState::from_sql(&state).ok_or_else(|| bad("état inconnu"))?,
+            kind: TaskKind::from_sql(&kind).ok_or_else(|| bad("type inconnu"))?,
             task_id,
             queue_id,
         })

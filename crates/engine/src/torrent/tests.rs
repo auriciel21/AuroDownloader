@@ -2,7 +2,7 @@
 //! (`testing::swarm`) partage des fichiers depuis un dossier temporaire ; le moteur les
 //! télécharge par ce seul pair, sans DHT ni connexion entrante.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use librqbit::{AddTorrent, Session, SessionOptions};
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
-use super::{Layout, Listen, Options, inspect_metainfo};
+use super::{Binding, Layout, Listen, Options, inspect_metainfo, system_interface};
 use crate::io::part_path;
 use crate::net::Client;
 use crate::net::filename::{NameRules, sanitize};
@@ -627,6 +627,264 @@ async fn a_folder_torrent_with_one_file_keeps_its_folder() {
     assert_eq!(
         std::fs::read(dir.path().join("Seul").join("sous").join("f0.bin")).unwrap(),
         data(0, LEN)
+    );
+    engine.shutdown().await;
+}
+
+// Liaison à une interface réseau (VPN, SPEC §7.16, étape 3d). Les interfaces simulées sont
+// liées en vrai à l'interface de bouclage, où écoute le pair local : librqbit s'y lie
+// réellement (sous Windows, par les copies corrigées de third_party).
+
+/// Interfaces simulées : nom → interface. Chaque test a ses propres noms.
+static FAKE_INTERFACES: std::sync::Mutex<Vec<(String, Binding)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn fake_interfaces(name: &str) -> Option<Binding> {
+    FAKE_INTERFACES
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, b)| b.clone())
+}
+
+/// L'interface simulée `name` apparaît avec cet index (un VPN reconnecté en change), ou
+/// disparaît (`None`).
+fn set_fake(name: &str, index: Option<u32>) {
+    let binding = index.map(|index| Binding {
+        index,
+        ..loopback()
+    });
+    let mut all = FAKE_INTERFACES.lock().unwrap();
+    all.retain(|(n, _)| n != name);
+    if let Some(binding) = binding {
+        all.push((name.to_owned(), binding));
+    }
+}
+
+/// L'interface de bouclage du système (« lo », « Loopback Pseudo-Interface 1 »).
+fn loopback() -> Binding {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let nics = NetworkInterface::show().unwrap();
+    let nic = nics
+        .iter()
+        .find(|n| {
+            n.addr
+                .iter()
+                .any(|a| a.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+        })
+        .expect("interface de bouclage");
+    system_interface(&nic.name).expect("interface de bouclage utilisable")
+}
+
+/// Un moteur aux interfaces simulées, lié à `interface`, sans partage.
+async fn bound_engine(dir: &Path, peers: Vec<SocketAddr>, interface: &str) -> Engine {
+    let torrent = Options {
+        interfaces: fake_interfaces,
+        ..Options::local(peers)
+    };
+    let engine = Engine::start(config(dir, torrent)).unwrap();
+    engine.set_torrent_ratio(Some(0.0)).await.unwrap();
+    engine
+        .set_torrent_interface(Some(interface.to_owned()))
+        .await
+        .unwrap();
+    engine
+}
+
+/// Aucun changement d'état de `task_id` vers `to` pendant `delay`.
+async fn never_goes(
+    events: &mut broadcast::Receiver<Event>,
+    task_id: &str,
+    to: TaskState,
+    delay: Duration,
+) {
+    let seen = timeout(delay, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::StateChanged {
+                    task_id: t, to: s, ..
+                }) if t == task_id && s == to => return,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+            }
+        }
+    })
+    .await;
+    assert!(seen.is_err(), "{task_id} est passée à {to:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_torrent_waits_for_its_interface() {
+    const LEN: usize = 300 * 1024;
+    let seed = seeder("attente.iso", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = bound_engine(dir.path(), vec![seed.addr], "essai-attente").await;
+    assert!(!engine.snapshot().await.unwrap().torrent_interface_up);
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+
+    never_goes(&mut events, &id, TaskState::Active, Duration::from_secs(3)).await;
+    let task = engine.get(&id).await.unwrap();
+    assert_eq!(task.state, TaskState::Queued);
+    assert_eq!(task.done_bytes, 0);
+
+    set_fake("essai-attente", Some(7));
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert!(engine.snapshot().await.unwrap().torrent_interface_up);
+    assert_eq!(
+        std::fs::read(dir.path().join("attente.iso")).unwrap(),
+        data(0, LEN)
+    );
+    engine.shutdown().await;
+}
+
+/// L'interface disparaît en plein téléchargement (VPN coupé) : le torrent s'arrête et
+/// attend ; elle revient avec un autre index (VPN reconnecté) : il repart sur une session
+/// liée à elle et finit sans défaut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_interface_stops_torrents_until_it_returns() {
+    const LEN: usize = 2 * 1024 * 1024;
+    let seed = seeder("coupure.bin", &[("", LEN)], Some(256 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    set_fake("essai-coupure", Some(7));
+    let engine = bound_engine(dir.path(), vec![seed.addr], "essai-coupure").await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_progress(&mut events, &id, 64 * 1024).await;
+
+    set_fake("essai-coupure", None);
+    wait_state(&mut events, &id, TaskState::Queued).await;
+    assert!(!engine.snapshot().await.unwrap().torrent_interface_up);
+    never_goes(&mut events, &id, TaskState::Active, Duration::from_secs(4)).await;
+
+    set_fake("essai-coupure", Some(8));
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("coupure.bin")).unwrap(),
+        data(0, LEN)
+    );
+    no_part_left(dir.path());
+    engine.shutdown().await;
+}
+
+/// L'interface change sans disparaître (adresse ou index) : les torrents en cours
+/// repartent sur une nouvelle session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_changed_interface_restarts_its_torrents() {
+    const LEN: usize = 2 * 1024 * 1024;
+    let seed = seeder("bascule.bin", &[("", LEN)], Some(256 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    set_fake("essai-bascule", Some(7));
+    let engine = bound_engine(dir.path(), vec![seed.addr], "essai-bascule").await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_progress(&mut events, &id, 64 * 1024).await;
+
+    set_fake("essai-bascule", Some(9));
+    wait_state(&mut events, &id, TaskState::Queued).await;
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("bascule.bin")).unwrap(),
+        data(0, LEN)
+    );
+    engine.shutdown().await;
+}
+
+/// Le réglage changé en cours de route : les torrents repartent liés à la nouvelle
+/// interface ; retiré, ils passent par les routes du système.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changing_the_interface_setting_rebinds_running_torrents() {
+    const LEN: usize = 2 * 1024 * 1024;
+    let seed = seeder("reglage.bin", &[("", LEN)], Some(256 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    set_fake("essai-reglage-a", Some(7));
+    let engine = bound_engine(dir.path(), vec![seed.addr], "essai-reglage-a").await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_progress(&mut events, &id, 64 * 1024).await;
+
+    // Une interface absente : le torrent s'arrête et attend.
+    engine
+        .set_torrent_interface(Some("essai-reglage-b".into()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Queued).await;
+    never_goes(&mut events, &id, TaskState::Active, Duration::from_secs(3)).await;
+
+    // Plus d'interface : il repart et finit.
+    engine.set_torrent_interface(None).await.unwrap();
+    assert_eq!(engine.torrent_interface().await.unwrap(), None);
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("reglage.bin")).unwrap(),
+        data(0, LEN)
+    );
+    engine.shutdown().await;
+}
+
+/// La vraie interface de bouclage, trouvée par son nom : le pair local est joint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bound_to_the_loopback_the_local_peer_is_reached() {
+    const LEN: usize = 300 * 1024;
+    let seed = seeder("boucle.iso", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    engine
+        .set_torrent_interface(Some(loopback().device))
+        .await
+        .unwrap();
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("boucle.iso")).unwrap(),
+        data(0, LEN)
+    );
+    engine.shutdown().await;
+}
+
+/// Liée à une autre interface (une carte réseau), la session ne joint pas le pair local,
+/// qui n'est que sur l'interface de bouclage : rien ne passe par une autre interface.
+/// Sans carte réseau configurée (machine isolée), le test ne prouve rien et s'arrête.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bound_elsewhere_the_local_peer_is_never_reached() {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let nics = NetworkInterface::show().unwrap();
+    // L'interface de bouclage peut porter d'autres adresses (WSL : 10.255.255.254 sur
+    // `lo`) ; sous Linux, une entrée par adresse : on l'écarte par son nom.
+    let loopbacks: Vec<&str> = nics
+        .iter()
+        .filter(|n| n.addr.iter().any(|a| a.ip().is_loopback()))
+        .map(|n| n.name.as_str())
+        .collect();
+    let other = nics
+        .iter()
+        .filter(|n| !loopbacks.contains(&n.name.as_str()))
+        .filter(|n| n.addr.iter().any(|a| a.ip().is_ipv4()))
+        .find_map(|n| system_interface(&n.name));
+    let Some(other) = other else {
+        eprintln!("aucune carte réseau configurée : test sans objet");
+        return;
+    };
+    let seed = seeder("ailleurs.iso", &[("", 300 * 1024)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    engine
+        .set_torrent_interface(Some(other.device.clone()))
+        .await
+        .unwrap();
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Active).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let task = engine.get(&id).await.unwrap();
+    assert_eq!(task.state, TaskState::Active, "interface {}", other.device);
+    assert_eq!(task.done_bytes, 0, "interface {}", other.device);
+    assert!(
+        !dir.path().join("ailleurs.iso").exists(),
+        "interface {}",
+        other.device
     );
     engine.shutdown().await;
 }

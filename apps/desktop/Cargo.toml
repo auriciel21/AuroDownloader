@@ -43,3 +43,8 @@ tempfile = "3.27.0"
 codegen-units = 1
 lto = true
 strip = true
+
+# Mêmes copies corrigées que l'espace de travail principal (third_party/README.md).
+[patch.crates-io]
+librqbit = { path = "../../third_party/librqbit" }
+librqbit-dualstack-sockets = { path = "../../third_party/librqbit-dualstack-sockets" }

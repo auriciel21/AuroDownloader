@@ -17,7 +17,7 @@ use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
-use crate::store::settings::{DOWNLOAD_DIR, Flag, TORRENT_RATIO};
+use crate::store::settings::{self, DOWNLOAD_DIR, Flag, TORRENT_INTERFACE, TORRENT_RATIO};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -317,14 +317,16 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .get("values")
                 .and_then(Value::as_object)
                 .ok_or_else(|| RpcError::invalid_params("values : objet attendu"))?;
-            if let Some(key) = values
-                .keys()
-                .find(|k| *k != DOWNLOAD_DIR && *k != TORRENT_RATIO && Flag::from_key(k).is_none())
-            {
+            if let Some(key) = values.keys().find(|k| {
+                *k != DOWNLOAD_DIR
+                    && *k != TORRENT_RATIO
+                    && *k != TORRENT_INTERFACE
+                    && Flag::from_key(k).is_none()
+            }) {
                 let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
                     "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, \
-                     {TORRENT_RATIO}, {})",
+                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {})",
                     known.join(", ")
                 )));
             }
@@ -342,6 +344,20 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                         ));
                     }
                 },
+            };
+            // Interface réseau des torrents (SPEC §7.16) : un nom, ou null pour aucune.
+            let interface = match values.get(TORRENT_INTERFACE) {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(Value::String(name)) if settings::valid_interface_name(name) => {
+                    Some(Some(name.clone()))
+                }
+                Some(_) => {
+                    return Err(Params::wrong(
+                        TORRENT_INTERFACE,
+                        "nom d'interface (1 à 256 caractères, sans caractère de contrôle) ou null",
+                    ));
+                }
             };
             // Tous vérifiés avant d'en changer un.
             let mut flags = Vec::new();
@@ -362,6 +378,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             }
             if let Some(ratio) = ratio {
                 ctx.engine.set_torrent_ratio(ratio).await?;
+            }
+            if let Some(interface) = interface {
+                ctx.engine.set_torrent_interface(interface).await?;
             }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
@@ -399,9 +418,15 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": s.upload_limit},
-                "settings": settings_json(s.download_dir, &s.flags, s.torrent_ratio),
+                "settings": settings_json(
+                    s.download_dir,
+                    &s.flags,
+                    s.torrent_ratio,
+                    s.torrent_interface,
+                ),
                 "networkUsable": s.network_usable,
                 "networkMetered": s.network_metered,
+                "torrentInterfaceUp": s.torrent_interface_up,
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -512,12 +537,22 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     }
     let ratio = ctx.engine.torrent_ratio().await?;
     let ratio = ratio.map_or(Value::Null, Value::from);
-    Ok(json!({"values": settings_json(dir, &flags, ratio)}))
+    let interface = ctx.engine.torrent_interface().await?;
+    Ok(json!({"values": settings_json(dir, &flags, ratio, interface)}))
 }
 
 /// Valeurs des réglages, telles que `settings.get` et `sync.snapshot` les donnent.
-fn settings_json(download_dir: Option<String>, flags: &[(Flag, bool)], ratio: Value) -> Value {
-    let mut values = json!({DOWNLOAD_DIR: download_dir, TORRENT_RATIO: ratio});
+fn settings_json(
+    download_dir: Option<String>,
+    flags: &[(Flag, bool)],
+    ratio: Value,
+    interface: Option<String>,
+) -> Value {
+    let mut values = json!({
+        DOWNLOAD_DIR: download_dir,
+        TORRENT_RATIO: ratio,
+        TORRENT_INTERFACE: interface,
+    });
     for (flag, on) in flags {
         values[flag.key()] = json!(on);
     }

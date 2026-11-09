@@ -61,6 +61,11 @@ pub const DEFAULT_QUEUE: &str = "default";
 /// (SPEC §7.10).
 pub const DISK_RECHECK: Duration = Duration::from_secs(30);
 
+/// Intervalle de surveillance de l'interface réseau des torrents (VPN, SPEC §7.16) : au
+/// plus ce délai entre sa disparition et l'arrêt des torrents, qui ne passent de toute
+/// façon plus par une autre (sockets liées à elle).
+pub const INTERFACE_CHECK: Duration = Duration::from_secs(2);
+
 /// Taille du tampon des événements ; un abonné trop lent perd les plus anciens.
 const EVENT_BUFFER: usize = 4096;
 
@@ -245,6 +250,12 @@ pub enum Event {
         flag: Flag,
         on: bool,
     },
+    /// L'interface réseau des torrents (SPEC §7.16) est là, ou non : sans elle, les
+    /// torrents attendent.
+    TorrentInterfaceChanged {
+        rev: u64,
+        up: bool,
+    },
     /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) ; `metered` : facturé
     /// au volume, sans partage de torrents (SPEC §7.16).
     NetworkChanged {
@@ -329,6 +340,10 @@ pub struct Snapshot {
     pub network_usable: bool,
     /// Réseau facturé au volume : pas de partage de torrents (SPEC §7.16).
     pub network_metered: bool,
+    /// Interface réseau des torrents (réglage `torrent.interface`) ; `None` : aucune.
+    pub torrent_interface: Option<String>,
+    /// L'interface des torrents est là, ou aucune n'est demandée (SPEC §7.16).
+    pub torrent_interface_up: bool,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -563,6 +578,8 @@ enum Command {
     SetUploadLimit(Option<u64>, Reply<()>),
     TorrentRatio(Reply<Option<f64>>),
     SetTorrentRatio(Option<f64>, Reply<()>),
+    TorrentInterface(Reply<Option<String>>),
+    SetTorrentInterface(Option<String>, Reply<()>),
     SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
@@ -833,6 +850,18 @@ impl Engine {
             .await
     }
 
+    /// Interface réseau des torrents (VPN, SPEC §7.16) ; `None` : aucune.
+    pub async fn torrent_interface(&self) -> Result<Option<String>, EngineError> {
+        self.ask(Command::TorrentInterface).await
+    }
+
+    /// Lie les torrents à une interface réseau (`None` : aucune). Les torrents en cours
+    /// repartent sur une session liée à la nouvelle ; sans elle, ils attendent.
+    pub async fn set_torrent_interface(&self, name: Option<String>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetTorrentInterface(name, reply))
+            .await
+    }
+
     /// Choisit les fichiers d'un torrent à télécharger (`task.setFiles`, SPEC §7.16), par
     /// rang ; renvoie la tâche, avec sa nouvelle taille.
     pub async fn set_files(
@@ -1069,6 +1098,9 @@ struct Running {
     /// Dernier état annoncé de l'exécution : `active`, ou `verifying` pendant le calcul de
     /// l'empreinte (F-11). Le changement d'état de sa fin part de lui.
     shown: TaskState,
+    /// Torrent, lancé à cette génération de l'interface (`Scheduler::iface_generation`) ;
+    /// `None` : téléchargement HTTP.
+    torrent: Option<u64>,
 }
 
 /// Ce qu'une exécution signale à la boucle, en plus de son issue.
@@ -1118,6 +1150,14 @@ struct Scheduler {
     network_metered: bool,
     /// Session des torrents (SPEC §7.16), créée au premier torrent à démarrer.
     torrents: Torrents,
+    /// Interface réseau des torrents (réglage `torrent.interface`, SPEC §7.16) : son nom,
+    /// ce qu'elle était à la dernière vérification (`None` : absente), et sa génération,
+    /// augmentée à chaque changement. Un torrent ne part pas tant qu'un torrent lancé à une
+    /// génération précédente tourne encore : la session est liée à l'ancienne interface.
+    iface_name: Option<String>,
+    iface_binding: Option<torrent::Binding>,
+    iface_generation: u64,
+    next_iface_check: Instant,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -1149,6 +1189,8 @@ impl Scheduler {
         // Limite d'envoi (torrents) : lue ici ; une base illisible la laisse ouverte.
         let upload_limit = settings::upload_limit(&conn).ok().flatten();
         torrents.set_limits(download_limit, upload_limit);
+        let iface_name = settings::torrent_interface(&conn).ok().flatten();
+        let iface_binding = iface_name.as_deref().and_then(|n| torrents.resolve(n));
         Scheduler {
             conn,
             config,
@@ -1173,6 +1215,10 @@ impl Scheduler {
             network_usable,
             network_metered: false,
             torrents,
+            iface_name,
+            iface_binding,
+            iface_generation: 0,
+            next_iface_check: Instant::now() + INTERFACE_CHECK,
         }
     }
 
@@ -1188,6 +1234,7 @@ impl Scheduler {
         loop {
             if self.shutdown.is_none() {
                 self.recheck_disk();
+                self.check_interface();
                 self.refresh_schedules(false);
                 self.check_end_action();
                 self.start_runnable();
@@ -1228,6 +1275,11 @@ impl Scheduler {
         let cap = Duration::from_secs(60)
             .min(self.next_disk_check.saturating_duration_since(now))
             .min(self.planning_wake(now));
+        // L'interface des torrents se surveille tant qu'il y en a une.
+        let cap = match self.iface_name {
+            Some(_) => cap.min(self.next_iface_check.saturating_duration_since(now)),
+            None => cap,
+        };
         match next_retry_at(&self.conn) {
             Ok(Some(at)) => {
                 Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
@@ -1350,11 +1402,20 @@ impl Scheduler {
             if self.running.contains_key(&c.task_id) || self.broken.contains(&c.task_id) {
                 continue;
             }
+            // Torrent lié à une interface (VPN, SPEC §7.16) : il attend qu'elle soit là, et
+            // que les torrents lancés sur la précédente aient quitté sa session. Un torrent
+            // resté `active` (arrêt brutal) retourne en file pendant qu'elle manque.
+            if c.kind == TaskKind::Torrent && !self.torrents_may_start() {
+                if c.state == TaskState::Active && !self.interface_up() {
+                    self.requeue_crashed(&c.task_id, PauseReason::Network);
+                }
+                continue;
+            }
             // Partage interrompu : il reprend quand le réseau convient et n'est pas facturé
             // au volume, sans compter dans la file ni suivre ses plages horaires.
             if c.state == TaskState::Seeding {
                 if self.network_usable && !self.network_metered {
-                    self.launch(c.task_id, c.queue_id, c.state);
+                    self.launch(c.task_id, c.queue_id, c.state, c.kind);
                 }
                 continue;
             }
@@ -1363,16 +1424,7 @@ impl Scheduler {
             // retourne en file.
             if !self.network_usable && c.state != TaskState::Verifying {
                 if c.state == TaskState::Active {
-                    let paused = Change {
-                        pause_reason: Some(PauseReason::Network),
-                        ..Change::to(TaskState::Paused)
-                    };
-                    let requeued = self
-                        .set_state(&c.task_id, &paused)
-                        .and_then(|()| self.set_state(&c.task_id, &Change::to(TaskState::Queued)));
-                    if requeued.is_err() {
-                        self.broken.insert(c.task_id);
-                    }
+                    self.requeue_crashed(&c.task_id, PauseReason::Network);
                 }
                 continue;
             }
@@ -1381,16 +1433,7 @@ impl Scheduler {
             // la fermeture.
             if self.planning.closed.contains(&c.queue_id) {
                 if matches!(c.state, TaskState::Active | TaskState::Verifying) {
-                    let paused = Change {
-                        pause_reason: Some(PauseReason::Schedule),
-                        ..Change::to(TaskState::Paused)
-                    };
-                    let requeued = self
-                        .set_state(&c.task_id, &paused)
-                        .and_then(|()| self.set_state(&c.task_id, &Change::to(TaskState::Queued)));
-                    if requeued.is_err() {
-                        self.broken.insert(c.task_id);
-                    }
+                    self.requeue_crashed(&c.task_id, PauseReason::Schedule);
                 }
                 continue;
             }
@@ -1399,11 +1442,11 @@ impl Scheduler {
                 continue;
             }
             *used += 1;
-            self.launch(c.task_id, c.queue_id, c.state);
+            self.launch(c.task_id, c.queue_id, c.state, c.kind);
         }
     }
 
-    fn launch(&mut self, task_id: String, queue_id: String, from: TaskState) {
+    fn launch(&mut self, task_id: String, queue_id: String, from: TaskState, kind: TaskKind) {
         // L'état `active` est enregistré ici, avant d'être annoncé : un instantané pris à
         // la révision de l'annonce le montre déjà (SPEC §6.10). `transfer::run` accepte
         // une tâche `active`, ou `verifying` (arrêt brutal pendant le calcul de
@@ -1434,6 +1477,7 @@ impl Scheduler {
                 then: Then::Keep,
                 live,
                 shown,
+                torrent: (kind == TaskKind::Torrent).then_some(self.iface_generation),
             },
         );
         self.changed(&task_id, from, shown);
@@ -1648,6 +1692,12 @@ impl Scheduler {
             Command::SetTorrentRatio(ratio, reply) => {
                 let _ = reply.send(self.set_torrent_ratio(ratio));
             }
+            Command::TorrentInterface(reply) => {
+                let _ = reply.send(Ok(self.iface_name.clone()));
+            }
+            Command::SetTorrentInterface(name, reply) => {
+                let _ = reply.send(self.set_torrent_interface(name));
+            }
             Command::SetFiles(task_id, selected, reply) => {
                 let _ = reply.send(self.set_files(&task_id, &selected));
             }
@@ -1690,6 +1740,8 @@ impl Scheduler {
             torrent_ratio: ratio_json(settings::torrent_ratio(&self.conn)?),
             network_usable: self.network_usable,
             network_metered: self.network_metered,
+            torrent_interface: self.iface_name.clone(),
+            torrent_interface_up: self.interface_up(),
         })
     }
 
@@ -2652,6 +2704,104 @@ impl Scheduler {
         self.broken.remove(task_id);
         let id = task_id.to_owned();
         self.emit(|rev| Event::Removed { rev, task_id: id });
+        Ok(())
+    }
+
+    /// L'interface des torrents est là, ou aucune n'est demandée.
+    fn interface_up(&self) -> bool {
+        self.iface_name.is_none() || self.iface_binding.is_some()
+    }
+
+    /// Un torrent peut partir : son interface est là, et aucun torrent lancé avant le
+    /// dernier changement d'interface ne tourne encore.
+    fn torrents_may_start(&self) -> bool {
+        self.interface_up()
+            && self
+                .running
+                .values()
+                .all(|r| r.torrent.is_none_or(|g| g == self.iface_generation))
+    }
+
+    /// Une tâche restée `active` par un arrêt brutal, qui ne peut pas repartir : elle
+    /// retourne en file, par une pause de cette cause.
+    fn requeue_crashed(&mut self, task_id: &str, reason: PauseReason) {
+        let paused = Change {
+            pause_reason: Some(reason),
+            ..Change::to(TaskState::Paused)
+        };
+        let requeued = self
+            .set_state(task_id, &paused)
+            .and_then(|()| self.set_state(task_id, &Change::to(TaskState::Queued)));
+        if requeued.is_err() {
+            self.broken.insert(task_id.to_owned());
+        }
+    }
+
+    /// Surveille l'interface des torrents (toutes les [`INTERFACE_CHECK`]) : disparue,
+    /// revenue ou changée (VPN reconnecté, adresse changée), elle change de génération.
+    fn check_interface(&mut self) {
+        let now = Instant::now();
+        let Some(name) = &self.iface_name else {
+            return;
+        };
+        if now < self.next_iface_check {
+            return;
+        }
+        self.next_iface_check = now + INTERFACE_CHECK;
+        let binding = self.torrents.resolve(name);
+        if binding != self.iface_binding {
+            let was_up = self.interface_up();
+            self.rebind(binding, was_up);
+        }
+    }
+
+    /// Nouvelle génération de l'interface : les torrents en cours s'arrêtent et retournent
+    /// en file (un partage reste `seeding`) ; ils repartiront, sur une session liée à la
+    /// nouvelle interface, quand elle sera là. Sans elle, rien ne passe par une autre
+    /// (décision de l'utilisateur du 2026-11-09 : les torrents attendent).
+    /// `was_up` : l'interface était là avant le changement.
+    fn rebind(&mut self, binding: Option<torrent::Binding>, was_up: bool) {
+        self.iface_binding = binding;
+        self.iface_generation += 1;
+        for run in self.running.values_mut() {
+            if run.torrent.is_some() && run.then == Then::Keep && !*run.stop.borrow() {
+                run.then = Then::Requeue;
+                let _ = run.stop.send(true);
+            }
+        }
+        let up = self.interface_up();
+        if up != was_up {
+            self.emit(|rev| Event::TorrentInterfaceChanged { rev, up });
+        }
+    }
+
+    /// Interface réseau des torrents (SPEC §7.16) : un nom, ou `None` pour aucune.
+    fn set_torrent_interface(&mut self, name: Option<String>) -> Result<(), EngineError> {
+        if name
+            .as_deref()
+            .is_some_and(|n| !settings::valid_interface_name(n))
+        {
+            return Err(EngineError::BadRequest(format!(
+                "{} : un nom d'interface (1 à {} caractères, sans caractère de contrôle), \
+                 ou null",
+                settings::TORRENT_INTERFACE,
+                settings::INTERFACE_NAME_MAX
+            )));
+        }
+        if name == self.iface_name {
+            return Ok(());
+        }
+        settings::set_torrent_interface(&self.conn, name.as_deref())?;
+        let binding = name.as_deref().and_then(|n| self.torrents.resolve(n));
+        let was_up = self.interface_up();
+        self.iface_name = name.clone();
+        self.next_iface_check = Instant::now() + INTERFACE_CHECK;
+        self.rebind(binding, was_up);
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::TORRENT_INTERFACE,
+            value: name.map_or(serde_json::Value::Null, serde_json::Value::from),
+        });
         Ok(())
     }
 
