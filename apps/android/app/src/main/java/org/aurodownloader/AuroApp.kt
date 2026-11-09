@@ -50,11 +50,16 @@ class AuroApp : Application() {
 
     // ---------- Actions ----------
 
-    /** Ajoute un téléchargement ; [done] reçoit l'erreur du moteur, ou `null`. */
+    /**
+     * Ajoute un téléchargement ; [done] reçoit l'erreur du moteur, ou `null`. Attend que le
+     * dossier soit réglé ([chooseFolder]) : avant, le moteur n'a pas de dossier où écrire.
+     */
     fun add(url: String, done: (Throwable?) -> Unit = {}) {
         val source = JSONObject().put("url", url.trim())
-        engine.call("task.add", JSONObject().put("sources", JSONArray().put(source))) {
-            done(it.exceptionOrNull())
+        afterFolder {
+            engine.call("task.add", JSONObject().put("sources", JSONArray().put(source))) {
+                done(it.exceptionOrNull())
+            }
         }
     }
 
@@ -85,18 +90,41 @@ class AuroApp : Application() {
      * Dossier des téléchargements (décision du 2026-11-08) : `Download/AuroDownloader` dans
      * le dossier public, écrit par des chemins ordinaires. Réglé au premier démarrage, ou
      * s'il a disparu ; un dossier choisi ensuite n'est pas remplacé.
+     *
+     * Le moteur n'a pas de dossier « Téléchargements » du système à prendre par défaut sous
+     * Android : un ajout arrivé avant ce réglage serait refusé (premier démarrage par un
+     * lien partagé, essai du 2026-11-09). Les ajouts attendent donc la fin de ce réglage
+     * ([afterFolder]), réussi ou non.
      */
     private fun chooseFolder() {
         engine.call("settings.get") { reply ->
-            val values = reply.getOrNull()?.optJSONObject("values") ?: return@call
-            val current = if (values.isNull("downloads.dir")) null else values.optString("downloads.dir")
-            if (!current.isNullOrEmpty() && File(current).isDirectory) return@call
+            val values = reply.getOrNull()?.optJSONObject("values")
+            val current = values?.takeUnless { it.isNull("downloads.dir") }?.optString("downloads.dir")
+            if (values == null || (!current.isNullOrEmpty() && File(current).isDirectory)) {
+                folderSettled()
+                return@call
+            }
             val wanted = defaultFolder()
             if (!wanted.mkdirs() && !wanted.isDirectory) {
                 Log.e(TAG, "dossier impossible à créer : $wanted")
             }
-            setSetting("downloads.dir", wanted.path)
+            setSetting("downloads.dir", wanted.path) { folderSettled() }
         }
+    }
+
+    // Fil principal seulement : les réponses du moteur y arrivent, et les ajouts en partent.
+    private var folderReady = false
+    private val waitingForFolder = mutableListOf<() -> Unit>()
+
+    private fun afterFolder(action: () -> Unit) {
+        if (folderReady) action() else waitingForFolder += action
+    }
+
+    private fun folderSettled() {
+        folderReady = true
+        val waiting = waitingForFolder.toList()
+        waitingForFolder.clear()
+        waiting.forEach { it() }
     }
 
     fun defaultFolder(): File =

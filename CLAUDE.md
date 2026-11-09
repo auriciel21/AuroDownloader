@@ -162,7 +162,11 @@ téléchargement.
   application/octet-stream`, une adresse différente à chaque fois (paramètre `?essai=…`).
   `cmd netpolicy set metered-network <SSID> true` simule « Wi-Fi seulement » : relever
   avant (`cmd netpolicy list wifi-networks`) et remettre ensuite (`undefined`). adb ne peut
-  pas envoyer `BOOT_COMPLETED` sur la tablette. Finir par `pm clear org.aurodownloader` et
+  pas envoyer `BOOT_COMPLETED` sur la tablette : vrai redémarrage par `adb reboot`, seulement
+  avec l'accord de l'utilisateur ; l'annonce n'arrive qu'après son déverrouillage (code de
+  l'utilisateur, jamais saisi par adb). « Tout mettre en pause » : `cmd statusbar
+  expand-notifications`, déplier le groupe puis la notification (`uiautomator dump`). Le
+  volet montre les notifications privées de l'utilisateur : ne rien en citer. Finir par `pm clear org.aurodownloader` et
   supprimer `Download/AuroDownloader`.
 - `experiments/android-saf` : essai de faisabilité Android (application Java minimale,
   construite sans Gradle par `build.sh --install`) ; ne fait pas partie du produit.
@@ -335,8 +339,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   3. application Kotlin et Jetpack Compose (liste, ajout, partage, détails, réglages ;
   fait le 2026-11-08, essai TalkBack à faire) ; 4. arrière-plan (fait le
   2026-11-09, SPEC 7.15 : transfert lancé par l'utilisateur à partir d'Android 14, service
-  avant, notification, Wi-Fi seulement, redémarrage ; restent à essayer : vrai redémarrage,
-  « Tout mettre en pause », téléphone) ; 5. porte : téléchargements longs sur deux appareils
+  avant, notification, Wi-Fi seulement, redémarrage ; vrai redémarrage et « Tout mettre en
+  pause » essayés sur la tablette le 2026-11-09 ; reste le téléphone) ; 5. porte : téléchargements longs sur deux appareils
   réels, Android 15 et 16 (décision de l'utilisateur).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
