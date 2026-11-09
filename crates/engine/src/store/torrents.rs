@@ -232,6 +232,73 @@ pub fn load_files(conn: &Connection, task_id: &str) -> Result<Vec<TorrentFile>, 
     Ok(files)
 }
 
+/// Octets envoyés aux autres pairs, cumulés d'une session à l'autre (SPEC §7.16).
+pub fn save_uploaded(conn: &Connection, task_id: &str, uploaded: u64) -> Result<(), StoreError> {
+    let uploaded = i64::try_from(uploaded).map_err(|_| StoreError::BadValue("octets".into()))?;
+    conn.execute(
+        "UPDATE torrents SET uploaded_bytes = ?2 WHERE task_id = ?1",
+        params![task_id, uploaded],
+    )?;
+    Ok(())
+}
+
+/// Choisit les fichiers à télécharger (`task.setFiles`) : ceux de `selected`, par rang,
+/// les autres non. La taille de la tâche devient celle des fichiers choisis ; renvoyée.
+/// Au moins un fichier, et seulement des rangs connus.
+pub fn set_selected(
+    conn: &mut Connection,
+    task_id: &str,
+    selected: &[u32],
+) -> Result<u64, StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let files = load_files(&tx, task_id)?;
+    if selected.is_empty() {
+        return Err(StoreError::BadValue("aucun fichier choisi".into()));
+    }
+    if let Some(unknown) = selected
+        .iter()
+        .find(|i| !files.iter().any(|f| f.index == **i))
+    {
+        return Err(StoreError::BadValue(format!("fichier inconnu : {unknown}")));
+    }
+    let mut total = 0u64;
+    for f in &files {
+        let on = selected.contains(&f.index);
+        if on {
+            total = total.saturating_add(f.length);
+        }
+        tx.execute(
+            "UPDATE task_files SET selected = ?3 WHERE task_id = ?1 AND file_index = ?2",
+            params![task_id, f.index, on],
+        )?;
+    }
+    let total_sql = i64::try_from(total).map_err(|_| StoreError::BadValue("taille".into()))?;
+    tx.execute(
+        "UPDATE tasks SET total_bytes = ?2, updated_at = ?3 WHERE id = ?1",
+        params![task_id, total_sql, now_ms()],
+    )?;
+    tx.commit()?;
+    Ok(total)
+}
+
+/// Avancement indicatif de chaque fichier (rang, octets).
+pub fn save_file_progress(
+    conn: &mut Connection,
+    task_id: &str,
+    done: &[(u32, u64)],
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    for (index, bytes) in done {
+        let bytes = i64::try_from(*bytes).map_err(|_| StoreError::BadValue("octets".into()))?;
+        tx.execute(
+            "UPDATE task_files SET done_bytes = ?3 WHERE task_id = ?1 AND file_index = ?2",
+            params![task_id, index, bytes],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Avancement indicatif d'un torrent (SPEC §7.16) : octets des morceaux vérifiés.
 pub fn save_progress(conn: &Connection, task_id: &str, done_bytes: u64) -> Result<(), StoreError> {
     let done = i64::try_from(done_bytes).map_err(|_| StoreError::BadValue("octets".into()))?;

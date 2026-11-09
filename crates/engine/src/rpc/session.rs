@@ -375,17 +375,29 @@ async fn describe(
             "task.removed",
             json!({"rev": rev, "taskId": task_id}),
         )),
-        Event::LimitsChanged { rev, download_bps } if topics.queues => Some(notification(
+        Event::LimitsChanged {
+            rev,
+            download_bps,
+            upload_bps,
+        } if topics.queues => Some(notification(
             "limits.updated",
-            json!({"rev": rev, "downloadBps": download_bps, "uploadBps": null}),
+            json!({"rev": rev, "downloadBps": download_bps, "uploadBps": upload_bps}),
+        )),
+        Event::SettingChanged { rev, key, value } if topics.queues => Some(notification(
+            "settings.updated",
+            json!({"rev": rev, "values": {key: value}}),
         )),
         Event::FlagChanged { rev, flag, on } if topics.queues => Some(notification(
             "settings.updated",
             json!({"rev": rev, "values": {flag.key(): on}}),
         )),
-        Event::NetworkChanged { rev, usable } if topics.queues => Some(notification(
+        Event::NetworkChanged {
+            rev,
+            usable,
+            metered,
+        } if topics.queues => Some(notification(
             "engine.network",
-            json!({"rev": rev, "usable": usable}),
+            json!({"rev": rev, "usable": usable, "metered": metered}),
         )),
         Event::DownloadDirChanged { rev, download_dir } if topics.queues => Some(notification(
             "settings.updated",
@@ -529,6 +541,11 @@ impl ProgressBatch {
             if let Some(verified) = p.verified {
                 item["verifiedBytes"] = json!(verified);
             }
+            // Torrent (SPEC §7.16) : octets envoyés aux autres pairs, et le débit d'envoi.
+            if let Some(uploaded) = p.uploaded {
+                item["uploadedBytes"] = json!(uploaded);
+                item["uploadBps"] = json!(p.upload_bps.unwrap_or(0));
+            }
             items.push(item);
         }
         Some(notification(
@@ -549,6 +566,9 @@ mod tests {
             connections: 1,
             segments: std::sync::Arc::from([]),
             verified: None,
+            uploaded: None,
+            upload_bps: None,
+            seeding: false,
         }
     }
 

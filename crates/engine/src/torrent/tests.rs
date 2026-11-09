@@ -14,7 +14,7 @@ use sha1::{Digest, Sha1};
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
-use super::{Layout, Options, inspect_metainfo};
+use super::{Layout, Listen, Options, inspect_metainfo};
 use crate::io::part_path;
 use crate::net::Client;
 use crate::net::filename::{NameRules, sanitize};
@@ -139,17 +139,74 @@ async fn seeder(name: &str, files: &[(&str, usize)], upload_bps: Option<u32>) ->
     }
 }
 
-fn config(dir: &Path, peers: Vec<SocketAddr>) -> Config {
+fn config(dir: &Path, torrent: Options) -> Config {
     Config {
         db_path: dir.join("auro.db"),
         client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
         transfer: TransferOptions {
-            torrent: Options::local(peers),
+            torrent,
             ..TransferOptions::default()
         },
         disk_recheck: DISK_RECHECK,
         planning: Planning::default(),
     }
+}
+
+/// Un moteur qui télécharge par ces seuls pairs, sans partager ensuite (ratio 0) : les
+/// tests du partage règlent le leur.
+async fn start(dir: &Path, peers: Vec<SocketAddr>) -> Engine {
+    let engine = Engine::start(config(dir, Options::local(peers))).unwrap();
+    engine.set_torrent_ratio(Some(0.0)).await.unwrap();
+    engine
+}
+
+/// Un moteur qui écoute à `listen` (un pair local vient y chercher ce qu'il partage), au
+/// ratio par défaut (1).
+fn sharing_engine(dir: &Path, peers: Vec<SocketAddr>, listen: SocketAddr) -> Engine {
+    let torrent = Options {
+        listen: Listen::Addr(listen),
+        ..Options::local(peers)
+    };
+    Engine::start(config(dir, torrent)).unwrap()
+}
+
+/// Une adresse locale libre (le moteur l'ouvrira ensuite).
+fn free_addr() -> SocketAddr {
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+}
+
+/// Un pair qui vient télécharger le torrent depuis `peer` seulement.
+async fn leecher(metainfo: &[u8], peer: SocketAddr) -> (Arc<Session>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new_with_opts(
+        dir.path().to_path_buf(),
+        SessionOptions {
+            dht: None,
+            disable_local_service_discovery: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    session
+        .add_torrent(
+            AddTorrent::from_bytes(metainfo.to_vec()),
+            Some(librqbit::AddTorrentOptions {
+                initial_peers: Some(vec![peer]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    (session, dir)
+}
+
+/// Octets reçus par le pair qui télécharge.
+fn leeched(session: &Session) -> u64 {
+    session.with_torrents(|ts| ts.map(|(_, t)| t.stats().progress_bytes).sum())
 }
 
 fn add(dest: &Path, metainfo: &[u8]) -> AddTask {
@@ -222,7 +279,7 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 async fn a_single_file_torrent_ends_under_its_own_name() {
     let seed = seeder("image.iso", &[("", 300 * 1024 + 17)], None).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_state(&mut events, &id, TaskState::Completed).await;
@@ -249,7 +306,7 @@ async fn a_multi_file_torrent_keeps_its_folder_and_paths() {
     ];
     let seed = seeder("Dossier", &files, None).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_state(&mut events, &id, TaskState::Completed).await;
@@ -272,7 +329,7 @@ async fn a_magnet_link_gets_its_metadata_from_the_peers() {
     let magnet = inspect_metainfo(&seed.metainfo).unwrap().magnet;
     assert!(magnet.starts_with("magnet:?xt=urn:btih:"), "{magnet}");
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine
         .add(AddTask {
@@ -304,7 +361,7 @@ async fn a_name_already_taken_gets_a_number() {
     let seed = seeder("pris.bin", &[("", 20 * 1024)], None).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("pris.bin"), b"autre").unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_state(&mut events, &id, TaskState::Completed).await;
@@ -329,7 +386,7 @@ async fn a_damaged_part_is_found_and_fetched_again_on_resume() {
     const LEN: usize = 1024 * 1024;
     let seed = seeder("lent.bin", &[("", LEN)], Some(256 * 1024)).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_progress(&mut events, &id, LEN as u64 / 4).await;
@@ -356,13 +413,13 @@ async fn an_interrupted_torrent_resumes_after_an_engine_restart() {
     let files = [("un.bin", LEN / 2), ("deux.bin", LEN / 2)];
     let seed = seeder("Reprise", &files, Some(256 * 1024)).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_progress(&mut events, &id, LEN as u64 / 4).await;
     engine.shutdown().await;
 
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     wait_state(&mut events, &id, TaskState::Completed).await;
     let top = dir.path().join("Reprise");
@@ -383,7 +440,7 @@ async fn cancelling_with_delete_files_leaves_nothing_behind() {
     let files = [("un.bin", LEN), ("deux/trois.bin", LEN)];
     let seed = seeder("Annule", &files, Some(128 * 1024)).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_progress(&mut events, &id, 64 * 1024).await;
@@ -404,7 +461,7 @@ async fn cancelling_with_delete_files_leaves_nothing_behind() {
 async fn the_same_torrent_twice_is_refused() {
     let seed = seeder("double.bin", &[("", 64 * 1024)], Some(16 * 1024)).await;
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), vec![seed.addr])).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
     engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     let again = engine.add(add(dir.path(), &seed.metainfo)).await;
     assert!(again.is_err(), "{again:?}");
@@ -424,7 +481,7 @@ async fn the_same_torrent_twice_is_refused() {
 #[tokio::test]
 async fn http_only_options_and_bad_torrents_are_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::start(config(dir.path(), Vec::new())).unwrap();
+    let engine = start(dir.path(), Vec::new()).await;
     let mut task = add(dir.path(), b"pas un torrent");
     assert!(engine.add(task.clone()).await.is_err());
     task.torrent = None;
@@ -493,4 +550,149 @@ fn names_from_a_torrent_are_cleaned_and_never_leave_the_folder() {
             Layout::parse(&handmade("..", &[&["x"]])).unwrap().top != ".."
         }
     );
+}
+
+// ---------- Étape 3b : partage, réseau facturé, choix des fichiers ----------
+
+/// Partage jusqu'au ratio 1 (décision de l'utilisateur du 2026-11-09) : après le
+/// téléchargement, la tâche passe à `seeding`, envoie autant qu'elle a reçu à un pair qui
+/// vient le chercher, puis se termine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sharing_goes_on_until_the_ratio_then_ends() {
+    const LEN: usize = 200 * 1024;
+    let seed = seeder("partage.bin", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_addr();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Seeding).await;
+    // Le fichier est déjà à sa place pendant le partage.
+    assert_eq!(
+        std::fs::read(dir.path().join("partage.bin")).unwrap(),
+        data(0, LEN)
+    );
+
+    let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(leeched(&peer), LEN as u64);
+    engine.shutdown().await;
+    let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
+    let row = crate::store::torrents::load_torrent(&conn, &id).unwrap();
+    assert!(row.uploaded_bytes >= LEN as u64, "{}", row.uploaded_bytes);
+}
+
+/// Une pause pendant le partage l'arrête : la tâche est terminée, son fichier en place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pausing_while_sharing_ends_the_task() {
+    let seed = seeder("pause.bin", &[("", 50 * 1024)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], free_addr());
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Seeding).await;
+    engine.pause(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("pause.bin")).unwrap(),
+        data(0, 50 * 1024)
+    );
+    engine.shutdown().await;
+}
+
+/// Un partage interrompu par l'arrêt du moteur reprend au démarrage suivant, et finit au
+/// ratio.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sharing_resumes_after_an_engine_restart() {
+    const LEN: usize = 100 * 1024;
+    let seed = seeder("reprise.bin", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_addr();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Seeding).await;
+    engine.shutdown().await;
+    assert_eq!(engine_state(dir.path(), &id), TaskState::Seeding);
+
+    let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
+    let mut events = engine.subscribe();
+    let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(leeched(&peer), LEN as u64);
+    engine.shutdown().await;
+}
+
+/// Sur un réseau facturé au volume (Android), le partage attend : rien ne part. Il reprend
+/// quand le réseau ne l'est plus.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_metered_network_holds_sharing_back() {
+    const LEN: usize = 100 * 1024;
+    let seed = seeder("facture.bin", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_addr();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Seeding).await;
+    engine.set_network(true, true).await.unwrap();
+    // Le temps que le partage s'arrête et que la session se ferme.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(leeched(&peer), 0);
+    assert_eq!(engine.get(&id).await.unwrap().state, TaskState::Seeding);
+
+    engine.set_network(true, false).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    engine.shutdown().await;
+}
+
+/// `task.setFiles` en cours de téléchargement : seuls les fichiers choisis vont jusqu'au
+/// bout et prennent leur nom final ; la taille de la tâche suit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn choosing_files_downloads_only_those() {
+    const LEN: usize = 256 * 1024;
+    let files = [("a.bin", LEN), ("b.bin", LEN), ("c.bin", LEN)];
+    let seed = seeder("Choix", &files, Some(64 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_progress(&mut events, &id, 1).await;
+
+    let task = engine.set_files(&id, vec![1]).await.unwrap();
+    assert_eq!(task.total_bytes, Some(LEN as u64));
+    // Rien de choisi, ou un rang inconnu : refusé.
+    assert!(engine.set_files(&id, vec![]).await.is_err());
+    assert!(engine.set_files(&id, vec![9]).await.is_err());
+
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    let top = dir.path().join("Choix");
+    assert_eq!(std::fs::read(top.join("b.bin")).unwrap(), data(1, LEN));
+    assert!(!top.join("a.bin").exists());
+    assert!(!top.join("c.bin").exists());
+
+    let details = engine
+        .details(
+            &id,
+            crate::scheduler::Include {
+                files: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let chosen: Vec<bool> = details.files.unwrap().iter().map(|f| f.selected).collect();
+    assert_eq!(chosen, vec![false, true, false]);
+    engine.shutdown().await;
+}
+
+/// État d'une tâche lu dans la base, moteur arrêté.
+fn engine_state(dir: &Path, task_id: &str) -> TaskState {
+    let conn = crate::store::open(&dir.join("auro.db")).unwrap();
+    crate::store::tasks::load_task(&conn, task_id)
+        .unwrap()
+        .state
 }

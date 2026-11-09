@@ -17,7 +17,7 @@ use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
-use crate::store::settings::{DOWNLOAD_DIR, Flag};
+use crate::store::settings::{DOWNLOAD_DIR, Flag, TORRENT_RATIO};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -228,6 +228,24 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let delete_files = p.bool("deleteFiles")?;
             for_each(ctx, &p, Action::Restart { delete_files }).await
         }
+        // Fichiers d'un torrent à télécharger (SPEC §7.16, depuis le 2026-11-09) : `selected`,
+        // les rangs choisis ; les autres ne le sont plus.
+        "task.setFiles" => {
+            let task_id = p.required_str("taskId")?;
+            let selected = p
+                .get("selected")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Params::wrong("selected", "liste de rangs"))?
+                .iter()
+                .map(|v| {
+                    v.as_u64()
+                        .and_then(|i| u32::try_from(i).ok())
+                        .ok_or_else(|| Params::wrong("selected", "liste de rangs"))
+                })
+                .collect::<Result<Vec<u32>, _>>()?;
+            let task = ctx.engine.set_files(&task_id, selected).await?;
+            Ok(task_json(&task))
+        }
         "history.list" => history_list(ctx, &p).await,
         "history.clear" => {
             let before = p.i64("before")?;
@@ -301,14 +319,30 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .ok_or_else(|| RpcError::invalid_params("values : objet attendu"))?;
             if let Some(key) = values
                 .keys()
-                .find(|k| *k != DOWNLOAD_DIR && Flag::from_key(k).is_none())
+                .find(|k| *k != DOWNLOAD_DIR && *k != TORRENT_RATIO && Flag::from_key(k).is_none())
             {
                 let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
-                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, {})",
+                    "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, \
+                     {TORRENT_RATIO}, {})",
                     known.join(", ")
                 )));
             }
+            // Ratio de partage des torrents (SPEC §7.16) : un nombre positif ou nul, ou null
+            // pour sans limite.
+            let ratio = match values.get(TORRENT_RATIO) {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(v) => match v.as_f64() {
+                    Some(r) if r.is_finite() && r >= 0.0 => Some(Some(r)),
+                    _ => {
+                        return Err(Params::wrong(
+                            TORRENT_RATIO,
+                            "nombre positif ou nul, ou null",
+                        ));
+                    }
+                },
+            };
             // Tous vérifiés avant d'en changer un.
             let mut flags = Vec::new();
             for flag in Flag::ALL {
@@ -326,6 +360,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             for (flag, on) in flags {
                 ctx.engine.set_flag(flag, on).await?;
             }
+            if let Some(ratio) = ratio {
+                ctx.engine.set_torrent_ratio(ratio).await?;
+            }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
                     Value::Null => None,
@@ -338,10 +375,15 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         "limits.get" => limits(ctx).await,
         "limits.set" => {
-            // Débit montant : pour les torrents, pas encore pris en charge.
-            p.refuse(&["uploadBps"])?;
-            if let Some(limit) = p.limit("downloadBps")? {
+            // Tout vérifié avant de changer quoi que ce soit.
+            let download = p.limit("downloadBps")?;
+            // Débit montant : torrents (SPEC §7.16, depuis le 2026-11-09).
+            let upload = p.limit("uploadBps")?;
+            if let Some(limit) = download {
                 ctx.engine.set_download_limit(limit).await?;
+            }
+            if let Some(limit) = upload {
+                ctx.engine.set_upload_limit(limit).await?;
             }
             limits(ctx).await
         }
@@ -356,9 +398,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "rev": s.rev,
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
-                "limits": {"downloadBps": s.download_limit, "uploadBps": null},
-                "settings": settings_json(s.download_dir, &s.flags),
+                "limits": {"downloadBps": s.download_limit, "uploadBps": s.upload_limit},
+                "settings": settings_json(s.download_dir, &s.flags, s.torrent_ratio),
                 "networkUsable": s.network_usable,
+                "networkMetered": s.network_metered,
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
@@ -399,8 +442,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 Some(Value::Bool(usable)) => *usable,
                 _ => return Err(Params::wrong("usable", "booléen")),
             };
-            ctx.engine.set_network(usable).await?;
-            Ok(json!({"usable": usable}))
+            // Réseau facturé au volume : pas de partage de torrents (SPEC §7.16).
+            let metered = p.bool("metered")?;
+            ctx.engine.set_network(usable, metered).await?;
+            Ok(json!({"usable": usable, "metered": metered}))
         }
         _ => Err(RpcError::method_not_found(method)),
     }
@@ -465,22 +510,25 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     for flag in Flag::ALL {
         flags.push((flag, ctx.engine.flag(flag).await?));
     }
-    Ok(json!({"values": settings_json(dir, &flags)}))
+    let ratio = ctx.engine.torrent_ratio().await?;
+    let ratio = ratio.map_or(Value::Null, Value::from);
+    Ok(json!({"values": settings_json(dir, &flags, ratio)}))
 }
 
 /// Valeurs des réglages, telles que `settings.get` et `sync.snapshot` les donnent.
-fn settings_json(download_dir: Option<String>, flags: &[(Flag, bool)]) -> Value {
-    let mut values = json!({DOWNLOAD_DIR: download_dir});
+fn settings_json(download_dir: Option<String>, flags: &[(Flag, bool)], ratio: Value) -> Value {
+    let mut values = json!({DOWNLOAD_DIR: download_dir, TORRENT_RATIO: ratio});
     for (flag, on) in flags {
         values[flag.key()] = json!(on);
     }
     values
 }
 
-/// Limites globales (`limits.get`) ; le débit montant n'est pas encore limité.
+/// Limites globales (`limits.get`) : réception, et envoi (torrents).
 async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
     let download = ctx.engine.download_limit().await?;
-    Ok(json!({"downloadBps": download, "uploadBps": null}))
+    let upload = ctx.engine.upload_limit().await?;
+    Ok(json!({"downloadBps": download, "uploadBps": upload}))
 }
 
 /// Identifiants d'un site tels que le protocole les montre, sans mot de passe.
@@ -614,12 +662,8 @@ async fn task_get(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
         match item.as_str() {
             "segments" => include.segments = true,
             "sources" => include.sources = true,
-            // Fichiers d'un torrent (SPEC §6.4) : pas encore de torrents.
-            "files" => {
-                return Err(RpcError::capability_missing(
-                    "include files n'est pas encore pris en charge par ce moteur",
-                ));
-            }
+            // Fichiers d'un torrent (SPEC §7.16, depuis le 2026-11-09).
+            "files" => include.files = true,
             other => {
                 return Err(RpcError::invalid_params(format!(
                     "include : valeur inconnue {other}"
@@ -655,6 +699,21 @@ fn details_json(d: &TaskDetails) -> Value {
         task["sources"] = sources
             .iter()
             .map(|s| json!({"url": s.url, "acceptsRanges": s.accepts_ranges}))
+            .collect();
+    }
+    // Fichiers d'un torrent (SPEC §7.16) ; `doneBytes` n'est qu'une indication.
+    if let Some(files) = &d.files {
+        task["files"] = files
+            .iter()
+            .map(|f| {
+                json!({
+                    "index": f.index,
+                    "path": f.path,
+                    "length": f.length,
+                    "selected": f.selected,
+                    "doneBytes": f.done_bytes,
+                })
+            })
             .collect();
     }
     task

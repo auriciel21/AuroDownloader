@@ -119,6 +119,8 @@ fn execute(
             bail!("{detail} [{code}] ; nouvelle tentative possible : auro direct resume {task_id}")
         }
         Outcome::Failed { code, detail } => bail!("{detail} [{code}]"),
+        // Le mode direct ne passe que par `transfer::run` : jamais de torrent.
+        Outcome::Seeding => bail!("partage d'un torrent interrompu"),
     }
     Ok(())
 }

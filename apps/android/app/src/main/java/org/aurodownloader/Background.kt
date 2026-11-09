@@ -54,7 +54,7 @@ class Background(private val app: AuroApp) {
     private var unmetered = false
     private var job: Pair<JobService, JobParameters>? = null
     private var service: TransferService? = null
-    private var told: Boolean? = null
+    private var told: Pair<Boolean, Boolean>? = null
     private var lastNotice = 0L
     private var bootPending = false
 
@@ -117,9 +117,16 @@ class Background(private val app: AuroApp) {
             else -> null
         }
         val usable = networkOk && protectedNow
-        if (told != usable) {
-            told = usable
-            app.engine.call("engine.setNetwork", JSONObject().put("usable", usable))
+        // Réseau facturé au volume : le moteur ne partage pas les torrents (SPEC §7.16). Le
+        // partage ne demande pas de protection : il n'a lieu que si l'application est à
+        // l'écran ou qu'un téléchargement est protégé.
+        val metered = !unmetered
+        if (told != usable to metered) {
+            told = usable to metered
+            app.engine.call(
+                "engine.setNetwork",
+                JSONObject().put("usable", usable).put("metered", metered),
+            )
         }
         if (busy.isEmpty()) {
             finishProtection()

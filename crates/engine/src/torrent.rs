@@ -1,9 +1,10 @@
 //! Torrent (SPEC §7.16, phase 5) : librqbit, derrière ce module. Rien d'autre dans le
 //! moteur ne connaît la bibliothèque, pour pouvoir en changer (SPEC §9.2).
 //!
-//! Une seule session par moteur, créée au premier torrent à démarrer : un moteur sans
-//! torrent n'ouvre ni port ni DHT. Chaque exécution ajoute son torrent à la session, le
-//! suit jusqu'à la fin ou à l'arrêt, puis l'en retire.
+//! Une seule session par moteur, ouverte avec le premier torrent en cours et fermée avec le
+//! dernier : un moteur sans torrent en cours n'ouvre ni port ni DHT. Chaque exécution
+//! ajoute son torrent à la session pour le télécharger, l'en retire pour vider et renommer
+//! ses fichiers, puis l'y remet pour le partager (`seeding`) jusqu'au ratio.
 //!
 //! La reprise ne fait confiance à aucun état enregistré : ni la reprise rapide ni la
 //! persistance de librqbit ne servent, et chaque démarrage revérifie l'empreinte des
@@ -15,10 +16,11 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
 use std::net::{Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -31,7 +33,7 @@ use librqbit::{
 };
 use rusqlite::Connection;
 use serde_json::Value;
-use tokio::sync::{OnceCell, watch};
+use tokio::sync::watch;
 
 use crate::io::{available_name, part_path, sync_parent_dir};
 use crate::net::filename::{NameRules, sanitize};
@@ -42,7 +44,8 @@ use crate::store::tasks::{
     primary_source, reserved_names,
 };
 use crate::store::torrents::{
-    TorrentFile, load_torrent, save_metainfo, save_preparation, save_progress,
+    TorrentFile, load_files, load_torrent, save_file_progress, save_metainfo, save_preparation,
+    save_progress, save_uploaded,
 };
 use crate::transfer::{MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
 
@@ -80,6 +83,8 @@ pub enum Listen {
     Off,
     /// En TCP, sur le port du réglage [`LISTEN_PORT`].
     Setting,
+    /// À cette adresse (tests : un pair local vient chercher ce que le moteur partage).
+    Addr(SocketAddr),
 }
 
 impl Default for Options {
@@ -103,7 +108,10 @@ impl Options {
     }
 }
 
-/// La session librqbit du moteur, partagée par ses exécutions.
+/// La session librqbit du moteur, partagée par ses exécutions : ouverte avec le premier
+/// torrent en cours, fermée avec le dernier. Un moteur sans torrent en cours n'a ni port
+/// ouvert ni DHT ; un réseau qui ne convient pas (SPEC §7.15) arrête les torrents, donc la
+/// session.
 #[derive(Clone)]
 pub struct Torrents {
     inner: Arc<Inner>,
@@ -113,16 +121,44 @@ struct Inner {
     options: Options,
     /// Dossier de données du moteur : table du DHT.
     state_dir: PathBuf,
-    session: OnceCell<Arc<Session>>,
+    slot: tokio::sync::Mutex<Slot>,
+    /// Limites globales de réception et d'envoi (SPEC §7.16), et la session ouverte, pour
+    /// les y appliquer aussitôt depuis la boucle du planificateur, qui n'attend pas.
+    limits: Mutex<Limits>,
+}
+
+#[derive(Default)]
+struct Slot {
+    session: Option<Arc<Session>>,
+    /// Exécutions qui s'en servent.
+    users: usize,
+}
+
+#[derive(Default)]
+struct Limits {
+    download: Option<u64>,
+    upload: Option<u64>,
+    open: Option<Arc<Session>>,
+}
+
+/// Ce qu'il faut pour ouvrir la session, lu dans la base avant de l'attendre : une
+/// connexion partagée ne traverse pas une attente.
+struct Opening {
+    listen: Option<SocketAddr>,
+    upnp: bool,
 }
 
 impl std::fmt::Debug for Torrents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Torrents")
             .field("options", &self.inner.options)
-            .field("started", &self.inner.session.initialized())
             .finish()
     }
+}
+
+/// Un débit en octets par seconde pour librqbit, qui le compte sur 32 bits.
+fn bps(limit: Option<u64>) -> Option<NonZeroU32> {
+    limit.and_then(|l| NonZeroU32::new(u32::try_from(l).unwrap_or(u32::MAX)))
 }
 
 impl Torrents {
@@ -131,61 +167,111 @@ impl Torrents {
             inner: Arc::new(Inner {
                 options,
                 state_dir,
-                session: OnceCell::new(),
+                slot: tokio::sync::Mutex::new(Slot::default()),
+                limits: Mutex::new(Limits::default()),
             }),
         }
     }
 
-    /// Port d'écoute de la session, lu (ou tiré) avant de l'attendre : une connexion
-    /// partagée ne traverse pas une attente.
-    fn port(&self, conn: &Connection) -> anyhow::Result<Option<u16>> {
-        match self.inner.options.listen {
-            Listen::Off => Ok(None),
-            Listen::Setting => listen_port(conn).map(Some),
+    /// Limites globales (réception, envoi), appliquées tout de suite à la session ouverte et
+    /// à celles qui suivront.
+    pub fn set_limits(&self, download: Option<u64>, upload: Option<u64>) {
+        let Ok(mut limits) = self.inner.limits.lock() else {
+            return;
+        };
+        limits.download = download;
+        limits.upload = upload;
+        if let Some(session) = &limits.open {
+            session.ratelimits.set_download_bps(bps(download));
+            session.ratelimits.set_upload_bps(bps(upload));
         }
     }
 
-    /// La session, créée au premier appel.
-    async fn session(&self, port: Option<u16>) -> anyhow::Result<Arc<Session>> {
-        let options = &self.inner.options;
+    fn opening(&self, conn: &Connection) -> anyhow::Result<Opening> {
+        Ok(Opening {
+            listen: match self.inner.options.listen {
+                Listen::Off => None,
+                Listen::Setting => Some((Ipv6Addr::UNSPECIFIED, listen_port(conn)?).into()),
+                Listen::Addr(addr) => Some(addr),
+            },
+            upnp: settings::flag(conn, settings::Flag::TorrentUpnp)?,
+        })
+    }
+
+    /// La session, ouverte si aucune exécution ne s'en sert encore. Chaque `acquire`
+    /// réussi demande son [`Torrents::release`].
+    async fn acquire(&self, opening: Opening) -> anyhow::Result<Arc<Session>> {
+        let mut slot = self.inner.slot.lock().await;
+        if let Some(session) = &slot.session {
+            let session = Arc::clone(session);
+            slot.users += 1;
+            return Ok(session);
+        }
+        let (download, upload) = self
+            .inner
+            .limits
+            .lock()
+            .map(|l| (l.download, l.upload))
+            .unwrap_or_default();
         let state_dir = self.inner.state_dir.clone();
-        let dht = options.dht;
-        self.inner
-            .session
-            .get_or_try_init(|| async move {
-                let dht = dht.then(|| DhtSessionConfig {
-                    persistence: Some(DhtPersistenceConfig {
-                        config_filename: Some(state_dir.join("torrent-dht.json")),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                });
-                let listen = port.map(|port| ListenerOptions {
-                    mode: ListenerMode::TcpOnly,
-                    listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),
-                    enable_upnp_port_forwarding: false,
-                    ..Default::default()
-                });
-                Session::new_with_opts(
-                    state_dir,
-                    SessionOptions {
-                        dht,
-                        listen,
-                        // La vérité vient des données (SPEC §7.16).
-                        fastresume: false,
-                        persistence: None,
-                        disable_local_service_discovery: true,
-                        client_name_and_version: Some(format!(
-                            "AuroDownloader {}",
-                            env!("CARGO_PKG_VERSION")
-                        )),
-                        ..Default::default()
-                    },
-                )
-                .await
-            })
-            .await
-            .cloned()
+        let dht = self.inner.options.dht.then(|| DhtSessionConfig {
+            persistence: Some(DhtPersistenceConfig {
+                config_filename: Some(state_dir.join("torrent-dht.json")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let listen = opening.listen.map(|addr| ListenerOptions {
+            mode: ListenerMode::TcpOnly,
+            listen_addr: addr,
+            enable_upnp_port_forwarding: opening.upnp,
+            ..Default::default()
+        });
+        let session = Session::new_with_opts(
+            state_dir,
+            SessionOptions {
+                dht,
+                listen,
+                // La vérité vient des données (SPEC §7.16).
+                fastresume: false,
+                persistence: None,
+                disable_local_service_discovery: true,
+                ratelimits: LimitsConfig {
+                    download_bps: bps(download),
+                    upload_bps: bps(upload),
+                },
+                client_name_and_version: Some(format!(
+                    "AuroDownloader {}",
+                    env!("CARGO_PKG_VERSION")
+                )),
+                ..Default::default()
+            },
+        )
+        .await?;
+        if let Ok(mut limits) = self.inner.limits.lock() {
+            limits.open = Some(Arc::clone(&session));
+            // Une limite changée pendant l'ouverture.
+            session.ratelimits.set_download_bps(bps(limits.download));
+            session.ratelimits.set_upload_bps(bps(limits.upload));
+        }
+        slot.session = Some(Arc::clone(&session));
+        slot.users = 1;
+        Ok(session)
+    }
+
+    /// Une exécution a fini de se servir de la session ; la dernière la ferme.
+    async fn release(&self) {
+        let mut slot = self.inner.slot.lock().await;
+        slot.users = slot.users.saturating_sub(1);
+        if slot.users > 0 {
+            return;
+        }
+        if let Some(session) = slot.session.take() {
+            if let Ok(mut limits) = self.inner.limits.lock() {
+                limits.open = None;
+            }
+            session.stop().await;
+        }
     }
 }
 
@@ -377,13 +463,6 @@ impl Layout {
     }
 }
 
-/// Pourquoi un torrent s'arrête avant la fin.
-enum Stop {
-    /// Arrêt demandé.
-    User,
-    Failure(Failure),
-}
-
 #[derive(Debug)]
 enum Failure {
     /// La session ne démarre pas (port pris, réseau) : nouvel essai plus tard.
@@ -419,8 +498,23 @@ fn is_disk_full(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::StorageFull
 }
 
+/// Ce qu'une exécution a fait de son torrent.
+enum End {
+    /// Fichiers en place ; tâche `completed` (enregistré).
+    Completed(PathBuf),
+    /// Arrêt demandé pendant le téléchargement.
+    Stopped,
+    /// Arrêt pendant le partage (moteur, réseau) : la tâche reste `seeding`.
+    SeedingStopped,
+    /// Échec pendant le téléchargement.
+    Failed(Failure),
+    /// Échec pendant le partage : les fichiers sont là, le partage s'arrête.
+    SeedingFailed(Failure),
+}
+
 /// Exécute une tâche torrent jusqu'à sa fin ou son arrêt, et enregistre son issue, comme
-/// `transfer::run` pour un téléchargement HTTP.
+/// `transfer::run` pour un téléchargement HTTP. Une tâche `seeding` (partage interrompu)
+/// reprend son partage.
 pub async fn run(
     conn: &mut Connection,
     torrents: &Torrents,
@@ -433,7 +527,7 @@ pub async fn run(
         TaskState::Queued | TaskState::RetryWait => {
             change_state(conn, task_id, &Change::to(TaskState::Active))?;
         }
-        TaskState::Active => {}
+        TaskState::Active | TaskState::Seeding => {}
         other => {
             return Err(TransferError::NotRunnable {
                 task_id: task_id.to_owned(),
@@ -441,9 +535,31 @@ pub async fn run(
             });
         }
     }
-    match drive(conn, torrents, task_id, &mut stop, on_progress).await? {
-        Ok(path) => Ok(Outcome::Completed(path)),
-        Err(Stop::User) => {
+    let seeding = task.state == TaskState::Seeding;
+    let end = if stopping(&stop) {
+        if seeding {
+            End::SeedingStopped
+        } else {
+            End::Stopped
+        }
+    } else {
+        let opened = match torrents.opening(conn) {
+            Ok(opening) => torrents.acquire(opening).await,
+            Err(e) => Err(e),
+        };
+        match opened {
+            Ok(session) => {
+                let end = drive(conn, torrents, &session, task_id, &mut stop, on_progress).await;
+                torrents.release().await;
+                end?
+            }
+            Err(e) if seeding => End::SeedingFailed(Failure::Session(format!("{e:#}"))),
+            Err(e) => End::Failed(Failure::Session(format!("{e:#}"))),
+        }
+    };
+    match end {
+        End::Completed(path) => Ok(Outcome::Completed(path)),
+        End::Stopped => {
             let change = Change {
                 pause_reason: Some(PauseReason::User),
                 ..Change::to(TaskState::Paused)
@@ -451,8 +567,30 @@ pub async fn run(
             change_state(conn, task_id, &change)?;
             Ok(Outcome::Paused)
         }
-        Err(Stop::Failure(failure)) => record_failure(conn, task_id, &failure),
+        End::SeedingStopped => Ok(Outcome::Seeding),
+        End::Failed(failure) => record_failure(conn, task_id, &failure),
+        End::SeedingFailed(failure) => {
+            eprintln!(
+                "aurod : tâche {task_id} : partage arrêté : {} [{}]",
+                failure.detail(),
+                failure.code()
+            );
+            finish_sharing(conn, task_id)
+        }
     }
+}
+
+/// Termine une tâche dont le partage s'arrête : ses fichiers sont en place.
+pub fn finish_sharing(conn: &mut Connection, task_id: &str) -> Result<Outcome, TransferError> {
+    let task = load_task(conn, task_id)?;
+    let top = Path::new(&task.dest_dir).join(task.file_name.as_deref().unwrap_or_default());
+    complete_task(
+        conn,
+        task_id,
+        &top.to_string_lossy(),
+        task.total_bytes.unwrap_or(task.done_bytes),
+    )?;
+    Ok(Outcome::Completed(top))
 }
 
 fn record_failure(
@@ -500,49 +638,59 @@ fn stopping(stop: &watch::Receiver<bool>) -> bool {
     *stop.borrow() || stop.has_changed().is_err()
 }
 
+/// Avancement d'une exécution, d'un passage à l'autre.
+struct Counters {
+    /// Octets des morceaux vérifiés des fichiers choisis.
+    done: u64,
+    /// Taille des fichiers choisis.
+    total: u64,
+    /// Octets envoyés, cumulés depuis l'ajout du torrent.
+    uploaded: u64,
+    /// Octets à envoyer avant de finir le partage ; `None` : sans limite.
+    target: Option<u64>,
+}
+
 async fn drive(
     conn: &mut Connection,
     torrents: &Torrents,
+    session: &Arc<Session>,
     task_id: &str,
     stop: &mut watch::Receiver<bool>,
     on_progress: &mut (dyn FnMut(Progress) + Send),
-) -> Result<Result<PathBuf, Stop>, TransferError> {
-    if stopping(stop) {
-        return Ok(Err(Stop::User));
-    }
-    let port = match torrents.port(conn) {
-        Ok(p) => p,
-        Err(e) => return Ok(Err(Stop::Failure(Failure::Session(format!("{e:#}"))))),
-    };
-    let session = match torrents.session(port).await {
-        Ok(s) => s,
-        Err(e) => return Ok(Err(Stop::Failure(Failure::Session(format!("{e:#}"))))),
-    };
+) -> Result<End, TransferError> {
     let peers = torrents.inner.options.initial_peers.clone();
+    let seeding = load_task(conn, task_id)?.state == TaskState::Seeding;
+    let failed = |f: Failure| {
+        if seeding {
+            End::SeedingFailed(f)
+        } else {
+            End::Failed(f)
+        }
+    };
 
     // Métadonnées : celles du fichier .torrent, ou celles d'un lien magnet, demandées aux
     // pairs puis gardées.
     let row = load_torrent(conn, task_id)?;
-    let metainfo = match row.metainfo {
+    let metainfo = match row.metainfo.clone() {
         Some(m) => Bytes::from(m),
         None => {
-            let magnet = match row.magnet {
+            let magnet = match row.magnet.clone() {
                 Some(m) => m,
                 None => primary_source(conn, task_id)?.url,
             };
-            match resolve(&session, &magnet, &peers, stop).await {
+            match resolve(session, &magnet, &peers, stop).await {
                 Ok(Some(bytes)) => {
                     save_metainfo(conn, task_id, &bytes)?;
                     bytes
                 }
-                Ok(None) => return Ok(Err(Stop::User)),
-                Err(e) => return Ok(Err(Stop::Failure(Failure::Torrent(e)))),
+                Ok(None) => return Ok(End::Stopped),
+                Err(e) => return Ok(failed(Failure::Torrent(e))),
             }
         }
     };
     let layout = match Layout::parse(&metainfo) {
         Ok(l) => l,
-        Err(e) => return Ok(Err(Stop::Failure(Failure::Torrent(e)))),
+        Err(e) => return Ok(failed(Failure::Torrent(e))),
     };
 
     // Préparation : nom du premier élément (libre dans le dossier), fichiers, taille.
@@ -551,108 +699,302 @@ async fn drive(
         if let Err(e) = prepare(conn, &task, &layout) {
             return match e {
                 PrepareError::Store(e) => Err(e.into()),
-                PrepareError::Disk(e) => Ok(Err(Stop::Failure(Failure::Disk(e)))),
+                PrepareError::Disk(e) => Ok(failed(Failure::Disk(e))),
             };
         }
         task = load_task(conn, task_id)?;
     }
     let top = task.file_name.clone().unwrap_or_else(|| layout.top.clone());
-    let total = layout.total();
     let paths = layout.final_paths(Path::new(&task.dest_dir), &top);
-    let factory = storage::Factory::new(paths.clone());
-    let first_error = factory.error();
-
-    let options = AddTorrentOptions {
-        overwrite: true,
-        output_folder: Some(task.dest_dir.clone()),
-        storage_factory: Some(factory.clone().boxed()),
-        initial_peers: (!peers.is_empty()).then_some(peers),
-        ratelimits: LimitsConfig {
-            upload_bps: None,
-            download_bps: task
-                .speed_limit_bps
-                .and_then(|l| NonZeroU32::new(u32::try_from(l).unwrap_or(u32::MAX))),
-        },
-        ..Default::default()
+    let total = task.total_bytes.unwrap_or_else(|| layout.total());
+    let ratio = match row.ratio_limit {
+        Some(r) => Some(r),
+        None => settings::torrent_ratio(conn)?,
     };
-    let handle = match session
-        .add_torrent(AddTorrent::from_bytes(metainfo), Some(options))
-        .await
+    let mut counters = Counters {
+        done: if seeding { total } else { task.done_bytes },
+        total,
+        uploaded: row.uploaded_bytes,
+        target: ratio.map(|r| target_bytes(r, total)),
+    };
+    let pass = Pass {
+        task_id,
+        dest_dir: &task.dest_dir,
+        session,
+        metainfo: &metainfo,
+        paths: &paths,
+        peers: &peers,
+        speed_limit: task.speed_limit_bps,
+    };
+
+    if !seeding {
+        match pass
+            .follow(conn, stop, on_progress, &mut counters, false)
+            .await?
+        {
+            Passed::Reached => {}
+            Passed::Stopped => return Ok(End::Stopped),
+            Passed::Failed(f) => return Ok(End::Failed(f)),
+        }
+        // Fichiers choisis vidés sur disque, puis sous leur nom final.
+        let selected = selected_files(conn, task_id)?;
+        for (i, path) in paths.iter().enumerate() {
+            if let Some(path) = path
+                && selected.contains(&i)
+                && let Err(e) = seal(path)
+            {
+                return Ok(End::Failed(Failure::Disk(e)));
+            }
+        }
+        counters.total = load_task(conn, task_id)?
+            .total_bytes
+            .unwrap_or(counters.total);
+        counters.done = counters.total;
+        counters.target = ratio.map(|r| target_bytes(r, counters.total));
+        if counters.target == Some(0) {
+            return complete(conn, task_id, &task.dest_dir, &top, counters.total);
+        }
+        // Partage (décision de l'utilisateur du 2026-11-09 : jusqu'au ratio 1).
+        change_state(conn, task_id, &Change::to(TaskState::Seeding))?;
+        on_progress(counters.progress(0, None, true));
+    }
+    match pass
+        .follow(conn, stop, on_progress, &mut counters, true)
+        .await?
     {
-        Ok(AddTorrentResponse::Added(_, handle)) => handle,
-        Ok(AddTorrentResponse::AlreadyManaged(..)) => {
-            return Ok(Err(Stop::Failure(Failure::Torrent(
-                "ce torrent est déjà en cours dans une autre tâche".into(),
-            ))));
-        }
-        Ok(AddTorrentResponse::ListOnly(_)) => {
-            return Ok(Err(Stop::Failure(Failure::Torrent(
-                "réponse inattendue de la bibliothèque".into(),
-            ))));
-        }
-        Err(e) => return Ok(Err(Stop::Failure(Failure::Torrent(format!("{e:#}"))))),
-    };
-    let id = handle.id();
+        Passed::Reached => complete(conn, task_id, &task.dest_dir, &top, counters.total),
+        Passed::Stopped => Ok(End::SeedingStopped),
+        Passed::Failed(f) => Ok(End::SeedingFailed(f)),
+    }
+}
 
-    let mut tick = tokio::time::interval(POLL);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last_saved = Instant::now();
-    let mut done = task.done_bytes;
-    let outcome = loop {
-        tokio::select! {
-            changed = stop.changed() => {
-                if changed.is_err() || *stop.borrow() {
-                    break Err(Stop::User);
-                }
-            }
-            _ = tick.tick() => {
-                if let Some(e) = first_error.lock().ok().and_then(|mut e| e.take()) {
-                    break Err(Stop::Failure(Failure::Disk(e)));
-                }
-                let stats = handle.stats();
-                if let Some(e) = &stats.error {
-                    break Err(Stop::Failure(Failure::Torrent(e.clone())));
-                }
-                // Pendant la vérification de départ, librqbit compte les octets lus : la
-                // tâche montre encore son dernier avancement connu.
-                let live = stats.live.as_ref();
-                if live.is_some() {
-                    done = stats.progress_bytes.min(total);
-                }
-                on_progress(Progress {
-                    received: done,
-                    total: Some(total),
-                    connections: live.map_or(0, |l| {
-                        usize::try_from(l.snapshot.peer_stats.live).unwrap_or(usize::MAX)
-                    }),
-                    segments: Arc::from([]),
-                    verified: None,
-                });
-                if last_saved.elapsed() >= SAVE_EVERY {
-                    save_progress(conn, task_id, done)?;
-                    last_saved = Instant::now();
-                }
-                if stats.finished {
-                    break Ok(());
-                }
-            }
+/// Octets à envoyer pour un ratio et une taille.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn target_bytes(ratio: f64, total: u64) -> u64 {
+    (ratio * total as f64).ceil() as u64
+}
+
+fn complete(
+    conn: &mut Connection,
+    task_id: &str,
+    dest_dir: &str,
+    top: &str,
+    total: u64,
+) -> Result<End, TransferError> {
+    let path = Path::new(dest_dir).join(top);
+    complete_task(conn, task_id, &path.to_string_lossy(), total)?;
+    Ok(End::Completed(path))
+}
+
+/// Rangs des fichiers choisis.
+fn selected_files(conn: &Connection, task_id: &str) -> Result<HashSet<usize>, TransferError> {
+    Ok(load_files(conn, task_id)?
+        .iter()
+        .filter(|f| f.selected)
+        .filter_map(|f| usize::try_from(f.index).ok())
+        .collect())
+}
+
+impl Counters {
+    fn progress(&self, connections: usize, upload_bps: Option<u64>, seeding: bool) -> Progress {
+        Progress {
+            received: self.done,
+            total: Some(self.total),
+            connections,
+            segments: Arc::from([]),
+            verified: None,
+            uploaded: Some(self.uploaded),
+            upload_bps,
+            seeding,
         }
-    };
-    // Retiré de la session, fichiers gardés : librqbit lâche le stockage, puis ses
-    // lectures et écritures en cours finissent. Les fichiers ne se renomment ni ne
-    // s'effacent qu'une fois tous fermés.
-    if let Err(e) = session.delete(id.into(), false).await {
-        eprintln!("aurod : tâche {task_id} : torrent non retiré de la session : {e:#}");
     }
-    drop(handle);
-    if !factory.wait_closed(CLOSE_WAIT).await {
-        eprintln!("aurod : tâche {task_id} : fichiers du torrent encore ouverts");
+}
+
+/// Un passage du torrent dans la session : téléchargement jusqu'à la fin des fichiers
+/// choisis, ou partage jusqu'au ratio.
+struct Pass<'a> {
+    task_id: &'a str,
+    dest_dir: &'a str,
+    session: &'a Arc<Session>,
+    metainfo: &'a Bytes,
+    paths: &'a [Option<PathBuf>],
+    peers: &'a [SocketAddr],
+    speed_limit: Option<u64>,
+}
+
+enum Passed {
+    /// Fichiers choisis complets, ou ratio atteint.
+    Reached,
+    Stopped,
+    Failed(Failure),
+}
+
+/// Les fichiers à télécharger pour librqbit ; `None` : tous.
+fn only_files(selected: &HashSet<usize>, paths: &[Option<PathBuf>]) -> Option<Vec<usize>> {
+    let all = paths
+        .iter()
+        .enumerate()
+        .all(|(i, p)| p.is_none() || selected.contains(&i));
+    if all {
+        return None;
     }
-    save_progress(conn, task_id, done)?;
-    match outcome {
-        Ok(()) => finish(conn, task_id, &task, &top, &paths, total),
-        Err(stop) => Ok(Err(stop)),
+    let mut list: Vec<usize> = selected.iter().copied().collect();
+    list.sort_unstable();
+    Some(list)
+}
+
+impl Pass<'_> {
+    async fn follow(
+        &self,
+        conn: &mut Connection,
+        stop: &mut watch::Receiver<bool>,
+        on_progress: &mut (dyn FnMut(Progress) + Send),
+        counters: &mut Counters,
+        sharing: bool,
+    ) -> Result<Passed, TransferError> {
+        let task_id = self.task_id;
+        let factory = storage::Factory::new(self.paths.to_vec());
+        let first_error = factory.error();
+        let mut selected = selected_files(conn, task_id)?;
+        let options = AddTorrentOptions {
+            overwrite: true,
+            output_folder: Some(self.dest_dir.to_owned()),
+            storage_factory: Some(factory.clone().boxed()),
+            only_files: only_files(&selected, self.paths),
+            initial_peers: (!self.peers.is_empty()).then(|| self.peers.to_vec()),
+            ratelimits: LimitsConfig {
+                upload_bps: None,
+                download_bps: bps(self.speed_limit),
+            },
+            ..Default::default()
+        };
+        let handle = match self
+            .session
+            .add_torrent(AddTorrent::from_bytes(self.metainfo.clone()), Some(options))
+            .await
+        {
+            Ok(AddTorrentResponse::Added(_, handle)) => handle,
+            Ok(AddTorrentResponse::AlreadyManaged(..)) => {
+                return Ok(Passed::Failed(Failure::Torrent(
+                    "ce torrent est déjà en cours dans une autre tâche".into(),
+                )));
+            }
+            Ok(AddTorrentResponse::ListOnly(_)) => {
+                return Ok(Passed::Failed(Failure::Torrent(
+                    "réponse inattendue de la bibliothèque".into(),
+                )));
+            }
+            Err(e) => return Ok(Passed::Failed(Failure::Torrent(format!("{e:#}")))),
+        };
+        let id = handle.id();
+        // Octets envoyés avant ce passage : librqbit compte depuis l'ajout.
+        let before = counters.uploaded;
+
+        let mut tick = tokio::time::interval(POLL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_saved = Instant::now();
+        let passed = loop {
+            tokio::select! {
+                changed = stop.changed() => {
+                    if changed.is_err() || *stop.borrow() {
+                        break Passed::Stopped;
+                    }
+                }
+                _ = tick.tick() => {
+                    if let Some(e) = first_error.lock().ok().and_then(|mut e| e.take()) {
+                        break Passed::Failed(Failure::Disk(e));
+                    }
+                    let stats = handle.stats();
+                    if let Some(e) = &stats.error {
+                        break Passed::Failed(Failure::Torrent(e.clone()));
+                    }
+                    let live = stats.live.as_ref();
+                    // Fichiers choisis changés en cours (`task.setFiles`).
+                    if !sharing {
+                        let now = selected_files(conn, task_id)?;
+                        if now != selected {
+                            if let Err(e) = self.session.update_only_files(&handle, &now).await {
+                                eprintln!("aurod : tâche {task_id} : choix des fichiers : {e:#}");
+                            }
+                            selected = now;
+                            counters.total =
+                                load_task(conn, task_id)?.total_bytes.unwrap_or(counters.total);
+                        }
+                    }
+                    // Pendant la vérification de départ, librqbit compte les octets lus : la
+                    // tâche montre encore son dernier avancement connu.
+                    if live.is_some() && !sharing {
+                        counters.done = stats.progress_bytes.min(counters.total);
+                    }
+                    counters.uploaded = before.saturating_add(stats.uploaded_bytes);
+                    let connections = live.map_or(0, |l| {
+                        usize::try_from(l.snapshot.peer_stats.live).unwrap_or(usize::MAX)
+                    });
+                    let upload_bps = live.map(|l| l.upload_speed.as_bytes());
+                    on_progress(counters.progress(connections, upload_bps, sharing));
+                    if last_saved.elapsed() >= SAVE_EVERY {
+                        let files = (!sharing).then_some(&stats.file_progress);
+                        save_counters(conn, task_id, counters, files)?;
+                        last_saved = Instant::now();
+                    }
+                    if !sharing && stats.finished {
+                        break Passed::Reached;
+                    }
+                    if sharing && live.is_some() {
+                        // Les fichiers terminés ont changé sur le disque : librqbit voudrait
+                        // en retélécharger une partie. Le partage s'arrête là.
+                        if !stats.finished {
+                            break Passed::Failed(Failure::Torrent(
+                                "fichiers changés depuis la fin du téléchargement".into(),
+                            ));
+                        }
+                        if counters.target.is_some_and(|t| counters.uploaded >= t) {
+                            break Passed::Reached;
+                        }
+                    }
+                }
+            }
+        };
+        // Retiré de la session, fichiers gardés : librqbit lâche le stockage, puis ses
+        // lectures et écritures en cours finissent. Les fichiers ne se renomment ni ne
+        // s'effacent qu'une fois tous fermés.
+        if let Err(e) = self.session.delete(id.into(), false).await {
+            eprintln!("aurod : tâche {task_id} : torrent non retiré de la session : {e:#}");
+        }
+        let file_progress = handle.stats().file_progress;
+        drop(handle);
+        if !factory.wait_closed(CLOSE_WAIT).await {
+            eprintln!("aurod : tâche {task_id} : fichiers du torrent encore ouverts");
+        }
+        let files = (!sharing).then_some(&file_progress);
+        save_counters(conn, task_id, counters, files)?;
+        Ok(passed)
     }
+}
+
+/// Enregistre l'avancement (indicatif), les octets envoyés et, au téléchargement,
+/// l'avancement de chaque fichier.
+fn save_counters(
+    conn: &mut Connection,
+    task_id: &str,
+    counters: &Counters,
+    files: Option<&Vec<u64>>,
+) -> Result<(), TransferError> {
+    save_progress(conn, task_id, counters.done)?;
+    save_uploaded(conn, task_id, counters.uploaded)?;
+    if let Some(files) = files {
+        let done: Vec<(u32, u64)> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| u32::try_from(i).ok().map(|i| (i, *d)))
+            .collect();
+        save_file_progress(conn, task_id, &done)?;
+    }
+    Ok(())
 }
 
 /// Demande les métadonnées d'un lien magnet aux pairs ; `Ok(None)` si l'arrêt est demandé
@@ -749,27 +1091,6 @@ fn prepare(conn: &mut Connection, task: &TaskRow, layout: &Layout) -> Result<(),
         &layout.task_files(&name),
     )?;
     Ok(())
-}
-
-/// Fin du téléchargement : chaque fichier est vidé sur disque, puis prend son nom final ;
-/// ensuite seulement, la tâche est terminée. Un arrêt entre ces étapes laisse la tâche
-/// `active` : au redémarrage, le stockage retrouve chaque fichier sous l'un ou l'autre nom.
-fn finish(
-    conn: &mut Connection,
-    task_id: &str,
-    task: &TaskRow,
-    top: &str,
-    paths: &[Option<PathBuf>],
-    total: u64,
-) -> Result<Result<PathBuf, Stop>, TransferError> {
-    for path in paths.iter().flatten() {
-        if let Err(e) = seal(path) {
-            return Ok(Err(Stop::Failure(Failure::Disk(e))));
-        }
-    }
-    let top_path = Path::new(&task.dest_dir).join(top);
-    complete_task(conn, task_id, &top_path.to_string_lossy(), total)?;
-    Ok(Ok(top_path))
 }
 
 /// Vide le `.part` de `path` sur disque et lui donne son nom final. Un fichier vide n'a

@@ -905,7 +905,8 @@ async fn speed_limits_are_read_changed_and_announced() {
         .await;
     assert!(note["uploadBps"].is_null());
     for (params, code) in [
-        (json!({"uploadBps": 5}), "CAPABILITY_MISSING"),
+        // Débit d'envoi (torrents) : pris en charge depuis le 2026-11-09 ; 0 refusé.
+        (json!({"uploadBps": 0}), "INVALID_PARAMS"),
         (json!({"downloadBps": 0}), "INVALID_PARAMS"),
         (json!({"downloadBps": "vite"}), "INVALID_PARAMS"),
     ] {
@@ -1118,11 +1119,11 @@ async fn task_get_shows_segments_and_sources_on_request() {
     // Sans `include`, ni segments ni sources.
     let plain = c.result("task.get", json!({"taskId": id})).await;
     assert!(plain.get("segments").is_none() && plain.get("sources").is_none());
-    assert_eq!(
-        c.error_code("task.get", json!({"taskId": id, "include": ["files"]}))
-            .await,
-        "CAPABILITY_MISSING"
-    );
+    // Fichiers d'un torrent (depuis le 2026-11-09) : aucun pour une tâche HTTP.
+    let files = c
+        .result("task.get", json!({"taskId": id, "include": ["files"]}))
+        .await;
+    assert_eq!(files["files"], json!([]), "{files}");
     assert_eq!(
         c.error_code("task.get", json!({"taskId": id, "include": ["tout"]}))
             .await,
@@ -1824,7 +1825,7 @@ async fn the_network_state_is_set_announced_and_in_the_snapshot() {
     let set = c
         .result("engine.setNetwork", json!({"usable": false}))
         .await;
-    assert_eq!(set, json!({"usable": false}));
+    assert_eq!(set, json!({"usable": false, "metered": false}));
     let note = c.notification("engine.network", |_| true).await;
     assert_eq!(note["usable"], false);
     assert!(note["rev"].as_u64().is_some());
@@ -1881,5 +1882,102 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
             "{bad}"
         );
     }
+    engine.shutdown().await;
+}
+
+/// Réglages et limites des torrents (SPEC §7.16) : débit d'envoi, ratio de partage, UPnP
+/// (faux par défaut), réseau facturé ; `task.setFiles` seulement pour un torrent.
+#[tokio::test]
+async fn torrent_settings_limits_and_files_go_through_the_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+
+    let values = c.result("settings.get", json!({})).await["values"].clone();
+    assert_eq!(values["torrent.ratioLimit"], json!(1.0), "{values}");
+    assert_eq!(values["torrent.upnp"], json!(false), "{values}");
+
+    let limits = c.result("limits.set", json!({"uploadBps": 4096})).await;
+    assert_eq!(limits["uploadBps"], 4096);
+    let note = c.notification("limits.updated", |_| true).await;
+    assert_eq!(note["uploadBps"], 4096);
+    assert_eq!(c.result("limits.get", json!({})).await["uploadBps"], 4096);
+
+    let set = c
+        .result(
+            "settings.set",
+            json!({"values": {"torrent.ratioLimit": 2.5}}),
+        )
+        .await;
+    assert_eq!(set["values"]["torrent.ratioLimit"], json!(2.5));
+    let note = c
+        .notification("settings.updated", |p| {
+            p["values"].get("torrent.ratioLimit").is_some()
+        })
+        .await;
+    assert_eq!(note["values"]["torrent.ratioLimit"], json!(2.5));
+    let set = c
+        .result(
+            "settings.set",
+            json!({"values": {"torrent.ratioLimit": null}}),
+        )
+        .await;
+    assert_eq!(set["values"]["torrent.ratioLimit"], Value::Null);
+    for bad in [json!(-1), json!("2"), json!(true)] {
+        assert_eq!(
+            c.error_code(
+                "settings.set",
+                json!({"values": {"torrent.ratioLimit": bad}})
+            )
+            .await,
+            "INVALID_PARAMS"
+        );
+    }
+
+    let network = c
+        .result(
+            "engine.setNetwork",
+            json!({"usable": true, "metered": true}),
+        )
+        .await;
+    assert_eq!(network["metered"], true);
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["networkMetered"], true);
+    assert_eq!(snapshot["limits"]["uploadBps"], 4096);
+    assert_eq!(snapshot["settings"]["torrent.ratioLimit"], Value::Null);
+
+    // `task.setFiles` : refusé pour une tâche HTTP.
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/f")}], "destDir": dir_text(dir.path()), "startPaused": true}),
+        )
+        .await;
+    assert_eq!(
+        c.error_code(
+            "task.setFiles",
+            json!({"taskId": added["taskId"], "selected": [0]})
+        )
+        .await,
+        "INVALID_PARAMS"
+    );
+    assert_eq!(
+        c.error_code(
+            "task.setFiles",
+            json!({"taskId": added["taskId"], "selected": "0"})
+        )
+        .await,
+        "INVALID_PARAMS"
+    );
+    let task = c
+        .result(
+            "task.get",
+            json!({"taskId": added["taskId"], "include": ["files"]}),
+        )
+        .await;
+    assert_eq!(task["files"], json!([]), "{task}");
     engine.shutdown().await;
 }

@@ -662,11 +662,17 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `sources[0]` porte soit `url`, soit `torrent`, le contenu d'un fichier `.torrent` en base64, jamais les deux (`INVALID_PARAMS`). Un `url` en `magnet:` fait aussi une tâche torrent. La tâche a pour source son lien magnet, déduit du fichier s'il le faut.
   - Un fichier invalide, un lien magnet sans empreinte BitTorrent v1, ou le même torrent qu'une tâche non terminée : `INVALID_PARAMS`. `headers`, `checksum` et `maxConnections` ne s'appliquent pas à un torrent : `INVALID_PARAMS`.
   - Une tâche, telle que la décrivent `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `kind` : `http` ou `torrent`.
-  - `task.update` refuse `checksum`, `destDir`, `fileName` et `url` pour un torrent (`INVALID_PARAMS`).
+  - `task.update` refuse `checksum`, `destDir`, `fileName` et `url` pour un torrent (`INVALID_PARAMS`). Son `speedLimitBps` vaut à la prochaine reprise de la tâche : librqbit ne change pas la limite d'un torrent en cours.
+  - `task.setFiles` (`taskId`, `selected[]`, les rangs des fichiers choisis ; portée `control`) : seulement pour un torrent préparé (fichiers connus), en file, en cours, en pause, en attente ou en échec ; au moins un fichier, rangs connus (`INVALID_PARAMS` sinon). Rend la tâche, avec sa nouvelle taille (celle des fichiers choisis) ; annoncé comme une préparation (`task.updated`). Une exécution en cours suit le nouveau choix.
+  - `task.get` avec `include: ["files"]` ajoute `files[]` : `index`, `path` (chemin dans le torrent, composants nettoyés et séparés par `/`), `length`, `selected`, `doneBytes` (indication). Vide pour une tâche HTTP.
+  - `task.progress` porte, pour un torrent, `uploadedBytes` (cumulés) et `uploadBps`.
+  - `limits.set` et `limits.get` : `uploadBps`, limite d'envoi globale ; annoncée par `limits.updated`, avec `downloadBps`. La limite globale de réception vaut aussi pour les torrents, par le limiteur de librqbit, à part de celle du HTTP.
+  - Réglages (`settings.get`, `settings.set`) : `torrent.ratioLimit` (nombre positif ou nul, `null` pour sans limite ; 1 par défaut ; `settings.updated`) et `torrent.upnp` (booléen, faux par défaut ; vaut à la prochaine ouverture de la session).
+  - `engine.setNetwork` accepte `metered` (booléen, faux par défaut) ; `engine.network` et `sync.snapshot` (`networkMetered`) le rendent (section 7.16).
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
-  - dans `limits.set` : `uploadBps`, le débit montant ne servant qu'aux torrents (`limits.get` le renvoie à `null`).
+  - (`uploadBps` de `limits.set` était refusé jusqu'au 2026-11-09 ; il est pris en charge depuis, avec les torrents.)
 - **Limites de débit** (`speedLimitBps`, `downloadBps`) : un entier d'au moins 1, en octets par seconde.
   - Dans `task.update`, `queue.update` et `limits.set`, `null` retire la limite et un paramètre absent la laisse telle quelle.
   - Une nouvelle limite s'applique aussitôt aux tâches en cours (section 7.6).
@@ -695,8 +701,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
     (section 8.2) ;
   - une tâche terminée n'a plus de segments ; ses sources restent depuis le 2026-11-07
     (section 5.6, règle 4 ; ce paragraphe disait le contraire jusqu'au 2026-11-08) ;
-  - `files` (torrents) est refusé par `CAPABILITY_MISSING`, une valeur inconnue par
-    `INVALID_PARAMS`.
+  - `files` (torrents) : depuis le 2026-11-09, voir « Torrent » plus haut (avant :
+    `CAPABILITY_MISSING`) ; une valeur inconnue : `INVALID_PARAMS`.
 - **Retéléchargement** (`task.restart`, depuis le 2026-11-07 ; portée `control`) : section 5.5 pour les états.
   - Le `.part` est supprimé ; avec `deleteFiles`, le fichier final d'une tâche terminée aussi, et le nouveau téléchargement reprend son nom. Sans, l'ancien fichier reste (le moteur n'écrase jamais un fichier) et le nouveau prend un autre nom (« nom (1).ext »).
   - Annonce : `task.updated` avec `fileName`, `totalBytes`, `errorCode` et `errorDetail` à `null` et `doneBytes` à 0, puis `task.stateChanged` vers `queued`.
@@ -1212,11 +1218,29 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
   - le même torrent ajouté deux fois ;
   - des noms hostiles nettoyés (`CON`, `a<b`) et un chemin en `..` refusé.
 - **Constaté** : `librqbit::create_torrent` (9.1.0) oublie l'empreinte du dernier morceau quand le dernier fichier est vide. Le moteur ne s'en sert pas ; les tests écrivent leurs `.torrent` eux-mêmes.
-- **Reste de l'étape 3** :
-  - le partage (`seeding`) jusqu'au ratio ;
-  - les limites de débit (envoi compris), le choix des fichiers (`task.setFiles`, `include: files`) et les réglages ;
-  - l'arrêt des torrents par `engine.setNetwork` : en 3a, un torrent en cours suit déjà le planificateur (il retourne en file), mais la session reste ouverte ;
-  - le banc de reprise et la liaison à une interface.
+
+**Mise en œuvre de l'étape 3b (2026-11-09).**
+- **Session** : elle s'ouvre avec le premier torrent en cours et se ferme avec le dernier. Sans torrent en cours, il n'y a ni port ouvert ni DHT. `engine.setNetwork` arrête les torrents, donc la session.
+- **Partage** :
+  - Fin du téléchargement : le torrent quitte la session, les fichiers choisis sont vidés sur disque puis renommés.
+  - Si un partage est demandé, la tâche passe à `seeding` et le torrent revient dans la session sur les fichiers finaux. librqbit les revérifie en entier avant de partager, ce qui sert de vérification finale sur disque.
+  - Le partage finit au ratio, compté sur la taille des fichiers choisis et les octets envoyés depuis l'ajout (`torrents.uploaded_bytes`). La tâche passe alors à `completed`, avec sa ligne d'historique.
+  - Le ratio vient de `torrents.ratio_limit`, sinon du réglage `torrent.ratioLimit`. Il est lu au début de chaque exécution.
+- **Interruptions du partage** :
+  - Une pause pendant le partage l'arrête, et la tâche est terminée (`seeding` → `completed`). Une annulation pendant le partage l'annule ; avec `deleteFiles`, les fichiers terminés partent aussi.
+  - Arrêt du moteur, réseau inutilisable, ou réseau facturé (`engine.setNetwork` avec `metered`) : la tâche reste `seeding`. Le planificateur relance son partage quand le réseau convient et n'est pas facturé.
+  - Un partage ne prend pas de place dans sa file et ne suit pas ses plages horaires.
+  - Si les fichiers terminés ont changé sur le disque, ou si la session ne s'ouvre pas, le partage s'arrête et la tâche est terminée.
+- **Android** : l'application dit `metered` (réseau sans `NOT_METERED`). Le partage ne demande pas la protection d'Android : il n'a lieu que si l'application est à l'écran ou qu'un téléchargement est protégé, et jamais sur un réseau facturé.
+- **Limites** : `uploadBps` global ; la limite globale de réception vaut aussi pour la session, à part du HTTP. Les deux s'appliquent aussitôt à la session ouverte. La limite propre à une tâche torrent vaut à sa prochaine reprise.
+- **Choix des fichiers** : `task.setFiles` et `include: files` (section 6.5).
+  - Une exécution en cours relit le choix à chaque seconde et le transmet à librqbit.
+  - Seuls les fichiers choisis sont vidés et renommés à la fin.
+  - Un fichier non choisi garde les octets des morceaux qu'il partage avec un fichier choisi, sous son `.part`, qui part avec la tâche.
+- **Réglages** : `torrent.ratioLimit` et `torrent.upnp` (section 6.5).
+- **Tests** : partage jusqu'au ratio avec un pair local qui vient télécharger, pause pendant le partage, reprise du partage après un redémarrage du moteur, partage retenu sur un réseau facturé puis repris, choix des fichiers en cours de téléchargement ; protocole (limites, ratio, UPnP, réseau facturé, `task.setFiles`).
+- **Essai réel** (2026-11-09, WSL) : `aurod` d'essai et la CLI. Netinst Debian 13.7 (756 Mio) par un lien magnet sans tracker (DHT seul), ratio 0, envoi limité à 100 Kio/s : terminé en 27 s, empreinte publiée juste. La table du DHT ne s'est pas enregistrée en si peu de temps (librqbit l'écrit toutes les 60 s).
+- **Reste de l'étape 3** : le banc de reprise des torrents (3c) et la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
 
 ## 8. Sécurité, vie privée et cadre légal
 

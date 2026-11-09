@@ -172,6 +172,12 @@ pub struct Progress {
     /// Pendant la vérification de l'empreinte (`verifying`, F-11) : octets du fichier déjà
     /// lus ; `None` pendant la réception.
     pub verified: Option<u64>,
+    /// Torrent (SPEC §7.16) : octets envoyés aux autres pairs, cumulés ; `None` en HTTP.
+    pub uploaded: Option<u64>,
+    /// Torrent : débit d'envoi, en octets par seconde.
+    pub upload_bps: Option<u64>,
+    /// Torrent en partage (`seeding`) : la tâche vient d'y passer, ou y est.
+    pub seeding: bool,
 }
 
 /// Un segment qu'une connexion reçoit en ce moment.
@@ -202,6 +208,9 @@ pub enum Outcome {
     },
     /// Échec définitif ; tâche `failed`.
     Failed { code: &'static str, detail: String },
+    /// Torrent dont le partage s'arrête avant son terme (arrêt du moteur, réseau) ; tâche
+    /// toujours `seeding`, qui reprendra (SPEC §7.16).
+    Seeding,
 }
 
 /// Erreurs qui empêchent d'exécuter ou d'enregistrer : base illisible, état incohérent.
@@ -805,6 +814,9 @@ async fn verify(
         connections: 0,
         segments: Arc::from([]),
         verified: Some(read),
+        uploaded: None,
+        upload_bps: None,
+        seeding: false,
     };
     on_progress(report(0));
     let read = Arc::new(AtomicU64::new(0));
@@ -1446,6 +1458,9 @@ fn progress(
         connections,
         segments: segments.into(),
         verified: None,
+        uploaded: None,
+        upload_bps: None,
+        seeding: false,
     }
 }
 

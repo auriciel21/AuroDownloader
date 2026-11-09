@@ -752,14 +752,20 @@ pub fn complete_task(
     total_bytes: u64,
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Un torrent finit son partage (`seeding` → `completed`, SPEC §7.16).
+    let seeding = load_task(&tx, task_id)?.state == TaskState::Seeding;
     let from = match check_transition(&tx, task_id, TaskState::Verifying) {
         Ok(from) => from,
         Err(StoreError::BadTransition {
             from: "verifying", ..
         }) => TaskState::Verifying,
+        Err(_) if seeding => TaskState::Seeding,
         Err(e) => return Err(e),
     };
-    debug_assert!(matches!(from, TaskState::Active | TaskState::Verifying));
+    debug_assert!(matches!(
+        from,
+        TaskState::Active | TaskState::Verifying | TaskState::Seeding
+    ));
     let total = to_i64(total_bytes, "taille")?;
     let now = now_ms();
 
@@ -964,7 +970,9 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
         "SELECT t.id, t.queue_id, q.max_active, t.state
          FROM tasks t JOIN queues q ON q.id = t.queue_id
          -- `verifying` : arrêt brutal pendant le calcul de l'empreinte, qui reprend.
-         WHERE (t.state IN ('queued', 'active', 'verifying')
+         -- `seeding` : partage d'un torrent interrompu (arrêt du moteur, réseau), qui
+         -- reprend (SPEC §7.16).
+         WHERE (t.state IN ('queued', 'active', 'verifying', 'seeding')
                 OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1))
            -- Pendant le déplacement de son fichier, une tâche attend (SPEC §7.12).
            AND NOT EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = t.id)

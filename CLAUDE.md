@@ -67,7 +67,10 @@ téléchargement.
   session partagée créée au premier torrent, `torrent::storage` écrit dans les `.part`,
   revérification des morceaux à chaque démarrage, vidage puis renommage à la fin ; tests
   sur un essaim local, `.torrent` écrits à la main), `store::torrents` (tâche torrent, sa
-  source magnet, métadonnées, `task_files`). `execute` aiguille selon `TaskRow::kind`.
+  source magnet, métadonnées, `task_files`, octets envoyés, fichiers choisis). `execute`
+  aiguille selon `TaskRow::kind`. Session ouverte avec le premier torrent en cours, fermée
+  avec le dernier ; partage (`seeding`) jusqu'au ratio, hors des places de la file.
+  Réglages `torrent.ratioLimit`, `torrent.upnp`, `torrent.listenPort` ; `limits.uploadBps`.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -376,7 +379,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   conception SPEC 7.16 (décisions de l'utilisateur : partage jusqu'au ratio 1, port
   d'écoute sans UPnP ; revérification complète à chaque démarrage, sans reprise rapide) :
   3a. ajout (magnet, `.torrent`) et téléchargement jusqu'à la fin, essaim local dans les
-  tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau ;
+  tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau
+  (fait le 2026-11-09, essai réel sous WSL : netinst Debian par magnet, DHT seul) ;
   3c. banc de reprise et écritures perdues ; 3d. liaison à une interface (VPN), Windows
   compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),

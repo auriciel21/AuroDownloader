@@ -19,6 +19,22 @@ pub const PREALLOCATE: &str = "downloads.preallocate";
 /// l'utilisateur n'en a pas donné (F-11, SPEC §7.9) ; vrai par défaut.
 pub const NEIGHBOR_CHECKSUM: &str = "downloads.neighborChecksum";
 
+/// Limite de débit montant globale (torrents, SPEC §7.16), en octets par seconde ; `null` :
+/// aucune.
+pub const UPLOAD_LIMIT: &str = "limits.uploadBps";
+
+/// Ratio de partage d'un torrent terminé (SPEC §7.16) : `0` pour ne pas partager, `null`
+/// pour partager sans limite ; 1,0 tant que rien n'est enregistré (décision de
+/// l'utilisateur du 2026-11-09).
+pub const TORRENT_RATIO: &str = "torrent.ratioLimit";
+
+/// Ratio de partage par défaut.
+pub const DEFAULT_RATIO: f64 = 1.0;
+
+/// Demander à la box d'ouvrir le port d'écoute des torrents (UPnP) ; faux par défaut
+/// (décision de l'utilisateur du 2026-11-09).
+pub const TORRENT_UPNP: &str = "torrent.upnp";
+
 /// Espace de noms des secrets de cette base dans le coffre du système (`secrets`), tiré
 /// au hasard au premier démarrage. Interne : `settings.get` ne le montre pas.
 pub const VAULT_NAMESPACE: &str = "vault.namespace";
@@ -54,24 +70,32 @@ pub fn set_download_dir(conn: &Connection, dir: Option<&str>) -> Result<(), Stor
     set(conn, DOWNLOAD_DIR, &dir.map_or(Value::Null, Value::from))
 }
 
-/// Réglages oui ou non du moteur, vrais tant que rien n'est enregistré.
+/// Réglages oui ou non du moteur ; leur valeur par défaut : [`Flag::default_on`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Flag {
     /// Réserver la place de chaque fichier au départ (F-10, SPEC §7.6 bis).
     Preallocate,
     /// Chercher l'empreinte d'un fichier dans ses fichiers voisins (F-11, SPEC §7.9).
     NeighborChecksum,
+    /// UPnP pour le port d'écoute des torrents (SPEC §7.16) ; faux par défaut.
+    TorrentUpnp,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 2] = [Flag::Preallocate, Flag::NeighborChecksum];
+    pub const ALL: [Flag; 3] = [Flag::Preallocate, Flag::NeighborChecksum, Flag::TorrentUpnp];
 
     /// Clé du réglage, dans la base et dans le protocole.
     pub fn key(self) -> &'static str {
         match self {
             Flag::Preallocate => PREALLOCATE,
             Flag::NeighborChecksum => NEIGHBOR_CHECKSUM,
+            Flag::TorrentUpnp => TORRENT_UPNP,
         }
+    }
+
+    /// Valeur tant que rien n'est enregistré.
+    pub fn default_on(self) -> bool {
+        !matches!(self, Flag::TorrentUpnp)
     }
 
     pub fn from_key(key: &str) -> Option<Flag> {
@@ -79,11 +103,11 @@ impl Flag {
     }
 }
 
-/// Valeur d'un réglage oui ou non ; vraie tant que rien n'est enregistré.
+/// Valeur d'un réglage oui ou non ; celle par défaut tant que rien n'est enregistré.
 pub fn flag(conn: &Connection, flag: Flag) -> Result<bool, StoreError> {
     let key = flag.key();
     match get(conn, key)? {
-        None | Some(Value::Null) => Ok(true),
+        None | Some(Value::Null) => Ok(flag.default_on()),
         Some(Value::Bool(on)) => Ok(on),
         Some(v) => Err(StoreError::BadValue(format!(
             "réglage {key} : {v} n'est pas un booléen"
@@ -140,6 +164,42 @@ pub fn set_download_limit(conn: &Connection, limit: Option<u64>) -> Result<(), S
         DOWNLOAD_LIMIT,
         &limit.map_or(Value::Null, Value::from),
     )
+}
+
+/// Limite de débit montant globale ; `None` : aucune.
+pub fn upload_limit(conn: &Connection) -> Result<Option<u64>, StoreError> {
+    match get(conn, UPLOAD_LIMIT)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) if n > 0 => Ok(Some(n)),
+            _ => Err(StoreError::BadValue(format!(
+                "réglage {UPLOAD_LIMIT} : {v} n'est pas un débit"
+            ))),
+        },
+    }
+}
+
+pub fn set_upload_limit(conn: &Connection, limit: Option<u64>) -> Result<(), StoreError> {
+    set(conn, UPLOAD_LIMIT, &limit.map_or(Value::Null, Value::from))
+}
+
+/// Ratio de partage des torrents ; `None` : sans limite. [`DEFAULT_RATIO`] tant que rien
+/// n'est enregistré.
+pub fn torrent_ratio(conn: &Connection) -> Result<Option<f64>, StoreError> {
+    match get(conn, TORRENT_RATIO)? {
+        None => Ok(Some(DEFAULT_RATIO)),
+        Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(r) if r.is_finite() && r >= 0.0 => Ok(Some(r)),
+            _ => Err(StoreError::BadValue(format!(
+                "réglage {TORRENT_RATIO} : {v} n'est pas un ratio"
+            ))),
+        },
+    }
+}
+
+pub fn set_torrent_ratio(conn: &Connection, ratio: Option<f64>) -> Result<(), StoreError> {
+    set(conn, TORRENT_RATIO, &ratio.map_or(Value::Null, Value::from))
 }
 
 #[cfg(test)]

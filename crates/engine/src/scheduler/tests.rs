@@ -580,6 +580,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::DownloadDirChanged { rev, .. }
                 | Event::FlagChanged { rev, .. }
                 | Event::NetworkChanged { rev, .. }
+                | Event::SettingChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),
@@ -2136,7 +2137,7 @@ mod network {
             .unwrap();
         wait_state(&mut events, &first, TaskState::Active).await;
 
-        engine.set_network(false).await.unwrap();
+        engine.set_network(false, false).await.unwrap();
         wait_state(&mut events, &first, TaskState::Queued).await;
         let snapshot = engine.snapshot().await.unwrap();
         assert!(!snapshot.network_usable);
@@ -2150,9 +2151,9 @@ mod network {
             assert_eq!(task(dir.path(), id).state, TaskState::Queued, "{id}");
         }
         // Le même état redit : rien à annoncer.
-        engine.set_network(false).await.unwrap();
+        engine.set_network(false, false).await.unwrap();
 
-        engine.set_network(true).await.unwrap();
+        engine.set_network(true, false).await.unwrap();
         let mut left: HashSet<String> = [first.clone(), second.clone()].into();
         let mut announced = 0;
         timeout(WAIT, async {

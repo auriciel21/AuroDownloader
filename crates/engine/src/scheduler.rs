@@ -236,6 +236,8 @@ pub enum Event {
     LimitsChanged {
         rev: u64,
         download_bps: Option<u64>,
+        /// Envoi (torrents, SPEC §7.16).
+        upload_bps: Option<u64>,
     },
     /// Réglage oui ou non changé (réservation de la place, empreintes voisines).
     FlagChanged {
@@ -243,10 +245,19 @@ pub enum Event {
         flag: Flag,
         on: bool,
     },
-    /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15).
+    /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) ; `metered` : facturé
+    /// au volume, sans partage de torrents (SPEC §7.16).
     NetworkChanged {
         rev: u64,
         usable: bool,
+        metered: bool,
+    },
+    /// Réglage changé, hors réglages oui ou non et dossier : sa clé et sa nouvelle valeur
+    /// (`torrent.ratioLimit`, SPEC §7.16).
+    SettingChanged {
+        rev: u64,
+        key: &'static str,
+        value: serde_json::Value,
     },
     /// Dossier des téléchargements changé : le dossier retenu désormais.
     DownloadDirChanged {
@@ -281,15 +292,19 @@ pub enum Event {
 pub struct Include {
     pub segments: bool,
     pub sources: bool,
+    /// Fichiers d'un torrent (SPEC §7.16).
+    pub files: bool,
 }
 
-/// Une tâche avec ses segments et ses sources, si demandés.
+/// Une tâche avec ses segments, ses sources et ses fichiers, si demandés.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDetails {
     pub task: TaskRow,
     /// Segments enregistrés, chacun avec ses octets reçus s'il est en cours de réception.
     pub segments: Option<Vec<(Segment, Option<u64>)>>,
     pub sources: Option<Vec<SourceRow>>,
+    /// Fichiers d'un torrent ; vide pour une tâche HTTP, ou avant la préparation.
+    pub files: Option<Vec<store::torrents::TorrentFile>>,
 }
 
 /// État complet du moteur à une révision donnée (`sync.snapshot`, SPEC §6.10).
@@ -302,12 +317,18 @@ pub struct Snapshot {
     pub queues: Vec<QueueRow>,
     /// Limite de débit globale (`None` : aucune).
     pub download_limit: Option<u64>,
+    /// Limite d'envoi globale (torrents ; `None` : aucune).
+    pub upload_limit: Option<u64>,
     /// Dossier des ajouts sans `destDir` ; `None` s'il n'y en a aucun.
     pub download_dir: Option<String>,
     /// Réglages oui ou non (F-10, F-11), dans l'ordre de [`Flag::ALL`].
     pub flags: Vec<(Flag, bool)>,
+    /// Ratio de partage des torrents : un nombre, ou `null` pour sans limite.
+    pub torrent_ratio: serde_json::Value,
     /// Le réseau convient aux téléchargements (SPEC §7.15).
     pub network_usable: bool,
+    /// Réseau facturé au volume : pas de partage de torrents (SPEC §7.16).
+    pub network_metered: bool,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -537,7 +558,12 @@ enum Command {
     SetDownloadDir(Option<String>, Reply<Option<String>>),
     Flag(Flag, Reply<bool>),
     SetFlag(Flag, bool, Reply<()>),
-    SetNetwork(bool, Reply<()>),
+    SetNetwork(bool, bool, Reply<()>),
+    UploadLimit(Reply<Option<u64>>),
+    SetUploadLimit(Option<u64>, Reply<()>),
+    TorrentRatio(Reply<Option<f64>>),
+    SetTorrentRatio(Option<f64>, Reply<()>),
+    SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
         schedule_id: Option<String>,
@@ -777,9 +803,46 @@ impl Engine {
 
     /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) : sans lui, les tâches
     /// en cours retournent en file et rien ne démarre. Dit par l'application ; vrai au
-    /// démarrage du moteur.
-    pub async fn set_network(&self, usable: bool) -> Result<(), EngineError> {
-        self.ask(|reply| Command::SetNetwork(usable, reply)).await
+    /// démarrage du moteur. `metered` : réseau facturé au volume, sans partage de torrents
+    /// (SPEC §7.16).
+    pub async fn set_network(&self, usable: bool, metered: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetNetwork(usable, metered, reply))
+            .await
+    }
+
+    /// Limite d'envoi globale (torrents, SPEC §7.16) ; `None` : aucune.
+    pub async fn upload_limit(&self) -> Result<Option<u64>, EngineError> {
+        self.ask(Command::UploadLimit).await
+    }
+
+    /// Change la limite d'envoi globale ; enregistrée, elle s'applique aussitôt.
+    pub async fn set_upload_limit(&self, limit: Option<u64>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetUploadLimit(limit, reply))
+            .await
+    }
+
+    /// Ratio de partage des torrents ; `None` : sans limite.
+    pub async fn torrent_ratio(&self) -> Result<Option<f64>, EngineError> {
+        self.ask(Command::TorrentRatio).await
+    }
+
+    /// Change le ratio de partage des torrents (`0` : pas de partage ; `None` : sans
+    /// limite). Vaut pour les partages qui commencent ensuite.
+    pub async fn set_torrent_ratio(&self, ratio: Option<f64>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetTorrentRatio(ratio, reply))
+            .await
+    }
+
+    /// Choisit les fichiers d'un torrent à télécharger (`task.setFiles`, SPEC §7.16), par
+    /// rang ; renvoie la tâche, avec sa nouvelle taille.
+    pub async fn set_files(
+        &self,
+        task_id: &str,
+        selected: Vec<u32>,
+    ) -> Result<TaskRow, EngineError> {
+        let id = task_id.to_owned();
+        self.ask(|reply| Command::SetFiles(id, selected, reply))
+            .await
     }
 
     /// Abonnement aux événements à partir de maintenant.
@@ -993,6 +1056,8 @@ enum Then {
     Requeue,
     /// L'annuler, avec ou sans son `.part`.
     Cancel { delete_files: bool },
+    /// Finir le partage d'un torrent (pause pendant `seeding`) : la tâche est terminée.
+    Complete,
 }
 
 struct Running {
@@ -1013,6 +1078,8 @@ enum RunNote {
     Prepared(String),
     /// Passage à `verifying` enregistré (F-11).
     Verifying(String),
+    /// Passage d'un torrent à `seeding` enregistré (SPEC §7.16).
+    Seeding(String),
 }
 
 struct Scheduler {
@@ -1046,6 +1113,9 @@ struct Scheduler {
     /// et celles en cours retournent en file. Dit par l'application (Android : réseau
     /// perdu, ou facturé avec « Wi-Fi seulement ») ; vrai au démarrage.
     network_usable: bool,
+    /// Réseau facturé au volume (SPEC §7.16) : les torrents ne partagent pas. Dit par
+    /// l'application Android ; faux au démarrage.
+    network_metered: bool,
     /// Session des torrents (SPEC §7.16), créée au premier torrent à démarrer.
     torrents: Torrents,
 }
@@ -1076,6 +1146,9 @@ impl Scheduler {
             .map(Path::to_path_buf)
             .unwrap_or_default();
         let torrents = Torrents::new(config.transfer.torrent.clone(), state_dir);
+        // Limite d'envoi (torrents) : lue ici ; une base illisible la laisse ouverte.
+        let upload_limit = settings::upload_limit(&conn).ok().flatten();
+        torrents.set_limits(download_limit, upload_limit);
         Scheduler {
             conn,
             config,
@@ -1098,6 +1171,7 @@ impl Scheduler {
             moved,
             moved_rx: Some(moved_rx),
             network_usable,
+            network_metered: false,
             torrents,
         }
     }
@@ -1209,6 +1283,15 @@ impl Scheduler {
                     self.changed(&task_id, TaskState::Active, TaskState::Verifying);
                 }
             }
+            RunNote::Seeding(task_id) => {
+                let Some(run) = self.running.get_mut(&task_id) else {
+                    return;
+                };
+                if run.shown == TaskState::Active {
+                    run.shown = TaskState::Seeding;
+                    self.changed(&task_id, TaskState::Active, TaskState::Seeding);
+                }
+            }
         }
     }
 
@@ -1255,11 +1338,24 @@ impl Scheduler {
             Err(_) => return,
         };
         let mut busy: HashMap<String, u32> = HashMap::new();
-        for r in self.running.values() {
+        // Un partage de torrent ne prend pas de place dans sa file (SPEC §7.16).
+        for r in self
+            .running
+            .values()
+            .filter(|r| r.shown != TaskState::Seeding)
+        {
             *busy.entry(r.queue_id.clone()).or_default() += 1;
         }
         for c in candidates {
             if self.running.contains_key(&c.task_id) || self.broken.contains(&c.task_id) {
+                continue;
+            }
+            // Partage interrompu : il reprend quand le réseau convient et n'est pas facturé
+            // au volume, sans compter dans la file ni suivre ses plages horaires.
+            if c.state == TaskState::Seeding {
+                if self.network_usable && !self.network_metered {
+                    self.launch(c.task_id, c.queue_id, c.state);
+                }
                 continue;
             }
             // Réseau qui ne convient pas (SPEC §7.15) : rien ne démarre, sauf le calcul d'une
@@ -1312,7 +1408,10 @@ impl Scheduler {
         // la révision de l'annonce le montre déjà (SPEC §6.10). `transfer::run` accepte
         // une tâche `active`, ou `verifying` (arrêt brutal pendant le calcul de
         // l'empreinte), qui reste dans son état.
-        let resumed = matches!(from, TaskState::Active | TaskState::Verifying);
+        let resumed = matches!(
+            from,
+            TaskState::Active | TaskState::Verifying | TaskState::Seeding
+        );
         if !resumed
             && change_state(&mut self.conn, &task_id, &Change::to(TaskState::Active)).is_err()
         {
@@ -1321,6 +1420,7 @@ impl Scheduler {
         }
         let shown = match from {
             TaskState::Verifying => TaskState::Verifying,
+            TaskState::Seeding => TaskState::Seeding,
             _ => TaskState::Active,
         };
         let throttle = self.throttle_for(&task_id, &queue_id);
@@ -1532,9 +1632,24 @@ impl Scheduler {
             Command::Flag(flag, reply) => {
                 let _ = reply.send(settings::flag(&self.conn, flag).map_err(Into::into));
             }
-            Command::SetNetwork(usable, reply) => {
-                self.set_network(usable);
+            Command::SetNetwork(usable, metered, reply) => {
+                self.set_network(usable, metered);
                 let _ = reply.send(Ok(()));
+            }
+            Command::UploadLimit(reply) => {
+                let _ = reply.send(settings::upload_limit(&self.conn).map_err(Into::into));
+            }
+            Command::SetUploadLimit(limit, reply) => {
+                let _ = reply.send(self.set_upload_limit(limit));
+            }
+            Command::TorrentRatio(reply) => {
+                let _ = reply.send(settings::torrent_ratio(&self.conn).map_err(Into::into));
+            }
+            Command::SetTorrentRatio(ratio, reply) => {
+                let _ = reply.send(self.set_torrent_ratio(ratio));
+            }
+            Command::SetFiles(task_id, selected, reply) => {
+                let _ = reply.send(self.set_files(&task_id, &selected));
             }
             Command::SetFlag(flag, on, reply) => {
                 let result = settings::set_flag(&self.conn, flag, on);
@@ -1566,12 +1681,15 @@ impl Scheduler {
             end_action: self.planning.pending.clone(),
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,
+            upload_limit: settings::upload_limit(&self.conn)?,
             download_dir: self.download_dir()?,
             flags: Flag::ALL
                 .into_iter()
                 .map(|f| Ok((f, settings::flag(&self.conn, f)?)))
                 .collect::<Result<_, StoreError>>()?,
+            torrent_ratio: ratio_json(settings::torrent_ratio(&self.conn)?),
             network_usable: self.network_usable,
+            network_metered: self.network_metered,
         })
     }
 
@@ -1618,11 +1736,76 @@ impl Scheduler {
         Self::check_speed_limit(limit)?;
         settings::set_download_limit(&self.conn, limit)?;
         self.limits.global.set_rate(limit);
+        self.limits_changed()
+    }
+
+    /// Limite d'envoi globale (torrents, SPEC §7.16).
+    fn set_upload_limit(&mut self, limit: Option<u64>) -> Result<(), EngineError> {
+        Self::check_speed_limit(limit)?;
+        settings::set_upload_limit(&self.conn, limit)?;
+        self.limits_changed()
+    }
+
+    /// Applique les limites globales aux torrents et les annonce.
+    fn limits_changed(&mut self) -> Result<(), EngineError> {
+        let download_bps = settings::download_limit(&self.conn)?;
+        let upload_bps = settings::upload_limit(&self.conn)?;
+        self.torrents.set_limits(download_bps, upload_bps);
         self.emit(|rev| Event::LimitsChanged {
             rev,
-            download_bps: limit,
+            download_bps,
+            upload_bps,
         });
         Ok(())
+    }
+
+    /// Ratio de partage des torrents (SPEC §7.16) : un nombre réel positif ou nul, ou
+    /// `None` pour sans limite.
+    fn set_torrent_ratio(&mut self, ratio: Option<f64>) -> Result<(), EngineError> {
+        if ratio.is_some_and(|r| !r.is_finite() || r < 0.0) {
+            return Err(EngineError::BadRequest(
+                "torrent.ratioLimit : un nombre positif ou nul, ou null".into(),
+            ));
+        }
+        settings::set_torrent_ratio(&self.conn, ratio)?;
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::TORRENT_RATIO,
+            value: ratio_json(ratio),
+        });
+        Ok(())
+    }
+
+    /// Fichiers choisis d'un torrent (`task.setFiles`, SPEC §7.16) : avant la fin du
+    /// téléchargement seulement ; une exécution en cours suit le nouveau choix.
+    fn set_files(&mut self, task_id: &str, selected: &[u32]) -> Result<TaskRow, EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        if task.kind != TaskKind::Torrent {
+            return Err(EngineError::BadRequest(
+                "task.setFiles : seulement pour un torrent".into(),
+            ));
+        }
+        if !matches!(
+            task.state,
+            TaskState::Queued
+                | TaskState::Active
+                | TaskState::Paused
+                | TaskState::RetryWait
+                | TaskState::Failed
+        ) {
+            return Err(Self::invalid(&task, "choix des fichiers"));
+        }
+        if task.file_name.is_none() {
+            return Err(EngineError::BadRequest(
+                "task.setFiles : fichiers pas encore connus (métadonnées attendues)".into(),
+            ));
+        }
+        store::torrents::set_selected(&mut self.conn, task_id, selected).map_err(|e| match e {
+            StoreError::BadValue(m) => EngineError::BadRequest(format!("task.setFiles : {m}")),
+            e => e.into(),
+        })?;
+        self.announce_prepared(task_id);
+        Ok(load_task(&self.conn, task_id)?)
     }
 
     fn update_task(&mut self, task_id: &str, update: TaskUpdate) -> Result<TaskRow, EngineError> {
@@ -2022,7 +2205,12 @@ impl Scheduler {
 
     fn pause(&mut self, task_id: &str) -> Result<(), EngineError> {
         if let Some(run) = self.running.get_mut(task_id) {
-            run.then = Then::Keep;
+            // Pause d'un partage : il s'arrête, et la tâche est terminée (SPEC §7.16).
+            run.then = if run.shown == TaskState::Seeding {
+                Then::Complete
+            } else {
+                Then::Keep
+            };
             let _ = run.stop.send(true);
             return Ok(());
         }
@@ -2030,8 +2218,20 @@ impl Scheduler {
         match task.state {
             TaskState::Queued | TaskState::RetryWait => self.set_state(task_id, &user_pause()),
             TaskState::Paused => Ok(()),
+            TaskState::Seeding => self.stop_sharing(task_id),
             _ => Err(Self::invalid(&task, "mise en pause")),
         }
+    }
+
+    /// Termine le partage d'un torrent qui ne tourne pas (SPEC §7.16).
+    fn stop_sharing(&mut self, task_id: &str) -> Result<(), EngineError> {
+        torrent::finish_sharing(&mut self.conn, task_id).map_err(|e| match e {
+            TransferError::Store(e) => e.into(),
+            e => EngineError::BadRequest(e.to_string()),
+        })?;
+        self.drop_secrets(task_id);
+        self.changed(task_id, TaskState::Seeding, TaskState::Completed);
+        Ok(())
     }
 
     fn resume(&mut self, task_id: &str) -> Result<(), EngineError> {
@@ -2053,9 +2253,11 @@ impl Scheduler {
                 self.broken.remove(task_id);
                 self.set_state(task_id, &Change::to(TaskState::Queued))
             }
-            TaskState::Queued | TaskState::Active | TaskState::Verifying | TaskState::RetryWait => {
-                Ok(())
-            }
+            TaskState::Queued
+            | TaskState::Active
+            | TaskState::Verifying
+            | TaskState::RetryWait
+            | TaskState::Seeding => Ok(()),
             _ => Err(Self::invalid(&task, "reprise")),
         }
     }
@@ -2075,6 +2277,14 @@ impl Scheduler {
                 self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
                 if delete_files {
                     delete_part(&self.conn, &task)?;
+                }
+                Ok(())
+            }
+            // Partage interrompu : ses fichiers sont terminés (SPEC §7.16).
+            TaskState::Seeding => {
+                self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
+                if delete_files {
+                    delete_final(&self.conn, &task)?;
                 }
                 Ok(())
             }
@@ -2112,10 +2322,16 @@ impl Scheduler {
         } else {
             None
         };
+        let files = if include.files {
+            Some(store::torrents::load_files(&self.conn, task_id)?)
+        } else {
+            None
+        };
         Ok(TaskDetails {
             task,
             segments,
             sources,
+            files,
         })
     }
 
@@ -2441,29 +2657,36 @@ impl Scheduler {
 
     /// Réseau utilisable ou non (SPEC §7.15) : sans lui, les tâches en cours retournent en
     /// file, sauf le calcul d'une empreinte, et rien ne démarre ; avec lui, elles repartent.
-    fn set_network(&mut self, usable: bool) {
-        if self.network_usable == usable {
+    fn set_network(&mut self, usable: bool, metered: bool) {
+        if self.network_usable == usable && self.network_metered == metered {
             return;
         }
         self.network_usable = usable;
+        self.network_metered = metered;
         if usable {
             // Une erreur de réseau survenue avant que l'application dise la coupure : la tâche
             // repart maintenant, sans attendre son délai (SPEC §7.15).
             let _ = tasks::retry_network_waits(&self.conn, now_ms());
         }
-        if !usable {
-            for run in self.running.values_mut() {
-                // Une tâche que l'utilisateur arrête ou annule garde sa suite.
-                if run.shown != TaskState::Verifying
-                    && run.then == Then::Keep
-                    && !*run.stop.borrow()
-                {
-                    run.then = Then::Requeue;
-                    let _ = run.stop.send(true);
-                }
+        for run in self.running.values_mut() {
+            // Sans réseau, tout s'arrête ; sur un réseau facturé, seuls les partages de
+            // torrents (SPEC §7.16). Une tâche que l'utilisateur arrête ou annule garde sa
+            // suite ; un partage arrêté reste `seeding` et reprendra.
+            let stops = !usable || (metered && run.shown == TaskState::Seeding);
+            if stops
+                && run.shown != TaskState::Verifying
+                && run.then == Then::Keep
+                && !*run.stop.borrow()
+            {
+                run.then = Then::Requeue;
+                let _ = run.stop.send(true);
             }
         }
-        self.emit(|rev| Event::NetworkChanged { rev, usable });
+        self.emit(|rev| Event::NetworkChanged {
+            rev,
+            usable,
+            metered,
+        });
     }
 
     fn begin_shutdown(&mut self, done: Option<oneshot::Sender<()>>) {
@@ -2515,8 +2738,18 @@ impl Scheduler {
                         true => delete_part(&self.conn, &task),
                         false => Ok(()),
                     }),
+                // Partage arrêté (SPEC §7.16) : les fichiers sont terminés.
+                TaskState::Seeding => self
+                    .set_state(task_id, &Change::to(TaskState::Cancelled))
+                    .and_then(|()| match delete_files {
+                        true => delete_final(&self.conn, &task),
+                        false => Ok(()),
+                    }),
                 _ => Ok(()),
             },
+            // Pause pendant le partage : la tâche est terminée.
+            Then::Complete if task.state == TaskState::Seeding => self.stop_sharing(task_id),
+            Then::Complete => Ok(()),
         };
     }
 
@@ -2624,6 +2857,11 @@ async fn reveal(
     Ok(list)
 }
 
+/// Ratio de partage tel que le protocole le montre : un nombre, ou `null` (sans limite).
+fn ratio_json(ratio: Option<f64>) -> serde_json::Value {
+    ratio.map_or(serde_json::Value::Null, serde_json::Value::from)
+}
+
 /// Un lien magnet (SPEC §7.16), quelle que soit la casse du schéma.
 fn is_magnet(url: &str) -> bool {
     url.get(..7)
@@ -2702,13 +2940,17 @@ async fn execute(
     // la signale à la boucle.
     // Le premier avancement de la vérification de l'empreinte suit le passage à
     // `verifying` (F-11), qu'il signale de même.
-    let (mut first, mut verifying) = (true, false);
+    let (mut first, mut verifying, mut seeding) = (true, false, false);
     let mut on_progress = |progress: Progress| {
         if std::mem::take(&mut first) {
             let _ = prepared.send(RunNote::Prepared(task_id.to_owned()));
         }
         if progress.verified.is_some() && !std::mem::replace(&mut verifying, true) {
             let _ = prepared.send(RunNote::Verifying(task_id.to_owned()));
+        }
+        // Un torrent passe au partage (SPEC §7.16) : annoncé comme `verifying`.
+        if progress.seeding && !std::mem::replace(&mut seeding, true) {
+            let _ = prepared.send(RunNote::Seeding(task_id.to_owned()));
         }
         live.send_replace(Arc::clone(&progress.segments));
         let _ = events.send(Event::Progress {
