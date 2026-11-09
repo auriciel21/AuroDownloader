@@ -398,7 +398,13 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   copies corrigées de librqbit, torrents en attente sans l'interface, torrents seulement ;
   décisions de l'utilisateur ; essai réel par son VPN sous Windows le même jour) ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
-  essais sur des vidéos sous licence libre ; 5. interfaces (bureau, CLI, extension ;
+  essais sur des vidéos sous licence libre ; conception SPEC 7.17 (décisions de
+  l'utilisateur du 2026-11-09 : architecture mixte, yt-dlp n'extrait que, le moteur
+  télécharge les flux directs et yt-dlp les flux fragmentés, ffmpeg fusionne ; outils
+  téléchargés au besoin sur accord, empreinte vérifiée ; yt-dlp mis à jour seul, signature
+  vérifiée ; essais réels sans YouTube, exception à « pas d'exécutable téléchargé » pour
+  yt-dlp et ffmpeg officiels) : 4a. outils ; 4b. extraction et ajout ; 4c. flux ; 4d. fusion,
+  contrôle et banc de reprise ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

@@ -813,6 +813,8 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `TORRENT_SESSION` | oui | La session des torrents ne démarre pas (port d'écoute pris, réseau) ; depuis le 2026-11-09, section 7.16 |
 | `TORRENT_FAILED` | non | Erreur du torrent lui-même : métadonnées invalides, refus de la bibliothèque, même torrent déjà en cours ; depuis le 2026-11-09, section 7.16 |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
+| `TOOLS_MISSING` | non | yt-dlp ou ffmpeg n'est pas installé (section 7.17, depuis le 2026-11-09) |
+| `MERGE_FAILED` | non | ffmpeg n'a pas pu fusionner les flux, ou ffprobe refuse le fichier produit (section 7.17) |
 
 ### 6.9 Portées des jetons
 
@@ -1282,6 +1284,90 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
   - le protocole (réglage, valeurs refusées, instantané, notification).
 - **Essai réel** (2026-11-09, Windows 11) : VPN de l'utilisateur (« Ma Protection » du Pack Vie Digitale, carte Wintun `FSVpnSDK-HydraTunnel`, une adresse IPv4 et une adresse locale au lien), `aurod` d'essai lié à elle, netinst Debian 13.7 (756 Mio) par lien magnet (DHT seul), ratio 0, envoi limité à 100 Kio/s, réception à 2 Mio/s. Relevé toutes les 5 s : jusqu'à 263 connexions TCP et les deux sockets UDP, toutes sur l'adresse du VPN, aucune ailleurs. À 4,4 %, l'utilisateur a coupé le VPN : le torrent est revenu en file en moins de 5 s, sans plus aucune connexion ; au retour du VPN, il est reparti seul sur une nouvelle session, liée à lui. Terminé en 7 min 20 s, empreinte publiée juste.
 - **Reste de l'étape 3** : la durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie ; la liaison sous Android n'a pas été essayée sur un appareil.
+
+### 7.17 Vidéo (phase 5, conception du 2026-11-09)
+
+Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par ffmpeg (F-22 à F-25). Windows et Linux seulement en v1 : le moteur Android n'annonce pas la capacité `media`, et ses méthodes y rendent `CAPABILITY_MISSING`.
+
+**Décisions de l'utilisateur (2026-11-09).**
+- Architecture mixte. yt-dlp ne fait qu'extraire : adresses des flux, en-têtes, formats. Le moteur télécharge lui-même les flux directs, avec la règle 1, les limites, la reprise vérifiée et les segments. Il ne confie à yt-dlp que les flux fragmentés (HLS, DASH à fragments). ffmpeg fusionne ensuite les flux.
+- yt-dlp et ffmpeg sont téléchargés au besoin, avec l'accord de l'utilisateur, depuis leurs publications officielles, empreinte publiée vérifiée. Rien de plus dans l'installateur.
+- yt-dlp se met à jour automatiquement : au plus une fois par jour, empreinte et signature du projet vérifiées, remplacement seulement entre deux exécutions.
+- Essais réels sur des vidéos sous licence libre (PeerTube, Wikimedia Commons, Internet Archive), jamais YouTube.
+
+**Outils** (`media::tools`). Dossier `tools/` à côté de la base.
+- **yt-dlp** : fichier de la plateforme publié par le projet (`github.com/yt-dlp/yt-dlp/releases`) :
+  - Windows : `yt-dlp.exe`, ou `yt-dlp_arm64.exe` sur ARM ;
+  - Linux : `yt-dlp_linux`, ou `yt-dlp_linux_aarch64`.
+  - Le moteur télécharge aussi `SHA2-256SUMS` et sa signature `SHA2-256SUMS.sig`. Il vérifie la signature avec la clé publique du projet, intégrée au moteur (`public.key` du dépôt de yt-dlp, empreinte notée dans le code), puis l'empreinte du fichier. Le fichier est écrit sous un nom provisoire, vidé sur disque, puis renommé.
+- **ffmpeg et ffprobe** :
+  - Windows : version stable des builds BtbN (`ffmpeg-n8.1-latest-win64-gpl-8.1.zip`, `github.com/BtbN/FFmpeg-Builds`). Empreinte vérifiée dans `checksums.sha256` de la même publication ; les deux exécutables sont extraits de l'archive.
+  - Linux : `ffmpeg` et `ffprobe` du système s'ils sont dans le `PATH`, sinon la même publication BtbN (`linux64` ou `linuxarm64`, `.tar.xz`).
+  - BtbN ne signe pas ses builds : l'empreinte ne protège que contre un fichier abîmé, pas contre une publication compromise. Limite acceptée, à revoir si une source signée apparaît.
+- **Installation** : jamais d'elle-même. `media.tools` rend l'état des outils : présents ou non, version, origine (téléchargés ou système). `media.installTools` les installe, sur l'accord que l'interface a demandé à l'utilisateur. Sans outils, `media.probe` et l'ajout d'une vidéo rendent `TOOLS_MISSING`.
+- **Mise à jour de yt-dlp** (F-25) : réglage `media.autoUpdate` (vrai par défaut), désactivable comme toute vérification de mise à jour (section 8.2).
+  - Au plus une fois par 24 heures, à l'occasion d'un `media.probe` ou d'un ajout, le moteur lit la dernière publication. Si elle diffère de la version installée, il la télécharge et la vérifie comme à l'installation.
+  - Il la met en place quand aucun yt-dlp ne tourne, et l'annonce par `engine.warning` (`YTDLP_UPDATED`). Un échec garde l'ancienne version (`engine.warning`, `YTDLP_UPDATE_FAILED`).
+  - ffmpeg ne se met à jour qu'à la demande (`media.installTools`).
+- **Lancement des processus** :
+  - arguments passés un à un, jamais par un interpréteur de commandes ;
+  - l'adresse de la page placée après `--`, pour qu'elle ne puisse pas passer pour une option ;
+  - adresses `http` et `https` seulement ;
+  - sans fenêtre de console sous Windows, et tués avec leur exécution.
+  - Les messages de yt-dlp ne citent pas l'adresse dans les journaux du moteur (section 8.2).
+
+**Extraction** (`media.probe`, portée `add`).
+- `yt-dlp -J --no-playlist -- <pageUrl>`, délai de 90 s : titre, durée, extracteur, vignette.
+- `formats[]` avec, pour chaque format : `formatId`, `ext`, codecs vidéo et audio, `width`, `height`, `fps`, débit, taille (exacte ou estimée), `protocol`, `drm`.
+- Langues des sous-titres.
+- Une page de liste de lecture ne rend que sa vidéo (`--no-playlist`) ; les listes viendront plus tard, par l'analyse de liens (F-29).
+- Échec : `EXTRACTOR_FAILED`, avec le dernier message de yt-dlp, sans l'adresse.
+
+**Ajout** (`task.add` avec `media`).
+- `media` porte `pageUrl` et éventuellement :
+  - `format` (sélecteur de yt-dlp ; par défaut `bv*+ba/b`, la meilleure vidéo et le meilleur audio) ;
+  - `container` (`mp4`, `mkv`, `webm` ; par défaut, automatique) ;
+  - `subtitles` (langues).
+- La tâche est de genre `media`, avec sa ligne `media_jobs` (migration 1). Elle prend le titre de la vidéo pour nom d'affichage dès la résolution.
+- Un format protégé par DRM est refusé (section 8.3) : le moteur ne le télécharge pas, même si yt-dlp le proposait.
+
+**Exécution** (`media::run`). États : `queued` → `active` (résolution et flux) → `post_processing` (fusion) → `completed`.
+- **Résolution** : `yt-dlp -J -f <format> -- <pageUrl>` donne les flux retenus (`requested_formats`, ou le format seul). Chaque flux est enregistré comme fichier de la tâche (`task_files`), avec son genre (vidéo, audio, sous-titres), son protocole et son nom provisoire. Les adresses et en-têtes des flux ne sont gardés qu'en mémoire : ils expirent, et un `Cookie` fourni par yt-dlp est un secret (section 5.1). Chaque exécution refait la résolution.
+- **Flux direct** (`http`, `https`, sans fragments) : téléchargé par le moteur, comme une tâche HTTP, dans `<nom>.f<id>.<ext>.part`.
+  - Les règles habituelles s'appliquent : segments et règle 1 (base `segments` du flux), limites, reprise par `If-Range`, nom de fichier nettoyé.
+  - Les en-têtes de yt-dlp s'appliquent (`User-Agent`, `Referer`…).
+  - Une adresse expirée (`403`, `410`) fait refaire la résolution, au plus trois fois, puis le téléchargement reprend sur la nouvelle adresse.
+- **Flux fragmenté** (`m3u8`, `m3u8_native`, `http_dash_segments`…) : confié à `yt-dlp -f <id> --newline --progress-template … -o <fichier du flux>`. Le moteur lit l'avancement sur la sortie de yt-dlp et le publie comme celui d'un flux.
+  - Pause : yt-dlp est arrêté ; à la reprise, il est relancé et reprend ses fichiers partiels.
+  - À la fin, le moteur vide le fichier sur disque avant d'enregistrer le flux comme terminé.
+  - Ici la règle 1 ne vaut qu'à la fin du flux. Une coupure de la machine pendant ce flux peut laisser des fragments perdus que yt-dlp ne revérifie pas. Limite acceptée avec l'architecture mixte ; ffprobe contrôle le fichier fusionné.
+- **Fusion** (`post_processing`, F-23) : `ffmpeg -i <flux>… -map … -c copy` vers un fichier provisoire, sans réencodage.
+  - Conteneur : celui demandé, sinon `mp4` si tous les flux sont `mp4` ou `m4a`, `webm` si tous sont `webm`, `mkv` sinon.
+  - `ffprobe` vérifie que le fichier produit se lit et qu'il a la durée annoncée, à 2 s près. Le fichier est vidé sur disque, renommé à son nom final (`nom (1).ext` si le nom est pris), puis les fichiers des flux sont effacés.
+  - Un flux unique est seulement contrôlé par `ffprobe` et renommé, sans ffmpeg.
+  - Une coupure pendant la fusion la recommence : le fichier provisoire est effacé au démarrage.
+- **Sous-titres** (F-24, priorité C) : téléchargés par le moteur, gardés à côté de la vidéo (`<nom>.<langue>.<ext>`). Sous-étape à part, après le reste.
+- **Erreurs** :
+  - `EXTRACTOR_FAILED` : la résolution échoue ;
+  - `TOOLS_MISSING` (nouveau, non réessayé) : yt-dlp ou ffmpeg absent ;
+  - `MERGE_FAILED` (nouveau, non réessayé) : ffmpeg échoue, ou ffprobe refuse le fichier produit ;
+  - les erreurs réseau et disque des flux sont celles d'une tâche HTTP.
+
+**Protocole** : `media.probe`, `media.tools`, `media.installTools` (portée `admin`), `task.add` avec `media`, réglage `media.autoUpdate`, `engine.warning` (`YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`). Capacité `media` annoncée sous Windows et Linux. Détail en section 6.5, à chaque sous-étape.
+
+**Tests** :
+- Faux yt-dlp et faux ffmpeg : petits programmes de test qui rendent une extraction donnée et écrivent des fichiers, sur un serveur HTTP local.
+- Faux serveur de publications (outils, empreintes, signature faite par une clé de test).
+- Tests ignorés par défaut avec les vrais outils (`AURO_YTDLP`, `AURO_FFMPEG`), sur une page locale avec une vidéo directe et une liste HLS.
+- Banc de reprise des vidéos sous arrêt brutal, comme ceux des tâches HTTP et des torrents.
+- Essais réels sous Windows et Linux.
+
+**Sous-étapes** :
+- 4a. Outils : installation, vérification (signature, empreintes), mise à jour, `media.tools`, `media.installTools`.
+- 4b. Extraction et ajout : `media.probe`, `task.add` avec `media`, `media_jobs`.
+- 4c. Flux : directs par le moteur, fragmentés par yt-dlp, pause et reprise, adresse expirée.
+- 4d. Fusion et contrôle (ffmpeg, ffprobe), `post_processing`, reprise après coupure ; banc de reprise des vidéos.
+- 4e. Essais réels ; sous-titres (F-24).
 
 ## 8. Sécurité, vie privée et cadre légal
 
