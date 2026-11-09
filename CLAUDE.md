@@ -367,9 +367,13 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   torrent : librqbit (Rust) face à libtorrent-rasterbar (C++) (fait le même jour,
   `experiments/torrent/README.md` ; décision de l'utilisateur : librqbit, sans
   chiffrement du protocole, sources web ni torrents v2 en v1 ; la liaison à une
-  interface sous Windows sera ajoutée par le projet) ; 3. module `torrent` du moteur (magnet, `.torrent`, DHT,
-  PEX, choix des fichiers, débit montant, liaison à une interface réseau, banc de
-  reprise) ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
+  interface sous Windows sera ajoutée par le projet) ; 3. module `torrent` du moteur,
+  conception SPEC 7.16 (décisions de l'utilisateur : partage jusqu'au ratio 1, port
+  d'écoute sans UPnP ; revérification complète à chaque démarrage, sans reprise rapide) :
+  3a. ajout (magnet, `.torrent`) et téléchargement jusqu'à la fin, essaim local dans les
+  tests ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau ;
+  3c. banc de reprise et écritures perdues ; 3d. liaison à une interface (VPN), Windows
+  compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
   essais sur des vidéos sous licence libre ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo

@@ -90,12 +90,22 @@ librqbit donne `96d69b45…`, libtorrent `31254278…`.
 - **libtorrent** fait confiance à ses données de reprise sans revérifier les morceaux.
 - **Aucune des deux** ne revérifie le fichier entier à la fin.
 
-Conséquence pour le moteur, quelle que soit la bibliothèque. La règle 1 de la SPEC (5.6 :
-octets vidés sur disque avant d'être comptés) et l'intégrité (7.9) devront venir de notre
-code :
-- le stockage du torrent passe par le module `io` (écritures positionnées, `SyncGate`) ;
-- la liste des morceaux reçus ne s'enregistre en base qu'après le vidage des données ;
-- tous les morceaux sont revérifiés à la fin, dans un état `verifying` comme pour F-11.
+**Contre-épreuve avec librqbit sans reprise rapide ni persistance** (`AURO_FULL_CHECK=1`,
+option `overwrite` pour reprendre les fichiers déjà là). Au redémarrage, librqbit
+recalcule l'empreinte de chaque morceau présent sur disque :
+- les 4 Mio effacés sont vus manquants et retéléchargés ;
+- l'empreinte finale est juste ;
+- la vérification a pris moins de 2 s pour 756 Mio.
+
+C'est le mode retenu pour le moteur : la reprise part des données, jamais d'un état
+enregistré.
+
+Conséquence pour le moteur, quelle que soit la bibliothèque : l'intégrité (SPEC 5.6 et
+7.9) doit venir de notre code. Avec librqbit, la conception retenue (SPEC 7.16) est
+la suivante :
+- aucune reprise rapide : chaque démarrage d'un torrent revérifie ce qui est sur disque ;
+- la progression enregistrée en base n'est qu'une indication ;
+- les fichiers sont vidés sur disque avant que la tâche ne soit déclarée terminée.
 
 ### Android
 

@@ -31,6 +31,9 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&state)?;
     std::fs::create_dir_all(dir)?;
 
+    // AURO_FULL_CHECK=1 : ni reprise rapide ni persistance ; à chaque lancement, librqbit
+    // revérifie tout ce qui est sur disque (mode retenu pour le moteur).
+    let full_check = std::env::var_os("AURO_FULL_CHECK").is_some();
     let started = Instant::now();
     let session = Session::new_with_opts(
         PathBuf::from(dir),
@@ -42,8 +45,8 @@ async fn main() -> anyhow::Result<()> {
                 }),
                 ..Default::default()
             }),
-            fastresume: true,
-            persistence: Some(SessionPersistenceConfig::Json {
+            fastresume: !full_check,
+            persistence: (!full_check).then(|| SessionPersistenceConfig::Json {
                 folder: Some(state.join("session")),
             }),
             listen: None,
@@ -69,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
             add,
             Some(AddTorrentOptions {
                 output_folder: Some(dir.clone()),
+                // Reprendre les fichiers déjà là (sans persistance, librqbit les refuse).
+                overwrite: true,
                 ..Default::default()
             }),
         )

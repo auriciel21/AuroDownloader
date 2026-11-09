@@ -1135,6 +1135,55 @@ Application Android (phase 4, étape 4) :
 - Essais du 2026-11-09 sur le téléphone Galaxy S25 Ultra, passé entre-temps à Android 17 (API 37 ; l'application vise l'API 35) : DVD Debian de 3,7 Gio ouvert au tout premier démarrage, application à l'écran, 41 Mio/s, empreinte juste ; le même, application en arrière-plan sous un transfert lancé par l'utilisateur, 40 Mio/s, notification à jour, transfert fermé à la fin, empreinte juste ; le même encore, processus de l'application tué (`kill -9`) à 1,0 Gio : Android relance aussitôt le processus pour le transfert, qui reprend sans repartir de zéro et finit avec l'empreinte juste. Chaque empreinte est vérifiée par le moteur, puis recalculée sur l'appareil. L'antivirus AVG du téléphone signale l'application (paquet de mise au point signé par la clé d'essai, installé par adb) comme « application suspecte » à son installation : à suivre pour la diffusion (paquet signé, distribution par une boutique).
 - Premier démarrage par un lien (essai du 2026-11-09) : le moteur d'Android n'a pas de dossier « Téléchargements » du système à prendre par défaut, et l'application ne règle `downloads.dir` qu'après une première réponse du moteur ; un ajout arrivé avant était refusé (`DEST_NOT_WRITABLE`), et le lien perdu. Les ajouts de l'application attendent désormais la fin de ce réglage.
 
+### 7.16 Torrent (phase 5, conception du 2026-11-09)
+
+Conception arrêtée après le prototype (`experiments/torrent/README.md`) et les décisions de l'utilisateur du 2026-11-09. Mise en œuvre par étapes (3a à 3e, CLAUDE.md) ; ce qui n'est pas encore fait reste refusé par `CAPABILITY_MISSING`.
+
+**Bibliothèque.** librqbit 9.1.0, sans ses fonctions par défaut, avec `rust-tls` (rustls et aws-lc, comme le reste du moteur), derrière le module `torrent` : rien d'autre dans le moteur ne la connaît, pour pouvoir en changer (section 9.2). Une seule session par moteur, créée au premier torrent à démarrer : un moteur sans torrent n'ouvre ni port ni DHT.
+
+**Ajout.** `task.add` reçoit dans `sources[0]` soit `url`, un lien `magnet:`, soit `torrent`, le contenu d'un fichier `.torrent` en base64. La tâche est de type `torrent`. Les métadonnées d'un lien magnet s'obtiennent au démarrage de la tâche, par le DHT et les pairs, comme la préparation d'un téléchargement HTTP (section 7.1). La table `torrents` garde l'empreinte d'information, le lien et les métadonnées une fois connues ; `task_files` reçoit les fichiers, tous choisis par défaut.
+
+**Fichiers.**
+- Torrent à un fichier : `destDir/<nom>`. À plusieurs fichiers : `destDir/<nom du torrent>/<chemins>`.
+- Chaque composant de nom passe par `net::filename::sanitize` (section 8.1 : un chemin du torrent ne sort jamais du dossier).
+- Le premier élément (fichier ou dossier) évite un nom déjà pris, comme en HTTP (« nom (1) »).
+- Chaque fichier s'écrit sous `<nom>.part` jusqu'à la fin du torrent.
+- Les morceaux à cheval sur un fichier non choisi écrivent une partie de ce fichier : il reste en `.part` et part avec la tâche.
+
+**Écriture et reprise : la vérité vient des données.**
+- Le prototype l'a montré : librqbit et libtorrent font tous deux confiance à leur état de reprise, et finissent avec un fichier faux après des écritures perdues.
+- Le moteur n'utilise donc ni la reprise rapide de librqbit ni sa persistance. Chaque démarrage d'une tâche torrent (ajout, reprise, redémarrage du moteur) revérifie l'empreinte de chaque morceau présent sur disque.
+- Pendant cette vérification, la tâche est `active`, avec la phase `checking` dans son avancement. Elle a pris moins de 2 s pour 756 Mio au prototype.
+- En conséquence, `done_bytes` et `task_files.done_bytes` ne sont qu'une indication pour un torrent. La règle 1 de la section 5.6, qui sert à ne compter que des octets vidés sur disque, n'y est pas nécessaire : un compteur trop optimiste ne fait rien perdre, puisque la reprise ne s'en sert pas.
+- Le stockage du torrent est celui du moteur (trait `TorrentStorage` de librqbit) : écritures et lectures positionnées dans les `.part`.
+
+**Fin.**
+- Quand tous les morceaux des fichiers choisis sont là, chaque fichier est vidé sur disque, puis prend son nom final.
+- La tâche passe ensuite à `seeding`, ou à `completed` si aucun partage n'est demandé.
+- Un arrêt entre ces étapes laisse la tâche `active`. Au redémarrage, le stockage retrouve chaque fichier sous l'un ou l'autre nom, et la vérification complète refait le point.
+
+**Partage** (décision de l'utilisateur du 2026-11-09 : jusqu'au ratio 1).
+- Réglage `torrent.ratioLimit`, 1,0 par défaut : nombre réel, `0` pour ne pas partager, `null` pour partager sans limite. `torrents.ratio_limit` le remplace pour une tâche.
+- `torrents.seed_time_limit_s` borne la durée, si l'utilisateur la fixe.
+- La tâche reste `seeding` jusqu'à avoir envoyé `ratioLimit` × la taille des fichiers choisis, puis passe à `completed` et quitte la session.
+- `torrents.uploaded_bytes` cumule les octets envoyés, d'une session à l'autre.
+- Sous Android, le partage n'a lieu que sur un réseau sans frais au volume (précisé à l'étape 3b).
+
+**Réseau** (décision de l'utilisateur du 2026-11-09 : port d'écoute, sans UPnP).
+- Connexions entrantes en TCP sur un port fixe : `torrent.listenPort`, tiré au hasard entre 49152 et 65535 au premier démarrage de la session, puis gardé. Sous Windows, le pare-feu demande une fois s'il faut autoriser `aurod`.
+- Pas d'UPnP par défaut (`torrent.upnp`, faux) : le moteur ne modifie pas la box.
+- DHT actif, avec sa table gardée dans le dossier de données du moteur. Échange de pairs (PEX) actif. Pas de découverte sur le réseau local. uTP inactif (expérimental dans librqbit).
+- Liaison à une interface (VPN, section 8.1) : étape 3e, y compris sous Windows, que librqbit ne gère pas.
+- `engine.setNetwork` (section 7.15) arrête les torrents comme les autres tâches.
+
+**Limites de débit.**
+- La limite globale de réception s'applique aux torrents par le limiteur de librqbit, à part de celle des téléchargements HTTP. Les deux ensemble peuvent donc dépasser la limite globale, jusqu'au double.
+- `uploadBps` (`limits.set`) limite l'envoi.
+- `speedLimitBps` d'une tâche torrent limite sa réception.
+- La limite d'une file ne s'applique pas aux torrents en v1.
+
+**Pas en v1** (décision de l'utilisateur du 2026-11-09) : chiffrement du protocole (MSE/PE), sources web (BEP 19), torrents v2 (BEP 52).
+
 ## 8. Sécurité, vie privée et cadre légal
 
 Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ailleurs et ouvre un port réseau local : ce sont les deux surfaces d'attaque à traiter en priorité. Les parades ci-dessous sont des exigences de conception, vérifiées par des tests dédiés (section 9).
