@@ -40,6 +40,10 @@ pub const TORRENT_UPNP: &str = "torrent.upnp";
 /// (décision de l'utilisateur du 2026-11-09).
 pub const TORRENT_INTERFACE: &str = "torrent.interface";
 
+/// Mettre yt-dlp à jour de lui-même, au plus une fois par jour (F-25, SPEC §7.17) ; vrai
+/// par défaut.
+pub const MEDIA_AUTO_UPDATE: &str = "media.autoUpdate";
+
 /// Longueur maximale du nom d'une interface (caractères).
 pub const INTERFACE_NAME_MAX: usize = 256;
 
@@ -87,10 +91,18 @@ pub enum Flag {
     NeighborChecksum,
     /// UPnP pour le port d'écoute des torrents (SPEC §7.16) ; faux par défaut.
     TorrentUpnp,
+    /// Mise à jour automatique de yt-dlp (F-25, SPEC §7.17) ; vrai par défaut, désactivable
+    /// comme toute vérification de mise à jour (SPEC §8.2).
+    MediaAutoUpdate,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 3] = [Flag::Preallocate, Flag::NeighborChecksum, Flag::TorrentUpnp];
+    pub const ALL: [Flag; 4] = [
+        Flag::Preallocate,
+        Flag::NeighborChecksum,
+        Flag::TorrentUpnp,
+        Flag::MediaAutoUpdate,
+    ];
 
     /// Clé du réglage, dans la base et dans le protocole.
     pub fn key(self) -> &'static str {
@@ -98,6 +110,7 @@ impl Flag {
             Flag::Preallocate => PREALLOCATE,
             Flag::NeighborChecksum => NEIGHBOR_CHECKSUM,
             Flag::TorrentUpnp => TORRENT_UPNP,
+            Flag::MediaAutoUpdate => MEDIA_AUTO_UPDATE,
         }
     }
 

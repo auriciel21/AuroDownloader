@@ -1893,6 +1893,94 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
     engine.shutdown().await;
 }
 
+/// Outils de la vidéo (SPEC §7.17) : état, installation sur demande seulement (portée
+/// `admin`), annoncée par `media.tools` ; réglage `media.autoUpdate`, vrai par défaut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_tools_are_installed_only_on_request() {
+    let release = crate::testing::tools::FakeRelease::new();
+    release.publish_ytdlp("2026.11.01", b"faux yt-dlp", None);
+    release.publish_default_ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(Config {
+        db_path: dir.path().join("auro.db"),
+        client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
+        transfer: Options {
+            media: crate::media::Options {
+                sources: release.sources(),
+                dir: None,
+            },
+            ..Options::default()
+        },
+        disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
+    })
+    .unwrap();
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let values = c.result("settings.get", json!({})).await["values"].clone();
+    assert_eq!(values["media.autoUpdate"], true, "{values}");
+
+    let tools = c.result("media.tools", json!({})).await;
+    assert_eq!(tools["ready"], false, "{tools}");
+    assert_eq!(tools["ytdlp"], Value::Null);
+    assert_eq!(tools["installing"], false);
+    // Rien n'a été demandé au serveur : aucune installation d'elle-même.
+    assert_eq!(release.requested(), Vec::<String>::new());
+    assert!(
+        !dir.path()
+            .join("tools")
+            .join(crate::media::tools::exe("yt-dlp"))
+            .exists()
+    );
+
+    // Une connexion `control` ne peut pas installer de programmes.
+    let mut limited = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("control");
+    limited.result("engine.hello", params).await;
+    assert_eq!(
+        limited.error_code("media.installTools", json!({})).await,
+        "UNAUTHORIZED"
+    );
+    assert_eq!(
+        c.error_code("media.installTools", json!({"force": "oui"}))
+            .await,
+        "INVALID_PARAMS"
+    );
+
+    let started = c.result("media.installTools", json!({})).await;
+    assert_eq!(started["ready"], false, "{started}");
+    let done = c
+        .notification("media.tools", |p| {
+            p["installing"] == false && p["ready"] == true
+        })
+        .await;
+    assert_eq!(done["ytdlp"]["version"], "2026.11.01", "{done}");
+    assert_eq!(done["ytdlp"]["origin"], "download");
+    assert_eq!(done["error"], Value::Null);
+    let tools = c.result("media.tools", json!({})).await;
+    assert_eq!(tools["ready"], true);
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("tools")
+                .join(crate::media::tools::exe("yt-dlp"))
+        )
+        .unwrap(),
+        b"faux yt-dlp"
+    );
+
+    c.result(
+        "settings.set",
+        json!({"values": {"media.autoUpdate": false}}),
+    )
+    .await;
+    let values = c.result("settings.get", json!({})).await["values"].clone();
+    assert_eq!(values["media.autoUpdate"], false);
+    engine.shutdown().await;
+}
+
 /// Interface réseau des torrents (SPEC §7.16) : `torrent.interface`, son état dans
 /// l'instantané et par `engine.torrentInterface`.
 #[tokio::test]

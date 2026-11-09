@@ -109,6 +109,7 @@ impl From<EngineError> for RpcError {
             EngineError::Move(_) => Self::new(-32026, "MOVE_FAILED", message),
             EngineError::SourceMismatch { .. } => Self::new(-32027, "SOURCE_MISMATCH", message),
             EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
+            EngineError::CapabilityMissing(_) => Self::capability_missing(message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
                 Self::internal(message)
             }

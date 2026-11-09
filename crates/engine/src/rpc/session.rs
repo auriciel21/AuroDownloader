@@ -399,6 +399,12 @@ async fn describe(
             "engine.network",
             json!({"rev": rev, "usable": usable, "metered": metered}),
         )),
+        // Outils de la vidéo (SPEC §7.17) : installation, mise à jour.
+        Event::ToolsChanged { rev, status } if topics.queues => {
+            let mut params = super::methods::tools_json(&status);
+            params["rev"] = json!(rev);
+            Some(notification("media.tools", params))
+        }
         // Interface réseau des torrents (SPEC §7.16) là ou non.
         Event::TorrentInterfaceChanged { rev, up } if topics.queues => Some(notification(
             "engine.torrentInterface",

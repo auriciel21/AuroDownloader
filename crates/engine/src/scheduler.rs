@@ -34,6 +34,7 @@ use tokio::time::Instant;
 use crate::io::checksum::Checksum;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
+use crate::media;
 use crate::net::{self, Client, NetError};
 use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
 use crate::secrets::{Vault, VaultError};
@@ -256,6 +257,12 @@ pub enum Event {
         rev: u64,
         up: bool,
     },
+    /// Les outils de la vidéo ont changé (SPEC §7.17) : installation commencée, finie ou
+    /// en échec, yt-dlp mis à jour.
+    ToolsChanged {
+        rev: u64,
+        status: media::tools::Status,
+    },
     /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) ; `metered` : facturé
     /// au volume, sans partage de torrents (SPEC §7.16).
     NetworkChanged {
@@ -416,6 +423,10 @@ pub enum EngineError {
 
     #[error("identifiants inconnus : {0}")]
     LoginNotFound(String),
+
+    /// Fonction absente de cette plateforme (la vidéo hors de Windows et Linux).
+    #[error("{0}")]
+    CapabilityMissing(String),
 }
 
 /// Tâche à ajouter.
@@ -579,6 +590,8 @@ enum Command {
     TorrentRatio(Reply<Option<f64>>),
     SetTorrentRatio(Option<f64>, Reply<()>),
     TorrentInterface(Reply<Option<String>>),
+    /// Les outils de la vidéo ont changé (installation, mise à jour) : à annoncer.
+    ToolsChanged(media::tools::Status),
     SetTorrentInterface(Option<String>, Reply<()>),
     SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
@@ -611,6 +624,8 @@ pub struct Engine {
     default_queue: String,
     rev: Arc<AtomicU64>,
     stopped: watch::Receiver<bool>,
+    /// Outils de la vidéo (SPEC §7.17) ; `None` hors de Windows et Linux.
+    tools: Option<Arc<media::tools::Tools>>,
 }
 
 impl Engine {
@@ -636,6 +651,22 @@ impl Engine {
         let (stopped_tx, stopped) = watch::channel(false);
         let (prepared_tx, prepared) = mpsc::unbounded_channel();
         let rev = Arc::new(AtomicU64::new(0));
+        // Outils de la vidéo : `tools/` à côté de la base, sauf réglage contraire.
+        let tools = media::SUPPORTED.then(|| {
+            let dir = config.transfer.media.dir.clone().unwrap_or_else(|| {
+                config
+                    .db_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default()
+                    .join("tools")
+            });
+            Arc::new(media::tools::Tools::open(
+                dir,
+                config.transfer.media.sources.clone(),
+                config.client.clone(),
+            ))
+        });
         let state = Scheduler::new(
             conn,
             config,
@@ -670,6 +701,7 @@ impl Engine {
             default_queue,
             rev,
             stopped,
+            tools,
         })
     }
 
@@ -848,6 +880,48 @@ impl Engine {
     pub async fn set_torrent_ratio(&self, ratio: Option<f64>) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetTorrentRatio(ratio, reply))
             .await
+    }
+
+    /// Outils de la vidéo (SPEC §7.17), ou `CapabilityMissing` hors de Windows et Linux.
+    fn media_tools_handle(&self) -> Result<&Arc<media::tools::Tools>, EngineError> {
+        self.tools.as_ref().ok_or_else(|| {
+            EngineError::CapabilityMissing(
+                "vidéo : seulement sous Windows et Linux en v1 (SPEC §7.17)".into(),
+            )
+        })
+    }
+
+    /// État des outils de la vidéo (`media.tools`).
+    pub fn media_tools(&self) -> Result<media::tools::Status, EngineError> {
+        Ok(self.media_tools_handle()?.status())
+    }
+
+    /// Installe les outils de la vidéo qui manquent (tous si `force`), en arrière-plan :
+    /// rend l'état aussitôt, installation en cours. La fin s'annonce par
+    /// `Event::ToolsChanged`. Seulement sur la demande de l'utilisateur (SPEC §7.17).
+    pub async fn install_media_tools(
+        &self,
+        force: bool,
+    ) -> Result<media::tools::Status, EngineError> {
+        let tools = Arc::clone(self.media_tools_handle()?);
+        if tools.begin_install() {
+            let commands = self.commands.clone();
+            let installing = Arc::clone(&tools);
+            tokio::spawn(async move {
+                if let Err(e) = installing.install(force).await {
+                    eprintln!("aurod : outils de la vidéo non installés : {e}");
+                }
+                let _ = commands
+                    .send(Command::ToolsChanged(installing.status()))
+                    .await;
+            });
+        }
+        let status = tools.status();
+        let _ = self
+            .commands
+            .send(Command::ToolsChanged(status.clone()))
+            .await;
+        Ok(status)
     }
 
     /// Interface réseau des torrents (VPN, SPEC §7.16) ; `None` : aucune.
@@ -1691,6 +1765,9 @@ impl Scheduler {
             }
             Command::SetTorrentRatio(ratio, reply) => {
                 let _ = reply.send(self.set_torrent_ratio(ratio));
+            }
+            Command::ToolsChanged(status) => {
+                self.emit(|rev| Event::ToolsChanged { rev, status });
             }
             Command::TorrentInterface(reply) => {
                 let _ = reply.send(Ok(self.iface_name.clone()));

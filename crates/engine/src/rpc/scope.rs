@@ -61,7 +61,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list"
         | "settings.get" | "events.subscribe" | "events.unsubscribe" | "sync.snapshot"
         | "engine.stats"
-        | "history.list" => Scope::Read,
+        | "history.list"
+        // État des outils de la vidéo (SPEC §7.17).
+        | "media.tools" => Scope::Read,
         "task.add" | "task.addBatch" | "media.probe" | "linkscan.run" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
@@ -85,6 +87,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
         // Identifiants de sites (SPEC §7.14) : même la liste (noms d'utilisateur).
         "login.list" | "login.set" | "login.delete" => Scope::Admin,
+        // Télécharge et installe des programmes (SPEC §7.17).
+        "media.installTools" => Scope::Admin,
         _ => return None,
     })
 }

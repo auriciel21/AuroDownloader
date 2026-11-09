@@ -13,6 +13,7 @@
 pub mod io;
 pub mod launch;
 pub mod limit;
+pub mod media;
 pub mod moves;
 pub mod net;
 pub mod paths;

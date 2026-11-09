@@ -7,3 +7,5 @@
 *.yml       text eol=lf
 Cargo.lock  text eol=lf
 *.sh        text eol=lf
+# Jeu d'essai signé (SPEC 7.17) : octets exacts, sans conversion des fins de ligne.
+crates/engine/src/media/testdata/** -text

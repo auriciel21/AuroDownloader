@@ -616,6 +616,8 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `engine.setNetwork` | `usable` (booléen) | `usable` : le réseau convient, ou non, aux téléchargements (section 7.15, depuis le 2026-11-09) |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
 | `media.probe` | `pageUrl` | `formats[]` disponibles |
+| `media.tools` | aucun | État des outils de la vidéo : `ytdlp` et `ffmpeg` (`version`, `origin` : `download` ou `system`, ou `null`), `ready`, `installing`, `error` (section 7.17, depuis le 2026-11-09) |
+| `media.installTools` | `force` (booléen, faux par défaut : seulement ce qui manque) | Lance l'installation en arrière-plan et rend l'état aussitôt ; la fin s'annonce par `media.tools`. `CAPABILITY_MISSING` hors de Windows et Linux (section 7.17) |
 | `history.list` / `history.clear` | `query`, `before`, `limit`, `cursor` | Entrées d'historique ; nombre d'entrées effacées (section 6.5, depuis le 2026-11-08) |
 | `settings.get` / `settings.set` | `keys[]` ou `values` | Réglages (`values`, par clé) |
 | `events.subscribe` / `events.unsubscribe` | `topics[]` (`tasks`, `queues`, `progress`), `progressIntervalMs` | Abonnement actif et `rev` au moment de l'abonnement |
@@ -671,6 +673,10 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Réglages (`settings.get`, `settings.set`) : `torrent.ratioLimit` (nombre positif ou nul, `null` pour sans limite ; 1 par défaut ; `settings.updated`) et `torrent.upnp` (booléen, faux par défaut ; vaut à la prochaine ouverture de la session).
   - `engine.setNetwork` accepte `metered` (booléen, faux par défaut) ; `engine.network` et `sync.snapshot` (`networkMetered`) le rendent (section 7.16).
   - Réglage `torrent.interface` (étape 3d, 2026-11-09) : nom de l'interface réseau des torrents (VPN), 1 à 256 caractères sans caractère de contrôle, ou `null` (aucune, par défaut) ; `settings.updated`. `sync.snapshot` porte `torrentInterfaceUp` (l'interface est là, ou aucune n'est demandée), et la notification `engine.torrentInterface` (`up`, sujet `queues`) en annonce chaque changement (section 7.16).
+- **Vidéo, étape 4a** (2026-11-09, section 7.17) :
+  - `media.tools` (portée `read`) et `media.installTools` (portée `admin` : elle télécharge et installe des programmes) ; notification `media.tools` (sujet `queues`), avec les mêmes champs que `media.tools` et `rev`, à chaque début, fin ou échec d'une installation.
+  - Réglage `media.autoUpdate` (booléen, vrai par défaut ; `settings.updated`) : mise à jour automatique de yt-dlp.
+  - Hors de Windows et Linux, les méthodes de la vidéo rendent `CAPABILITY_MISSING`.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -830,10 +836,10 @@ Mise en œuvre (décision du 2026-11-07, phase 3) :
 - **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6).
 - **Portées exigées** :
   - aucune : `engine.hello` ;
-  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats` ;
+  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats`, `media.tools` ;
   - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run` ;
   - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction`, `engine.setNetwork`, `history.clear` ;
-  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14).
+  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14) ; `media.installTools` (installation de programmes, section 7.17).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 
@@ -1369,6 +1375,39 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 - 4d. Fusion et contrôle (ffmpeg, ffprobe), `post_processing`, reprise après coupure ; banc de reprise des vidéos.
 - 4e. Essais réels ; sous-titres (F-24).
 
+**Mise en œuvre de l'étape 4a (2026-11-09) : outils.**
+- **Signature** (`media::openpgp`) : lecture d'un paquet de signature OpenPGP v4 et d'une clé RSA v4. Seuls les cas de yt-dlp sont acceptés (signature binaire détachée, RSA, SHA-256 ou SHA-512) ; tout autre format est refusé.
+  - La vérification RSA (PKCS #1 v1.5) est celle d'aws-lc, déjà dans le moteur par rustls et librqbit.
+  - L'émetteur doit être la clé attendue, par son empreinte ou son identifiant.
+  - La clé de yt-dlp est `crates/engine/src/media/yt-dlp-public.key`, copie exacte de `public.key` de son dépôt. Son empreinte, AC0C BBE6 848D 6A87 3464 AF4E 57CF 6593 3B5A 7581 (RSA 4096, relevée par `gpg` le 2026-11-09), est contrôlée au chargement.
+- **Outils** (`media::tools`) :
+  - L'installation suit la section ci-dessus. Les fichiers téléchargés sont écrits sous un nom provisoire, contrôlés pendant l'écriture, vidés sur disque, puis renommés. Le moteur ne tire de l'archive de ffmpeg que `bin/ffmpeg` et `bin/ffprobe`, et l'efface ensuite.
+  - L'état est gardé dans `tools/tools.json` (version et empreinte de chaque outil, dernière recherche de mise à jour), écrit de la même façon. Au démarrage, un outil enregistré dont le fichier manque est oublié.
+  - La mise à jour de yt-dlp (`update_ytdlp_if_due`) remplace le fichier sous un verrou en écriture : elle attend qu'aucune exécution de yt-dlp ne tienne le verrou en lecture.
+  - Sous Linux, le ffmpeg du système est préféré s'il est dans le `PATH`, avec son ffprobe à côté.
+- **Moteur et protocole** : `Engine::media_tools`, `Engine::install_media_tools` (en arrière-plan, une installation à la fois), `media.tools`, `media.installTools`, notification `media.tools`, réglage `media.autoUpdate` (section 6.5). Hors de Windows et Linux, pas d'outils : `CAPABILITY_MISSING`.
+- **Dépendances** :
+  - `aws-lc-rs` en dépendance directe (déjà présente) ;
+  - `zip` (MIT, sous Windows) ;
+  - `tar` (MIT ou Apache-2.0) et `xz2` (MIT ou Apache-2.0, avec liblzma ; sous Linux).
+  - `cargo deny check licenses` passe.
+- **Tests** :
+  - **Vraie signature** : `SHA2-256SUMS` de la publication 2026.10.26 de yt-dlp et sa signature, gardés tels quels dans `testdata/`. `.gitattributes` empêche Git d'en convertir les fins de ligne, ce qui casserait la signature. Le test vérifie aussi qu'un octet changé, une fin de ligne Windows ou une autre clé font refuser le fichier.
+  - **Faux serveur de publications** (`testing::tools`, clé de test, archives fabriquées par le test). Il couvre :
+    - l'installation complète ;
+    - une liste d'empreintes signée par une autre clé ;
+    - un outil ou une archive différents de leur empreinte publiée ;
+    - une archive sans ffprobe ;
+    - la mise à jour au plus une fois par jour, retenue à travers un redémarrage ;
+    - une mise à jour à la signature fausse, qui garde l'ancienne version ;
+    - une mise à jour qui attend la fin d'un yt-dlp en cours ;
+    - une seule installation à la fois.
+  - **Protocole** : portée `admin`, aucune requête avant la demande, notification de fin, réglage.
+- **Essai réel** (2026-11-09, test ignoré `real_tools_install_from_the_official_releases`), depuis les publications officielles :
+  - Windows 11 : yt-dlp 2026.10.26 (23,6 Mo), ffmpeg et ffprobe 8.1 de BtbN (165 Mo chacun), en 50 s ;
+  - Linux (WSL, sans ffmpeg dans le système) : yt-dlp 41,2 Mo, ffmpeg et ffprobe 173 Mo chacun, en 55 s.
+- **Reste pour 4b** : déclencher la mise à jour de yt-dlp à l'occasion d'un `media.probe` ou d'un ajout, et l'annoncer (`engine.warning`).
+
 ## 8. Sécurité, vie privée et cadre légal
 
 Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ailleurs et ouvre un port réseau local : ce sont les deux surfaces d'attaque à traiter en priorité. Les parades ci-dessous sont des exigences de conception, vérifiées par des tests dédiés (section 9).
@@ -1404,6 +1443,7 @@ Ce qui suit n'est pas un avis juridique ; un juriste doit le valider avant la pr
 - **Composants externes.** yt-dlp et ffmpeg sont appelés comme processus séparés, sans être liés au programme, ce qui garde la licence du projet indépendante de la leur. Un contrôle automatique des licences (de type `cargo-deny`) vérifie à chaque build que chaque dépendance est compatible avec la GPL-3.0.
 - **Mise en œuvre du contrôle (2026-11-09, phase 5).** `deny.toml` liste les licences admises : permissives (MIT, MIT-0, 0BSD, ISC, BSD-3-Clause, Zlib, Unicode-3.0, CC0-1.0, Unlicense), Apache-2.0 (avec ou sans l'exception LLVM ; compatible avec la GPL-3.0, pas avec la GPL-2.0 seule), MPL-2.0 (compatible par sa section 3) et CDLA-Permissive-2.0 (licence de données, attribution seule : les certificats racines de Mozilla dans `webpki-root-certs`). `cargo deny check licenses` contrôle l'espace de travail principal et, avec `--manifest-path apps/desktop/Cargo.toml --config deny.toml`, l'application de bureau, toutes cibles comprises (Windows, Linux, Android). Ajouter une licence à la liste demande d'avoir vérifié sa compatibilité et de la noter ici. Sans intégration continue pour l'instant, le contrôle se lance à la main avec les tests ; il rejoindra la CI. Les dépendances Gradle de l'application Android (AndroidX, Jetpack Compose, Kotlin : Apache-2.0 ; partie Kotlin de `rustls-platform-verifier` : MIT ou Apache-2.0) ne passent pas par `cargo-deny` : relevé à la main le même jour.
 - **Copies corrigées de dépendances (2026-11-09, étape 3d de la phase 5).** `third_party/` contient `librqbit` 9.1.0 et `librqbit-dualstack-sockets` 0.7.0, modifiées pour la liaison à une interface sous Windows (section 7.16) et branchées par `[patch.crates-io]`. Leur licence, Apache-2.0, permet de les modifier et de les redistribuer : texte complet dans `third_party/LICENSE-APACHE-2.0`, et chaque fichier modifié le signale en tête (section 4 de la licence). `cargo deny` les contrôle comme les autres dépendances. La crate `network-interface` (MIT ou Apache-2.0), déjà tirée par librqbit, est désormais aussi une dépendance directe du moteur.
+- **Vidéo, étape 4a (2026-11-09).** Nouvelles dépendances du moteur : `zip` (MIT, Windows), `tar` et `xz2` (MIT ou Apache-2.0, Linux ; `xz2` compile liblzma, du domaine public et sous 0BSD), `aws-lc-rs` en direct (déjà présente). yt-dlp (Unlicense) et ffmpeg (builds GPL de BtbN) ne sont ni liés ni fournis : le moteur les télécharge sur la demande de l'utilisateur et les lance comme processus séparés. La clé publique de yt-dlp copiée dans le dépôt vient d'un projet en Unlicense.
 - **Nom et marques.** Le projet porte un nom original ; il n'utilise ni les noms, ni les logos, ni le code d'IDM, JDownloader, FDM ou d'autres produits.
 - **Boutiques d'applications.** Les règles de Google Play limitent les applications qui téléchargent des contenus de plateformes en dehors de leurs conditions d'utilisation ; je ne les ai pas relues pour ce document. La distribution visée en priorité est F-Droid et un APK signé, avec l'étude d'une version Play sans module vidéo, à confirmer après lecture des règles en vigueur.
 

@@ -311,6 +311,16 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             ctx.engine.delete_login(&p.required_str("loginId")?).await?;
             Ok(json!({}))
         }
+        // Outils de la vidéo (SPEC §7.17).
+        "media.tools" => Ok(tools_json(&ctx.engine.media_tools()?)),
+        "media.installTools" => {
+            let force = match p.get("force") {
+                None => false,
+                Some(Value::Bool(force)) => *force,
+                Some(_) => return Err(Params::wrong("force", "booléen")),
+            };
+            Ok(tools_json(&ctx.engine.install_media_tools(force).await?))
+        }
         "settings.get" => settings(ctx).await,
         "settings.set" => {
             let values = p
@@ -557,6 +567,21 @@ fn settings_json(
         values[flag.key()] = json!(on);
     }
     values
+}
+
+/// État des outils de la vidéo (`media.tools`, notification `media.tools`).
+pub(crate) fn tools_json(status: &crate::media::tools::Status) -> Value {
+    let tool = |t: &Option<crate::media::tools::Tool>| {
+        t.as_ref()
+            .map(|t| json!({"version": t.version, "origin": t.origin.as_str()}))
+    };
+    json!({
+        "ytdlp": tool(&status.ytdlp),
+        "ffmpeg": tool(&status.ffmpeg),
+        "ready": status.ready(),
+        "installing": status.installing,
+        "error": status.error,
+    })
 }
 
 /// Limites globales (`limits.get`) : réception, et envoi (torrents).

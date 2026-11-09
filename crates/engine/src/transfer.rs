@@ -109,6 +109,8 @@ pub struct Options {
     pub neighbor_checksum: bool,
     /// Session des torrents (SPEC §7.16).
     pub torrent: crate::torrent::Options,
+    /// Outils de la vidéo (SPEC §7.17).
+    pub media: crate::media::Options,
 }
 
 impl Default for Options {
@@ -129,6 +131,7 @@ impl Default for Options {
             preallocate: true,
             neighbor_checksum: false,
             torrent: crate::torrent::Options::default(),
+            media: crate::media::Options::default(),
         }
     }
 }

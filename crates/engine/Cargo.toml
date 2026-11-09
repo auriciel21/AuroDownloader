@@ -43,6 +43,9 @@ sha2 = "0.10.9"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 uuid = { version = "1.26.1", features = ["v4", "v7"] }
+# Signature des publications de yt-dlp (SPEC §7.17, `media::openpgp`) : RSA PKCS #1 ;
+# déjà tirée par librqbit et rustls.
+aws-lc-rs = "1.18"
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
@@ -68,10 +71,16 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Power",
     "Win32_System_Threading",
 ] }
+# Archive de ffmpeg sous Windows (builds BtbN, SPEC §7.17, `media::tools`).
+zip ={ version = "7.3.0", default-features = false, features = ["deflate-flate2"] }
 
 # Coffre du système sous Linux : Secret Service par D-Bus (`secrets`).
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5.1.0", features = ["rt-async-io-crypto-rust"] }
+# Archive de ffmpeg sous Linux, quand le système n'en a pas (`.tar.xz` de BtbN,
+# `media::tools`).
+tar ="0.4.46"
+xz2 = "0.1.7"
 
 # Espace libre d'un volume (`io::free_space`).
 [target.'cfg(unix)'.dependencies]
