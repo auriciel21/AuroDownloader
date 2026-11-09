@@ -18,6 +18,8 @@ pub enum TaskKind {
     Http,
     /// Torrent (SPEC §7.16) : lien magnet ou fichier `.torrent`.
     Torrent,
+    /// Vidéo (SPEC §7.17) : page lue par yt-dlp, flux téléchargés puis fusionnés.
+    Media,
 }
 
 impl TaskKind {
@@ -25,6 +27,7 @@ impl TaskKind {
         match self {
             TaskKind::Http => "http",
             TaskKind::Torrent => "torrent",
+            TaskKind::Media => "media",
         }
     }
 
@@ -32,6 +35,7 @@ impl TaskKind {
         match s {
             "http" => Some(TaskKind::Http),
             "torrent" => Some(TaskKind::Torrent),
+            "media" => Some(TaskKind::Media),
             _ => None,
         }
     }
@@ -92,7 +96,14 @@ impl TaskState {
             (Queued, Active | Paused | Cancelled)
                 | (
                     Active,
-                    Paused | RetryWait | Verifying | Seeding | Failed | Cancelled
+                    Paused
+                        | RetryWait
+                        | Verifying
+                        | Seeding
+                        // Fusion des flux d'une vidéo (SPEC §7.17, depuis le 2026-11-09).
+                        | PostProcessing
+                        | Failed
+                        | Cancelled
                 )
                 | (Paused, Queued | Cancelled)
                 | (RetryWait, Active | Paused | Failed | Cancelled)
@@ -283,6 +294,9 @@ pub struct NewTask<'a> {
     pub checksum: Option<&'a Checksum>,
     /// En-têtes HTTP de la tâche ; les secrets sont déjà dans le coffre.
     pub headers: &'a [StoredHeader],
+    /// Tâche interne d'une vidéo (flux direct, SPEC §7.17) : sa tâche vidéo. Jamais lancée
+    /// par le planificateur, absente des listes et de l'historique.
+    pub parent_id: Option<&'a str>,
 }
 
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
@@ -296,10 +310,10 @@ pub fn create_task(
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
                             max_connections, speed_limit_bps, idempotency_key, requested_name,
-                            checksum_algo, checksum_value, created_at, updated_at)
+                            checksum_algo, checksum_value, created_at, updated_at, parent_id)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?7, ?8, ?9, ?10, ?11, ?6, ?6)",
+                 ?3, ?4, ?5, ?7, ?8, ?9, ?10, ?11, ?6, ?6, ?12)",
         params![
             task_id,
             new.queue_id,
@@ -311,7 +325,8 @@ pub fn create_task(
             new.idempotency_key,
             new.requested_name,
             new.checksum.map(|c| c.algo().as_sql()),
-            new.checksum.map(Checksum::value)
+            new.checksum.map(Checksum::value),
+            new.parent_id
         ],
     )?;
     tx.execute(
@@ -445,7 +460,7 @@ pub fn load_task(conn: &Connection, task_id: &str) -> Result<TaskRow, StoreError
 /// Toutes les tâches, dans l'ordre de création.
 pub fn list_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {TASK_COLUMNS} FROM tasks ORDER BY created_at, id"
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_id IS NULL ORDER BY created_at, id"
     ))?;
     let rows = stmt.query_map([], raw_task)?;
     rows.map(|r| r?.try_into()).collect()
@@ -759,12 +774,17 @@ pub fn complete_task(
         Err(StoreError::BadTransition {
             from: "verifying", ..
         }) => TaskState::Verifying,
+        // Vidéo dont les flux sont fusionnés (SPEC §7.17).
+        Err(StoreError::BadTransition {
+            from: "post_processing",
+            ..
+        }) => TaskState::PostProcessing,
         Err(_) if seeding => TaskState::Seeding,
         Err(e) => return Err(e),
     };
     debug_assert!(matches!(
         from,
-        TaskState::Active | TaskState::Verifying | TaskState::Seeding
+        TaskState::Active | TaskState::Verifying | TaskState::Seeding | TaskState::PostProcessing
     ));
     let total = to_i64(total_bytes, "taille")?;
     let now = now_ms();
@@ -787,7 +807,9 @@ pub fn complete_task(
          SELECT ?2, id, display_name, ?3, ?4, ?5, 'completed',
                 -- Empreinte vérifiée (F-11) : seule SHA-256 a sa colonne.
                 CASE WHEN checksum_algo = 'sha256' THEN checksum_value END, ?6
-         FROM tasks WHERE id = ?1",
+         FROM tasks WHERE id = ?1
+           -- Une tâche interne d'une vidéo n'a pas d'historique : sa vidéo en a un.
+           AND parent_id IS NULL",
         params![task_id, new_id(), final_path, total, host, now],
     )?;
     tx.execute(
@@ -974,7 +996,10 @@ pub fn runnable_tasks(conn: &Connection, now: i64) -> Result<Vec<Candidate>, Sto
          -- `verifying` : arrêt brutal pendant le calcul de l'empreinte, qui reprend.
          -- `seeding` : partage d'un torrent interrompu (arrêt du moteur, réseau), qui
          -- reprend (SPEC §7.16).
-         WHERE (t.state IN ('queued', 'active', 'verifying', 'seeding')
+         -- `post_processing` : arrêt pendant la fusion d'une vidéo, qui la recommence (SPEC
+         -- §7.17). Les tâches internes d'une vidéo ne partent qu'avec elle.
+         WHERE t.parent_id IS NULL
+           AND (t.state IN ('queued', 'active', 'verifying', 'seeding', 'post_processing')
                 OR (t.state = 'retry_wait' AND COALESCE(t.next_retry_at, 0) <= ?1))
            -- Pendant le déplacement de son fichier, une tâche attend (SPEC §7.12).
            AND NOT EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = t.id)
@@ -1025,7 +1050,7 @@ pub fn find_tasks(conn: &Connection, filter: &TaskFilter) -> Result<Vec<TaskRow>
     };
     let mut stmt = conn.prepare(&format!(
         "SELECT {TASK_COLUMNS} FROM tasks
-         WHERE (?1 IS NULL OR queue_id = ?1) AND (?2 IS NULL OR id > ?2){state_clause}
+         WHERE parent_id IS NULL AND (?1 IS NULL OR queue_id = ?1) AND (?2 IS NULL OR id > ?2){state_clause}
          ORDER BY id LIMIT ?3"
     ))?;
     let limit = filter.limit.map_or(-1, i64::from);
@@ -1141,7 +1166,7 @@ pub fn set_queue_schedule(
 /// nouvelle tentative, en vérification ou en finition. Les pauses n'en sont pas.
 pub fn count_pending(conn: &Connection, queue_id: &str) -> Result<u64, StoreError> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE queue_id = ?1 AND state IN
+        "SELECT COUNT(*) FROM tasks WHERE queue_id = ?1 AND parent_id IS NULL AND state IN
            ('queued', 'active', 'retry_wait', 'verifying', 'post_processing')",
         [queue_id],
         |r| r.get(0),
@@ -1152,7 +1177,7 @@ pub fn count_pending(conn: &Connection, queue_id: &str) -> Result<u64, StoreErro
 /// Date de la prochaine nouvelle tentative (millisecondes Unix), s'il y en a une.
 pub fn next_retry_at(conn: &Connection) -> Result<Option<i64>, StoreError> {
     Ok(conn.query_row(
-        "SELECT MIN(next_retry_at) FROM tasks WHERE state = 'retry_wait'",
+        "SELECT MIN(next_retry_at) FROM tasks WHERE state = 'retry_wait' AND parent_id IS NULL",
         [],
         |r| r.get(0),
     )?)
@@ -1180,6 +1205,7 @@ mod tests {
                 requested_name: None,
                 checksum: None,
                 headers: &[],
+                parent_id: None,
             },
         )
         .unwrap()

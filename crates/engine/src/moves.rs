@@ -201,6 +201,7 @@ mod tests {
                 requested_name: None,
                 checksum: None,
                 headers: &[],
+                parent_id: None,
             },
         )
         .unwrap();

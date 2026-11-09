@@ -61,6 +61,8 @@ pub struct Sources {
     /// Essais : un yt-dlp déjà là (faux yt-dlp des tests), pris tel quel, sans installation
     /// ni mise à jour.
     pub local_ytdlp: Option<PathBuf>,
+    /// Essais : ffmpeg et ffprobe déjà là (faux outils des tests), pris tels quels.
+    pub local_ffmpeg: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for Sources {
@@ -73,6 +75,7 @@ impl Default for Sources {
                 .into(),
             system_ffmpeg: cfg!(target_os = "linux"),
             local_ytdlp: None,
+            local_ffmpeg: None,
         }
     }
 }
@@ -272,7 +275,21 @@ impl Tools {
                 path: self.ytdlp_path(),
             }),
         };
+        let local = self.sources.local_ffmpeg.clone().map(|(ffmpeg, ffprobe)| {
+            (
+                Tool {
+                    version: "local".into(),
+                    origin: Origin::System,
+                    path: ffmpeg,
+                },
+                ffprobe,
+            )
+        });
         let (ffmpeg, ffprobe) = match (&live.recorded.ffmpeg, system) {
+            _ if local.is_some() => {
+                let (tool, probe) = local.expect("présent");
+                (Some(tool), Some(probe))
+            }
             (Some((version, _)), _) => (
                 Some(Tool {
                     version: version.clone(),

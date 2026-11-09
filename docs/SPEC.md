@@ -480,6 +480,29 @@ CREATE TABLE media_jobs (
   subtitles_json  TEXT
 );
 
+-- Migration 0006 (2026-11-09, section 7.17, étape 4c) : un flux direct d'une vidéo se
+-- télécharge comme une tâche HTTP interne, rattachée à sa vidéo ; le planificateur ne la
+-- lance jamais, les listes, les comptes et l'historique ne la montrent pas.
+ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id) ON DELETE CASCADE;
+CREATE INDEX tasks_parent ON tasks(parent_id) WHERE parent_id IS NOT NULL;
+-- Flux retenus d'une vidéo, dans l'ordre de la fusion. `child_id` : sa tâche HTTP interne
+-- (flux direct) ; NULL pour un flux fragmenté (yt-dlp). `done` : fichier du flux complet
+-- et vidé sur disque. `merge_container` de media_jobs devient le conteneur retenu.
+CREATE TABLE media_streams (
+  task_id   TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  position  INTEGER NOT NULL,
+  format_id TEXT NOT NULL,
+  protocol  TEXT NOT NULL,
+  ext       TEXT NOT NULL,
+  has_video INTEGER NOT NULL CHECK (has_video IN (0, 1)),
+  has_audio INTEGER NOT NULL CHECK (has_audio IN (0, 1)),
+  file_name TEXT NOT NULL,
+  size      INTEGER,
+  child_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  done      INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+  PRIMARY KEY (task_id, position)
+);
+
 CREATE TABLE history (              -- survit à la suppression de la tâche
   id          TEXT PRIMARY KEY,
   task_id     TEXT,
@@ -513,11 +536,13 @@ CREATE INDEX idx_event_log_task    ON event_log (task_id, ts);
 | État | Sens | Passe à |
 | --- | --- | --- |
 | `queued` | Ajoutée, attend une place dans sa file | `active`, `paused`, `cancelled` |
-| `active` | Des connexions transfèrent des données | `paused`, `retry_wait`, `verifying`, `seeding`, `failed`, `cancelled` |
+| `active` | Des connexions transfèrent des données | `paused`, `retry_wait`, `verifying`, `seeding`, `post_processing` (fusion des flux d'une vidéo, depuis le 2026-11-09, section 7.17), `failed`, `cancelled` |
 | `paused` | Arrêtée, avec une cause dans `pause_reason` | `queued`, `cancelled` |
 | `retry_wait` | Échec temporaire, nouvelle tentative à `next_retry_at` | `active`, `paused`, `failed`, `cancelled` |
 | `verifying` | Vérification de l'empreinte du fichier complet | `paused`, `post_processing`, `completed`, `failed` |
 | `post_processing` | Rangement, renommage, extraction, commande externe | `completed`, `failed` |
+
+Une tâche `post_processing` interrompue par un arrêt du moteur reprend au démarrage : sa fusion recommence (section 7.17).
 | `seeding` | Torrent terminé, partage en cours | `completed`, `cancelled` |
 | `completed` | Fichier final en place | état terminal |
 | `failed` | Échec définitif, cause dans `error_code` | `queued` (relance manuelle) |
@@ -678,6 +703,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Réglage `media.autoUpdate` (booléen, vrai par défaut ; `settings.updated`) : mise à jour automatique de yt-dlp.
   - Hors de Windows et Linux, les méthodes de la vidéo rendent `CAPABILITY_MISSING`.
 - **Vidéo, étape 4b** (2026-11-09, section 7.17) : `media.probe` (portée `add`) ; erreurs `TOOLS_MISSING` (-32031) et `EXTRACTOR_FAILED` (-32032) ; `engine.warning` porte aussi `YTDLP_UPDATED` et `YTDLP_UPDATE_FAILED`, sujet `queues`.
+- **Vidéo, étape 4c** (2026-11-09, section 7.17) : `task.add` accepte `media` à la place de `sources` : `pageUrl`, et facultatifs `format` (sélecteur de yt-dlp, 1 à 200 caractères ; `bv*+ba/b` par défaut), `container` (`mp4`, `mkv`, `webm`), `subtitles` (au plus 20 codes de langue), `title` (nom affiché en attendant la résolution). `media` et `sources` ensemble sont refusés ; sans outils, `TOOLS_MISSING`. La tâche porte `kind: media`. Capacité `media` dans `engine.hello` sous Windows et Linux.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -1376,7 +1402,7 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 - 4a. Outils : installation, vérification (signature, empreintes), mise à jour, `media.tools`, `media.installTools`.
 - 4b. Extraction : `media.probe`, mise à jour de yt-dlp à cette occasion, `engine.warning`.
 - 4c. Ajout et flux : `task.add` avec `media`, `media_jobs`, résolution ; flux directs par le moteur, fragmentés par yt-dlp, pause et reprise, adresse expirée. (L'ajout est passé de 4b à 4c le 2026-11-09 : une tâche vidéo ajoutée sans exécution serait lancée par le planificateur sans rien savoir en faire.)
-- 4d. Fusion et contrôle (ffmpeg, ffprobe), `post_processing`, reprise après coupure ; banc de reprise des vidéos.
+- 4d. Banc de reprise des vidéos (arrêts pendant les flux et la fusion) ; limite de débit des flux fragmentés. (La fusion et son contrôle sont faits dès 4c, le 2026-11-09 : sans eux, une vidéo ne finissait pas.)
 - 4e. Essais réels ; sous-titres (F-24).
 
 **Mise en œuvre de l'étape 4a (2026-11-09) : outils.**
@@ -1436,6 +1462,40 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   | Internet Archive | Big Buck Bunny | 3, directs | 720 | aucun |
 
   Chaque extraction prend 4 à 5 s, et aucun format n'est protégé par DRM. Aucune de ces pages n'a de flux HLS : il en faudra une pour l'étape 4c.
+
+**Mise en œuvre de l'étape 4c (2026-11-09) : ajout, flux et fusion.** Elle s'écarte sur un point de la conception ci-dessus : les flux ne sont pas des fichiers de la tâche (`task_files`).
+- **Modèle** (migration 6, section 5.4) : les flux sont dans `media_streams`. Chaque flux direct se télécharge comme une **tâche HTTP interne**, rattachée à la vidéo par `tasks.parent_id`.
+  - Elle passe par `transfer::run`, inchangé : règle 1, segments, limites (seaux de la vidéo), reprise par `If-Range`, banc de reprise.
+  - Le planificateur ne la lance jamais (`runnable_tasks`). Les listes, les comptes de file, les nouvelles tentatives et l'historique l'ignorent ; elle disparaît avec sa vidéo (`ON DELETE CASCADE`).
+  - Ses en-têtes viennent de yt-dlp (`http_headers`). Ceux que le moteur fixe lui-même sont écartés, et les secrets (`Cookie`…) vont au coffre (section 5.1).
+- **Exécution** (`media::run`) :
+  - La résolution se refait à chaque exécution, puisque les adresses expirent. La première retient le titre (nom affiché), le conteneur et le nom final, pris sur le disque (`.part`) comme pour une tâche HTTP. Les suivantes demandent les mêmes formats (`id1+id2`) ; si la page ne les propose plus, échec `EXTRACTOR_FAILED`.
+  - Les flux se téléchargent un par un.
+  - Un flux direct reçoit à chaque exécution son adresse fraîche (`replace_url`), ses validateurs restant pour `If-Range`. Un `HTTP_STATUS` (adresse expirée) fait refaire la résolution, au plus trois fois par exécution. Un `FILE_CHANGED` fait repartir le flux de zéro, une fois. Les autres issues (pause, place, nouvelle tentative, échec) deviennent celles de la vidéo.
+  - Un flux fragmenté passe par `yt-dlp -f <id> --continue -o <fichier>` : modèle d'avancement `--progress-template`, `%` doublés dans le chemin, `--ffmpeg-location`, arbre tué à l'arrêt. À la fin, le fichier est vidé sur disque avant d'être enregistré.
+  - L'avancement de la vidéo est la somme de ses flux ; les flux finis sont enregistrés comme indication (`done_bytes`).
+- **Fusion** (`post_processing`, nouvelle transition `active` → `post_processing`, section 5.5) :
+  - `ffmpeg -c copy -f <format>` vers le `.part` du nom final, puis `ffprobe` (durée annoncée, à 2 s près). Le fichier est vidé sur disque, renommé, et les flux sont effacés.
+  - Un flux seul déjà dans le bon conteneur est seulement contrôlé et renommé.
+  - Un arrêt pendant la fusion la recommence au démarrage : `post_processing` fait partie des tâches reprises.
+  - Sous Windows, vider un fichier ouvert en lecture seule est refusé : il est ouvert en écriture, sans troncature.
+- **Annulation et retrait** : les fichiers des flux, leurs `.part`, ceux des tâches internes et le `.part` du nom final sont effacés.
+- **Protocole** : `task.add` avec `media`, et la capacité `media` (section 6.5).
+- **Tests** :
+  - Faux outils (`fake_ytdlp_answers`, `fake_ffmpeg` : ffmpeg met ses entrées bout à bout, ffprobe rend une durée), sur un site local :
+    - deux flux directs donnent une vidéo identique octet par octet, sans flux ni `.part` restant ; les en-têtes de yt-dlp sont envoyés, sauf ceux du moteur ; une seule tâche visible, une seule ligne d'historique ;
+    - pause et reprise en plein flux, sans perte ;
+    - adresse expirée (`403`), résolue de nouveau ;
+    - outils absents ; format protégé par DRM refusé avant toute requête ;
+    - annulation qui efface tout.
+  - Protocole : vérifications de `task.add` avec `media`, `kind: media`, capacité.
+- **Essai avec les vrais outils, sans Internet** (test ignoré `real_local_videos_are_downloaded_and_merged`, outils de `AURO_TOOLS_DIR`). ffmpeg fabrique une vidéo de 6 s (mire et son), servie en local de trois façons, chacune téléchargée et contrôlée (image et son présents) :
+  - un fichier mp4 seul : tâche interne, gardé tel quel ;
+  - une liste HLS à image et son séparés : deux flux par yt-dlp, puis fusion ;
+  - un manifeste DASH à fichiers directs (`BaseURL`) : deux tâches internes, puis fusion.
+  
+  Passé sous Windows 11 et Linux (WSL), avec yt-dlp 2026.10.26 et ffmpeg 8.1. Bancs de reprise longs passés sous Linux le même jour (crash_daemon, 150 cycles, 67 fichiers ; crash_resume, 300 cycles, 71 fichiers), les tâches internes et les requêtes du planificateur ayant changé. Le DASH « fichier unique » que fabrique ffmpeg (`-single_file`) fait échouer l'extracteur de yt-dlp (`KeyError: sourceURL`) : l'essai écrit son manifeste à la main.
+- **Reste pour 4d** : banc de reprise des vidéos (arrêts brutaux pendant les flux et la fusion) ; limite de débit des flux fragmentés (yt-dlp ne suit pas encore les seaux du moteur).
 
 ## 8. Sécurité, vie privée et cadre légal
 

@@ -125,6 +125,7 @@ impl FakeRelease {
             ffmpeg_download: self.server.url("/ffmpeg/"),
             system_ffmpeg: false,
             local_ytdlp: None,
+            local_ffmpeg: None,
         }
     }
 }
@@ -210,5 +211,94 @@ pub fn fake_ytdlp(
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         script
+    }
+}
+
+/// Un faux yt-dlp qui rend tour à tour `answers` à `-J` (la dernière ensuite), et note
+/// ses arguments dans `args.txt`. Deux réponses au plus.
+pub fn fake_ytdlp_answers(dir: &std::path::Path, answers: &[&str]) -> std::path::PathBuf {
+    assert!(!answers.is_empty() && answers.len() <= 2);
+    std::fs::create_dir_all(dir).unwrap();
+    for (i, a) in answers.iter().enumerate() {
+        std::fs::write(dir.join(format!("out{}.txt", i + 1)), a).unwrap();
+    }
+    let second = if answers.len() == 2 {
+        "out2.txt"
+    } else {
+        "out1.txt"
+    };
+    #[cfg(windows)]
+    {
+        let script = dir.join("yt-dlp.cmd");
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\necho %*>\"%~dp0args.txt\"\r\n\
+                 if exist \"%~dp0used\" (type \"%~dp0{second}\") else (type \"%~dp0out1.txt\" & \
+                 echo.>\"%~dp0used\")\r\nexit /b 0\r\n"
+            ),
+        )
+        .unwrap();
+        script
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = dir.join("yt-dlp");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\n' \"$@\" > \"$d/args.txt\"\n\
+                 if [ -e \"$d/used\" ]; then cat \"$d/{second}\"; else cat \"$d/out1.txt\"; \
+                 touch \"$d/used\"; fi\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+}
+
+/// Un faux ffmpeg qui met bout à bout ses entrées (`-i`) dans sa sortie (dernier argument),
+/// et un faux ffprobe qui rend la durée `duration_s` ; dans `dir`.
+pub fn fake_ffmpeg(
+    dir: &std::path::Path,
+    duration_s: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    std::fs::create_dir_all(dir).unwrap();
+    #[cfg(windows)]
+    {
+        let ffmpeg = dir.join("ffmpeg.cmd");
+        std::fs::write(
+            &ffmpeg,
+            "@echo off\r\nsetlocal enabledelayedexpansion\r\nset inputs=\r\nset last=\r\n\
+             :loop\r\nif \"%~1\"==\"\" goto done\r\n\
+             if \"%~1\"==\"-i\" (if defined inputs (set inputs=!inputs!+\"%~2\") else \
+             (set inputs=\"%~2\"))\r\nset last=%~1\r\nshift\r\ngoto loop\r\n\
+             :done\r\ncopy /b !inputs! \"%last%\" >nul\r\nexit /b %errorlevel%\r\n",
+        )
+        .unwrap();
+        let ffprobe = dir.join("ffprobe.cmd");
+        std::fs::write(&ffprobe, format!("@echo off\r\necho {duration_s}\r\n")).unwrap();
+        (ffmpeg, ffprobe)
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let ffmpeg = dir.join("ffmpeg");
+        std::fs::write(
+            &ffmpeg,
+            "#!/bin/sh\nset -- \"$@\"\nout=\"\"\nins=\"\"\nwhile [ $# -gt 0 ]; do\n\
+             if [ \"$1\" = -i ]; then ins=\"$ins\n$2\"; fi\nout=\"$1\"\nshift\ndone\n\
+             : > \"$out\"\nprintf '%s\n' \"$ins\" | while IFS= read -r f; do\n\
+             [ -n \"$f\" ] && cat \"$f\" >> \"$out\"\ndone\nexit 0\n",
+        )
+        .unwrap();
+        let ffprobe = dir.join("ffprobe");
+        std::fs::write(&ffprobe, format!("#!/bin/sh\necho {duration_s}\n")).unwrap();
+        for p in [&ffmpeg, &ffprobe] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (ffmpeg, ffprobe)
     }
 }

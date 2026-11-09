@@ -134,6 +134,7 @@ mod tests {
             requested_name: None,
             checksum: None,
             headers: &headers,
+            parent_id: None,
         };
         let (task, _) = create_task(&mut conn, &new).unwrap();
         let mut loaded = load(&conn, &task).unwrap();

@@ -1858,7 +1858,12 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
     let engine = engine(dir.path());
     let mut c = TestClient::connect(&engine);
     let hello = c.result("engine.hello", hello()).await;
-    assert_eq!(hello["capabilities"], json!(["torrent"]));
+    assert!(
+        hello["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("torrent"))
+    );
 
     let mut metainfo =
         b"d4:infod6:lengthi3e4:name5:x.bin12:piece lengthi16384e6:pieces20:".to_vec();
@@ -2087,6 +2092,74 @@ async fn media_probe_describes_a_page_through_ytdlp() {
         !message.contains("secret") && !message.contains("jeton"),
         "{message}"
     );
+    engine.shutdown().await;
+}
+
+/// `task.add` avec `media` (SPEC §7.17) : vérifié avant toute création ; la tâche porte
+/// `kind: media` ; capacité `media` annoncée sous Windows et Linux.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_video_is_added_through_task_add() {
+    let dir = tempfile::tempdir().unwrap();
+    // Sans outils : refusé.
+    let engine = media_engine(dir.path(), crate::media::tools::Sources::default());
+    let mut c = TestClient::connect(&engine);
+    let hello = c.result("engine.hello", hello()).await;
+    assert_eq!(
+        hello["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("media")),
+        crate::media::SUPPORTED
+    );
+    let dest = dir_text(dir.path());
+    assert_eq!(
+        c.error_code(
+            "task.add",
+            json!({"media": {"pageUrl": "https://exemple.org/v"}, "destDir": dest})
+        )
+        .await,
+        "TOOLS_MISSING"
+    );
+    engine.shutdown().await;
+
+    let fake = dir.path().join("faux");
+    let sources = crate::media::tools::Sources {
+        local_ytdlp: Some(crate::testing::tools::fake_ytdlp(&fake, "{}", "", 0, 0)),
+        local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(&fake, "1.0")),
+        system_ffmpeg: false,
+        ..crate::media::tools::Sources::default()
+    };
+    let engine = media_engine(dir.path(), sources);
+    let mut c = TestClient::connect(&engine);
+    for bad in [
+        json!({"media": {"pageUrl": "https://exemple.org/v"}, "sources": [{"url": "https://a/b"}]}),
+        json!({"media": "https://exemple.org/v"}),
+        json!({"media": {}}),
+        json!({"media": {"pageUrl": "https://exemple.org/v", "container": "avi"}}),
+        json!({"media": {"pageUrl": "https://exemple.org/v", "subtitles": ["fr fr"]}}),
+        json!({"media": {"pageUrl": "https://exemple.org/v", "format": ""}}),
+        json!({"media": {"pageUrl": "ftp://exemple.org/v"}}),
+    ] {
+        let code = c.error_code("task.add", bad.clone()).await;
+        assert!(
+            code == "INVALID_PARAMS" || code == "URL_INVALID",
+            "{bad} : {code}"
+        );
+    }
+    let added = c
+        .result(
+            "task.add",
+            json!({"media": {"pageUrl": "https://exemple.org/v", "title": "Un film",
+                             "container": "mkv", "subtitles": ["fr"]},
+                   "destDir": dest, "startPaused": true}),
+        )
+        .await;
+    let task = c
+        .result("task.get", json!({"taskId": added["taskId"]}))
+        .await;
+    assert_eq!(task["kind"], "media", "{task}");
+    assert_eq!(task["displayName"], "Un film");
+    assert_eq!(task["state"], "paused");
     engine.shutdown().await;
 }
 

@@ -12,6 +12,7 @@
 pub mod extract;
 pub mod openpgp;
 pub(crate) mod process;
+pub mod run;
 pub mod tools;
 
 /// Réglages du module.

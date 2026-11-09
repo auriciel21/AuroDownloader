@@ -79,7 +79,10 @@ téléchargement.
   `media/yt-dlp-public.key`), `media::tools` (installation sur demande, empreintes,
   `tools/tools.json`, mise à jour de yt-dlp au plus une fois par jour),
   `media::extract` (`media.probe` : `yt-dlp -J`), `media::process` (arbre des processus tué :
-  Job Object sous Windows, groupe sous Linux) ; faux serveur de
+  Job Object sous Windows, groupe sous Linux),
+  `media::run` (exécution d'une vidéo : résolution, flux, fusion par ffmpeg), `store::media`
+  (`media_jobs`, `media_streams`) ; un flux direct est une tâche HTTP interne
+  (`tasks.parent_id`, migration 6) téléchargée par `transfer::run` ; faux serveur de
   publications des tests : `testing::tools`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
@@ -237,6 +240,8 @@ cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête propreme
 # rien n'est exécuté) :
 # … et yt-dlp sur des pages de vidéos sous licence libre (outils gardés dans AURO_TOOLS_DIR) :
 AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_probe --nocapture
+# … et vidéos fabriquées par ffmpeg, servies en local et téléchargées (sans Internet) :
+AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_local --nocapture
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
@@ -415,8 +420,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   téléchargés au besoin sur accord, empreinte vérifiée ; yt-dlp mis à jour seul, signature
   vérifiée ; essais réels sans YouTube, exception à « pas d'exécutable téléchargé » pour
   yt-dlp et ffmpeg officiels) : 4a. outils (fait le 2026-11-09 : installation
-  vérifiée, essai réel sous Windows et Linux) ; 4b. extraction (fait le 2026-11-09) ; 4c. ajout et
-  flux ; 4d. fusion,
+  vérifiée, essai réel sous Windows et Linux) ; 4b. extraction (fait le 2026-11-09) ; 4c. ajout, flux et
+  fusion (fait le 2026-11-09) ; 4d. fusion,
   contrôle et banc de reprise ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
@@ -436,6 +441,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   ne s'efface qu'après la fermeture de tous ses accès (`storage::Factory::wait_closed`), et
   se vide sur disque avant son nom final. Ne pas créer de `.torrent` de test par
   `librqbit::create_torrent` (empreinte manquante si le dernier fichier est vide).
+- Vidéo (SPEC 7.17) : une tâche interne (`parent_id` non nul) ne se lance que par l'exécution
+  de sa vidéo ; toute nouvelle requête qui liste, compte ou planifie des tâches l'exclut
+  (`parent_id IS NULL`), mais celles des noms pris et des contrôles d'intégrité la gardent.
 - Copies corrigées (`third_party`) : ne jamais modifier une dépendance ailleurs. Toute
   modification y est marquée « AuroDownloader » et notée dans `third_party/README.md` ;
   monter la version d'une de ces crates demande d'y reporter les modifications.

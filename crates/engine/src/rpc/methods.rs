@@ -14,7 +14,8 @@ use super::{
 use crate::io::checksum::Checksum;
 use crate::schedule::Rules;
 use crate::scheduler::{
-    AddTask, EngineError, Include, LoginChange, LoginView, QueueChange, TaskDetails, TaskUpdate,
+    AddTask, EngineError, Include, LoginChange, LoginView, MediaRequest, QueueChange, TaskDetails,
+    TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
 use crate::store::settings::{self, DOWNLOAD_DIR, Flag, TORRENT_INTERFACE, TORRENT_RATIO};
@@ -535,7 +536,12 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     Ok(json!({
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
-        "capabilities": ["torrent"],
+        // Vidéo (SPEC §7.17) : Windows et Linux seulement.
+        "capabilities": if crate::media::SUPPORTED {
+            json!(["torrent", "media"])
+        } else {
+            json!(["torrent"])
+        },
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
     }))
@@ -686,13 +692,29 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             "idempotencyKey : de 1 à {MAX_IDEMPOTENCY_KEY} octets"
         )));
     }
-    let sources = p
-        .get("sources")
-        .and_then(Value::as_array)
-        .ok_or_else(|| RpcError::invalid_params("sources manquant"))?;
+    // Vidéo d'une page (SPEC §7.17) : `media` à la place de `sources`.
+    let media = match p.get("media") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(m)) => {
+            if p.get("sources").is_some() {
+                return Err(RpcError::invalid_params("media ou sources, pas les deux"));
+            }
+            Some(media_request(m)?)
+        }
+        Some(_) => return Err(Params::wrong("media", "objet")),
+    };
+    let no_sources = Vec::new();
+    let sources = match &media {
+        Some(_) => &no_sources,
+        None => p
+            .get("sources")
+            .and_then(Value::as_array)
+            .ok_or_else(|| RpcError::invalid_params("sources manquant"))?,
+    };
     // Une adresse (`url`, lien magnet compris), ou un fichier `.torrent` en base64
     // (`torrent`, SPEC §7.16).
     let (url, torrent) = match sources.as_slice() {
+        [] if media.is_some() => ("", None),
         [one] => match (one.get("url"), one.get("torrent")) {
             (Some(url), None) => (
                 url.as_str()
@@ -748,9 +770,49 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             file_name: p.str("fileName")?,
             checksum: p.checksum("checksum")?.flatten(),
             torrent,
+            media,
         })
         .await?;
     Ok(json!({"taskId": task_id}))
+}
+
+/// `media` de `task.add` (SPEC §7.17) : `pageUrl`, et `format`, `container`, `subtitles`,
+/// `title` facultatifs.
+fn media_request(m: &serde_json::Map<String, Value>) -> Result<MediaRequest, RpcError> {
+    let text = |key: &str| -> Result<Option<String>, RpcError> {
+        match m.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(RpcError::invalid_params(format!(
+                "media.{key} : texte attendu"
+            ))),
+        }
+    };
+    let page_url =
+        text("pageUrl")?.ok_or_else(|| RpcError::invalid_params("media.pageUrl manquant"))?;
+    let subtitles = match m.get("subtitles") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|v| {
+                v.as_str().map(str::to_owned).ok_or_else(|| {
+                    RpcError::invalid_params("media.subtitles : codes de langue attendus")
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "media.subtitles : liste de codes de langue attendue",
+            ));
+        }
+    };
+    Ok(MediaRequest {
+        page_url,
+        format: text("format")?,
+        container: text("container")?,
+        subtitles,
+        title: text("title")?,
+    })
 }
 
 /// `task.get` : la tâche, et sur demande (`include`) ses segments et ses sources.

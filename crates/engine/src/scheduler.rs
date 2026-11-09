@@ -472,7 +472,27 @@ pub struct AddTask {
     /// Contenu d'un fichier `.torrent` (SPEC §7.16) ; `url` est alors ignorée. Un lien
     /// `magnet:` dans `url` fait aussi une tâche torrent.
     pub torrent: Option<Vec<u8>>,
+    /// Vidéo d'une page (SPEC §7.17) ; `url` est alors ignorée.
+    pub media: Option<MediaRequest>,
 }
+
+/// Vidéo demandée par `task.add` (SPEC §7.17).
+#[derive(Debug, Clone, Default)]
+pub struct MediaRequest {
+    pub page_url: String,
+    /// Sélecteur de formats de yt-dlp ; `None` : `bv*+ba/b`.
+    pub format: Option<String>,
+    /// `mp4`, `mkv` ou `webm` ; `None` : automatique.
+    pub container: Option<String>,
+    /// Langues des sous-titres (étape 4e).
+    pub subtitles: Vec<String>,
+    /// Titre connu du client (`media.probe`), nom affiché en attendant la résolution.
+    pub title: Option<String>,
+}
+
+/// Sélecteur de formats par défaut : la meilleure vidéo et le meilleur son, sinon le
+/// meilleur format complet.
+pub const DEFAULT_FORMAT: &str = "bv*+ba/b";
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
 
@@ -668,22 +688,6 @@ impl Engine {
         let (stopped_tx, stopped) = watch::channel(false);
         let (prepared_tx, prepared) = mpsc::unbounded_channel();
         let rev = Arc::new(AtomicU64::new(0));
-        // Outils de la vidéo : `tools/` à côté de la base, sauf réglage contraire.
-        let tools = media::SUPPORTED.then(|| {
-            let dir = config.transfer.media.dir.clone().unwrap_or_else(|| {
-                config
-                    .db_path
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_default()
-                    .join("tools")
-            });
-            Arc::new(media::tools::Tools::open(
-                dir,
-                config.transfer.media.sources.clone(),
-                config.client.clone(),
-            ))
-        });
         let state = Scheduler::new(
             conn,
             config,
@@ -693,6 +697,7 @@ impl Engine {
             download_limit,
             prepared_tx,
         );
+        let tools = state.tools.clone();
         let client = state.config.client.clone();
         tokio::spawn(async move {
             state.run(inbox, prepared).await;
@@ -1291,6 +1296,8 @@ struct Scheduler {
     iface_binding: Option<torrent::Binding>,
     iface_generation: u64,
     next_iface_check: Instant,
+    /// Outils de la vidéo (SPEC §7.17) ; `None` hors de Windows et Linux.
+    tools: Option<Arc<media::tools::Tools>>,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -1322,6 +1329,22 @@ impl Scheduler {
         // Limite d'envoi (torrents) : lue ici ; une base illisible la laisse ouverte.
         let upload_limit = settings::upload_limit(&conn).ok().flatten();
         torrents.set_limits(download_limit, upload_limit);
+        // Outils de la vidéo : `tools/` à côté de la base, sauf réglage contraire.
+        let tools = media::SUPPORTED.then(|| {
+            let dir = config.transfer.media.dir.clone().unwrap_or_else(|| {
+                config
+                    .db_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default()
+                    .join("tools")
+            });
+            Arc::new(media::tools::Tools::open(
+                dir,
+                config.transfer.media.sources.clone(),
+                config.client.clone(),
+            ))
+        });
         let iface_name = settings::torrent_interface(&conn).ok().flatten();
         let iface_binding = iface_name.as_deref().and_then(|n| torrents.resolve(n));
         Scheduler {
@@ -1352,6 +1375,7 @@ impl Scheduler {
             iface_binding,
             iface_generation: 0,
             next_iface_check: Instant::now() + INTERFACE_CHECK,
+            tools,
         }
     }
 
@@ -1625,10 +1649,19 @@ impl Scheduler {
         let rev = Arc::clone(&self.rev);
         let prepared = self.prepared.clone();
         let torrents = self.torrents.clone();
+        let tools = self.tools.clone();
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
             let result = execute(
-                &config, &torrents, &id, stopped, events, rev, prepared, live_tx,
+                &config,
+                &torrents,
+                tools.as_ref(),
+                &id,
+                stopped,
+                events,
+                rev,
+                prepared,
+                live_tx,
             )
             .await;
             (id, result)
@@ -2128,6 +2161,9 @@ impl Scheduler {
         if task.torrent.is_some() || is_magnet(&task.url) {
             return self.add_torrent(task);
         }
+        if task.media.is_some() {
+            return self.add_media(task);
+        }
         net::check_url(&task.url)?;
         net::check_task_headers(&task.headers)
             .map_err(|e| EngineError::BadRequest(e.to_string()))?;
@@ -2156,6 +2192,7 @@ impl Scheduler {
                 requested_name: task.file_name.as_deref(),
                 checksum: task.checksum.as_ref(),
                 headers: &stored,
+                parent_id: None,
             },
         );
         let (task_id, _) = match created {
@@ -2199,6 +2236,78 @@ impl Scheduler {
     }
 
     /// Ajout d'un torrent (SPEC §7.16) : lien magnet dans `url`, ou fichier `.torrent`.
+    /// Ajoute une vidéo (SPEC §7.17) : les outils doivent être là ; tout est vérifié avant
+    /// la création.
+    fn add_media(&mut self, task: AddTask) -> Result<String, EngineError> {
+        let request = task.media.clone().unwrap_or_default();
+        let tools = self.tools.as_ref().ok_or_else(|| {
+            EngineError::CapabilityMissing(
+                "vidéo : seulement sous Windows et Linux en v1 (SPEC §7.17)".into(),
+            )
+        })?;
+        if !tools.status().ready() {
+            return Err(EngineError::ToolsMissing(
+                "yt-dlp, ffmpeg ou ffprobe n'est pas installé (media.installTools)".into(),
+            ));
+        }
+        net::check_url(&request.page_url)?;
+        Self::check_speed_limit(task.speed_limit_bps)?;
+        let format = request.format.as_deref().unwrap_or(DEFAULT_FORMAT);
+        if format.trim().is_empty() || format.len() > 200 || format.chars().any(char::is_control) {
+            return Err(EngineError::BadRequest(
+                "media.format : un sélecteur de yt-dlp, 1 à 200 caractères".into(),
+            ));
+        }
+        if let Some(c) = &request.container
+            && !matches!(c.as_str(), "mp4" | "mkv" | "webm")
+        {
+            return Err(EngineError::BadRequest(
+                "media.container : mp4, mkv ou webm".into(),
+            ));
+        }
+        if request.subtitles.len() > 20
+            || request.subtitles.iter().any(|l| {
+                l.is_empty()
+                    || l.len() > 20
+                    || !l
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            })
+        {
+            return Err(EngineError::BadRequest(
+                "media.subtitles : au plus 20 codes de langue".into(),
+            ));
+        }
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let display_name = request
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| t.chars().take(200).collect::<String>())
+            .unwrap_or_else(|| transfer::display_name_for(&request.page_url));
+        let task_id = store::media::create_media_task(
+            &mut self.conn,
+            &store::media::NewMedia {
+                queue_id: &queue_id,
+                page_url: &request.page_url,
+                display_name: &display_name,
+                dest_dir: &dest_dir,
+                speed_limit_bps: task.speed_limit_bps,
+                idempotency_key: task.idempotency_key.as_deref(),
+                format,
+                container: request.container.as_deref(),
+                subtitles: &request.subtitles,
+            },
+        )?;
+        let id = task_id.clone();
+        self.emit(|rev| Event::Added { rev, task_id: id });
+        if task.start_paused {
+            self.set_state(&task_id, &user_pause())?;
+        }
+        Ok(task_id)
+    }
+
     fn add_torrent(&mut self, task: AddTask) -> Result<String, EngineError> {
         if !task.headers.is_empty() || task.checksum.is_some() || task.max_connections.is_some() {
             return Err(EngineError::BadRequest(
@@ -3186,6 +3295,10 @@ fn delete_part(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
         return torrent::delete_files(conn, task, false)
             .map_err(|source| EngineError::DeleteFile { path, source });
     }
+    if task.kind == TaskKind::Media {
+        return media::run::delete_files(conn, task, false)
+            .map_err(|source| EngineError::DeleteFile { path, source });
+    }
     delete_file(part_path(&path))
 }
 
@@ -3198,6 +3311,10 @@ fn delete_final(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
     let path = Path::new(&task.dest_dir).join(name);
     if task.kind == TaskKind::Torrent {
         return torrent::delete_files(conn, task, true)
+            .map_err(|source| EngineError::DeleteFile { path, source });
+    }
+    if task.kind == TaskKind::Media {
+        return media::run::delete_files(conn, task, true)
             .map_err(|source| EngineError::DeleteFile { path, source });
     }
     delete_file(path)
@@ -3217,6 +3334,7 @@ fn delete_file(path: PathBuf) -> Result<(), EngineError> {
 async fn execute(
     config: &Config,
     torrents: &Torrents,
+    tools: Option<&Arc<media::tools::Tools>>,
     task_id: &str,
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
@@ -3248,8 +3366,20 @@ async fn execute(
             progress,
         });
     };
-    if load_task(&conn, task_id)?.kind == TaskKind::Torrent {
-        return torrent::run(&mut conn, torrents, task_id, stop, &mut on_progress).await;
+    match load_task(&conn, task_id)?.kind {
+        TaskKind::Torrent => {
+            return torrent::run(&mut conn, torrents, task_id, stop, &mut on_progress).await;
+        }
+        // Vidéo (SPEC §7.17) : ses flux directs passent par `transfer::run`.
+        TaskKind::Media => {
+            let ctx = media::run::Context {
+                client: &config.client,
+                opts: &config.transfer,
+                tools,
+            };
+            return media::run::run(&mut conn, &ctx, task_id, stop, &mut on_progress).await;
+        }
+        TaskKind::Http => {}
     }
     transfer::run(
         &mut conn,

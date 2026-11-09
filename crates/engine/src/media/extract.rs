@@ -216,3 +216,107 @@ fn parse_format(f: &Value) -> Option<Format> {
 
 #[cfg(test)]
 mod tests;
+
+/// Les flux qu'un format retient (`yt-dlp -J -f <format>`), avec ce qu'il faut pour les
+/// télécharger : adresse et en-têtes, valables quelques heures.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resolution {
+    pub title: String,
+    pub duration_s: Option<f64>,
+    pub streams: Vec<Resolved>,
+}
+
+/// Un flux retenu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resolved {
+    pub format_id: String,
+    pub ext: String,
+    pub protocol: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub size: Option<u64>,
+    pub has_video: bool,
+    pub has_audio: bool,
+    pub drm: bool,
+    /// Téléchargé par le moteur (`http`, `https`, d'un seul tenant) ; sinon par yt-dlp
+    /// (HLS, DASH à fragments).
+    pub direct: bool,
+}
+
+/// Résout `format` pour `page_url`.
+pub async fn resolve(
+    ytdlp: &Path,
+    page_url: &str,
+    format: &str,
+    timeout: Duration,
+) -> Result<Resolution, ExtractError> {
+    let mut command = ytdlp_command(ytdlp);
+    command.args([
+        "-J",
+        "--no-playlist",
+        "--no-warnings",
+        "-f",
+        format,
+        "--",
+        page_url,
+    ]);
+    let output = run(command, timeout).await?;
+    let json: Value = serde_json::from_slice(&output)
+        .map_err(|_| ExtractError::Failed("réponse de yt-dlp illisible".into()))?;
+    parse_resolution(&json)
+}
+
+pub(crate) fn parse_resolution(json: &Value) -> Result<Resolution, ExtractError> {
+    if json["_type"].as_str() == Some("playlist") {
+        return Err(ExtractError::Failed(
+            "liste de lecture : seule une page de vidéo est prise en charge".into(),
+        ));
+    }
+    let chosen: Vec<&Value> = match json["requested_formats"].as_array() {
+        Some(list) if !list.is_empty() => list.iter().collect(),
+        // Un seul format : décrit à la racine.
+        _ => vec![json],
+    };
+    let streams = chosen
+        .into_iter()
+        .map(parse_resolved)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| ExtractError::Failed("flux sans adresse ni identifiant".into()))?;
+    if streams.is_empty() {
+        return Err(ExtractError::Failed("aucun flux retenu".into()));
+    }
+    Ok(Resolution {
+        title: text(&json["title"]).unwrap_or_else(|| "vidéo".into()),
+        duration_s: json["duration"].as_f64(),
+        streams,
+    })
+}
+
+fn parse_resolved(f: &Value) -> Option<Resolved> {
+    let format = parse_format(f)?;
+    let url = text(&f["url"])?;
+    let headers = f["http_headers"]
+        .as_object()
+        .map(|h| {
+            h.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let direct = matches!(format.protocol.as_str(), "http" | "https")
+        && f.get("fragments").is_none_or(Value::is_null);
+    // Sans codec annoncé, un format est pris pour complet (vidéo et son).
+    let unknown = format.vcodec.is_none() && format.acodec.is_none();
+    Some(Resolved {
+        has_video: format.vcodec.is_some() || unknown,
+        has_audio: format.acodec.is_some() || unknown,
+        format_id: format.format_id,
+        ext: format.ext,
+        protocol: format.protocol,
+        url,
+        headers,
+        size: format.filesize.filter(|_| !format.filesize_approx),
+        drm: format.drm,
+        direct,
+    })
+}

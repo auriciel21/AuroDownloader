@@ -1,0 +1,908 @@
+//! Exécution d'une tâche vidéo (SPEC §7.17, étape 4c) : résolution des flux par yt-dlp,
+//! téléchargement de chaque flux, puis fusion (`post_processing`).
+//!
+//! Un flux direct se télécharge comme une tâche HTTP interne (`tasks.parent_id`), par
+//! `transfer::run` lui-même : règle 1, segments, limites et reprise vérifiée, sans rien de
+//! propre à la vidéo. Un flux fragmenté (HLS, DASH à fragments) est confié à yt-dlp, qui
+//! reprend ses fichiers partiels ; le moteur ne vide son fichier sur disque qu'à la fin.
+//!
+//! Chaque exécution refait la résolution : les adresses des flux expirent. Une adresse
+//! refusée (`HTTP_STATUS`) la fait refaire, au plus [`MAX_REFRESH`] fois.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use rusqlite::Connection;
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+use tokio::sync::watch;
+
+use super::extract::{self, ExtractError, Resolution, Resolved};
+use super::tools::{Status, Tools};
+use crate::io::{claim_name, part_path, sync_parent_dir};
+use crate::net::Client;
+use crate::net::filename::{NameRules, sanitize};
+use crate::store::headers::{Stored, StoredHeader};
+use crate::store::media::{self, StreamRow};
+use crate::store::now_ms;
+use crate::store::tasks::{
+    self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, complete_task, load_task,
+    reserved_names,
+};
+use crate::transfer::{self, MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
+
+/// Résolutions refaites dans une exécution pour une adresse refusée.
+pub const MAX_REFRESH: u32 = 3;
+
+/// Délai de la fusion par ffmpeg (copie des flux, sans réencodage).
+const MERGE_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Écart toléré entre la durée annoncée et celle du fichier produit.
+const DURATION_SLACK_S: f64 = 2.0;
+
+/// Ce dont une exécution a besoin.
+pub struct Context<'a> {
+    pub client: &'a Client,
+    pub opts: &'a transfer::Options,
+    pub tools: Option<&'a Arc<Tools>>,
+}
+
+/// Fin d'une exécution, avant son enregistrement.
+enum End {
+    Completed(PathBuf),
+    Stopped,
+    DiskFull(String),
+    RetryLater { code: &'static str, detail: String },
+    Failed { code: &'static str, detail: String },
+}
+
+fn failed(code: &'static str, detail: impl Into<String>) -> End {
+    End::Failed {
+        code,
+        detail: detail.into(),
+    }
+}
+
+/// Exécute la tâche vidéo `task_id` jusqu'à sa fin ou son arrêt, et enregistre son issue.
+pub async fn run(
+    conn: &mut Connection,
+    ctx: &Context<'_>,
+    task_id: &str,
+    mut stop: watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<Outcome, TransferError> {
+    let task = load_task(conn, task_id)?;
+    match task.state {
+        TaskState::Queued | TaskState::RetryWait => {
+            change_state(conn, task_id, &Change::to(TaskState::Active))?;
+        }
+        TaskState::Active | TaskState::PostProcessing => {}
+        other => {
+            return Err(TransferError::NotRunnable {
+                task_id: task_id.to_owned(),
+                state: other.as_sql(),
+            });
+        }
+    }
+    let status = ctx.tools.map(|t| t.status()).unwrap_or_default();
+    let end = if !status.ready() {
+        failed(
+            "TOOLS_MISSING",
+            "yt-dlp, ffmpeg ou ffprobe n'est pas installé (media.installTools)",
+        )
+    } else if task.state == TaskState::PostProcessing {
+        // Arrêt pendant la fusion : elle recommence.
+        finish(conn, &status, task_id, None).await?
+    } else {
+        download(conn, ctx, &status, task_id, &mut stop, on_progress).await?
+    };
+    record(conn, task_id, end)
+}
+
+/// Enregistre l'issue, comme `transfer::run` pour une tâche HTTP.
+fn record(conn: &mut Connection, task_id: &str, end: End) -> Result<Outcome, TransferError> {
+    match end {
+        End::Completed(path) => Ok(Outcome::Completed(path)),
+        End::Stopped => {
+            let change = Change {
+                pause_reason: Some(PauseReason::User),
+                ..Change::to(TaskState::Paused)
+            };
+            change_state(conn, task_id, &change)?;
+            Ok(Outcome::Paused)
+        }
+        End::DiskFull(detail) => {
+            let change = Change {
+                pause_reason: Some(PauseReason::DiskFull),
+                error: Some(("DISK_FULL", &detail)),
+                ..Change::to(TaskState::Paused)
+            };
+            change_state(conn, task_id, &change)?;
+            Ok(Outcome::DiskFull)
+        }
+        End::RetryLater { code, detail } => {
+            let task = load_task(conn, task_id)?;
+            if task.retry_count + 1 >= MAX_FAILURES {
+                return record(conn, task_id, End::Failed { code, detail });
+            }
+            let delay = retry_delay(task.retry_count, None, Duration::ZERO);
+            let at_ms =
+                now_ms().saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX));
+            let change = Change {
+                error: Some((code, &detail)),
+                next_retry_at: Some(at_ms),
+                ..Change::to(TaskState::RetryWait)
+            };
+            change_state(conn, task_id, &change)?;
+            Ok(Outcome::RetryLater {
+                code,
+                detail,
+                at_ms,
+            })
+        }
+        End::Failed { code, detail } => {
+            let change = Change {
+                error: Some((code, &detail)),
+                ..Change::to(TaskState::Failed)
+            };
+            change_state(conn, task_id, &change)?;
+            Ok(Outcome::Failed { code, detail })
+        }
+    }
+}
+
+/// Arrêt demandé : valeur vraie, ou plus personne pour le demander.
+fn stopping(stop: &watch::Receiver<bool>) -> bool {
+    *stop.borrow() || stop.has_changed().is_err()
+}
+
+async fn wait_stop(stop: &mut watch::Receiver<bool>) {
+    loop {
+        if stopping(stop) {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Résolution, interrompue par un arrêt (`Ok(None)`).
+async fn resolve(
+    status: &Status,
+    page_url: &str,
+    format: &str,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<Option<Resolution>, ExtractError> {
+    let ytdlp = &status.ytdlp.as_ref().expect("outils prêts").path;
+    tokio::select! {
+        r = extract::resolve(ytdlp, page_url, format, extract::PROBE_TIMEOUT) => r.map(Some),
+        _ = wait_stop(stop) => Ok(None),
+    }
+}
+
+/// Conteneur de la vidéo finale : celui demandé ; sinon `mp4` si tous les flux sont
+/// `mp4` ou `m4a`, `webm` s'ils sont tous `webm`, `mkv` pour un mélange. Un flux seul
+/// garde le sien.
+fn container_for(requested: Option<&str>, streams: &[Resolved]) -> String {
+    if let Some(c) = requested {
+        return c.to_owned();
+    }
+    if let [one] = streams {
+        return one.ext.clone();
+    }
+    if streams
+        .iter()
+        .all(|s| matches!(s.ext.as_str(), "mp4" | "m4a"))
+    {
+        "mp4".into()
+    } else if streams.iter().all(|s| s.ext == "webm") {
+        "webm".into()
+    } else {
+        "mkv".into()
+    }
+}
+
+/// Identifiant de format réduit à des caractères sûrs dans un nom de fichier.
+fn safe_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect()
+}
+
+/// Résolution, puis chaque flux, puis la fusion.
+async fn download(
+    conn: &mut Connection,
+    ctx: &Context<'_>,
+    status: &Status,
+    task_id: &str,
+    stop: &mut watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<End, TransferError> {
+    let mut task = load_task(conn, task_id)?;
+    let job = media::load_job(conn, task_id)?;
+    let mut streams = media::load_streams(conn, task_id)?;
+    // Retéléchargement : la préparation est oubliée (nom), les flux aussi.
+    if task.file_name.is_none() && !streams.is_empty() {
+        media::forget_streams(conn, task_id)?;
+        streams.clear();
+    }
+    let selector = if streams.is_empty() {
+        job.format.clone()
+    } else {
+        // Les mêmes flux qu'à la première résolution.
+        streams
+            .iter()
+            .map(|s| s.format_id.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    let mut resolution = match resolve(status, &job.page_url, &selector, stop).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(End::Stopped),
+        Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
+    };
+    if resolution.streams.iter().any(|s| s.drm) {
+        // SPEC §8.3 : jamais de contournement d'une protection.
+        return Ok(failed(
+            "EXTRACTOR_FAILED",
+            "format protégé par DRM : refusé",
+        ));
+    }
+    if streams.is_empty() {
+        let container = container_for(job.container.as_deref(), &resolution.streams);
+        let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
+        let stem = sanitize(&resolution.title, NameRules::native());
+        let wanted = format!("{stem}.{container}");
+        // Le nom final est pris sur le disque (`.part`), comme pour une tâche HTTP.
+        let final_name = match claim_name(Path::new(&task.dest_dir), &wanted, &reserved) {
+            Ok(name) => name,
+            Err(e) => return Ok(failed("DISK_IO", e.to_string())),
+        };
+        let final_stem = final_name
+            .strip_suffix(&format!(".{container}"))
+            .unwrap_or(&final_name)
+            .to_owned();
+        let rows: Vec<StreamRow> = resolution
+            .streams
+            .iter()
+            .enumerate()
+            .map(|(i, s)| StreamRow {
+                position: i as u32,
+                format_id: s.format_id.clone(),
+                protocol: s.protocol.clone(),
+                ext: s.ext.clone(),
+                has_video: s.has_video,
+                has_audio: s.has_audio,
+                file_name: format!("{final_stem}.f{}.{}", safe_id(&s.format_id), s.ext),
+                size: s.size,
+                child_id: None,
+                done: false,
+            })
+            .collect();
+        media::save_resolution(
+            conn,
+            task_id,
+            &resolution.title,
+            &final_name,
+            &container,
+            &rows,
+        )?;
+        streams = media::load_streams(conn, task_id)?;
+        task = load_task(conn, task_id)?;
+    } else {
+        let wanted: Vec<&str> = streams.iter().map(|s| s.format_id.as_str()).collect();
+        let got: Vec<&str> = resolution
+            .streams
+            .iter()
+            .map(|s| s.format_id.as_str())
+            .collect();
+        if wanted != got {
+            return Ok(failed(
+                "EXTRACTOR_FAILED",
+                "la page ne propose plus les mêmes flux",
+            ));
+        }
+    }
+
+    let mut done_bytes: u64 = streams
+        .iter()
+        .filter(|s| s.done)
+        .filter_map(|s| s.size)
+        .sum();
+    let mut refreshes = 0;
+    for index in 0..streams.len() {
+        if streams[index].done {
+            continue;
+        }
+        loop {
+            let stream = &streams[index];
+            let resolved = &resolution.streams[index];
+            let total: Option<u64> = streams.iter().map(|s| s.size).sum();
+            let step = if resolved.direct {
+                direct(
+                    conn,
+                    ctx,
+                    &task,
+                    stream,
+                    resolved,
+                    stop,
+                    done_bytes,
+                    total,
+                    on_progress,
+                )
+                .await?
+            } else {
+                fragmented(
+                    conn,
+                    status,
+                    &task,
+                    stream,
+                    &job.page_url,
+                    stop,
+                    done_bytes,
+                    total,
+                    on_progress,
+                )
+                .await?
+            };
+            match step {
+                Step::Done(size) => {
+                    done_bytes += size;
+                    media::save_progress(conn, task_id, done_bytes, None)?;
+                    break;
+                }
+                Step::Refresh if refreshes < MAX_REFRESH => {
+                    refreshes += 1;
+                    resolution =
+                        match resolve(status, &job.page_url, &selector_of(&streams), stop).await {
+                            Ok(Some(r)) if same_streams(&streams, &r) => r,
+                            Ok(Some(_)) => {
+                                return Ok(failed(
+                                    "EXTRACTOR_FAILED",
+                                    "la page ne propose plus les mêmes flux",
+                                ));
+                            }
+                            Ok(None) => return Ok(End::Stopped),
+                            Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
+                        };
+                }
+                Step::Refresh => {
+                    return Ok(failed(
+                        "HTTP_STATUS",
+                        "adresse du flux toujours refusée après une nouvelle résolution",
+                    ));
+                }
+                Step::End(end) => {
+                    media::save_progress(conn, task_id, done_bytes, None)?;
+                    return Ok(end);
+                }
+            }
+        }
+        streams = media::load_streams(conn, task_id)?;
+    }
+
+    change_state(conn, task_id, &Change::to(TaskState::PostProcessing))?;
+    finish(conn, status, task_id, resolution.duration_s).await
+}
+
+fn selector_of(streams: &[StreamRow]) -> String {
+    streams
+        .iter()
+        .map(|s| s.format_id.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn same_streams(streams: &[StreamRow], resolution: &Resolution) -> bool {
+    streams.len() == resolution.streams.len()
+        && streams
+            .iter()
+            .zip(&resolution.streams)
+            .all(|(a, b)| a.format_id == b.format_id)
+}
+
+/// Issue d'un flux.
+enum Step {
+    /// Complet et vidé sur disque ; sa taille.
+    Done(u64),
+    /// Adresse refusée : refaire la résolution.
+    Refresh,
+    End(End),
+}
+
+/// En-têtes de yt-dlp recevables par une tâche HTTP (ceux que le moteur fixe lui-même
+/// sont écartés), les secrets au coffre (SPEC §5.1).
+fn store_headers(
+    headers: &[(String, String)],
+    vault: &crate::secrets::Vault,
+) -> Result<Vec<StoredHeader>, String> {
+    let mut kept: Vec<(String, String)> = Vec::new();
+    for (name, value) in headers {
+        if kept.len() >= crate::net::MAX_TASK_HEADERS
+            || kept.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let pair = vec![(name.clone(), value.clone())];
+        if crate::net::check_task_headers(&pair).is_ok() {
+            kept.extend(pair);
+        }
+    }
+    let mut stored = Vec::with_capacity(kept.len());
+    for (name, value) in kept {
+        if crate::net::is_secret_header(&name) {
+            match vault.put(&value) {
+                Ok(id) => stored.push((name, Stored::Secret(id))),
+                Err(e) => {
+                    vault.forget(
+                        stored
+                            .into_iter()
+                            .filter_map(|(_, s)| match s {
+                                Stored::Secret(id) => Some(id),
+                                Stored::Plain(_) => None,
+                            })
+                            .collect(),
+                    );
+                    return Err(e.to_string());
+                }
+            }
+        } else {
+            stored.push((name, Stored::Plain(value)));
+        }
+    }
+    Ok(stored)
+}
+
+/// Un flux direct, par sa tâche HTTP interne.
+#[allow(clippy::too_many_arguments)]
+async fn direct(
+    conn: &mut Connection,
+    ctx: &Context<'_>,
+    task: &TaskRow,
+    stream: &StreamRow,
+    resolved: &Resolved,
+    stop: &mut watch::Receiver<bool>,
+    base: u64,
+    total: Option<u64>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<Step, TransferError> {
+    let child_id =
+        match stream
+            .child_id
+            .clone()
+            .or(media::child_named(conn, &task.id, &stream.file_name)?)
+        {
+            Some(id) => {
+                // Adresse fraîche à chaque exécution ; ses validateurs restent, pour `If-Range`.
+                tasks::replace_url(conn, &id, &resolved.url, None, None)?;
+                id
+            }
+            None => {
+                let stored = match store_headers(&resolved.headers, &ctx.opts.vault) {
+                    Ok(stored) => stored,
+                    Err(e) => {
+                        return Ok(Step::End(End::RetryLater {
+                            code: "SECRET_UNAVAILABLE",
+                            detail: e,
+                        }));
+                    }
+                };
+                let (id, _) = tasks::create_task(
+                    conn,
+                    &NewTask {
+                        queue_id: &task.queue_id,
+                        url: &resolved.url,
+                        display_name: &stream.file_name,
+                        dest_dir: &task.dest_dir,
+                        max_connections: task.max_connections,
+                        speed_limit_bps: None,
+                        idempotency_key: None,
+                        requested_name: Some(&stream.file_name),
+                        checksum: None,
+                        headers: &stored,
+                        parent_id: Some(&task.id),
+                    },
+                )?;
+                id
+            }
+        };
+    media::set_child(conn, &task.id, stream.position, &child_id)?;
+    let mut restarted = false;
+    loop {
+        let child = load_task(conn, &child_id)?;
+        match child.state {
+            TaskState::Completed => {
+                // Arrêt entre la fin du flux et son enregistrement.
+                let name = child.file_name.clone().unwrap_or_default();
+                let size = child.total_bytes.unwrap_or(child.done_bytes);
+                media::stream_done(conn, &task.id, stream.position, &name, size)?;
+                return Ok(Step::Done(size));
+            }
+            TaskState::Paused | TaskState::Failed => {
+                change_state(conn, &child_id, &Change::to(TaskState::Queued))?;
+            }
+            _ => {}
+        }
+        let mut forward = |p: Progress| {
+            let current = p.total.or(stream.size).unwrap_or(0);
+            let others: Option<u64> = total.map(|t| t.saturating_sub(stream.size.unwrap_or(0)));
+            on_progress(Progress {
+                received: base + p.received,
+                total: others.map(|o| o + current).or(p.total.map(|t| base + t)),
+                connections: p.connections,
+                segments: Arc::from([]),
+                verified: None,
+                uploaded: None,
+                upload_bps: None,
+                seeding: false,
+            });
+        };
+        let outcome = transfer::run(
+            conn,
+            ctx.client,
+            &child_id,
+            ctx.opts,
+            stop.clone(),
+            &mut forward,
+        )
+        .await?;
+        return Ok(match outcome {
+            Outcome::Completed(path) => {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                media::stream_done(conn, &task.id, stream.position, &name, size)?;
+                Step::Done(size)
+            }
+            Outcome::Paused => Step::End(End::Stopped),
+            Outcome::DiskFull => Step::End(End::DiskFull(
+                "plus assez de place pour un flux de la vidéo".into(),
+            )),
+            Outcome::FileChanged if !restarted => {
+                // Le flux a changé derrière sa nouvelle adresse : il repart de zéro.
+                restarted = true;
+                if let Some(name) = &load_task(conn, &child_id)?.file_name {
+                    let _ = std::fs::remove_file(part_path(&Path::new(&task.dest_dir).join(name)));
+                }
+                tasks::restart_task(conn, &child_id)?;
+                continue;
+            }
+            Outcome::FileChanged => Step::End(failed(
+                "FILE_CHANGED",
+                "un flux de la vidéo change à chaque essai",
+            )),
+            Outcome::RetryLater { code, detail, .. } => Step::End(End::RetryLater { code, detail }),
+            Outcome::Failed {
+                code: "HTTP_STATUS",
+                ..
+            } => Step::Refresh,
+            Outcome::Failed { code, detail } => Step::End(End::Failed { code, detail }),
+            Outcome::Seeding => Step::End(failed("INTERNAL", "issue de torrent pour une vidéo")),
+        });
+    }
+}
+
+/// Un flux fragmenté, par yt-dlp : il écrit `<flux>.part` et le renomme à la fin ; le
+/// moteur vide ensuite le fichier sur disque.
+#[allow(clippy::too_many_arguments)]
+async fn fragmented(
+    conn: &mut Connection,
+    status: &Status,
+    task: &TaskRow,
+    stream: &StreamRow,
+    page_url: &str,
+    stop: &mut watch::Receiver<bool>,
+    base: u64,
+    total: Option<u64>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<Step, TransferError> {
+    let path = Path::new(&task.dest_dir).join(&stream.file_name);
+    if !path.exists() {
+        let ytdlp = &status.ytdlp.as_ref().expect("outils prêts").path;
+        let ffmpeg = &status.ffmpeg.as_ref().expect("outils prêts").path;
+        let mut command = extract::ytdlp_command(ytdlp);
+        // `-o` est un modèle de yt-dlp : `%` s'y double.
+        let template = path.to_string_lossy().replace('%', "%%");
+        command.args([
+            "-f",
+            &stream.format_id,
+            "--no-playlist",
+            "--newline",
+            "--no-mtime",
+        ]);
+        command.args(["--no-warnings", "--continue"]);
+        command.args([
+            "--progress-template",
+            "download:AURO %(progress.downloaded_bytes)s %(progress.total_bytes)s \
+             %(progress.total_bytes_estimate)s",
+        ]);
+        command.arg("--ffmpeg-location").arg(ffmpeg);
+        command.arg("-o").arg(&template);
+        command.args(["--", page_url]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (mut child, _tree) = match super::process::spawn(&mut command) {
+            Ok(spawned) => spawned,
+            Err(e) => return Ok(Step::End(failed("TOOLS_MISSING", e.to_string()))),
+        };
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("sortie")).lines();
+        let mut stderr = child.stderr.take().expect("sortie d'erreur");
+        let errors = tokio::spawn(async move {
+            let mut text = Vec::new();
+            let _ = (&mut stderr).take(1 << 20).read_to_end(&mut text).await;
+            text
+        });
+        loop {
+            tokio::select! {
+                line = stdout.next_line() => match line {
+                    Ok(Some(line)) => {
+                        if let Some(p) = parse_progress(&line) {
+                            let current = p.1.or(stream.size);
+                            let others: Option<u64> =
+                                total.map(|t| t.saturating_sub(stream.size.unwrap_or(0)));
+                            on_progress(Progress {
+                                received: base + p.0,
+                                total: match (others, current) {
+                                    (Some(o), Some(c)) => Some(o + c),
+                                    _ => None,
+                                },
+                                connections: 1,
+                                segments: Arc::from([]),
+                                verified: None,
+                                uploaded: None,
+                                upload_bps: None,
+                                seeding: false,
+                            });
+                        }
+                    }
+                    _ => break,
+                },
+                _ = wait_stop(stop) => return Ok(Step::End(End::Stopped)),
+            }
+        }
+        let exit = tokio::select! {
+            exit = child.wait() => exit,
+            _ = wait_stop(stop) => return Ok(Step::End(End::Stopped)),
+        };
+        let stderr = errors.await.unwrap_or_default();
+        match exit {
+            Ok(code) if code.success() => {}
+            Ok(_) => {
+                return Ok(Step::End(failed(
+                    "EXTRACTOR_FAILED",
+                    extract::error_message(&stderr),
+                )));
+            }
+            Err(e) => return Ok(Step::End(failed("EXTRACTOR_FAILED", e.to_string()))),
+        }
+        if !path.exists() {
+            return Ok(Step::End(failed(
+                "EXTRACTOR_FAILED",
+                "yt-dlp a fini sans écrire le flux",
+            )));
+        }
+    }
+    // Règle 1, à la fin du flux : le fichier est vidé sur disque avant d'être enregistré.
+    let synced = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || -> std::io::Result<u64> {
+            let len = sync_file(&path)?;
+            sync_parent_dir(&path).map_err(std::io::Error::other)?;
+            Ok(len)
+        }
+    })
+    .await?;
+    let size = match synced {
+        Ok(size) => size,
+        Err(e) => return Ok(Step::End(failed("DISK_IO", e.to_string()))),
+    };
+    // Le `.part` réservé à la création du nom, que yt-dlp a remplacé.
+    let _ = std::fs::remove_file(part_path(&path));
+    media::stream_done(conn, &task.id, stream.position, &stream.file_name, size)?;
+    Ok(Step::Done(size))
+}
+
+/// Ligne d'avancement de yt-dlp (`AURO <reçus> <total> <estimation>`, `NA` si inconnu) :
+/// octets reçus et taille, exacte ou estimée.
+fn parse_progress(line: &str) -> Option<(u64, Option<u64>)> {
+    let mut parts = line.strip_prefix("AURO ")?.split_whitespace();
+    let number = |s: Option<&str>| s.and_then(|s| s.parse::<f64>().ok()).map(|v| v as u64);
+    let received = number(parts.next())?;
+    let total = number(parts.next());
+    let estimate = number(parts.next());
+    Some((received, total.or(estimate)))
+}
+
+/// Fusion (F-23) et contrôle, puis fin de la tâche.
+async fn finish(
+    conn: &mut Connection,
+    status: &Status,
+    task_id: &str,
+    duration_s: Option<f64>,
+) -> Result<End, TransferError> {
+    let task = load_task(conn, task_id)?;
+    let job = media::load_job(conn, task_id)?;
+    let streams = media::load_streams(conn, task_id)?;
+    let Some(final_name) = task.file_name.clone() else {
+        return Ok(failed("INTERNAL", "vidéo sans nom final"));
+    };
+    if streams.is_empty() || streams.iter().any(|s| !s.done) {
+        return Ok(failed("INTERNAL", "fusion d'une vidéo aux flux incomplets"));
+    }
+    let dir = PathBuf::from(&task.dest_dir);
+    let final_path = dir.join(&final_name);
+    let part = part_path(&final_path);
+    let inputs: Vec<PathBuf> = streams.iter().map(|s| dir.join(&s.file_name)).collect();
+    let container = job.container.unwrap_or_else(|| "mkv".into());
+    let ffmpeg = &status.ffmpeg.as_ref().expect("outils prêts").path;
+    let ffprobe = status.ffprobe.as_ref().expect("outils prêts");
+
+    let single_as_is = matches!(&streams[..], [one] if one.ext == container);
+    if !single_as_is {
+        let _ = std::fs::remove_file(&part);
+        if let Err(e) = merge(ffmpeg, &inputs, &container, &part).await {
+            return Ok(failed("MERGE_FAILED", e));
+        }
+    }
+    let produced = if single_as_is { &inputs[0] } else { &part };
+    if let Err(e) = check(ffprobe, produced, duration_s).await {
+        return Ok(failed("MERGE_FAILED", e));
+    }
+    let synced = tokio::task::spawn_blocking({
+        let (produced, final_path, part) = (produced.clone(), final_path.clone(), part.clone());
+        move || -> std::io::Result<u64> {
+            let len = sync_file(&produced)?;
+            std::fs::rename(&produced, &final_path)?;
+            // Le `.part` réservé au nom final, s'il reste (flux seul gardé tel quel).
+            let _ = std::fs::remove_file(&part);
+            sync_parent_dir(&final_path).map_err(std::io::Error::other)?;
+            Ok(len)
+        }
+    })
+    .await?;
+    let size = match synced {
+        Ok(size) => size,
+        Err(e) => return Ok(failed("DISK_IO", e.to_string())),
+    };
+    if !single_as_is {
+        for input in &inputs {
+            let _ = std::fs::remove_file(input);
+        }
+    }
+    complete_task(conn, task_id, &final_path.to_string_lossy(), size)?;
+    Ok(End::Completed(final_path))
+}
+
+/// Vide un fichier sur disque et rend sa taille. Ouvert en écriture, sans le tronquer :
+/// Windows refuse de vider un fichier ouvert en lecture seule.
+fn sync_file(path: &Path) -> std::io::Result<u64> {
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.sync_all()?;
+    Ok(file.metadata()?.len())
+}
+
+/// Nom de format de ffmpeg pour un conteneur (la sortie est un `.part`).
+fn muxer(container: &str) -> &str {
+    match container {
+        "mkv" => "matroska",
+        "m4a" => "ipod",
+        other => other,
+    }
+}
+
+/// `ffmpeg -i <flux>… -map … -c copy -f <format> <sortie>`, sans réencodage.
+async fn merge(
+    ffmpeg: &Path,
+    inputs: &[PathBuf],
+    container: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(ffmpeg);
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]);
+    for input in inputs {
+        command.arg("-i").arg(input);
+    }
+    for i in 0..inputs.len() {
+        command.args(["-map", &i.to_string()]);
+    }
+    command
+        .args(["-c", "copy", "-f", muxer(container)])
+        .arg(output);
+    run_tool(command, MERGE_TIMEOUT).await.map(|_| ())
+}
+
+/// `ffprobe` lit le fichier produit ; sa durée doit être celle annoncée, à
+/// [`DURATION_SLACK_S`] près.
+async fn check(ffprobe: &Path, file: &Path, expected_s: Option<f64>) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(ffprobe);
+    command.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    ]);
+    command.arg(file);
+    let out = run_tool(command, Duration::from_secs(120)).await?;
+    let duration: f64 = String::from_utf8_lossy(&out)
+        .trim()
+        .parse()
+        .map_err(|_| "ffprobe ne lit pas la durée du fichier produit".to_owned())?;
+    match expected_s {
+        Some(expected) if (duration - expected).abs() > DURATION_SLACK_S => Err(format!(
+            "durée du fichier produit : {duration:.1} s au lieu de {expected:.1} s"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Lance ffmpeg ou ffprobe (arbre tué au bout du délai) ; sa sortie, ou son message.
+async fn run_tool(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    super::process::prepare(&mut command);
+    let (child, _tree) = super::process::spawn(&mut command).map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| "délai dépassé".to_owned())?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(extract::error_message(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+/// Fichiers d'une vidéo à effacer (annulation, retrait) : ceux de ses flux et leurs
+/// `.part`, le `.part` du nom final ; avec `finals`, le fichier final aussi.
+pub fn delete_files(conn: &Connection, task: &TaskRow, finals: bool) -> std::io::Result<()> {
+    let dir = Path::new(&task.dest_dir);
+    let remove = |path: PathBuf| match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    };
+    let streams = media::load_streams(conn, &task.id).map_err(std::io::Error::other)?;
+    for s in &streams {
+        let path = dir.join(&s.file_name);
+        remove(part_path(&path))?;
+        remove(path)?;
+    }
+    for child in media::children(conn, &task.id).map_err(std::io::Error::other)? {
+        if let Ok(row) = load_task(conn, &child)
+            && let Some(name) = row.file_name
+        {
+            let path = dir.join(name);
+            remove(part_path(&path))?;
+            remove(path)?;
+        }
+    }
+    if let Some(name) = &task.file_name {
+        let path = dir.join(name);
+        remove(part_path(&path))?;
+        if finals {
+            remove(path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

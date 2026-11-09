@@ -16,6 +16,7 @@ use crate::segmenter::CoverageError;
 pub mod headers;
 pub mod history;
 pub mod logins;
+pub mod media;
 pub mod moves;
 pub mod schedules;
 pub mod segments;
@@ -63,6 +64,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "checksum_source",
         sql: include_str!("../migrations/0005_checksum_source.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "media_streams",
+        sql: include_str!("../migrations/0006_media_streams.sql"),
     },
 ];
 
@@ -272,11 +278,12 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 16] = [
+    const EXPECTED_TABLES: [&str; 17] = [
         "event_log",
         "file_moves",
         "history",
         "media_jobs",
+        "media_streams",
         "queues",
         "rules",
         "schedules",
@@ -333,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_16_tables_of_the_spec() {
+    fn migrations_create_the_17_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());
