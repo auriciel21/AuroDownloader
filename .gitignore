@@ -15,6 +15,9 @@
 # Prototypes de bureau : schémas générés par Tauri
 /experiments/desktop/tauri/gen/
 
+# Prototype torrent : compilation
+/experiments/torrent/rqbit/target/
+
 # Application de bureau : schémas générés par Tauri
 /apps/desktop/gen/
 /apps/desktop/target/

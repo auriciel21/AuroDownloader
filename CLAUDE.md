@@ -175,6 +175,12 @@ téléchargement.
 - `experiments/desktop` : prototypes Qt Quick (`qt`, CMake et Qt 6 MSVC dans `C:\Qt`) et
   Tauri (`tauri`, hors de l'espace de travail Cargo) de l'application de bureau, au
   périmètre identique, et leurs mesures (`README.md`) ; ne font pas partie du produit.
+- `experiments/torrent` : prototype torrent (phase 5, étape 2) : `rqbit` (librqbit, hors de
+  l'espace de travail Cargo, compilé sous WSL Ubuntu), `libtorrent/lt_proto.py` (liaisons
+  Python dans un environnement de la distribution Ubuntu-24.04), scripts `run.sh` et
+  `magnet.sh` (`PROTO_DIR`), mesures dans `README.md`. Essais sur l'essaim Debian
+  seulement, envoi limité, arrêt sans partager ; mesurer sous WSL (sous Windows, un port
+  d'écoute fait apparaître la fenêtre du pare-feu).
 
 ## Commandes
 
