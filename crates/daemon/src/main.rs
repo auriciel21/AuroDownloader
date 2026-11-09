@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use auro_engine::media;
 use auro_engine::net::Client;
 use auro_engine::paths;
 use auro_engine::power;
@@ -47,6 +48,19 @@ struct Args {
     /// virgules), sans DHT ni connexion entrante (banc de reprise des torrents)
     #[arg(long, value_name = "PAIRS", value_delimiter = ',')]
     torrent_peers: Vec<std::net::SocketAddr>,
+
+    /// Essais : ce yt-dlp, pris tel quel, sans installation ni mise à jour (banc de reprise
+    /// des vidéos) ; avec --media-ffmpeg et --media-ffprobe
+    #[arg(long, value_name = "FICHIER", requires_all = ["media_ffmpeg", "media_ffprobe"])]
+    media_ytdlp: Option<PathBuf>,
+
+    /// Essais : ce ffmpeg, pris tel quel
+    #[arg(long, value_name = "FICHIER", requires = "media_ytdlp")]
+    media_ffmpeg: Option<PathBuf>,
+
+    /// Essais : ce ffprobe, pris tel quel
+    #[arg(long, value_name = "FICHIER", requires = "media_ytdlp")]
+    media_ffprobe: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -90,7 +104,19 @@ fn main() -> Result<()> {
     } else {
         torrent::Options::local(args.torrent_peers.clone())
     };
-    runtime.block_on(run(db, endpoint, client, planning, torrent))
+    // Essais seulement : des outils de la vidéo imposés (banc de reprise des vidéos).
+    let media = match (args.media_ytdlp, args.media_ffmpeg, args.media_ffprobe) {
+        (Some(ytdlp), Some(ffmpeg), Some(ffprobe)) => media::Options {
+            sources: media::tools::Sources {
+                local_ytdlp: Some(ytdlp),
+                local_ffmpeg: Some((ffmpeg, ffprobe)),
+                ..media::tools::Sources::default()
+            },
+            dir: None,
+        },
+        _ => media::Options::default(),
+    };
+    runtime.block_on(run(db, endpoint, client, planning, torrent, media))
 }
 
 /// Un point d'accès autre que celui par défaut sert aux essais : sans `--db`, il ouvrirait
@@ -112,6 +138,7 @@ async fn run(
     client: Client,
     planning: Planning,
     torrent: torrent::Options,
+    media: media::Options,
 ) -> Result<()> {
     let engine = Engine::start(Config {
         db_path: db.clone(),
@@ -122,6 +149,7 @@ async fn run(
             vault: Vault::system(),
             neighbor_checksum: true,
             torrent,
+            media,
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,

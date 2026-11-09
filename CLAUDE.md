@@ -251,6 +251,9 @@ AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_daemon --
 # Banc de reprise des torrents (aurod tué pendant que plusieurs torrents se téléchargent
 # depuis un pair local, écritures perdues simulées ; aurod --torrent-peers) :
 AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_torrent -- --nocapture
+# Banc de reprise des vidéos (aurod tué pendant les flux et la fusion ; faux yt-dlp et
+# ffmpeg imposés par aurod --media-ytdlp --media-ffmpeg --media-ffprobe) :
+AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_media -- --nocapture
 # Disque vraiment plein (Linux, WSL) : tmpfs de 8 Mio monté sans root, puis le test ignoré :
 D=$(mktemp -d); unshare -rm sh -c "mount -t tmpfs -o size=8m tmpfs $D && \
   AURO_FULL_DISK_DIR=$D cargo test -p auro-engine --lib -- --ignored really_full"
@@ -330,7 +333,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   (`crates/daemon/tests/crash_daemon.rs`). Leurs contrôles communs sont dans
   `testing::Checker`. Toute modification du module `torrent` ou de `store::torrents` passe
   aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
-  `testing::swarm`).
+  `testing::swarm`). Toute modification du module `media` ou de `store::media` passe aussi celui des
+  vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`).
 - Vidages du `.part` : toujours par le `SyncGate` du fichier (`PartFile::checkpoint`,
   `SegmentWriter::finish`), jamais par un `sync_data` direct pendant que des écrivains
   tournent : des vidages simultanés du même fichier coûtent très cher sous Linux.
@@ -421,8 +425,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   vérifiée ; essais réels sans YouTube, exception à « pas d'exécutable téléchargé » pour
   yt-dlp et ffmpeg officiels) : 4a. outils (fait le 2026-11-09 : installation
   vérifiée, essai réel sous Windows et Linux) ; 4b. extraction (fait le 2026-11-09) ; 4c. ajout, flux et
-  fusion (fait le 2026-11-09) ; 4d. fusion,
-  contrôle et banc de reprise ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
+  fusion (fait le 2026-11-09) ; 4d. banc de reprise des vidéos et limite de
+  débit des flux fragmentés (fait le 2026-11-09) ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

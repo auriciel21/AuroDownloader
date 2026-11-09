@@ -42,6 +42,34 @@ async fn wait_end(events: &mut broadcast::Receiver<Event>, task_id: &str) -> Tas
     .expect("la vidéo ne finit pas")
 }
 
+/// Les états annoncés pour `task_id` jusqu'à sa fin.
+async fn states_until_end(
+    events: &mut broadcast::Receiver<Event>,
+    task_id: &str,
+) -> Vec<TaskState> {
+    let mut seen = Vec::new();
+    timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::StateChanged { task_id: t, to, .. }) if t == task_id => {
+                    seen.push(to);
+                    if matches!(
+                        to,
+                        TaskState::Completed | TaskState::Failed | TaskState::Paused
+                    ) {
+                        return;
+                    }
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+            }
+        }
+    })
+    .await
+    .expect("la vidéo ne finit pas");
+    seen
+}
+
 /// Sert les fichiers de `dir` (sans plages), avec le bon type pour les listes.
 fn serve_dir(dir: PathBuf) -> crate::testing::Server {
     serve(move |request| {
@@ -325,21 +353,28 @@ struct Setup {
 }
 
 fn setup(answers: &[&str], tools: bool) -> Setup {
+    setup_with(|fake| {
+        if tools {
+            crate::media::tools::Sources {
+                local_ytdlp: Some(crate::testing::tools::fake_ytdlp_answers(fake, answers)),
+                local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(fake, "6.0")),
+                system_ffmpeg: false,
+                ..Default::default()
+            }
+        } else {
+            crate::media::tools::Sources {
+                system_ffmpeg: false,
+                ..Default::default()
+            }
+        }
+    })
+}
+
+/// Un moteur dont les outils sont ceux que `tools` prépare dans un dossier de faux outils.
+fn setup_with(tools: impl FnOnce(&Path) -> crate::media::tools::Sources) -> Setup {
     let dir = tempfile::tempdir().unwrap();
     let fake = dir.path().join("faux");
-    let sources = if tools {
-        crate::media::tools::Sources {
-            local_ytdlp: Some(crate::testing::tools::fake_ytdlp_answers(&fake, answers)),
-            local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(&fake, "6.0")),
-            system_ffmpeg: false,
-            ..Default::default()
-        }
-    } else {
-        crate::media::tools::Sources {
-            system_ffmpeg: false,
-            ..Default::default()
-        }
-    };
+    let sources = tools(&fake);
     let engine = Engine::start(Config {
         db_path: dir.path().join("auro.db"),
         client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
@@ -413,7 +448,16 @@ async fn two_direct_streams_become_one_video() {
         .add(add_video(&s, "https://exemple.org/page"))
         .await
         .unwrap();
-    assert_eq!(wait_end(&mut events, &id).await, TaskState::Completed);
+    let states = states_until_end(&mut events, &id).await;
+    assert_eq!(
+        states,
+        [
+            TaskState::Active,
+            TaskState::PostProcessing,
+            TaskState::Completed
+        ],
+        "fusion annoncée"
+    );
 
     let task = s.engine.get(&id).await.unwrap();
     assert_eq!(task.display_name, "Essai : vidéo");
@@ -565,5 +609,55 @@ async fn cancelling_a_video_deletes_its_streams() {
     })
     .await
     .unwrap_or_else(|_| panic!("restent : {:?}", files_in(&s.dest)));
+    s.engine.shutdown().await;
+}
+
+/// Un flux fragmenté passe par yt-dlp (`-o` vers le fichier du flux), avec la plus petite
+/// limite de débit (`--limit-rate`) ; puis fusion avec le flux direct.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fragmented_stream_goes_through_ytdlp_within_the_limit() {
+    let server = site(None);
+    let fragment = crate::testing::content_range(3_000_000, 100 * 1024);
+    let answer = serde_json::json!({
+        "title": "Fragments", "duration": 6.0,
+        "requested_formats": [
+            {"format_id": "hls-1", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+             "protocol": "m3u8_native", "url": server.url("/v.m3u8")},
+            {"format_id": "a1", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
+             "protocol": "http", "url": server.url("/a.m4a")}
+        ]
+    })
+    .to_string();
+    let s = setup_with(|fake| crate::media::tools::Sources {
+        local_ytdlp: Some(crate::testing::tools::fake_ytdlp_media(
+            fake, &answer, &fragment, 0,
+        )),
+        local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(fake, "6.0")),
+        system_ffmpeg: false,
+        ..Default::default()
+    });
+    s.engine.set_download_limit(Some(2_000_000)).await.unwrap();
+    let mut events = s.engine.subscribe();
+    let mut add = add_video(&s, "https://exemple.org/page");
+    add.speed_limit_bps = Some(1_500_000);
+    let id = s.engine.add(add).await.unwrap();
+    let end = wait_end(&mut events, &id).await;
+    let task = s.engine.get(&id).await.unwrap();
+    assert_eq!(end, TaskState::Completed, "{task:?}");
+    let mut expected = fragment.clone();
+    expected.extend(audio_bytes());
+    assert_eq!(
+        std::fs::read(s.dest.join(task.file_name.as_deref().unwrap())).unwrap(),
+        expected
+    );
+    let downloads =
+        std::fs::read_to_string(s._dir.path().join("faux").join("downloads.txt")).unwrap();
+    assert!(downloads.contains("--limit-rate"), "{downloads}");
+    assert!(
+        downloads.contains("1500000"),
+        "la plus petite limite : {downloads}"
+    );
+    assert!(downloads.contains("hls-1"), "{downloads}");
+    assert_eq!(files_in(&s.dest).len(), 1, "{:?}", files_in(&s.dest));
     s.engine.shutdown().await;
 }

@@ -181,6 +181,8 @@ pub struct Progress {
     pub upload_bps: Option<u64>,
     /// Torrent en partage (`seeding`) : la tâche vient d'y passer, ou y est.
     pub seeding: bool,
+    /// Vidéo en fusion (`post_processing`, SPEC §7.17) : la tâche vient d'y passer.
+    pub merging: bool,
 }
 
 /// Un segment qu'une connexion reçoit en ce moment.
@@ -820,6 +822,7 @@ async fn verify(
         uploaded: None,
         upload_bps: None,
         seeding: false,
+        merging: false,
     };
     on_progress(report(0));
     let read = Arc::new(AtomicU64::new(0));
@@ -1464,6 +1467,7 @@ fn progress(
         uploaded: None,
         upload_bps: None,
         seeding: false,
+        merging: false,
     }
 }
 

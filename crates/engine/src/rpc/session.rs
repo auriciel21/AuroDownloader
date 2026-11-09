@@ -585,6 +585,7 @@ mod tests {
             uploaded: None,
             upload_bps: None,
             seeding: false,
+            merging: false,
         }
     }
 

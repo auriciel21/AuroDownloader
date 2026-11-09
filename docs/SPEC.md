@@ -1349,7 +1349,7 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   - l'adresse de la page placée après `--`, pour qu'elle ne puisse pas passer pour une option ;
   - adresses `http` et `https` seulement ;
   - sans fenêtre de console sous Windows ;
-  - tués avec tout leur arbre quand leur exécution s'arrête ou dépasse son délai : yt-dlp publié est un « onefile » PyInstaller, qui lance lui-même l'interpréteur Python. Sous Windows, un Job Object (`KILL_ON_JOB_CLOSE`) les tue aussi si `aurod` meurt brutalement ; sous Linux, un groupe de processus, qui ne survit pas à un `aurod` tué (`SIGKILL`) : l'interpréteur resterait orphelin jusqu'à sa fin.
+  - tués avec tout leur arbre quand leur exécution s'arrête ou dépasse son délai : yt-dlp publié est un « onefile » PyInstaller, qui lance lui-même l'interpréteur Python. Sous Windows, un Job Object (`KILL_ON_JOB_CLOSE`) les tue aussi si `aurod` meurt brutalement ; sous Linux, un groupe de processus, et `PR_SET_PDEATHSIG` (`SIGTERM`) : un `aurod` tué brutalement ne tue pas le groupe, mais le processus lancé reçoit alors `SIGTERM`, que le chargeur PyInstaller transmet à l'interpréteur (étape 4d ; sans lui, le banc de reprise des vidéos trouvait des fichiers de flux écrits après la fin de leur vidéo).
   - Les messages de yt-dlp ne citent pas l'adresse dans les journaux du moteur (section 8.2).
 
 **Extraction** (`media.probe`, portée `add`).
@@ -1497,6 +1497,16 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   Passé sous Windows 11 et Linux (WSL), avec yt-dlp 2026.10.26 et ffmpeg 8.1. Bancs de reprise longs passés sous Linux le même jour (crash_daemon, 150 cycles, 67 fichiers ; crash_resume, 300 cycles, 71 fichiers), les tâches internes et les requêtes du planificateur ayant changé. Le DASH « fichier unique » que fabrique ffmpeg (`-single_file`) fait échouer l'extracteur de yt-dlp (`KeyError: sourceURL`) : l'essai écrit son manifeste à la main.
 - **Reste pour 4d** : banc de reprise des vidéos (arrêts brutaux pendant les flux et la fusion) ; limite de débit des flux fragmentés (yt-dlp ne suit pas encore les seaux du moteur).
 
+**Mise en œuvre de l'étape 4d (2026-11-09) : banc de reprise et limite des flux fragmentés.**
+- **Banc** (`crates/daemon/tests/crash_media.rs`, section 9.1) : `aurod` tué pendant les flux et la fusion. Les outils lui sont imposés par `--media-ytdlp`, `--media-ffmpeg` et `--media-ffprobe` (essais seulement).
+- **Défauts trouvés et corrigés grâce au banc** :
+  - **Vidéo bloquée en `post_processing`** : une vidéo arrêtée pendant sa fusion ne repartait jamais. Le planificateur prenait `post_processing` pour un état neuf, tentait `post_processing` → `active`, transition interdite, et la mettait de côté. Il la reprend maintenant telle quelle.
+  - **Fusion non annoncée** : le passage à `post_processing` n'était pas annoncé. Il l'est désormais, comme `verifying` : nouveau champ `Progress::merging`, et note `RunNote::PostProcessing`.
+  - **Fichiers de flux restants sous Linux** : un `aurod` tué laissait tourner ses outils, qui pouvaient écrire un fichier de flux après la fin de leur vidéo (2 fichiers restants en 150 cycles). Corrigé par `PR_SET_PDEATHSIG`, comme décrit plus haut.
+- **Limite de débit des flux fragmentés** : yt-dlp reçoit `--limit-rate`, la plus petite des limites de la tâche, de sa file et globale, lue au lancement. Ce n'est pas un seau partagé avec les autres téléchargements, qui peuvent donc ensemble dépasser la limite globale ; un changement de limite vaut au flux suivant.
+- **Tests** : flux fragmenté par yt-dlp (`-o`, `--limit-rate` à la plus petite limite) suivi de la fusion ; passage annoncé en `post_processing`.
+- **Reste pour 4e** : essais réels sur PeerTube, Wikimedia Commons et Internet Archive ; sous-titres (F-24).
+
 ## 8. Sécurité, vie privée et cadre légal
 
 Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ailleurs et ouvre un port réseau local : ce sont les deux surfaces d'attaque à traiter en priorité. Les parades ci-dessous sont des exigences de conception, vérifiées par des tests dédiés (section 9).
@@ -1562,6 +1572,14 @@ Le banc de reprise des torrents (`crates/daemon/tests/crash_torrent.rs`, phase 5
 - Windows 11 (graine 1794245565815179301) : 120 arrêts brutaux et 30 arrêts demandés, 227 torrents terminés et vérifiés, 37 plages effacées, en 4 min 59 s.
 
 La première campagne avait échoué par la faute du pair de test, et non du moteur (section 7.16, étape 3c).
+
+Le banc de reprise des vidéos (`crates/daemon/tests/crash_media.rs`, phase 5, section 7.17) tue `aurod` pendant qu'il télécharge trois vidéos à la fois. Chaque vidéo a deux flux : un flux fragmenté, que le faux yt-dlp écrit en une à deux secondes, et un flux direct de 1 Mio, servi en local, bridé, avec plages et ETag, que le moteur télécharge par sa tâche interne. Le faux ffmpeg met une seconde à fusionner, pour que des arrêts tombent aussi pendant la fusion. Après chaque arrêt, le banc vérifie qu'aucune vidéo n'est en échec, que chaque vidéo terminée est juste octet par octet, et qu'elle ne laisse ni flux ni `.part` ; à la fin, que le dossier ne contient que les vidéos.
+
+Campagnes du 2026-11-09, 150 lancements chacune, sans défaut :
+- Windows 11 (graine 1794262139524606701) : 120 arrêts brutaux et 30 arrêts demandés, 119 vidéos terminées et vérifiées, 64 arrêts pendant une fusion, en 9 min 22 s ;
+- Linux (WSL, graine 1794263431687590387) : 120 arrêts brutaux et 30 arrêts demandés, 141 vidéos terminées et vérifiées, 33 arrêts pendant une fusion, en 9 min 32 s.
+
+Les premières campagnes avaient trouvé deux défauts du moteur, corrigés depuis (section 7.17, étape 4d) : une vidéo arrêtée pendant sa fusion restait bloquée, et, sous Linux, des outils survivaient à un `aurod` tué.
 
 Version de la porte de phase 1, passée le 2026-10-15 sous Windows 11, sans aucun défaut. Le banc a fait 1 000 lancements sur un fichier de 1 Gio, en 1 h 41 (graine 1792094471405815701) :
 - 845 arrêts brutaux, dont 456 sur un découpage redécoupé ;

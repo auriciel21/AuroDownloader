@@ -288,10 +288,11 @@ pub fn fake_ffmpeg(
         let ffmpeg = dir.join("ffmpeg");
         std::fs::write(
             &ffmpeg,
-            "#!/bin/sh\nset -- \"$@\"\nout=\"\"\nins=\"\"\nwhile [ $# -gt 0 ]; do\n\
-             if [ \"$1\" = -i ]; then ins=\"$ins\n$2\"; fi\nout=\"$1\"\nshift\ndone\n\
-             : > \"$out\"\nprintf '%s\n' \"$ins\" | while IFS= read -r f; do\n\
-             [ -n \"$f\" ] && cat \"$f\" >> \"$out\"\ndone\nexit 0\n",
+            // `exec cat` : le dernier programme garde le signal de mort du moteur, comme un
+            // vrai ffmpeg (`media::process::prepare`).
+            "#!/bin/sh\nprev=\"\"\nins=\"\"\nout=\"\"\nfor a in \"$@\"; do\n\
+             if [ \"$prev\" = -i ]; then ins=\"$ins|$a\"; fi\nprev=\"$a\"\nout=\"$a\"\ndone\n\
+             sleep 0\nIFS='|'\nset -- ${ins#|}\nexec cat \"$@\" > \"$out\"\n",
         )
         .unwrap();
         let ffprobe = dir.join("ffprobe");
@@ -301,4 +302,80 @@ pub fn fake_ffmpeg(
         }
         (ffmpeg, ffprobe)
     }
+}
+
+/// Un faux yt-dlp de vidéo : à `-J`, il rend `answer` ; sinon (téléchargement d'un flux
+/// fragmenté), il attend `delay_s` secondes puis écrit `stream` dans le fichier qui suit
+/// `-o`. Il note ses arguments dans `args.txt` (`argsN.txt` pour chaque téléchargement).
+pub fn fake_ytdlp_media(
+    dir: &std::path::Path,
+    answer: &str,
+    stream: &[u8],
+    delay_s: u32,
+) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("out.txt"), answer).unwrap();
+    std::fs::write(dir.join("stream.bin"), stream).unwrap();
+    #[cfg(windows)]
+    {
+        let script = dir.join("yt-dlp.cmd");
+        let wait = if delay_s > 0 {
+            format!("ping -n {} 127.0.0.1 >nul\r\n", delay_s + 1)
+        } else {
+            String::new()
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\necho %*>\"%~dp0args.txt\"\r\n\
+                 echo %* | findstr /C:\" -J \" >nul && (type \"%~dp0out.txt\" & exit /b 0)\r\n\
+                 echo %*>>\"%~dp0downloads.txt\"\r\n\
+                 :loop\r\nif \"%~1\"==\"\" exit /b 2\r\nif \"%~1\"==\"-o\" goto found\r\n\
+                 shift\r\ngoto loop\r\n:found\r\n{wait}\
+                 copy /b /y \"%~dp0stream.bin\" \"%~2\" >nul\r\n\
+                 echo AURO 100 100 NA\r\nexit /b %errorlevel%\r\n"
+            ),
+        )
+        .unwrap();
+        script
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = dir.join("yt-dlp");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args.txt\"\n\
+                 case \" $* \" in *\" -J \"*) cat \"$d/out.txt\"; exit 0;; esac\n\
+                 echo \"$*\" >> \"$d/downloads.txt\"\n\
+                 while [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then out=\"$2\"; fi\n  shift\ndone\n\
+                 echo 'AURO 100 100 NA'\nsleep {delay_s}\nexec cp \"$d/stream.bin\" \"$out\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+}
+
+/// Comme [`fake_ffmpeg`], mais ffmpeg attend `delay_s` secondes avant d'écrire : un arrêt
+/// peut tomber pendant la fusion.
+pub fn fake_ffmpeg_slow(
+    dir: &std::path::Path,
+    duration_s: &str,
+    delay_s: u32,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (ffmpeg, ffprobe) = fake_ffmpeg(dir, duration_s);
+    let script = std::fs::read_to_string(&ffmpeg).unwrap();
+    #[cfg(windows)]
+    let slowed = script.replacen(
+        ":done\r\n",
+        &format!(":done\r\nping -n {} 127.0.0.1 >nul\r\n", delay_s + 1),
+        1,
+    );
+    #[cfg(not(windows))]
+    let slowed = script.replacen("sleep 0\n", &format!("sleep {delay_s}\n"), 1);
+    std::fs::write(&ffmpeg, slowed).unwrap();
+    (ffmpeg, ffprobe)
 }

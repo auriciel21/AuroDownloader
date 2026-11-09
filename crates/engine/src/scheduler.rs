@@ -1250,6 +1250,8 @@ enum RunNote {
     Verifying(String),
     /// Passage d'un torrent à `seeding` enregistré (SPEC §7.16).
     Seeding(String),
+    /// Passage d'une vidéo à `post_processing` (fusion) enregistré (SPEC §7.17).
+    PostProcessing(String),
 }
 
 struct Scheduler {
@@ -1501,6 +1503,15 @@ impl Scheduler {
                     self.changed(&task_id, TaskState::Active, TaskState::Seeding);
                 }
             }
+            RunNote::PostProcessing(task_id) => {
+                let Some(run) = self.running.get_mut(&task_id) else {
+                    return;
+                };
+                if run.shown == TaskState::Active {
+                    run.shown = TaskState::PostProcessing;
+                    self.changed(&task_id, TaskState::Active, TaskState::PostProcessing);
+                }
+            }
         }
     }
 
@@ -1610,7 +1621,11 @@ impl Scheduler {
         // l'empreinte), qui reste dans son état.
         let resumed = matches!(
             from,
-            TaskState::Active | TaskState::Verifying | TaskState::Seeding
+            TaskState::Active
+                | TaskState::Verifying
+                | TaskState::Seeding
+                // Arrêt pendant la fusion d'une vidéo : elle recommence (SPEC §7.17).
+                | TaskState::PostProcessing
         );
         if !resumed
             && change_state(&mut self.conn, &task_id, &Change::to(TaskState::Active)).is_err()
@@ -1621,6 +1636,7 @@ impl Scheduler {
         let shown = match from {
             TaskState::Verifying => TaskState::Verifying,
             TaskState::Seeding => TaskState::Seeding,
+            TaskState::PostProcessing => TaskState::PostProcessing,
             _ => TaskState::Active,
         };
         let throttle = self.throttle_for(&task_id, &queue_id);
@@ -3347,7 +3363,7 @@ async fn execute(
     // la signale à la boucle.
     // Le premier avancement de la vérification de l'empreinte suit le passage à
     // `verifying` (F-11), qu'il signale de même.
-    let (mut first, mut verifying, mut seeding) = (true, false, false);
+    let (mut first, mut verifying, mut seeding, mut merging) = (true, false, false, false);
     let mut on_progress = |progress: Progress| {
         if std::mem::take(&mut first) {
             let _ = prepared.send(RunNote::Prepared(task_id.to_owned()));
@@ -3358,6 +3374,10 @@ async fn execute(
         // Un torrent passe au partage (SPEC §7.16) : annoncé comme `verifying`.
         if progress.seeding && !std::mem::replace(&mut seeding, true) {
             let _ = prepared.send(RunNote::Seeding(task_id.to_owned()));
+        }
+        // Une vidéo passe à la fusion (SPEC §7.17).
+        if progress.merging && !std::mem::replace(&mut merging, true) {
+            let _ = prepared.send(RunNote::PostProcessing(task_id.to_owned()));
         }
         live.send_replace(Arc::clone(&progress.segments));
         let _ = events.send(Event::Progress {

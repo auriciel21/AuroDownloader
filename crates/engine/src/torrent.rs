@@ -886,6 +886,7 @@ impl Counters {
             uploaded: Some(self.uploaded),
             upload_bps,
             seeding,
+            merging: false,
         }
     }
 }

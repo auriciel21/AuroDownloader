@@ -7,10 +7,34 @@
 
 use std::io;
 
-/// Prépare une commande pour [`spawn`] (sous Linux, son propre groupe de processus).
+/// Prépare une commande pour [`spawn`] : sous Linux, son propre groupe de processus, et
+/// `SIGTERM` à la mort du moteur (`PR_SET_PDEATHSIG`).
+///
+/// Un `aurod` tué brutalement (`SIGKILL`) ne tue pas son groupe : sans ce signal, yt-dlp
+/// ou ffmpeg continueraient seuls, et pourraient écrire un flux après la fin de sa vidéo
+/// (banc de reprise des vidéos, 2026-11-09). Le chargeur PyInstaller de yt-dlp transmet
+/// `SIGTERM` à l'interpréteur ; ffmpeg s'arrête. Le signal suit un `exec`, pas un `fork`.
+/// Il part à la fin du fil qui a lancé le processus : les lancements se font depuis les
+/// fils de travail du moteur, qui durent autant que lui.
 pub(crate) fn prepare(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(target_os = "linux")]
+    // SAFETY : entre `fork` et `exec`, seuls des appels sûrs dans ce contexte (`prctl`,
+    // `getppid`, `kill` sur soi-même).
+    unsafe {
+        let parent = libc::getpid();
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Le moteur est mort avant le réglage : rien ne doit lui survivre.
+            if libc::getppid() != parent {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+            Ok(())
+        });
+    }
     #[cfg(not(unix))]
     let _ = command;
 }

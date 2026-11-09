@@ -391,6 +391,18 @@ async fn download(
     }
 
     change_state(conn, task_id, &Change::to(TaskState::PostProcessing))?;
+    // Annoncé par le planificateur.
+    on_progress(Progress {
+        received: done_bytes,
+        total: Some(done_bytes),
+        connections: 0,
+        segments: Arc::from([]),
+        verified: None,
+        uploaded: None,
+        upload_bps: None,
+        seeding: false,
+        merging: true,
+    });
     finish(conn, status, task_id, resolution.duration_s).await
 }
 
@@ -544,6 +556,7 @@ async fn direct(
                 uploaded: None,
                 upload_bps: None,
                 seeding: false,
+                merging: false,
             });
         };
         let outcome = transfer::run(
@@ -622,6 +635,11 @@ async fn fragmented(
             "--no-mtime",
         ]);
         command.args(["--no-warnings", "--continue"]);
+        // Limite de débit (SPEC §7.6) : yt-dlp ne passe pas par les seaux du moteur ; il
+        // reçoit la plus petite de la tâche, de sa file et globale (étape 4d).
+        if let Some(bps) = rate_limit(conn, task)? {
+            command.args(["--limit-rate", &bps.to_string()]);
+        }
         command.args([
             "--progress-template",
             "download:AURO %(progress.downloaded_bytes)s %(progress.total_bytes)s \
@@ -662,6 +680,7 @@ async fn fragmented(
                                 uploaded: None,
                                 upload_bps: None,
                                 seeding: false,
+                                merging: false,
                             });
                         }
                     }
@@ -710,6 +729,19 @@ async fn fragmented(
     let _ = std::fs::remove_file(part_path(&path));
     media::stream_done(conn, &task.id, stream.position, &stream.file_name, size)?;
     Ok(Step::Done(size))
+}
+
+/// Plus petite limite de débit de la tâche, de sa file et globale, s'il y en a une.
+fn rate_limit(conn: &Connection, task: &TaskRow) -> Result<Option<u64>, TransferError> {
+    let queue = tasks::list_queues(conn)?
+        .into_iter()
+        .find(|q| q.id == task.queue_id)
+        .and_then(|q| q.speed_limit_bps);
+    let global = crate::store::settings::download_limit(conn)?;
+    Ok([task.speed_limit_bps, queue, global]
+        .into_iter()
+        .flatten()
+        .min())
 }
 
 /// Ligne d'avancement de yt-dlp (`AURO <reçus> <total> <estimation>`, `NA` si inconnu) :
