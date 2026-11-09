@@ -1839,3 +1839,47 @@ async fn the_network_state_is_set_announced_and_in_the_snapshot() {
     );
     engine.shutdown().await;
 }
+
+/// Torrent (SPEC §7.16) : `sources[0].torrent`, un fichier `.torrent` en base64, fait une
+/// tâche `torrent` ; le moteur annonce la capacité.
+#[tokio::test]
+async fn a_torrent_file_in_base64_makes_a_torrent_task() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let hello = c.result("engine.hello", hello()).await;
+    assert_eq!(hello["capabilities"], json!(["torrent"]));
+
+    let mut metainfo =
+        b"d4:infod6:lengthi3e4:name5:x.bin12:piece lengthi16384e6:pieces20:".to_vec();
+    metainfo.extend([7u8; 20]);
+    metainfo.extend_from_slice(b"ee");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&metainfo);
+    let dest = dir_text(dir.path());
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"torrent": encoded}], "destDir": dest, "startPaused": true}),
+        )
+        .await;
+    let task = c
+        .result("task.get", json!({"taskId": added["taskId"]}))
+        .await;
+    assert_eq!(task["kind"], "torrent", "{task}");
+    assert_eq!(task["displayName"], "x.bin", "{task}");
+
+    for bad in [
+        json!({"sources": [{"torrent": "%%%"}], "destDir": dest}),
+        json!({"sources": [{"torrent": encoded, "url": "https://a.b/c"}], "destDir": dest}),
+        json!({"sources": [{"torrent": base64::engine::general_purpose::STANDARD.encode(b"non")}], "destDir": dest}),
+        json!({"sources": [{"url": "magnet:?dn=sans-empreinte"}], "destDir": dest}),
+    ] {
+        assert_eq!(
+            c.error_code("task.add", bad.clone()).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    engine.shutdown().await;
+}

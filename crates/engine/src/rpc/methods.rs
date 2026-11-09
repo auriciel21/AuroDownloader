@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use base64::Engine as _;
 use serde_json::{Map, Value, json};
 
 use super::scope::{self, Scope};
@@ -449,7 +450,7 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     Ok(json!({
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
-        "capabilities": [],
+        "capabilities": ["torrent"],
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
     }))
@@ -543,11 +544,35 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         .get("sources")
         .and_then(Value::as_array)
         .ok_or_else(|| RpcError::invalid_params("sources manquant"))?;
-    let url = match sources.as_slice() {
-        [one] => one
-            .get("url")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RpcError::invalid_params("sources[0].url manquant"))?,
+    // Une adresse (`url`, lien magnet compris), ou un fichier `.torrent` en base64
+    // (`torrent`, SPEC §7.16).
+    let (url, torrent) = match sources.as_slice() {
+        [one] => match (one.get("url"), one.get("torrent")) {
+            (Some(url), None) => (
+                url.as_str()
+                    .ok_or_else(|| RpcError::invalid_params("sources[0].url : texte attendu"))?,
+                None,
+            ),
+            (None, Some(torrent)) => {
+                let text = torrent.as_str().ok_or_else(|| {
+                    RpcError::invalid_params("sources[0].torrent : texte base64 attendu")
+                })?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(text)
+                    .map_err(|_| {
+                        RpcError::invalid_params("sources[0].torrent : base64 invalide")
+                    })?;
+                ("", Some(bytes))
+            }
+            (Some(_), Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "sources[0] : url ou torrent, pas les deux",
+                ));
+            }
+            (None, None) => {
+                return Err(RpcError::invalid_params("sources[0].url manquant"));
+            }
+        },
         [] => return Err(RpcError::invalid_params("sources vide")),
         _ => {
             return Err(RpcError::capability_missing(
@@ -576,6 +601,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             headers: p.string_map("headers")?,
             file_name: p.str("fileName")?,
             checksum: p.checksum("checksum")?.flatten(),
+            torrent,
         })
         .await?;
     Ok(json!({"taskId": task_id}))

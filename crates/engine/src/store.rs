@@ -21,6 +21,7 @@ pub mod schedules;
 pub mod segments;
 pub mod settings;
 pub mod tasks;
+pub mod torrents;
 
 /// Une étape de migration du schéma.
 #[derive(Debug, Clone, Copy)]

@@ -107,6 +107,8 @@ pub struct Options {
     /// réglage `downloads.neighborChecksum`). Faux par défaut : la bibliothèque, ses tests et
     /// ses bancs n'envoient pas de requêtes de plus ; `aurod` l'active, et le réglage décide.
     pub neighbor_checksum: bool,
+    /// Session des torrents (SPEC §7.16).
+    pub torrent: crate::torrent::Options,
 }
 
 impl Default for Options {
@@ -126,6 +128,7 @@ impl Default for Options {
             vault: Vault::default(),
             preallocate: true,
             neighbor_checksum: false,
+            torrent: crate::torrent::Options::default(),
         }
     }
 }

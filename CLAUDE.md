@@ -63,6 +63,11 @@ téléchargement.
   effacement), méthodes `history.list` et `history.clear`.
   Réservation de la place (F-10, 2026-11-08) : `io::preallocate` (`fallocate`, NTFS et
   ReFS), réglage `downloads.preallocate`, vrai par défaut.
+  Torrent (SPEC 7.16, phase 5, 2026-11-09) : `torrent` (librqbit derrière ce seul module :
+  session partagée créée au premier torrent, `torrent::storage` écrit dans les `.part`,
+  revérification des morceaux à chaque démarrage, vidage puis renommage à la fin ; tests
+  sur un essaim local, `.torrent` écrits à la main), `store::torrents` (tâche torrent, sa
+  source magnet, métadonnées, `task_files`). `execute` aiguille selon `TaskRow::kind`.
 - `crates/daemon` (`auro-daemon`, binaire `aurod`) : le moteur en processus autonome, qui
   sert le protocole sur le point d'accès local.
 - `crates/engine/migrations/` : migrations SQL numérotées, intégrées au binaire.
@@ -371,7 +376,7 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   conception SPEC 7.16 (décisions de l'utilisateur : partage jusqu'au ratio 1, port
   d'écoute sans UPnP ; revérification complète à chaque démarrage, sans reprise rapide) :
   3a. ajout (magnet, `.torrent`) et téléchargement jusqu'à la fin, essaim local dans les
-  tests ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau ;
+  tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau ;
   3c. banc de reprise et écritures perdues ; 3d. liaison à une interface (VPN), Windows
   compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
@@ -388,6 +393,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Changements d'état d'une tâche dans le moteur : par les commandes de `Engine`, que la
   boucle du planificateur traite une à une ; ne pas appeler `change_state` à côté d'elle
   pendant qu'elle tourne.
+- Torrent (SPEC 7.16) : librqbit ne se voit que dans le module `torrent`. Jamais sa
+  reprise rapide ni sa persistance : la reprise revérifie les morceaux sur disque, et
+  l'avancement enregistré n'est qu'une indication. Un fichier d'un torrent ne se renomme ni
+  ne s'efface qu'après la fermeture de tous ses accès (`storage::Factory::wait_closed`), et
+  se vide sur disque avant son nom final. Ne pas créer de `.torrent` de test par
+  `librqbit::create_torrent` (empreinte manquante si le dernier fichier est vide).
 - Porte de la phase 1 (SPEC 9.3), franchie le 2026-10-16 :
   - N-01 et débit : portes tenues sous Linux (WSL, relevé du 2026-10-16 dans
     `docs/MESURES.md`) ; seuil 1,0 confirmé. Windows (relevé du 2026-10-16) : débit

@@ -133,6 +133,7 @@ fn notification(method: &str, params: Value) -> Value {
 pub fn task_json(t: &TaskRow) -> Value {
     json!({
         "taskId": t.id,
+        "kind": t.kind.as_sql(),
         "queueId": t.queue_id,
         "state": t.state.as_sql(),
         "priority": t.priority,

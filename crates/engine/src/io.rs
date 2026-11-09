@@ -489,15 +489,42 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), IoError> {
 
 /// Écriture positionnée de tout `buf` à `offset` (`pwrite`), sans curseur partagé.
 #[cfg(unix)]
-fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     file.write_all_at(buf, offset)
+}
+
+/// Lecture positionnée de tout `buf` depuis `offset` (`pread`), sans curseur partagé ; un
+/// fichier trop court rend `UnexpectedEof`.
+#[cfg(unix)]
+pub(crate) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+/// Lecture positionnée de tout `buf` depuis `offset`. Comme pour l'écriture, `seek_read`
+/// déplace un curseur qui ne sert jamais ici.
+#[cfg(windows)]
+pub(crate) fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Écriture positionnée de tout `buf` à `offset`. `seek_write` déplace le curseur du
 /// fichier, qui ne sert jamais ici : chaque écriture donne sa position.
 #[cfg(windows)]
-fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match file.seek_write(buf, offset) {

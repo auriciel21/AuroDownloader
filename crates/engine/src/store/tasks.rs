@@ -12,6 +12,31 @@ use super::{StoreError, new_id, now_ms};
 use crate::io::checksum::Checksum;
 use crate::segmenter::Segment;
 
+/// Type d'une tâche (colonne `kind`, SPEC §5.3) : ceux que ce moteur crée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    Http,
+    /// Torrent (SPEC §7.16) : lien magnet ou fichier `.torrent`.
+    Torrent,
+}
+
+impl TaskKind {
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            TaskKind::Http => "http",
+            TaskKind::Torrent => "torrent",
+        }
+    }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "http" => Some(TaskKind::Http),
+            "torrent" => Some(TaskKind::Torrent),
+            _ => None,
+        }
+    }
+}
+
 /// État d'une tâche (SPEC §5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -106,6 +131,7 @@ impl PauseReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: String,
+    pub kind: TaskKind,
     pub queue_id: String,
     pub state: TaskState,
     /// La plus grande part la première (F-14).
@@ -301,7 +327,7 @@ const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
      queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
      EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id), checksum_algo, \
-     checksum_value, checksum_source";
+     checksum_value, checksum_source, kind";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -327,6 +353,7 @@ struct RawTask {
     checksum_algo: Option<String>,
     checksum_value: Option<String>,
     checksum_source: Option<String>,
+    kind: String,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -353,6 +380,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         checksum_algo: row.get(19)?,
         checksum_value: row.get(20)?,
         checksum_source: row.get(21)?,
+        kind: row.get(22)?,
     })
 }
 
@@ -371,6 +399,7 @@ impl TryFrom<RawTask> for TaskRow {
         Ok(TaskRow {
             checksum_source: raw.checksum_source.filter(|_| checksum.is_some()),
             checksum,
+            kind: TaskKind::from_sql(&raw.kind).ok_or_else(|| bad("type inconnu"))?,
             state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
             total_bytes: to_u64(raw.total_bytes, "taille")?,
             done_bytes: u64::try_from(raw.done_bytes).map_err(|_| bad("octets écrits négatifs"))?,
@@ -806,6 +835,9 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
         });
     }
     super::segments::clear(&tx, task_id)?;
+    // Fichiers d'un torrent : réappris à la préparation (SPEC §7.16) ; ses métadonnées
+    // restent.
+    tx.execute("DELETE FROM task_files WHERE task_id = ?1", [task_id])?;
     tx.execute(
         "UPDATE sources SET state = 'unknown', accepts_ranges = NULL, etag = NULL,
            last_modified = NULL, content_length = NULL, fail_count = 0, last_error = NULL

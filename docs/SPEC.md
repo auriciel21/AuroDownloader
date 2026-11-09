@@ -583,6 +583,8 @@ Le premier appel d'un client est `engine.hello`. Il annonce la plage de versions
       "rev":1042}}
 ```
 
+Capacités annoncées par ce moteur : `torrent` depuis le 2026-11-09 (section 7.16) ; avant, aucune.
+
 Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et ferme la connexion.
 
 Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client garde pour cette connexion (section 6.9). Elle ne peut que se restreindre ; une portée plus large, ou de côté, est refusée par `UNAUTHORIZED`. La réponse donne la portée de la connexion dans `scope`.
@@ -656,6 +658,11 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `Cookie`, `Authorization` et `Proxy-Authorization` vont au coffre du système (section 5.1) ; s'il refuse, `SECRET_UNAVAILABLE`.
   - Une redirection vers un autre hôte n'emporte pas ces trois en-têtes. Le moteur n'ajoute jamais de `Referer` de lui-même : avant le 2026-11-07, après une redirection, la bibliothèque HTTP y mettait l'adresse qui redirige, signature comprise, à l'intention de l'hôte suivant.
   - La portée `add` suffit (relais de l'extension, section 4.5). `task.get` ne rend pas les en-têtes.
+- **Torrent** (depuis le 2026-11-09, section 7.16) :
+  - `sources[0]` porte soit `url`, soit `torrent`, le contenu d'un fichier `.torrent` en base64, jamais les deux (`INVALID_PARAMS`). Un `url` en `magnet:` fait aussi une tâche torrent. La tâche a pour source son lien magnet, déduit du fichier s'il le faut.
+  - Un fichier invalide, un lien magnet sans empreinte BitTorrent v1, ou le même torrent qu'une tâche non terminée : `INVALID_PARAMS`. `headers`, `checksum` et `maxConnections` ne s'appliquent pas à un torrent : `INVALID_PARAMS`.
+  - Une tâche, telle que la décrivent `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `kind` : `http` ou `torrent`.
+  - `task.update` refuse `checksum`, `destDir`, `fileName` et `url` pour un torrent (`INVALID_PARAMS`).
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -795,6 +802,8 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `AUTH_REQUIRED` | non | Le serveur demande une identification (`401` avec `WWW-Authenticate`) et aucun identifiant de site ne convient (depuis le 2026-11-08, section 7.14) |
 | `AUTH_FAILED` | non | Le serveur refuse les identifiants du site, ou demande Basic sur une connexion non chiffrée (section 7.14) |
 | `INTERNAL` | non | Erreur du moteur lui-même (base illisible, incohérence, panique d'une exécution) ; détail dans `error_detail`. La tâche ne repart qu'à la demande de l'utilisateur |
+| `TORRENT_SESSION` | oui | La session des torrents ne démarre pas (port d'écoute pris, réseau) ; depuis le 2026-11-09, section 7.16 |
+| `TORRENT_FAILED` | non | Erreur du torrent lui-même : métadonnées invalides, refus de la bibliothèque, même torrent déjà en cours ; depuis le 2026-11-09, section 7.16 |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 
 ### 6.9 Portées des jetons
@@ -1183,6 +1192,31 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - La limite d'une file ne s'applique pas aux torrents en v1.
 
 **Pas en v1** (décision de l'utilisateur du 2026-11-09) : chiffrement du protocole (MSE/PE), sources web (BEP 19), torrents v2 (BEP 52).
+
+**Mise en œuvre de l'étape 3a (2026-11-09).**
+- **Fait** : ajout par lien magnet ou fichier `.torrent` (section 6.5) et téléchargement jusqu'à la fin.
+  - Module `torrent` : session, stockage dans les `.part`, revérification à chaque démarrage, vidage sur disque puis renommage à la fin.
+  - `store::torrents` ; colonne `kind` lue dans `TaskRow`.
+  - Pas de nouvelle migration : la migration 1 avait déjà les tables `torrents` et `task_files`.
+  - En attendant l'étape 3b, un torrent terminé passe directement à `completed`, sans partage.
+- **Vérifications** :
+  - Le moteur refuse un `.torrent` dont le nombre d'empreintes de morceaux ne correspond pas à la taille, ce que librqbit ne vérifie pas : un tel fichier n'échouait qu'à la vérification.
+  - Le moteur attend que librqbit ait fermé tous les fichiers d'un torrent avant de les renommer ou de les effacer. Sous Windows, un fichier encore ouvert ne disparaît pas tout à fait.
+- **Tests** : essaim local de deux pairs, sans Internet, couvrant :
+  - un fichier seul, plusieurs fichiers avec dossiers et fichier vide ;
+  - un lien magnet ;
+  - un nom déjà pris (« nom (1) ») ;
+  - un `.part` effacé pendant une pause, retrouvé et retéléchargé ;
+  - la reprise après un redémarrage du moteur ;
+  - l'annulation avec effacement des fichiers ;
+  - le même torrent ajouté deux fois ;
+  - des noms hostiles nettoyés (`CON`, `a<b`) et un chemin en `..` refusé.
+- **Constaté** : `librqbit::create_torrent` (9.1.0) oublie l'empreinte du dernier morceau quand le dernier fichier est vide. Le moteur ne s'en sert pas ; les tests écrivent leurs `.torrent` eux-mêmes.
+- **Reste de l'étape 3** :
+  - le partage (`seeding`) jusqu'au ratio ;
+  - les limites de débit (envoi compris), le choix des fichiers (`task.setFiles`, `include: files`) et les réglages ;
+  - l'arrêt des torrents par `engine.setNetwork` : en 3a, un torrent en cours suit déjà le planificateur (il retourne en file), mais la session reste ouverte ;
+  - le banc de reprise et la liaison à une interface.
 
 ## 8. Sécurité, vie privée et cadre légal
 

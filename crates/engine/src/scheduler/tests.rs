@@ -398,12 +398,25 @@ async fn cancel_stops_the_task_and_deletes_its_part_file() {
         .await
         .unwrap();
     wait_state(&mut events, &id, TaskState::Active).await;
-    // Laisse le temps de créer le `.part`.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(dir.path().join("x.bin.part").exists());
+    // Le `.part` naît à la préparation ; la machine peut être chargée (autres tests).
+    let part = dir.path().join("x.bin.part");
+    let created = timeout(WAIT, async {
+        while !part.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(created.is_ok(), "le .part n'a jamais été créé");
     engine.cancel(&id, true).await.unwrap();
     wait_state(&mut events, &id, TaskState::Cancelled).await;
-    assert!(!dir.path().join("x.bin.part").exists());
+    // Le moteur annonce l'annulation, puis efface le `.part`.
+    let gone = timeout(WAIT, async {
+        while part.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(gone.is_ok(), "le .part reste");
     assert!(!dir.path().join("x.bin").exists());
     // Une tâche annulée ne repart plus.
     assert!(matches!(

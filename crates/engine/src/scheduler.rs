@@ -43,10 +43,11 @@ use crate::store::history::{self, HistoryFilter, HistoryRow};
 use crate::store::segments::load_segments;
 use crate::store::settings::Flag;
 use crate::store::tasks::{
-    self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskRow, TaskState,
-    change_state, load_task, next_retry_at, runnable_tasks,
+    self, Change, NewTask, PauseReason, QueueRow, SourceRow, TaskFilter, TaskKind, TaskRow,
+    TaskState, change_state, load_task, next_retry_at, runnable_tasks,
 };
 use crate::store::{self, StoreError, now_ms, schedules, settings};
+use crate::torrent::{self, Torrents};
 use crate::transfer::{self, LiveSegment, Options, Outcome, Progress, TransferError};
 
 mod planning;
@@ -406,6 +407,9 @@ pub struct AddTask {
     pub file_name: Option<String>,
     /// Empreinte attendue du fichier (F-11), vérifiée avant son renommage.
     pub checksum: Option<Checksum>,
+    /// Contenu d'un fichier `.torrent` (SPEC §7.16) ; `url` est alors ignorée. Un lien
+    /// `magnet:` dans `url` fait aussi une tâche torrent.
+    pub torrent: Option<Vec<u8>>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -1042,6 +1046,8 @@ struct Scheduler {
     /// et celles en cours retournent en file. Dit par l'application (Android : réseau
     /// perdu, ou facturé avec « Wi-Fi seulement ») ; vrai au démarrage.
     network_usable: bool,
+    /// Session des torrents (SPEC §7.16), créée au premier torrent à démarrer.
+    torrents: Torrents,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -1063,6 +1069,13 @@ impl Scheduler {
     ) -> Self {
         let (moved, moved_rx) = mpsc::unbounded_channel();
         let network_usable = config.planning.network_usable;
+        // La table du DHT se garde à côté de la base.
+        let state_dir = config
+            .db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let torrents = Torrents::new(config.transfer.torrent.clone(), state_dir);
         Scheduler {
             conn,
             config,
@@ -1085,6 +1098,7 @@ impl Scheduler {
             moved,
             moved_rx: Some(moved_rx),
             network_usable,
+            torrents,
         }
     }
 
@@ -1333,9 +1347,13 @@ impl Scheduler {
         let events = self.events.clone();
         let rev = Arc::clone(&self.rev);
         let prepared = self.prepared.clone();
+        let torrents = self.torrents.clone();
         let id = task_id.clone();
         let handle = self.runs.spawn(async move {
-            let result = execute(&config, &id, stopped, events, rev, prepared, live_tx).await;
+            let result = execute(
+                &config, &torrents, &id, stopped, events, rev, prepared, live_tx,
+            )
+            .await;
             (id, result)
         });
         self.run_ids.insert(handle.id(), task_id);
@@ -1616,6 +1634,12 @@ impl Scheduler {
             // L'empreinte se lit à la fin du téléchargement, en cours compris ; pas pendant
             // son calcul, ni sur un fichier déjà terminé.
             let task = load_task(&self.conn, task_id)?;
+            // Un torrent porte les empreintes de chacun de ses morceaux (SPEC §7.16).
+            if task.kind == TaskKind::Torrent {
+                return Err(EngineError::BadRequest(
+                    "empreinte : un torrent vérifie déjà chacun de ses morceaux".into(),
+                ));
+            }
             if matches!(
                 task.state,
                 TaskState::Verifying | TaskState::Completed | TaskState::Cancelled
@@ -1727,6 +1751,9 @@ impl Scheduler {
         {
             return Ok(existing);
         }
+        if task.torrent.is_some() || is_magnet(&task.url) {
+            return self.add_torrent(task);
+        }
         net::check_url(&task.url)?;
         net::check_task_headers(&task.headers)
             .map_err(|e| EngineError::BadRequest(e.to_string()))?;
@@ -1734,21 +1761,7 @@ impl Scheduler {
         if let Some(name) = &task.file_name {
             check_file_name(name)?;
         }
-        let dest_dir = match task.dest_dir {
-            Some(dir) => dir,
-            None => self.download_dir()?.ok_or_else(|| {
-                EngineError::DestDir(
-                    "aucun dossier indiqué, et ni réglage ni dossier « Téléchargements » sur \
-                     cette machine"
-                        .into(),
-                )
-            })?,
-        };
-        check_dest_dir(&dest_dir)?;
-        let queue_id = task.queue_id.unwrap_or_else(|| self.default_queue.clone());
-        if !tasks::queue_exists(&self.conn, &queue_id)? {
-            return Err(EngineError::QueueNotFound(queue_id));
-        }
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
         let display_name = task
             .file_name
             .clone()
@@ -1778,6 +1791,76 @@ impl Scheduler {
                 return Err(e.into());
             }
         };
+        let id = task_id.clone();
+        self.emit(|rev| Event::Added { rev, task_id: id });
+        if task.start_paused {
+            self.set_state(&task_id, &user_pause())?;
+        }
+        Ok(task_id)
+    }
+
+    /// Dossier et file d'un ajout : ceux demandés, sinon le dossier des téléchargements du
+    /// moteur et la file par défaut.
+    fn destination(
+        &self,
+        dest_dir: Option<String>,
+        queue_id: Option<String>,
+    ) -> Result<(String, String), EngineError> {
+        let dest_dir = match dest_dir {
+            Some(dir) => dir,
+            None => self.download_dir()?.ok_or_else(|| {
+                EngineError::DestDir(
+                    "aucun dossier indiqué, et ni réglage ni dossier « Téléchargements » sur \
+                     cette machine"
+                        .into(),
+                )
+            })?,
+        };
+        check_dest_dir(&dest_dir)?;
+        let queue_id = queue_id.unwrap_or_else(|| self.default_queue.clone());
+        if !tasks::queue_exists(&self.conn, &queue_id)? {
+            return Err(EngineError::QueueNotFound(queue_id));
+        }
+        Ok((dest_dir, queue_id))
+    }
+
+    /// Ajout d'un torrent (SPEC §7.16) : lien magnet dans `url`, ou fichier `.torrent`.
+    fn add_torrent(&mut self, task: AddTask) -> Result<String, EngineError> {
+        if !task.headers.is_empty() || task.checksum.is_some() || task.max_connections.is_some() {
+            return Err(EngineError::BadRequest(
+                "headers, checksum et maxConnections ne s'appliquent pas à un torrent".into(),
+            ));
+        }
+        Self::check_speed_limit(task.speed_limit_bps)?;
+        if let Some(name) = &task.file_name {
+            check_file_name(name)?;
+        }
+        let added = match &task.torrent {
+            Some(metainfo) => torrent::inspect_metainfo(metainfo),
+            None => torrent::inspect_magnet(&task.url),
+        }
+        .map_err(EngineError::BadRequest)?;
+        if let Some(other) = store::torrents::unfinished_with_hash(&self.conn, &added.info_hash)? {
+            return Err(EngineError::BadRequest(format!(
+                "ce torrent est déjà dans la liste (tâche {other})"
+            )));
+        }
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let display_name = task.file_name.clone().unwrap_or(added.name);
+        let task_id = store::torrents::create_torrent_task(
+            &mut self.conn,
+            &store::torrents::NewTorrent {
+                queue_id: &queue_id,
+                display_name: &display_name,
+                dest_dir: &dest_dir,
+                magnet: &added.magnet,
+                info_hash: &added.info_hash,
+                metainfo: task.torrent.as_deref(),
+                speed_limit_bps: task.speed_limit_bps,
+                idempotency_key: task.idempotency_key.as_deref(),
+                requested_name: task.file_name.as_deref(),
+            },
+        )?;
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
         if task.start_paused {
@@ -1991,7 +2074,7 @@ impl Scheduler {
             TaskState::Queued | TaskState::Paused | TaskState::RetryWait => {
                 self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
                 if delete_files {
-                    delete_part(&task)?;
+                    delete_part(&self.conn, &task)?;
                 }
                 Ok(())
             }
@@ -2060,9 +2143,9 @@ impl Scheduler {
             )));
         }
         if delete_files && task.state == TaskState::Completed {
-            delete_final(&task)?;
+            delete_final(&self.conn, &task)?;
         }
-        delete_part(&task)?;
+        delete_part(&self.conn, &task)?;
         let from = tasks::restart_task(&mut self.conn, task_id)?;
         self.broken.remove(task_id);
         let id = task_id.to_owned();
@@ -2082,6 +2165,12 @@ impl Scheduler {
         let task = load_task(&self.conn, task_id)?;
         if task.moving {
             return Err(EngineError::Moving(task_id.to_owned()));
+        }
+        // Déplacer, renommer, changer d'adresse : pas pour un torrent en v1 (SPEC §7.16).
+        if task.kind == TaskKind::Torrent {
+            return Err(EngineError::BadRequest(format!(
+                "{action} : pas encore pour un torrent"
+            )));
         }
         let allowed = matches!(
             task.state,
@@ -2337,8 +2426,8 @@ impl Scheduler {
         }
         if delete_files {
             match task.state {
-                TaskState::Completed => delete_final(&task)?,
-                _ => delete_part(&task)?,
+                TaskState::Completed => delete_final(&self.conn, &task)?,
+                _ => delete_part(&self.conn, &task)?,
             }
         }
         let secrets = headers::secret_refs(&self.conn, task_id)?;
@@ -2423,7 +2512,7 @@ impl Scheduler {
                 TaskState::Paused | TaskState::RetryWait => self
                     .set_state(task_id, &Change::to(TaskState::Cancelled))
                     .and_then(|()| match delete_files {
-                        true => delete_part(&task),
+                        true => delete_part(&self.conn, &task),
                         false => Ok(()),
                     }),
                 _ => Ok(()),
@@ -2535,6 +2624,12 @@ async fn reveal(
     Ok(list)
 }
 
+/// Un lien magnet (SPEC §7.16), quelle que soit la casse du schéma.
+fn is_magnet(url: &str) -> bool {
+    url.get(..7)
+        .is_some_and(|s| s.eq_ignore_ascii_case("magnet:"))
+}
+
 /// Un dossier de destination : chemin absolu d'un dossier existant.
 fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
     let path = Path::new(dir);
@@ -2553,20 +2648,32 @@ fn user_pause() -> Change<'static> {
     }
 }
 
-/// Supprime le `.part` d'une tâche annulée, s'il existe.
-fn delete_part(task: &TaskRow) -> Result<(), EngineError> {
+/// Supprime le `.part` d'une tâche annulée, s'il existe ; ceux de chaque fichier d'un
+/// torrent (SPEC §7.16).
+fn delete_part(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
     let Some(name) = &task.file_name else {
         return Ok(());
     };
-    delete_file(part_path(&Path::new(&task.dest_dir).join(name)))
+    let path = Path::new(&task.dest_dir).join(name);
+    if task.kind == TaskKind::Torrent {
+        return torrent::delete_files(conn, task, false)
+            .map_err(|source| EngineError::DeleteFile { path, source });
+    }
+    delete_file(part_path(&path))
 }
 
-/// Supprime le fichier final d'une tâche terminée, s'il existe encore.
-fn delete_final(task: &TaskRow) -> Result<(), EngineError> {
+/// Supprime le fichier final d'une tâche terminée, s'il existe encore ; tous ceux d'un
+/// torrent, et son dossier s'il reste vide.
+fn delete_final(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
     let Some(name) = &task.file_name else {
         return Ok(());
     };
-    delete_file(Path::new(&task.dest_dir).join(name))
+    let path = Path::new(&task.dest_dir).join(name);
+    if task.kind == TaskKind::Torrent {
+        return torrent::delete_files(conn, task, true)
+            .map_err(|source| EngineError::DeleteFile { path, source });
+    }
+    delete_file(path)
 }
 
 fn delete_file(path: PathBuf) -> Result<(), EngineError> {
@@ -2577,9 +2684,12 @@ fn delete_file(path: PathBuf) -> Result<(), EngineError> {
     }
 }
 
-/// Une exécution, avec sa propre connexion à la base.
+/// Une exécution, avec sa propre connexion à la base : un téléchargement HTTP
+/// (`transfer::run`) ou un torrent (`torrent::run`, SPEC §7.16).
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     config: &Config,
+    torrents: &Torrents,
     task_id: &str,
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
@@ -2607,6 +2717,9 @@ async fn execute(
             progress,
         });
     };
+    if load_task(&conn, task_id)?.kind == TaskKind::Torrent {
+        return torrent::run(&mut conn, torrents, task_id, stop, &mut on_progress).await;
+    }
     transfer::run(
         &mut conn,
         &config.client,

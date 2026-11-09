@@ -26,4 +26,5 @@ pub mod store;
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
 pub mod testing;
+pub mod torrent;
 pub mod transfer;
