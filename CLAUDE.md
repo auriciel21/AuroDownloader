@@ -182,6 +182,9 @@ téléchargement.
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+# Licences des dépendances (deny.toml ; cargo install cargo-deny --locked) :
+cargo deny check licenses
+cargo deny --manifest-path apps/desktop/Cargo.toml --config deny.toml check licenses
 cargo run -p auro-cli -- db migrate auro.db
 cargo run -p auro-cli -- probe https://deb.debian.org/debian/README
 # Client du moteur ; `aurod` démarre de lui-même s'il ne tourne pas (base et point
@@ -243,6 +246,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
+- Licence GPL-3.0 ou ultérieure (N-11). Toute dépendance ajoutée ou mise à jour passe
+  `cargo deny check licenses` (et sa variante du bureau) ; une licence nouvelle ne s'ajoute
+  à `deny.toml` qu'après vérification de sa compatibilité, notée dans la SPEC 8.3. Les
+  dépendances Gradle d'Android se relèvent à la main (même section).
 - Secrets des tâches (`Cookie`, `Authorization`, `Proxy-Authorization`) : seulement par
   `secrets::Vault`, la base n'en garde que la référence ; le secret est écrit avant sa
   référence, la référence effacée avant le secret. Tests : `Vault::memory()` (défaut
@@ -347,6 +354,18 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   Porte franchie le 2026-11-09, déclarée par l'utilisateur après les essais sur les deux
   (SPEC 7.15 et 9.3), Android 17 accepté à la place du 16. Restes : TalkBack, Android 8 à
   13, sélecteur de stockage (carte SD, Drive).
+- Phase 5, plan du 2026-11-09 (validé par l'utilisateur) : 1. licence GPL-3.0 ou ultérieure
+  (N-11, décision du même jour : `LICENSE`, champ `license` des paquets) et contrôle des
+  licences des dépendances (`cargo deny check licenses`, `deny.toml` ; fait le même jour,
+  aucune dépendance incompatible) ; 2. prototype
+  torrent : librqbit (Rust) face à libtorrent-rasterbar (C++), mesures présentées à
+  l'utilisateur avant le choix ; 3. module `torrent` du moteur (magnet, `.torrent`, DHT,
+  PEX, choix des fichiers, débit montant, liaison à une interface réseau, banc de
+  reprise) ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
+  avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
+  essais sur des vidéos sous licence libre ; 5. interfaces (bureau, CLI, extension ;
+  torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
+  seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,

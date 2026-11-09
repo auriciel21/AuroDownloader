@@ -152,7 +152,7 @@ Quinze exigences encadrent la qualité du produit. Les chiffres sont des cibles 
 | N-08 | Portabilité | Plateformes | Windows 10 et 11 (x86\_64, ARM64) ; Linux (x86\_64, aarch64) ; Android 8.0 et plus |
 | N-09 | Accessibilité | Utilisation sans souris et avec lecteur d'écran | Conformité visée WCAG 2.2 niveau AA pour l'interface graphique |
 | N-10 | Langues | Interface traduisible | Textes externalisés, UTF-8 partout ; français et anglais livrés en v1 |
-| N-11 | Licence | Logiciel libre | GPL-3.0 ou ultérieure proposée pour le moteur et les clients (à confirmer) |
+| N-11 | Licence | Logiciel libre | GPL-3.0 ou ultérieure pour le moteur et les clients (décision de l'utilisateur du 2026-11-09 ; texte dans `LICENSE`, champ `license` des paquets Cargo) |
 | N-12 | Observabilité | Journaux | Journaux structurés avec niveaux et rotation ; export de diagnostic sans adresses ni identifiants |
 | N-13 | Maintenabilité | Qualité du code | Intégration continue sur les trois plateformes ; tests de reprise et d'intégrité bloquants |
 | N-14 | Mises à jour | Distribution | Mise à jour signée ; sur Android, mise à jour par les boutiques et F-Droid, pas de mise à jour silencieuse |
@@ -1168,6 +1168,7 @@ Ce qui suit n'est pas un avis juridique ; un juriste doit le valider avant la pr
 
 - **L'outil est légal, l'usage dépend du contenu.** Le projet ne doit pas faciliter le contournement de mesures techniques de protection (DRM), que prohibent la plupart des législations, dont la directive européenne 2001/29/CE et le DMCA américain. La v1 exclut donc ce périmètre (section 1) et le projet ne livre aucun plugin de ce type.
 - **Composants externes.** yt-dlp et ffmpeg sont appelés comme processus séparés, sans être liés au programme, ce qui garde la licence du projet indépendante de la leur. Un contrôle automatique des licences (de type `cargo-deny`) vérifie à chaque build que chaque dépendance est compatible avec la GPL-3.0.
+- **Mise en œuvre du contrôle (2026-11-09, phase 5).** `deny.toml` liste les licences admises : permissives (MIT, MIT-0, 0BSD, ISC, BSD-3-Clause, Zlib, Unicode-3.0, CC0-1.0, Unlicense), Apache-2.0 (avec ou sans l'exception LLVM ; compatible avec la GPL-3.0, pas avec la GPL-2.0 seule), MPL-2.0 (compatible par sa section 3) et CDLA-Permissive-2.0 (licence de données, attribution seule : les certificats racines de Mozilla dans `webpki-root-certs`). `cargo deny check licenses` contrôle l'espace de travail principal et, avec `--manifest-path apps/desktop/Cargo.toml --config deny.toml`, l'application de bureau, toutes cibles comprises (Windows, Linux, Android). Ajouter une licence à la liste demande d'avoir vérifié sa compatibilité et de la noter ici. Sans intégration continue pour l'instant, le contrôle se lance à la main avec les tests ; il rejoindra la CI. Les dépendances Gradle de l'application Android (AndroidX, Jetpack Compose, Kotlin : Apache-2.0 ; partie Kotlin de `rustls-platform-verifier` : MIT ou Apache-2.0) ne passent pas par `cargo-deny` : relevé à la main le même jour.
 - **Nom et marques.** Le projet porte un nom original ; il n'utilise ni les noms, ni les logos, ni le code d'IDM, JDownloader, FDM ou d'autres produits.
 - **Boutiques d'applications.** Les règles de Google Play limitent les applications qui téléchargent des contenus de plateformes en dehors de leurs conditions d'utilisation ; je ne les ai pas relues pour ce document. La distribution visée en priorité est F-Droid et un APK signé, avec l'étude d'une version Play sans module vidéo, à confirmer après lecture des règles en vigueur.
 
@@ -1210,7 +1211,7 @@ Le banc alterne les outils d'un passage à l'autre et retient la médiane de cha
 | --- | --- | --- |
 | Limites d'Android sur les services en arrière-plan | Les téléchargements longs peuvent être interrompus par le système, selon la version | Étudier dès la phase 1 les services au premier plan et les transferts lancés par l'utilisateur proposés par Android ; ma connaissance de leurs durées maximales n'est pas vérifiée, donc à tester sur appareils réels |
 | Écriture positionnée via le sélecteur de stockage Android | Segmentation impossible ou plus lente sur certains appareils | Prototype en phase 1 ; repli par fichier temporaire interne (section 7.5) |
-| yt-dlp est écrit en Python | Intégration lourde sur Android | Évaluer un interpréteur embarqué ; sinon limiter la vidéo à Windows et Linux en v1 |
+| yt-dlp est écrit en Python | Intégration lourde sur Android | Décision de l'utilisateur du 2026-11-09 : la vidéo seulement sous Windows et Linux en v1 ; le torrent va aussi sur Android |
 | Capture dans le navigateur (Manifest V3 sous Chrome) | Moins de possibilités d'intercepter les téléchargements | Tester la capture dès la phase 3 ; s'appuyer sur l'API de téléchargements du navigateur plutôt que sur l'interception de requêtes |
 | Faux positifs d'antivirus sur Windows | Blocage de l'installateur, perte de confiance | Signature du code, builds reproductibles, publication des empreintes |
 | Étendue du projet | Livraison jamais atteinte | Les priorités M/S/C (section 2) découpent la v1 ; tout ajout passe par un arbitrage écrit |

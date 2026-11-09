@@ -3,6 +3,7 @@ name = "auro-daemon"
 description = "Moteur d'AuroDownloader en processus autonome, piloté par le protocole JSON-RPC"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
