@@ -582,6 +582,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::NetworkChanged { rev, .. }
                 | Event::TorrentInterfaceChanged { rev, .. }
                 | Event::ToolsChanged { rev, .. }
+                | Event::Warning { rev, .. }
                 | Event::SettingChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }

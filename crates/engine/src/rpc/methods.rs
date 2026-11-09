@@ -311,6 +311,11 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             ctx.engine.delete_login(&p.required_str("loginId")?).await?;
             Ok(json!({}))
         }
+        // Vidéo d'une page (SPEC §7.17).
+        "media.probe" => {
+            let page = p.required_str("pageUrl")?;
+            Ok(probe_json(&ctx.engine.probe_media(&page).await?))
+        }
         // Outils de la vidéo (SPEC §7.17).
         "media.tools" => Ok(tools_json(&ctx.engine.media_tools()?)),
         "media.installTools" => {
@@ -567,6 +572,39 @@ fn settings_json(
         values[flag.key()] = json!(on);
     }
     values
+}
+
+/// Vidéo décrite par yt-dlp (`media.probe`).
+fn probe_json(probe: &crate::media::extract::Probe) -> Value {
+    let formats: Vec<Value> = probe
+        .formats
+        .iter()
+        .map(|f| {
+            json!({
+                "formatId": f.format_id,
+                "ext": f.ext,
+                "vcodec": f.vcodec,
+                "acodec": f.acodec,
+                "width": f.width,
+                "height": f.height,
+                "fps": f.fps,
+                "tbr": f.tbr,
+                "filesize": f.filesize,
+                "filesizeApprox": f.filesize_approx,
+                "protocol": f.protocol,
+                "drm": f.drm,
+                "note": f.note,
+            })
+        })
+        .collect();
+    json!({
+        "title": probe.title,
+        "durationS": probe.duration_s,
+        "extractor": probe.extractor,
+        "thumbnail": probe.thumbnail,
+        "formats": formats,
+        "subtitles": probe.subtitles,
+    })
 }
 
 /// État des outils de la vidéo (`media.tools`, notification `media.tools`).

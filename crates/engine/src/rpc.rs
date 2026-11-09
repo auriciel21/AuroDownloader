@@ -110,6 +110,8 @@ impl From<EngineError> for RpcError {
             EngineError::SourceMismatch { .. } => Self::new(-32027, "SOURCE_MISMATCH", message),
             EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
             EngineError::CapabilityMissing(_) => Self::capability_missing(message),
+            EngineError::ToolsMissing(_) => Self::new(-32031, "TOOLS_MISSING", message),
+            EngineError::Extractor(_) => Self::new(-32032, "EXTRACTOR_FAILED", message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
                 Self::internal(message)
             }

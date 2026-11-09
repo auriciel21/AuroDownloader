@@ -399,6 +399,11 @@ async fn describe(
             "engine.network",
             json!({"rev": rev, "usable": usable, "metered": metered}),
         )),
+        // Avertissements du moteur (mise à jour de yt-dlp, SPEC §7.17).
+        Event::Warning { rev, code, message } if topics.queues => Some(notification(
+            "engine.warning",
+            json!({"rev": rev, "code": code, "message": message}),
+        )),
         // Outils de la vidéo (SPEC §7.17) : installation, mise à jour.
         Event::ToolsChanged { rev, status } if topics.queues => {
             let mut params = super::methods::tools_json(&status);

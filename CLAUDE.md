@@ -77,7 +77,9 @@ téléchargement.
   Vidéo (SPEC 7.17, phase 5) : `media` (yt-dlp et ffmpeg en processus séparés ; Windows et
   Linux seulement), `media::openpgp` (signature des publications de yt-dlp, clé
   `media/yt-dlp-public.key`), `media::tools` (installation sur demande, empreintes,
-  `tools/tools.json`, mise à jour de yt-dlp au plus une fois par jour) ; faux serveur de
+  `tools/tools.json`, mise à jour de yt-dlp au plus une fois par jour),
+  `media::extract` (`media.probe` : `yt-dlp -J`), `media::process` (arbre des processus tué :
+  Job Object sous Windows, groupe sous Linux) ; faux serveur de
   publications des tests : `testing::tools`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
@@ -233,7 +235,8 @@ cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
 # Vidéo : installation réelle des outils depuis les publications officielles (Internet,
 # rien n'est exécuté) :
-cargo test -p auro-engine --lib -- --ignored real_tools --nocapture
+# … et yt-dlp sur des pages de vidéos sous licence libre (outils gardés dans AURO_TOOLS_DIR) :
+AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_probe --nocapture
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
@@ -412,7 +415,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   téléchargés au besoin sur accord, empreinte vérifiée ; yt-dlp mis à jour seul, signature
   vérifiée ; essais réels sans YouTube, exception à « pas d'exécutable téléchargé » pour
   yt-dlp et ffmpeg officiels) : 4a. outils (fait le 2026-11-09 : installation
-  vérifiée, essai réel sous Windows et Linux) ; 4b. extraction et ajout ; 4c. flux ; 4d. fusion,
+  vérifiée, essai réel sous Windows et Linux) ; 4b. extraction (fait le 2026-11-09) ; 4c. ajout et
+  flux ; 4d. fusion,
   contrôle et banc de reprise ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).

@@ -124,6 +124,7 @@ impl FakeRelease {
             ytdlp_key: self.key.clone(),
             ffmpeg_download: self.server.url("/ffmpeg/"),
             system_ffmpeg: false,
+            local_ytdlp: None,
         }
     }
 }
@@ -161,5 +162,53 @@ pub fn make_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
     {
         let _ = entries;
         Vec::new()
+    }
+}
+
+/// Un faux yt-dlp (script), dans `dir` : il note ses arguments dans `args.txt` (un par
+/// ligne sous Linux), écrit `stdout` sur sa sortie et `stderr` sur sa sortie d'erreur,
+/// attend `sleep_s` secondes, puis rend `code`.
+pub fn fake_ytdlp(
+    dir: &std::path::Path,
+    stdout: &str,
+    stderr: &str,
+    code: i32,
+    sleep_s: u32,
+) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("out.txt"), stdout).unwrap();
+    std::fs::write(dir.join("err.txt"), stderr).unwrap();
+    #[cfg(windows)]
+    {
+        let script = dir.join("yt-dlp.cmd");
+        let wait = if sleep_s > 0 {
+            format!("ping -n {} 127.0.0.1 >nul\r\n", sleep_s + 1)
+        } else {
+            String::new()
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\necho %*>\"%~dp0args.txt\"\r\ntype \"%~dp0out.txt\"\r\n\
+                 type \"%~dp0err.txt\" 1>&2\r\n{wait}exit /b {code}\r\n"
+            ),
+        )
+        .unwrap();
+        script
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = dir.join("yt-dlp");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\n' \"$@\" > \"$d/args.txt\"\n\
+                 cat \"$d/out.txt\"\ncat \"$d/err.txt\" >&2\nsleep {sleep_s}\nexit {code}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
     }
 }

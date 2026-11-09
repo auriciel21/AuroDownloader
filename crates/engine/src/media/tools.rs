@@ -58,6 +58,9 @@ pub struct Sources {
     pub ffmpeg_download: String,
     /// Sous Linux, prendre d'abord le ffmpeg du système (`PATH`).
     pub system_ffmpeg: bool,
+    /// Essais : un yt-dlp déjà là (faux yt-dlp des tests), pris tel quel, sans installation
+    /// ni mise à jour.
+    pub local_ytdlp: Option<PathBuf>,
 }
 
 impl Default for Sources {
@@ -69,6 +72,7 @@ impl Default for Sources {
             ffmpeg_download: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
                 .into(),
             system_ffmpeg: cfg!(target_os = "linux"),
+            local_ytdlp: None,
         }
     }
 }
@@ -256,11 +260,18 @@ impl Tools {
     pub fn status(&self) -> Status {
         let system = self.system_ffmpeg();
         let live = self.live.lock().unwrap();
-        let ytdlp = live.recorded.ytdlp.as_ref().map(|(version, _)| Tool {
-            version: version.clone(),
-            origin: Origin::Download,
-            path: self.ytdlp_path(),
-        });
+        let ytdlp = match &self.sources.local_ytdlp {
+            Some(path) => Some(Tool {
+                version: "local".into(),
+                origin: Origin::System,
+                path: path.clone(),
+            }),
+            None => live.recorded.ytdlp.as_ref().map(|(version, _)| Tool {
+                version: version.clone(),
+                origin: Origin::Download,
+                path: self.ytdlp_path(),
+            }),
+        };
         let (ffmpeg, ffprobe) = match (&live.recorded.ffmpeg, system) {
             (Some((version, _)), _) => (
                 Some(Tool {

@@ -9,7 +9,9 @@
 //!
 //! Sous-étape 4a : les outils ([`tools`]) et la vérification des signatures ([`openpgp`]).
 
+pub mod extract;
 pub mod openpgp;
+pub(crate) mod process;
 pub mod tools;
 
 /// Réglages du module.

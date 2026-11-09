@@ -615,7 +615,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `engine.setNetwork` | `usable` (booléen) | `usable` : le réseau convient, ou non, aux téléchargements (section 7.15, depuis le 2026-11-09) |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
-| `media.probe` | `pageUrl` | `formats[]` disponibles |
+| `media.probe` | `pageUrl` (`http` ou `https`) | `title`, `durationS`, `extractor`, `thumbnail`, `subtitles[]` (langues), `formats[]` : `formatId`, `ext`, `vcodec` et `acodec` (`null` : absent), `width`, `height`, `fps`, `tbr` (kbit/s), `filesize`, `filesizeApprox`, `protocol`, `drm`, `note` (section 7.17, depuis le 2026-11-09) |
 | `media.tools` | aucun | État des outils de la vidéo : `ytdlp` et `ffmpeg` (`version`, `origin` : `download` ou `system`, ou `null`), `ready`, `installing`, `error` (section 7.17, depuis le 2026-11-09) |
 | `media.installTools` | `force` (booléen, faux par défaut : seulement ce qui manque) | Lance l'installation en arrière-plan et rend l'état aussitôt ; la fin s'annonce par `media.tools`. `CAPABILITY_MISSING` hors de Windows et Linux (section 7.17) |
 | `history.list` / `history.clear` | `query`, `before`, `limit`, `cursor` | Entrées d'historique ; nombre d'entrées effacées (section 6.5, depuis le 2026-11-08) |
@@ -677,6 +677,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `media.tools` (portée `read`) et `media.installTools` (portée `admin` : elle télécharge et installe des programmes) ; notification `media.tools` (sujet `queues`), avec les mêmes champs que `media.tools` et `rev`, à chaque début, fin ou échec d'une installation.
   - Réglage `media.autoUpdate` (booléen, vrai par défaut ; `settings.updated`) : mise à jour automatique de yt-dlp.
   - Hors de Windows et Linux, les méthodes de la vidéo rendent `CAPABILITY_MISSING`.
+- **Vidéo, étape 4b** (2026-11-09, section 7.17) : `media.probe` (portée `add`) ; erreurs `TOOLS_MISSING` (-32031) et `EXTRACTOR_FAILED` (-32032) ; `engine.warning` porte aussi `YTDLP_UPDATED` et `YTDLP_UPDATE_FAILED`, sujet `queues`.
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -792,6 +793,8 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32027 | `SOURCE_MISMATCH` | La nouvelle adresse donne un fichier d'une autre taille (section 7.13) |
 | -32028 | `SOURCE_UNREACHABLE` | La nouvelle adresse ne répond pas, ou refuse (section 7.13) |
 | -32030 | `CAPABILITY_MISSING` | Fonction non disponible dans ce moteur (torrent, vidéo) |
+| -32031 | `TOOLS_MISSING` | yt-dlp ou ffmpeg n'est pas installé : `media.installTools` (depuis le 2026-11-09, section 7.17) |
+| -32032 | `EXTRACTOR_FAILED` | yt-dlp n'a pas pu lire la page ; message sans l'adresse (section 7.17) |
 
 `INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
 
@@ -1319,7 +1322,8 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   - arguments passés un à un, jamais par un interpréteur de commandes ;
   - l'adresse de la page placée après `--`, pour qu'elle ne puisse pas passer pour une option ;
   - adresses `http` et `https` seulement ;
-  - sans fenêtre de console sous Windows, et tués avec leur exécution.
+  - sans fenêtre de console sous Windows ;
+  - tués avec tout leur arbre quand leur exécution s'arrête ou dépasse son délai : yt-dlp publié est un « onefile » PyInstaller, qui lance lui-même l'interpréteur Python. Sous Windows, un Job Object (`KILL_ON_JOB_CLOSE`) les tue aussi si `aurod` meurt brutalement ; sous Linux, un groupe de processus, qui ne survit pas à un `aurod` tué (`SIGKILL`) : l'interpréteur resterait orphelin jusqu'à sa fin.
   - Les messages de yt-dlp ne citent pas l'adresse dans les journaux du moteur (section 8.2).
 
 **Extraction** (`media.probe`, portée `add`).
@@ -1370,8 +1374,8 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 
 **Sous-étapes** :
 - 4a. Outils : installation, vérification (signature, empreintes), mise à jour, `media.tools`, `media.installTools`.
-- 4b. Extraction et ajout : `media.probe`, `task.add` avec `media`, `media_jobs`.
-- 4c. Flux : directs par le moteur, fragmentés par yt-dlp, pause et reprise, adresse expirée.
+- 4b. Extraction : `media.probe`, mise à jour de yt-dlp à cette occasion, `engine.warning`.
+- 4c. Ajout et flux : `task.add` avec `media`, `media_jobs`, résolution ; flux directs par le moteur, fragmentés par yt-dlp, pause et reprise, adresse expirée. (L'ajout est passé de 4b à 4c le 2026-11-09 : une tâche vidéo ajoutée sans exécution serait lancée par le planificateur sans rien savoir en faire.)
 - 4d. Fusion et contrôle (ffmpeg, ffprobe), `post_processing`, reprise après coupure ; banc de reprise des vidéos.
 - 4e. Essais réels ; sous-titres (F-24).
 
@@ -1406,7 +1410,32 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 - **Essai réel** (2026-11-09, test ignoré `real_tools_install_from_the_official_releases`), depuis les publications officielles :
   - Windows 11 : yt-dlp 2026.10.26 (23,6 Mo), ffmpeg et ffprobe 8.1 de BtbN (165 Mo chacun), en 50 s ;
   - Linux (WSL, sans ffmpeg dans le système) : yt-dlp 41,2 Mo, ffmpeg et ffprobe 173 Mo chacun, en 55 s.
-- **Reste pour 4b** : déclencher la mise à jour de yt-dlp à l'occasion d'un `media.probe` ou d'un ajout, et l'annoncer (`engine.warning`).
+- **Reste pour 4b** : déclencher la mise à jour de yt-dlp à l'occasion d'un `media.probe`, et l'annoncer (`engine.warning`) ; fait en 4b.
+
+**Mise en œuvre de l'étape 4b (2026-11-09) : extraction.**
+- **`media::extract`** : `yt-dlp --ignore-config --no-cache-dir --no-color -J --no-playlist --no-warnings -- <adresse>`, délai de 90 s.
+  - La réponse est réduite à ce que montre `media.probe`. Une liste de lecture est refusée, une page sans format aussi.
+  - Un format marqué `has_drm` (vrai, ou « maybe ») est signalé `drm`. Les sous-titres automatiques ne sont pas proposés.
+  - Message d'erreur : le dernier `ERROR:` de yt-dlp, sinon sa dernière ligne. Les adresses y sont remplacées par `<adresse>`, et il est raccourci à 300 caractères.
+- **`media::process`** : arbre de processus tué, comme décrit plus haut. Le test d'un faux yt-dlp qui dépasse son délai le montre : sous Windows, son processus enfant gardait la sortie ouverte 20 s ; tué avec l'arbre, l'essai finit en 0,6 s.
+- **Moteur et protocole** : `Engine::probe_media` vérifie l'adresse, lance la mise à jour de yt-dlp en arrière-plan si `media.autoUpdate` le permet, puis extrait en gardant yt-dlp pendant l'extraction (une mise à jour attend). La mise à jour s'annonce par `engine.warning` (`YTDLP_UPDATED`, ou `YTDLP_UPDATE_FAILED` si l'ancienne version reste), puis par `media.tools`.
+- **Essais** : `Sources::local_ytdlp` remplace yt-dlp par un faux (`testing::tools::fake_ytdlp` : script `.cmd` sous Windows, `sh` sous Linux, qui note ses arguments). Les tests couvrent :
+  - la lecture d'une réponse représentative (flux séparés, HLS, DRM, sous-titres), d'une vidéo à format unique et d'une liste de lecture ;
+  - des erreurs sans adresse ;
+  - l'adresse placée après `--` ;
+  - un yt-dlp lent arrêté à son délai ;
+  - une sortie illisible et un programme absent ;
+  - par le protocole : portée `add`, `TOOLS_MISSING`, `EXTRACTOR_FAILED` sans l'adresse, adresses refusées ;
+  - la mise à jour à l'occasion d'un `media.probe`, empêchée par `media.autoUpdate` à faux, puis annoncée.
+- **Essai réel** (2026-11-09, test ignoré `real_probe_of_free_videos`, yt-dlp 2026.10.26 officiel), sur Windows 11 :
+
+  | Page | Titre | Formats | Hauteur max | Sous-titres |
+  |---|---|---|---|---|
+  | PeerTube de la Blender Foundation (CC BY-SA, 75 s) | Inverse Kinematics Bone Constraint | 1, direct | 400 | aucun |
+  | Wikimedia Commons | Big Buck Bunny 4K | 5, directs | 2250 | 31 langues |
+  | Internet Archive | Big Buck Bunny | 3, directs | 720 | aucun |
+
+  Chaque extraction prend 4 à 5 s, et aucun format n'est protégé par DRM. Aucune de ces pages n'a de flux HLS : il en faudra une pour l'étape 4c.
 
 ## 8. Sécurité, vie privée et cadre légal
 

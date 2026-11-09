@@ -263,6 +263,13 @@ pub enum Event {
         rev: u64,
         status: media::tools::Status,
     },
+    /// Avertissement (`engine.warning`) : `YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`
+    /// (SPEC §7.17).
+    Warning {
+        rev: u64,
+        code: &'static str,
+        message: String,
+    },
     /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) ; `metered` : facturé
     /// au volume, sans partage de torrents (SPEC §7.16).
     NetworkChanged {
@@ -427,6 +434,14 @@ pub enum EngineError {
     /// Fonction absente de cette plateforme (la vidéo hors de Windows et Linux).
     #[error("{0}")]
     CapabilityMissing(String),
+
+    /// yt-dlp ou ffmpeg n'est pas installé (SPEC §7.17) : `media.installTools`.
+    #[error("{0}")]
+    ToolsMissing(String),
+
+    /// yt-dlp n'a pas pu lire la page (SPEC §7.17) ; message sans l'adresse.
+    #[error("yt-dlp : {0}")]
+    Extractor(String),
 }
 
 /// Tâche à ajouter.
@@ -592,6 +607,8 @@ enum Command {
     TorrentInterface(Reply<Option<String>>),
     /// Les outils de la vidéo ont changé (installation, mise à jour) : à annoncer.
     ToolsChanged(media::tools::Status),
+    /// Avertissement du moteur à annoncer (`engine.warning`).
+    Warn(&'static str, String),
     SetTorrentInterface(Option<String>, Reply<()>),
     SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
@@ -922,6 +939,48 @@ impl Engine {
             .send(Command::ToolsChanged(status.clone()))
             .await;
         Ok(status)
+    }
+
+    /// Décrit la vidéo d'une page (`media.probe`, SPEC §7.17) par yt-dlp. Adresses `http`
+    /// et `https` seulement. À cette occasion, yt-dlp se met à jour en arrière-plan si
+    /// c'est le moment (`media.autoUpdate`).
+    pub async fn probe_media(&self, page_url: &str) -> Result<media::extract::Probe, EngineError> {
+        let tools = Arc::clone(self.media_tools_handle()?);
+        crate::net::check_url(page_url)?;
+        self.update_ytdlp_if_due(&tools).await;
+        let Some((ytdlp, _running)) = tools.ytdlp().await else {
+            return Err(EngineError::ToolsMissing(
+                "yt-dlp n'est pas installé (media.installTools)".into(),
+            ));
+        };
+        media::extract::probe(&ytdlp, page_url, media::extract::PROBE_TIMEOUT)
+            .await
+            .map_err(|e| EngineError::Extractor(e.to_string()))
+    }
+
+    /// Lance la mise à jour de yt-dlp en arrière-plan si le réglage le permet ; elle-même
+    /// n'agit qu'une fois par jour au plus. Annoncée par `engine.warning`.
+    async fn update_ytdlp_if_due(&self, tools: &Arc<media::tools::Tools>) {
+        if !self.flag(Flag::MediaAutoUpdate).await.unwrap_or(false) {
+            return;
+        }
+        let tools = Arc::clone(tools);
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let warning = match tools.update_ytdlp_if_due(crate::store::now_ms()).await {
+                Ok(None) => return,
+                Ok(Some(version)) => (
+                    "YTDLP_UPDATED",
+                    format!("yt-dlp mis à jour : version {version}"),
+                ),
+                Err(e) => (
+                    "YTDLP_UPDATE_FAILED",
+                    format!("mise à jour de yt-dlp impossible, l'ancienne version reste : {e}"),
+                ),
+            };
+            let _ = commands.send(Command::Warn(warning.0, warning.1)).await;
+            let _ = commands.send(Command::ToolsChanged(tools.status())).await;
+        });
     }
 
     /// Interface réseau des torrents (VPN, SPEC §7.16) ; `None` : aucune.
@@ -1768,6 +1827,9 @@ impl Scheduler {
             }
             Command::ToolsChanged(status) => {
                 self.emit(|rev| Event::ToolsChanged { rev, status });
+            }
+            Command::Warn(code, message) => {
+                self.emit(|rev| Event::Warning { rev, code, message });
             }
             Command::TorrentInterface(reply) => {
                 let _ = reply.send(Ok(self.iface_name.clone()));

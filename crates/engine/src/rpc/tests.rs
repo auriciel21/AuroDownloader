@@ -1981,6 +1981,184 @@ async fn media_tools_are_installed_only_on_request() {
     engine.shutdown().await;
 }
 
+/// Un moteur dont les outils de la vidéo viennent de `sources`, dans `dir/tools`.
+fn media_engine(dir: &Path, sources: crate::media::tools::Sources) -> Engine {
+    Engine::start(Config {
+        db_path: dir.join("auro.db"),
+        client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
+        transfer: Options {
+            media: crate::media::Options { sources, dir: None },
+            ..Options::default()
+        },
+        disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
+    })
+    .unwrap()
+}
+
+/// `media.probe` (SPEC §7.17), portée `add` : yt-dlp décrit la page ; ses erreurs ne
+/// citent pas l'adresse ; sans yt-dlp, `TOOLS_MISSING`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_probe_describes_a_page_through_ytdlp() {
+    let dir = tempfile::tempdir().unwrap();
+    // Sans yt-dlp.
+    let engine = media_engine(dir.path(), crate::media::tools::Sources::default());
+    let mut c = TestClient::connect(&engine);
+    assert_eq!(
+        c.error_code("media.probe", json!({"pageUrl": "https://exemple.org/v"}))
+            .await,
+        "TOOLS_MISSING"
+    );
+    engine.shutdown().await;
+
+    let answer = json!({
+        "title": "Un film libre", "duration": 12.5, "extractor_key": "Generic",
+        "subtitles": {"fr": []},
+        "formats": [
+            {"format_id": "a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
+             "filesize": 1000, "protocol": "https"},
+            {"format_id": "v", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+             "width": 640, "height": 360, "protocol": "m3u8_native", "has_drm": false}
+        ]
+    });
+    let fake =
+        crate::testing::tools::fake_ytdlp(&dir.path().join("fake"), &answer.to_string(), "", 0, 0);
+    let sources = crate::media::tools::Sources {
+        local_ytdlp: Some(fake),
+        ..crate::media::tools::Sources::default()
+    };
+    let engine = media_engine(dir.path(), sources);
+    // Une connexion `add` (l'extension) peut décrire une page.
+    let mut c = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("add");
+    c.result("engine.hello", params).await;
+    let probe = c
+        .result("media.probe", json!({"pageUrl": "https://exemple.org/v"}))
+        .await;
+    assert_eq!(probe["title"], "Un film libre", "{probe}");
+    assert_eq!(probe["durationS"], 12.5);
+    assert_eq!(probe["extractor"], "Generic");
+    assert_eq!(probe["subtitles"], json!(["fr"]));
+    assert_eq!(probe["formats"][0]["formatId"], "a");
+    assert_eq!(probe["formats"][0]["vcodec"], Value::Null);
+    assert_eq!(probe["formats"][0]["filesize"], 1000);
+    assert_eq!(probe["formats"][1]["protocol"], "m3u8_native");
+    assert_eq!(probe["formats"][1]["drm"], false);
+    for bad in [
+        json!({}),
+        json!({"pageUrl": "ftp://exemple.org/v"}),
+        json!({"pageUrl": "pas une adresse"}),
+    ] {
+        let code = c.error_code("media.probe", bad.clone()).await;
+        assert!(
+            code == "INVALID_PARAMS" || code == "URL_INVALID",
+            "{bad} : {code}"
+        );
+    }
+    engine.shutdown().await;
+
+    // yt-dlp en échec : son message, sans l'adresse.
+    let fake = crate::testing::tools::fake_ytdlp(
+        &dir.path().join("fake-err"),
+        "",
+        "ERROR: [generic] Unsupported URL: https://exemple.org/secret?jeton=1\n",
+        1,
+        0,
+    );
+    let sources = crate::media::tools::Sources {
+        local_ytdlp: Some(fake),
+        ..crate::media::tools::Sources::default()
+    };
+    let engine = media_engine(dir.path(), sources);
+    let mut c = TestClient::connect(&engine);
+    let reply = c
+        .call(
+            "media.probe",
+            json!({"pageUrl": "https://exemple.org/secret?jeton=1"}),
+        )
+        .await;
+    assert_eq!(
+        reply["error"]["data"]["code"], "EXTRACTOR_FAILED",
+        "{reply}"
+    );
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        !message.contains("secret") && !message.contains("jeton"),
+        "{message}"
+    );
+    engine.shutdown().await;
+}
+
+/// La mise à jour de yt-dlp part d'un `media.probe` quand c'est le moment, et s'annonce
+/// par `engine.warning` ; `media.autoUpdate` à faux l'empêche.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ytdlp_updates_itself_on_a_probe_and_says_so() {
+    let release = crate::testing::tools::FakeRelease::new();
+    release.publish_ytdlp("2026.11.01", b"version 1", None);
+    release.publish_default_ffmpeg();
+    let dir = tempfile::tempdir().unwrap();
+    let tools_dir = dir.path().join("tools");
+    {
+        let tools = crate::media::tools::Tools::open(
+            tools_dir.clone(),
+            release.sources(),
+            Client::new().unwrap(),
+        );
+        assert!(tools.begin_install());
+        tools.install(false).await.unwrap();
+    }
+    // La dernière recherche date d'il y a plus d'un jour.
+    let state = tools_dir.join("tools.json");
+    let mut json: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    json["lastCheckMs"] = json!(0);
+    std::fs::write(&state, json.to_string()).unwrap();
+    release.publish_ytdlp("2026.11.05", b"version 2", None);
+
+    // Réglage à faux : pas de mise à jour.
+    let engine = media_engine(dir.path(), release.sources());
+    engine
+        .set_flag(crate::store::settings::Flag::MediaAutoUpdate, false)
+        .await
+        .unwrap();
+    let mut c = TestClient::connect(&engine);
+    // yt-dlp installé n'est qu'un faux : l'extraction échoue, la mise à jour non.
+    let _ = c
+        .call("media.probe", json!({"pageUrl": "https://exemple.org/v"}))
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        engine.media_tools().unwrap().ytdlp.unwrap().version,
+        "2026.11.01"
+    );
+    engine
+        .set_flag(crate::store::settings::Flag::MediaAutoUpdate, true)
+        .await
+        .unwrap();
+
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let _ = c
+        .call("media.probe", json!({"pageUrl": "https://exemple.org/v"}))
+        .await;
+    let warning = c
+        .notification("engine.warning", |p| p["code"] == "YTDLP_UPDATED")
+        .await;
+    assert!(
+        warning["message"].as_str().unwrap().contains("2026.11.05"),
+        "{warning}"
+    );
+    let tools = c
+        .notification("media.tools", |p| p["ytdlp"]["version"] == "2026.11.05")
+        .await;
+    assert_eq!(tools["ready"], true);
+    assert_eq!(
+        std::fs::read(tools_dir.join(crate::media::tools::exe("yt-dlp"))).unwrap(),
+        b"version 2"
+    );
+    engine.shutdown().await;
+}
+
 /// Interface réseau des torrents (SPEC §7.16) : `torrent.interface`, son état dans
 /// l'instantané et par `engine.torrentInterface`.
 #[tokio::test]
