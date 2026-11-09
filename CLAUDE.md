@@ -155,7 +155,7 @@ téléchargement.
   et plus ; `TransferService`, Android 8 à 13), notifications, « Wi-Fi seulement »,
   redémarrage (`BootReceiver`). Le moteur Android démarre sans réseau utilisable.
 - Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
-  téléphone Galaxy S25 Ultra (Android 16) ; messages du moteur par
+  téléphone Galaxy S25 Ultra (Android 17, `adb -s <série du téléphone>` ; antivirus AVG installé, qui signale l'application à l'installation : ne pas toucher à sa fenêtre) ; messages du moteur par
   `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
   passés à `adb shell`.
   Liens d'essai : `am start -a android.intent.action.VIEW -d <adresse> -t
@@ -340,8 +340,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   fait le 2026-11-08, essai TalkBack à faire) ; 4. arrière-plan (fait le
   2026-11-09, SPEC 7.15 : transfert lancé par l'utilisateur à partir d'Android 14, service
   avant, notification, Wi-Fi seulement, redémarrage ; vrai redémarrage et « Tout mettre en
-  pause » essayés sur la tablette le 2026-11-09 ; reste le téléphone) ; 5. porte : téléchargements longs sur deux appareils
-  réels, Android 15 et 16 (décision de l'utilisateur).
+  pause » essayés sur la tablette le 2026-11-09) ; 5. porte : téléchargements longs sur deux appareils
+  réels, Android 15 et 16 (décision de l'utilisateur ; le téléphone est passé à Android 17).
+  Essais faits le 2026-11-09 sur les deux (SPEC 7.15 et 9.3), franchissement à déclarer par
+  l'utilisateur.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
