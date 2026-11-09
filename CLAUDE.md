@@ -147,7 +147,9 @@ téléchargement.
   `MediaScannerConnection`, actions) ; `engine/` : `NativeEngine`, `EngineClient` (client
   JSON-RPC Kotlin), `Downloads` (état des tâches pour Compose, mêmes règles de révision que
   `ui/src/model.js`) ; `ui/` : `Screens` (liste, détails, réglages, ajout ; Material 3),
-  `Format` ; textes dans `res/values` (français) et `values-en`. `MainActivity` : Compose,
+  `Format` ; textes dans `res/values` (français) et `values-en` ; icône adaptative
+  vectorielle (`mipmap-anydpi-v26/ic_launcher.xml`, `drawable/ic_launcher_*`), recopiée de
+  `apps/desktop/icons/icon.svg`. `MainActivity` : Compose,
   `--es url <adresse>` (essais), ouverture par `FileProvider`. `ShareActivity` : liens
   partagés ou ouverts (activité sans fenêtre, toujours neuve). `Background` (SPEC 7.15) :
   dit au moteur si le réseau est utilisable (`engine.setNetwork`), demande la protection

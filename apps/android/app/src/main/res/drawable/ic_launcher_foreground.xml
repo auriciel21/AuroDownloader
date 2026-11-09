@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Premier plan de l'icône adaptative : la flèche de apps/desktop/icons/icon.svg (repère de
+  64 unités, disque de rayon 28 centré en 32,32). Le disque de 56 unités devient les 72 dp
+  visibles au centre des 108 dp de l'icône : échelle 72 / 56, puis le centre 32,32 ramené
+  en 54,54 (54 - 32 × 72 / 56 = 12,857). La flèche tient dans la zone sûre de 66 dp.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="1.2857143"
+        android:scaleY="1.2857143"
+        android:translateX="12.857143"
+        android:translateY="12.857143">
+        <path
+            android:pathData="M28,12h8v14h8L32,46 20,26h8z"
+            android:fillColor="#FFFFFF"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="1.5"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>

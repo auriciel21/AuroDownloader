@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="1024" height="1024">
   <!-- Source des icônes de l'application : dans apps/desktop,
        `cargo tauri icon icons/icon.svg -o icons`, puis ne garder que les fichiers que
-       cite tauri.conf.json (bundle.icon). -->
+       cite tauri.conf.json (bundle.icon). Android : recopiée à la main en vectoriel dans
+       apps/android/app/src/main/res/drawable/ic_launcher_*.xml ; les garder pareilles. -->
   <circle cx="32" cy="32" r="28" fill="#2b6cb0"/>
   <path d="M28 12h8v14h8L32 46 20 26h8z" fill="#fff" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
 </svg>
