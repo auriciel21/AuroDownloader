@@ -1,16 +1,13 @@
 //! Tests du module torrent (SPEC §7.16) : un essaim local, sans Internet. Un pair librqbit
-//! partage des fichiers depuis un dossier temporaire ; le moteur les télécharge par ce seul
-//! pair, sans DHT ni connexion entrante.
+//! (`testing::swarm`) partage des fichiers depuis un dossier temporaire ; le moteur les
+//! télécharge par ce seul pair, sans DHT ni connexion entrante.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use librqbit::limits::LimitsConfig;
-use librqbit::{AddTorrent, ListenerMode, ListenerOptions, Session, SessionOptions};
-use sha1::{Digest, Sha1};
+use librqbit::{AddTorrent, Session, SessionOptions};
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
@@ -21,15 +18,16 @@ use crate::net::filename::{NameRules, sanitize};
 use crate::scheduler::{AddTask, Config, DISK_RECHECK, Engine, Event, Planning};
 use crate::store::tasks::{TaskKind, TaskState};
 use crate::testing::content_range;
+use crate::testing::swarm::Seeder;
 use crate::transfer::Options as TransferOptions;
 
 const WAIT: Duration = Duration::from_secs(60);
 
-/// Un pair qui partage.
-struct Seeder {
-    _session: Arc<Session>,
+/// Un pair qui partage un torrent.
+struct Seed {
     addr: SocketAddr,
     metainfo: Vec<u8>,
+    _seeder: Seeder,
     _dir: tempfile::TempDir,
 }
 
@@ -38,103 +36,21 @@ fn data(index: usize, len: usize) -> Vec<u8> {
     content_range(index as u64 * 7919, len)
 }
 
-/// Taille des morceaux des torrents de test.
-const PIECE: usize = 16 * 1024;
-
-/// Un `.torrent` (bencode), empreintes SHA-1 de chaque morceau comprises. Écrit ici plutôt
-/// que par `librqbit::create_torrent`, qui oublie l'empreinte du dernier morceau quand le
-/// dernier fichier est vide (constaté le 2026-11-09, librqbit 9.1.0).
-fn make_torrent(name: &str, files: &[(&str, Vec<u8>)], single: bool) -> Vec<u8> {
-    let bstr = |s: &[u8]| {
-        let mut out = format!("{}:", s.len()).into_bytes();
-        out.extend_from_slice(s);
-        out
-    };
-    let all: Vec<u8> = files.iter().flat_map(|(_, d)| d.iter().copied()).collect();
-    let pieces: Vec<u8> = all
-        .chunks(PIECE)
-        .flat_map(|c| Sha1::digest(c).to_vec())
-        .collect();
-    // Clés d'un dictionnaire bencode dans l'ordre : files/length, name, piece length,
-    // pieces ; length, path.
-    let mut info = b"d".to_vec();
-    if single {
-        info.extend(format!("6:lengthi{}e", all.len()).into_bytes());
-    } else {
-        info.extend_from_slice(b"5:filesl");
-        for (path, d) in files {
-            info.extend(format!("d6:lengthi{}e4:pathl", d.len()).into_bytes());
-            for c in path.split('/') {
-                info.extend(bstr(c.as_bytes()));
-            }
-            info.extend_from_slice(b"ee");
-        }
-        info.push(b'e');
-    }
-    info.extend_from_slice(b"4:name");
-    info.extend(bstr(name.as_bytes()));
-    info.extend(format!("12:piece lengthi{PIECE}e6:pieces").into_bytes());
-    info.extend(bstr(&pieces));
-    info.push(b'e');
-    let mut out = b"d4:info".to_vec();
-    out.extend(info);
-    out.push(b'e');
-    out
-}
-
 /// Un pair qui partage `files` : un seul fichier si son chemin est vide (`name` est alors
 /// son nom), sinon un dossier `name` qui les contient. `upload_bps` le ralentit.
-async fn seeder(name: &str, files: &[(&str, usize)], upload_bps: Option<u32>) -> Seeder {
+async fn seeder(name: &str, files: &[(&str, usize)], upload_bps: Option<u32>) -> Seed {
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().join("seed");
-    let root = base.join(name);
-    let single = matches!(files, [("", _)]);
+    let seeder = Seeder::start(&dir.path().join("seed"), upload_bps).await;
     let contents: Vec<(&str, Vec<u8>)> = files
         .iter()
         .enumerate()
         .map(|(i, (rel, len))| (*rel, data(i, *len)))
         .collect();
-    for (rel, d) in &contents {
-        let path = if single { root.clone() } else { root.join(rel) };
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, d).unwrap();
-    }
-    let metainfo = make_torrent(name, &contents, single);
-    let session = Session::new_with_opts(
-        base,
-        SessionOptions {
-            dht: None,
-            listen: Some(ListenerOptions {
-                mode: ListenerMode::TcpOnly,
-                listen_addr: (Ipv4Addr::LOCALHOST, 0).into(),
-                ..Default::default()
-            }),
-            disable_local_service_discovery: true,
-            ratelimits: LimitsConfig {
-                upload_bps: upload_bps.and_then(NonZeroU32::new),
-                download_bps: None,
-            },
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    // Ses fichiers sont déjà là : il les vérifie, puis les partage.
-    session
-        .add_torrent(
-            AddTorrent::from_bytes(metainfo.clone()),
-            Some(librqbit::AddTorrentOptions {
-                overwrite: true,
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
-    let addr = session.listen_addr().expect("le pair écoute");
-    Seeder {
-        _session: session,
-        addr,
+    let metainfo = seeder.share(name, &contents).await;
+    Seed {
+        addr: seeder.addr,
         metainfo,
+        _seeder: seeder,
         _dir: dir,
     }
 }
@@ -695,4 +611,22 @@ fn engine_state(dir: &Path, task_id: &str) -> TaskState {
     crate::store::tasks::load_task(&conn, task_id)
         .unwrap()
         .state
+}
+
+/// Un torrent « à plusieurs fichiers » qui n'en contient qu'un garde son dossier, comme le
+/// veut le format (librqbit, lui, le range sans dossier quand on ne lui en donne pas).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folder_torrent_with_one_file_keeps_its_folder() {
+    const LEN: usize = 300 * 1024;
+    let seed = seeder("Seul", &[("sous/f0.bin", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("Seul").join("sous").join("f0.bin")).unwrap(),
+        data(0, LEN)
+    );
+    engine.shutdown().await;
 }

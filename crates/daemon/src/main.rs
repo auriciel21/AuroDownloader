@@ -14,6 +14,7 @@ use auro_engine::power;
 use auro_engine::rpc::local;
 use auro_engine::scheduler::{Config, DISK_RECHECK, Engine, Planning};
 use auro_engine::secrets::Vault;
+use auro_engine::torrent;
 use auro_engine::transfer::Options;
 use clap::Parser;
 
@@ -41,6 +42,11 @@ struct Args {
     /// le journal au lieu d'être exécutée
     #[arg(long)]
     simulate_power: bool,
+
+    /// Essais : les torrents passent par ces seuls pairs (adresse:port, séparées par des
+    /// virgules), sans DHT ni connexion entrante (banc de reprise des torrents)
+    #[arg(long, value_name = "PAIRS", value_delimiter = ',')]
+    torrent_peers: Vec<std::net::SocketAddr>,
 }
 
 fn main() -> Result<()> {
@@ -78,7 +84,13 @@ fn main() -> Result<()> {
         },
         ..Planning::default()
     };
-    runtime.block_on(run(db, endpoint, client, planning))
+    // Essais seulement : un essaim local (banc de reprise des torrents).
+    let torrent = if args.torrent_peers.is_empty() {
+        torrent::Options::default()
+    } else {
+        torrent::Options::local(args.torrent_peers.clone())
+    };
+    runtime.block_on(run(db, endpoint, client, planning, torrent))
 }
 
 /// Un point d'accès autre que celui par défaut sert aux essais : sans `--db`, il ouvrirait
@@ -94,7 +106,13 @@ fn check_test_setup(endpoint: Option<&str>, db: Option<&Path>, default: &str) ->
     }
 }
 
-async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) -> Result<()> {
+async fn run(
+    db: PathBuf,
+    endpoint: String,
+    client: Client,
+    planning: Planning,
+    torrent: torrent::Options,
+) -> Result<()> {
     let engine = Engine::start(Config {
         db_path: db.clone(),
         client,
@@ -103,6 +121,7 @@ async fn run(db: PathBuf, endpoint: String, client: Client, planning: Planning) 
         transfer: Options {
             vault: Vault::system(),
             neighbor_checksum: true,
+            torrent,
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,

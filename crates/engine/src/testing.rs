@@ -7,6 +7,8 @@
 //! Compilé pour les tests du moteur et, avec la fonctionnalité `testing`, pour ceux des
 //! autres paquets (banc de reprise de la CLI). Ne fait pas partie de l'API du moteur.
 
+pub mod swarm;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};

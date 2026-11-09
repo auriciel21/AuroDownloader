@@ -225,6 +225,9 @@ AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
 # Banc de reprise du moteur autonome (aurod tué pendant que plusieurs tâches tournent ;
 # la version courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_daemon -- --nocapture
+# Banc de reprise des torrents (aurod tué pendant que plusieurs torrents se téléchargent
+# depuis un pair local, écritures perdues simulées ; aurod --torrent-peers) :
+AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_torrent -- --nocapture
 # Disque vraiment plein (Linux, WSL) : tmpfs de 8 Mio monté sans root, puis le test ignoré :
 D=$(mktemp -d); unshare -rm sh -c "mount -t tmpfs -o size=8m tmpfs $D && \
   AURO_FULL_DISK_DIR=$D cargo test -p auro-engine --lib -- --ignored really_full"
@@ -302,7 +305,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   (`crates/cli/tests/crash_resume.rs`) ; un échec s'y rejoue avec `AURO_CRASH_SEED`.
   Toute modification de `scheduler`, `rpc` ou du daemon passe aussi celui d'`aurod`
   (`crates/daemon/tests/crash_daemon.rs`). Leurs contrôles communs sont dans
-  `testing::Checker`.
+  `testing::Checker`. Toute modification du module `torrent` ou de `store::torrents` passe
+  aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
+  `testing::swarm`).
 - Vidages du `.part` : toujours par le `SyncGate` du fichier (`PartFile::checkpoint`,
   `SegmentWriter::finish`), jamais par un `sync_data` direct pendant que des écrivains
   tournent : des vidages simultanés du même fichier coûtent très cher sous Linux.
@@ -379,10 +384,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   conception SPEC 7.16 (décisions de l'utilisateur : partage jusqu'au ratio 1, port
   d'écoute sans UPnP ; revérification complète à chaque démarrage, sans reprise rapide) :
   3a. ajout (magnet, `.torrent`) et téléchargement jusqu'à la fin, essaim local dans les
-  tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers, réglages, réseau
-  (fait le 2026-11-09, essai réel sous WSL : netinst Debian par magnet, DHT seul) ;
-  3c. banc de reprise et écritures perdues ; 3d. liaison à une interface (VPN), Windows
-  compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
+  tests (fait le 2026-11-09) ; 3b. partage, limites (envoi compris), choix des fichiers,
+  réglages, réseau (fait le 2026-11-09, essai réel sous WSL : netinst Debian par magnet,
+  DHT seul) ; 3c. banc de reprise et écritures perdues (fait le 2026-11-09,
+  `crash_torrent`) ; 3d. liaison à une interface (VPN), Windows compris ; 4. module `media` : yt-dlp et ffmpeg en processus séparés (yt-dlp récupéré
   avec contrôle de l'empreinte publiée, mise à jour indépendante, F-22, F-23, F-25),
   essais sur des vidéos sous licence libre ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo

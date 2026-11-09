@@ -1188,7 +1188,7 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - Connexions entrantes en TCP sur un port fixe : `torrent.listenPort`, tiré au hasard entre 49152 et 65535 au premier démarrage de la session, puis gardé. Sous Windows, le pare-feu demande une fois s'il faut autoriser `aurod`.
 - Pas d'UPnP par défaut (`torrent.upnp`, faux) : le moteur ne modifie pas la box.
 - DHT actif, avec sa table gardée dans le dossier de données du moteur. Échange de pairs (PEX) actif. Pas de découverte sur le réseau local. uTP inactif (expérimental dans librqbit).
-- Liaison à une interface (VPN, section 8.1) : étape 3e, y compris sous Windows, que librqbit ne gère pas.
+- Liaison à une interface (VPN, section 8.1) : étape 3d, y compris sous Windows, que librqbit ne gère pas.
 - `engine.setNetwork` (section 7.15) arrête les torrents comme les autres tâches.
 
 **Limites de débit.**
@@ -1240,7 +1240,19 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - **Réglages** : `torrent.ratioLimit` et `torrent.upnp` (section 6.5).
 - **Tests** : partage jusqu'au ratio avec un pair local qui vient télécharger, pause pendant le partage, reprise du partage après un redémarrage du moteur, partage retenu sur un réseau facturé puis repris, choix des fichiers en cours de téléchargement ; protocole (limites, ratio, UPnP, réseau facturé, `task.setFiles`).
 - **Essai réel** (2026-11-09, WSL) : `aurod` d'essai et la CLI. Netinst Debian 13.7 (756 Mio) par un lien magnet sans tracker (DHT seul), ratio 0, envoi limité à 100 Kio/s : terminé en 27 s, empreinte publiée juste. La table du DHT ne s'est pas enregistrée en si peu de temps (librqbit l'écrit toutes les 60 s).
-- **Reste de l'étape 3** : le banc de reprise des torrents (3c) et la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
+- **Reste après l'étape 3b** : le banc de reprise des torrents (3c) et la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
+
+**Mise en œuvre de l'étape 3c (2026-11-09) : banc de reprise des torrents.**
+- **Banc** (`crates/daemon/tests/crash_torrent.rs`) : `aurod` télécharge plusieurs torrents à la fois depuis un pair local (`testing::swarm`, librqbit, envoi bridé pour que chaque cycle tombe en plein téléchargement). Le banc en ajoute par le protocole (`.torrent` en base64) pour en garder toujours trois en cours : un seul fichier ou un dossier, avec des sous-dossiers et des fichiers vides, sans partage (ratio 0).
+  - Chaque cycle tue `aurod` à un instant aléatoire, sauf un sur cinq qui finit par `engine.shutdown`.
+  - Un arrêt sur deux est suivi d'une écriture perdue simulée : une plage de 64 Kio au plus mise à zéro dans un `.part` au hasard, comme un cache du système perdu avec la machine.
+  - Après chaque arrêt : aucune tâche en échec ni annulée ; chaque torrent terminé a tous ses fichiers sous leur nom final, identiques octet par octet au contenu partagé, et plus aucun `.part`. Le banc compte les arrêts tombés entre le renommage et l'enregistrement de la fin, que la reprise doit achever.
+  - À la fin, `aurod` reprend tout sans arrêt jusqu'au bout, et chaque torrent est vérifié.
+  - Réglages : `AURO_CRASH_CYCLES` (6 par défaut, version courte de `cargo test`), `AURO_CRASH_TASKS`, `AURO_CRASH_SIZE`, `AURO_CRASH_SECONDS`, `AURO_CRASH_SEED` pour rejouer un échec.
+- **`aurod --torrent-peers`** (essais seulement) : les torrents ne passent que par ces pairs, sans DHT ni connexion entrante.
+- **Campagnes** : voir la section 9.1.
+- **Constaté** : sans dossier de destination explicite, librqbit (9.1.0) range sans son dossier un torrent « à plusieurs fichiers » qui n'en contient qu'un. Le moteur donne toujours le dossier et garde celui du torrent (test `a_folder_torrent_with_one_file_keeps_its_folder`) ; le pair de test, qui ne le donnait pas, ne trouvait pas ses données, d'où des torrents bloqués à 0 octet dans la première campagne.
+- **Reste de l'étape 3** : la liaison à une interface réseau, Windows compris (3d). La durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie.
 
 ## 8. Sécurité, vie privée et cadre légal
 
@@ -1299,6 +1311,12 @@ Le projet repose sur un principe simple : aucune version ne sort si un test de r
 Le banc de reprise sous arrêt brutal (`crates/cli/tests/crash_resume.rs`) tue le processus à un instant aléatoire et relance la tâche. Après chaque arrêt, il vérifie les règles 1 à 4 de la section 5.6 sur la base et le `.part`, puis compare chaque fichier terminé octet par octet au contenu servi. Une version courte tourne à chaque intégration continue ; la version de la porte de phase 1 se règle par variables d'environnement. Tuer le processus laisse intact le cache du système : une coupure de la machine elle-même demande un banc séparé (machine virtuelle coupée net, ou système de fichiers qui simule la perte du cache), à prévoir.
 
 Le banc de reprise du moteur autonome (`crates/daemon/tests/crash_daemon.rs`, phase 2) fait de même avec `aurod`. Plusieurs tâches tournent à la fois et le banc en ajoute par le protocole pour en garder toujours quatre en cours. Un cycle sur cinq finit par un arrêt demandé (`engine.shutdown`) au lieu d'un arrêt brutal. Les contrôles sont communs aux deux bancs (`testing::Checker`). Campagne du 2026-11-06 sous Windows 11, sans aucun défaut : 150 lancements (graine 1793925077934193901), 120 arrêts brutaux et 30 arrêts demandés, 73 fichiers de 4 Mio terminés et vérifiés octet par octet, en 4 min 8 s. Aucun arrêt n'y tombe sur un découpage redécoupé, car chaque tâche garde le nombre de connexions fixé à l'ajout : le redécoupage sous arrêt brutal reste couvert par le banc de la phase 1.
+
+Le banc de reprise des torrents (`crates/daemon/tests/crash_torrent.rs`, phase 5, section 7.16) tue `aurod` pendant qu'il télécharge trois torrents à la fois depuis un pair local, et simule en plus, sur un arrêt sur deux, une écriture perdue dans un `.part`. Chaque torrent terminé est comparé octet par octet au contenu partagé. Campagnes du 2026-11-09, 150 lancements chacune, trois torrents d'environ 2 Mio, sans aucun défaut :
+- Linux (WSL, graine 1794236763982147965) : 120 arrêts brutaux et 30 arrêts demandés, 242 torrents terminés et vérifiés, 51 plages effacées dans un `.part`, 6 arrêts entre un renommage et l'enregistrement de la fin, en 4 min 36 s ;
+- Windows 11 (graine 1794245565815179301) : 120 arrêts brutaux et 30 arrêts demandés, 227 torrents terminés et vérifiés, 37 plages effacées, en 4 min 59 s.
+
+La première campagne avait échoué par la faute du pair de test, et non du moteur (section 7.16, étape 3c).
 
 Version de la porte de phase 1, passée le 2026-10-15 sous Windows 11, sans aucun défaut. Le banc a fait 1 000 lancements sur un fichier de 1 Gio, en 1 h 41 (graine 1792094471405815701) :
 - 845 arrêts brutaux, dont 456 sur un découpage redécoupé ;

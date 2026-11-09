@@ -18,6 +18,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "signal"] }
 
 [dev-dependencies]
+# Banc des torrents : le fichier .torrent passe en base64 (`task.add`).
+base64 = "0.22.1"
 auro-engine = { path = "../engine", features = ["testing"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
