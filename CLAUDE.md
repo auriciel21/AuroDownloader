@@ -344,8 +344,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   avant, notification, Wi-Fi seulement, redémarrage ; vrai redémarrage et « Tout mettre en
   pause » essayés sur la tablette le 2026-11-09) ; 5. porte : téléchargements longs sur deux appareils
   réels, Android 15 et 16 (décision de l'utilisateur ; le téléphone est passé à Android 17).
-  Essais faits le 2026-11-09 sur les deux (SPEC 7.15 et 9.3), franchissement à déclarer par
-  l'utilisateur.
+  Porte franchie le 2026-11-09, déclarée par l'utilisateur après les essais sur les deux
+  (SPEC 7.15 et 9.3), Android 17 accepté à la place du 16. Restes : TalkBack, Android 8 à
+  13, sélecteur de stockage (carte SD, Drive).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
