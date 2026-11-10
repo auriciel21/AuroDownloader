@@ -471,8 +471,7 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   qu'une autre application confie, partage seulement application à l'écran ou
   téléchargement protégé, pas de liaison à une interface ; décisions de l'utilisateur ;
   essai réel sur le téléphone, SPEC 4.4 ; « Annuler » et « Retirer » effacent le `.part`) ;
-  6. porte (campagne du 2026-11-10, critères tenus, déclaration de l'utilisateur
-  attendue : bancs et essais réels sous Windows et Linux, fuzzing des `.torrent`
+  6. porte, franchie le 2026-11-10, déclarée par l'utilisateur (campagne du même jour : bancs et essais réels sous Windows et Linux, fuzzing des `.torrent`
   (`torrent::fuzz`, décision de l'utilisateur), licences ; trouvés et corrigés : torrents
   aux fichiers au même chemin une fois nettoyés, refusés, et fin d'une vidéo interrompue
   après le renommage, `already_merged` ; SPEC 9.1 et 9.3). Décisions du même jour : le torrent d'abord ; la vidéo
