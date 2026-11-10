@@ -1,6 +1,6 @@
 // Réglages de l'extension : capture, taille minimale, sites exclus, navigation privée,
-// cookies de la page ; état de la liaison avec AuroDownloader (relais de messagerie
-// native) ; accès aux sites, pour les cookies.
+// cookies de la page, liens magnet ; état de la liaison avec AuroDownloader (relais de
+// messagerie native) ; accès aux sites, pour les cookies.
 const { DEFAULTS, settings } = globalThis.AuroDecide;
 const HOST = "org.aurodownloader.relay";
 const t = (key, ...subs) => chrome.i18n.getMessage(key, subs) || key;
@@ -17,6 +17,7 @@ async function load() {
   $("excludedSites").value = s.excludedSites.join("\n");
   $("captureIncognito").checked = s.captureIncognito;
   $("sendCookies").checked = s.sendCookies;
+  $("captureMagnet").checked = s.captureMagnet;
 }
 
 let savedTimer = 0;
@@ -28,6 +29,7 @@ async function save() {
     excludedSites: $("excludedSites").value.split(/[\s,]+/).filter(Boolean),
     captureIncognito: $("captureIncognito").checked,
     sendCookies: $("sendCookies").checked,
+    captureMagnet: $("captureMagnet").checked,
   });
   $("saved").textContent = t("saved");
   clearTimeout(savedTimer);

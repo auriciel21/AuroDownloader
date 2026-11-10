@@ -156,8 +156,10 @@ téléchargement.
   lancer un), et vérifier sa ligne de commande ; jamais avec un `aurod` qui pourrait
   éteindre la machine de l'utilisateur.
 - `extension` : extension navigateur (SPEC 4.5, F-37), Manifest V3 pour Firefox, Chrome et
-  Edge ; `decide.js` (décision de capture, testée par `node --test extension/tests/`),
-  `background.js`, `content.js` (clic avec Alt), `options.*`, `_locales` (en, fr).
+  Edge ; `decide.js` (décision de capture, `.torrent` et liens magnet, testée par
+  `node --test extension/tests/`), `background.js`, `content.js` (clic avec Alt, clic sur un
+  lien magnet), `popup.*` et `video.js` (fenêtre de l'icône : vidéo de la page ; qualités
+  recopiées de `ui/src/model.js`, comparées par les tests), `options.*`, `_locales` (en, fr).
   `AURO_ENDPOINT` remplace le point d'accès par défaut (`paths::endpoint`) : un navigateur
   d'essai lancé avec lui fait parler le relais à un moteur d'essai.
 - Essais de l'extension : jamais dans les profils de navigateur de l'utilisateur. Un profil
@@ -455,7 +457,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   vidéo (fait le 2026-11-09, essai de l'interface validé par l'utilisateur, outils
   installés depuis la boîte : boîte « Ajouter une vidéo », qualités et formats,
   sous-titres, installation des outils sur accord, rubrique Vidéo ; le moteur refuse
-  empreinte, déplacement et adresse pour une vidéo), 5d. extension (magnet, pages de vidéo), 5e.
+  empreinte, déplacement et adresse pour une vidéo),
+  5d. extension (écrite le 2026-11-10 : clic sur un lien magnet capté, option active par
+  défaut ; `.torrent` lu par l'extension et envoyé en base64 ; fenêtre de l'icône avec le
+  choix de la qualité, menu contextuel en meilleure qualité ; messages `probe` et `video` du
+  relais ; messages du moteur et du relais portés à 24 Mio ; décisions de l'utilisateur ;
+  essais 10 à 17 de `docs/ESSAI-EXTENSION.md` à faire par l'utilisateur), 5e.
   torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

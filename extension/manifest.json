@@ -12,14 +12,15 @@
   },
   "action": {
     "default_icon": { "32": "icons/32.png", "64": "icons/64.png" },
-    "default_title": "__MSG_name__"
+    "default_title": "__MSG_name__",
+    "default_popup": "popup.html"
   },
   "background": {
     "service_worker": "background.js",
     "scripts": ["decide.js", "background.js"]
   },
   "options_ui": { "page": "options.html", "open_in_tab": false },
-  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage", "cookies"],
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage", "cookies", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {

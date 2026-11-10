@@ -11,11 +11,18 @@
 //! - `{"type": "add", "url": …, "requestId": …, "paused": false, "headers": {…}}` : ajoute
 //!   un téléchargement dans le dossier du moteur ; `requestId` sert de clé d'idempotence
 //!   (un nouvel essai ne crée pas de doublon) ; `headers`, les en-têtes de la page
-//!   (`Referer`, `User-Agent`, `Cookie`), transmis à `task.add`. Réponse
+//!   (`Referer`, `User-Agent`, `Cookie`), transmis à `task.add`. `url` peut être un lien
+//!   magnet ; `torrent` (un fichier `.torrent` en base64) la remplace. Réponse
 //!   `{"ok": true, "taskId": …}`.
+//! - `{"type": "probe", "pageUrl": …}` : décrit la vidéo d'une page (`media.probe`) :
+//!   `{"ok": true, "title", "durationS", "formats": […], "subtitles": […]}`, chaque format
+//!   réduit à ce qu'il faut pour choisir une qualité.
+//! - `{"type": "video", "pageUrl": …, "format", "subtitles", "title", "requestId"}` :
+//!   ajoute la vidéo de la page (`task.add` avec `media`). Réponse `{"ok": true, "taskId"}`.
 //!
 //! Un refus répond `{"ok": false, "code": …, "message": …}` : `code` est celui du moteur
-//! (SPEC §6.7), ou `ENGINE_UNAVAILABLE`, `BAD_MESSAGE`, `UNKNOWN_TYPE`.
+//! (SPEC §6.7), ou `ENGINE_UNAVAILABLE`, `BAD_MESSAGE`, `UNKNOWN_TYPE`, `REPLY_TOO_LARGE`
+//! (réponse de plus de 1 Mio, que le navigateur n'accepterait pas).
 
 use std::io;
 
@@ -27,9 +34,10 @@ use crate::client::{self, EngineRefused, Rpc, Session};
 /// Nom de l'hôte déclaré aux navigateurs.
 pub const HOST_NAME: &str = "org.aurodownloader.relay";
 
-/// Plus long message accepté de l'extension. Les siens font quelques centaines d'octets ;
-/// le navigateur n'en enverrait pas plus de 64 Mio.
-pub const MAX_INCOMING: usize = 1 << 20;
+/// Plus long message accepté de l'extension : un `.torrent` de 16 Mio en base64 y tient
+/// (la limite d'un message du moteur, SPEC §6.3) ; le navigateur n'en enverrait pas plus
+/// de 64 Mio.
+pub const MAX_INCOMING: usize = 24 << 20;
 
 /// Plus long message que le navigateur accepte de l'hôte (Chrome, Firefox).
 pub const MAX_OUTGOING: usize = 1 << 20;
@@ -132,6 +140,8 @@ impl Relay {
         let mut reply = match message.get("type").and_then(Value::as_str) {
             Some("ping") => json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}),
             Some("add") => self.add(message).await,
+            Some("probe") => self.probe(message).await,
+            Some("video") => self.video(message).await,
             Some(other) => refusal("UNKNOWN_TYPE", format!("type de message inconnu : {other}")),
             None => refusal("BAD_MESSAGE", "type manquant"),
         };
@@ -142,14 +152,19 @@ impl Relay {
     }
 
     async fn add(&mut self, message: &Value) -> Value {
-        let Some(url) = message.get("url").and_then(Value::as_str) else {
-            return refusal("BAD_MESSAGE", "url manquante");
+        let text = |key: &str| message.get(key).and_then(Value::as_str);
+        // Une adresse (lien magnet compris) ou un `.torrent` en base64 (SPEC §7.16).
+        let source = match (text("url"), text("torrent")) {
+            (Some(url), None) => json!({"url": url}),
+            (None, Some(torrent)) => json!({"torrent": torrent}),
+            (Some(_), Some(_)) => return refusal("BAD_MESSAGE", "url ou torrent, pas les deux"),
+            (None, None) => return refusal("BAD_MESSAGE", "url manquante"),
         };
         let mut params = json!({
-            "sources": [{"url": url}],
+            "sources": [source],
             "startPaused": message.get("paused").and_then(Value::as_bool).unwrap_or(false),
         });
-        if let Some(key) = message.get("requestId").and_then(Value::as_str) {
+        if let Some(key) = text("requestId") {
             params["idempotencyKey"] = json!(key);
         }
         // En-têtes de la page (`Referer`, `User-Agent`, `Cookie`) : le moteur les vérifie,
@@ -159,13 +174,90 @@ impl Relay {
             Some(headers @ Value::Object(_)) => params["headers"] = headers.clone(),
             Some(_) => return refusal("BAD_MESSAGE", "headers : un objet est attendu"),
         }
+        self.added(params).await
+    }
+
+    /// `task.add`, réponse `{"ok": true, "taskId"}`.
+    async fn added(&mut self, params: Value) -> Value {
         match self.call("task.add", params).await {
             Ok(result) => json!({"ok": true, "taskId": result["taskId"]}),
-            Err(e) => match e.downcast::<EngineRefused>() {
-                Ok(refused) => refusal(&refused.code, refused.message),
-                Err(e) => refusal("ENGINE_UNAVAILABLE", format!("{e:#}")),
-            },
+            Err(e) => engine_refusal(e),
         }
+    }
+
+    /// Vidéo d'une page décrite par le moteur (SPEC §7.17), formats réduits à ce que
+    /// l'extension montre.
+    async fn probe(&mut self, message: &Value) -> Value {
+        let Some(page) = message.get("pageUrl").and_then(Value::as_str) else {
+            return refusal("BAD_MESSAGE", "pageUrl manquante");
+        };
+        let probe = match self.call("media.probe", json!({"pageUrl": page})).await {
+            Ok(probe) => probe,
+            Err(e) => return engine_refusal(e),
+        };
+        const KEPT: [&str; 8] = [
+            "formatId",
+            "ext",
+            "vcodec",
+            "acodec",
+            "height",
+            "filesize",
+            "filesizeApprox",
+            "drm",
+        ];
+        let formats: Vec<Value> = probe["formats"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|f| {
+                KEPT.iter()
+                    .filter_map(|k| f.get(*k).map(|v| ((*k).to_owned(), v.clone())))
+                    .collect::<serde_json::Map<_, _>>()
+                    .into()
+            })
+            .collect();
+        json!({
+            "ok": true,
+            "title": probe["title"],
+            "durationS": probe["durationS"],
+            "formats": formats,
+            "subtitles": probe["subtitles"],
+        })
+    }
+
+    /// Ajoute la vidéo d'une page : `task.add` avec `media` (SPEC §7.17), dans le dossier
+    /// du moteur.
+    async fn video(&mut self, message: &Value) -> Value {
+        let Some(page) = message.get("pageUrl").and_then(Value::as_str) else {
+            return refusal("BAD_MESSAGE", "pageUrl manquante");
+        };
+        let mut media = json!({"pageUrl": page});
+        for key in ["format", "title"] {
+            match message.get(key) {
+                None | Some(Value::Null) => {}
+                Some(v @ Value::String(_)) => media[key] = v.clone(),
+                Some(_) => return refusal("BAD_MESSAGE", format!("{key} : texte attendu")),
+            }
+        }
+        match message.get("subtitles") {
+            None | Some(Value::Null) => {}
+            Some(v @ Value::Array(_)) => media["subtitles"] = v.clone(),
+            Some(_) => return refusal("BAD_MESSAGE", "subtitles : liste attendue"),
+        }
+        let mut params = json!({"media": media});
+        if let Some(key) = message.get("requestId").and_then(Value::as_str) {
+            params["idempotencyKey"] = json!(key);
+        }
+        self.added(params).await
+    }
+}
+
+/// Refus du moteur, ou moteur injoignable.
+fn engine_refusal(e: anyhow::Error) -> Value {
+    match e.downcast::<EngineRefused>() {
+        Ok(refused) => refusal(&refused.code, refused.message),
+        Err(e) => refusal("ENGINE_UNAVAILABLE", format!("{e:#}")),
     }
 }
 
@@ -178,7 +270,16 @@ where
 {
     let mut relay = Relay::new(endpoint);
     while let Some(message) = read_message(&mut input).await? {
-        let reply = relay.handle(&message).await;
+        let mut reply = relay.handle(&message).await;
+        // Une réponse que le navigateur refuserait (une page aux milliers de formats) :
+        // un refus à la place, plutôt qu'un relais arrêté.
+        if reply.to_string().len() > MAX_OUTGOING {
+            let mut short = refusal("REPLY_TOO_LARGE", "réponse trop longue pour le navigateur");
+            if let Some(id) = message.get("id") {
+                short["id"] = id.clone();
+            }
+            reply = short;
+        }
         write_message(&mut output, &reply).await?;
     }
     Ok(())

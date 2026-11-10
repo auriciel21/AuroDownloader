@@ -1,0 +1,13 @@
+/* Fenêtre de l'extension (étape 5d) : la vidéo de la page. Couleurs d'options.css. */
+main { width: 22rem; max-width: none; padding: 12px 14px; }
+h1 { font-size: 1.05rem; margin-bottom: 6px; }
+.video-title { margin: 4px 0 8px; overflow-wrap: anywhere; }
+fieldset { border: 1px solid var(--line); border-radius: 4px; margin: 8px 0; padding: 6px 10px; }
+legend { color: var(--muted); padding: 0 4px; }
+fieldset label { display: flex; gap: 8px; align-items: center; margin: 3px 0; }
+fieldset label .size { color: var(--muted); margin-left: auto; }
+#subs { max-height: 8rem; overflow-y: auto; }
+button[type="submit"] { background: var(--accent); color: var(--bg); border-color: var(--accent); padding: 5px 14px; }
+button:disabled { opacity: 0.6; cursor: default; }
+.footer { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin: 10px 0 0; }
+.footer a { color: var(--accent); }

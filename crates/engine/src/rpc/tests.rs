@@ -1898,6 +1898,50 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
     engine.shutdown().await;
 }
 
+/// Un gros `.torrent` (16 Mio au plus côté clients, SPEC §6.3) passe en un seul message :
+/// ici un fichier de près de 1 Gio en morceaux de 16 Kio, 1,2 Mio d'empreintes, 1,6 Mio
+/// une fois en base64. Au-delà de la limite, la connexion se ferme.
+#[tokio::test]
+async fn a_large_torrent_file_fits_in_one_message() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    const PIECES: usize = 60_000;
+    let mut metainfo = format!(
+        "d4:infod6:lengthi{}e4:name8:gros.iso12:piece lengthi16384e6:pieces{}:",
+        PIECES * 16384,
+        PIECES * 20
+    )
+    .into_bytes();
+    metainfo.extend((0..PIECES * 20).map(|i| (i % 251) as u8));
+    metainfo.extend_from_slice(b"ee");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&metainfo);
+    assert!(encoded.len() > 1 << 20);
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"torrent": encoded}], "destDir": dir_text(dir.path()), "startPaused": true}),
+        )
+        .await;
+    let task = c
+        .result("task.get", json!({"taskId": added["taskId"]}))
+        .await;
+    assert_eq!(task["displayName"], "gros.iso", "{task}");
+
+    // Trop long : refusé, puis la connexion se ferme. Exactement un octet de trop, sans fin
+    // de ligne : le moteur lit tout ce qui est écrit avant de fermer.
+    let mut long = br#"{"jsonrpc": "2.0", "id": 99, "method": "task.list", "pad": ""#.to_vec();
+    long.resize(super::MAX_MESSAGE - 1, b'x');
+    long.extend_from_slice(br#""}"#);
+    assert_eq!(long.len(), super::MAX_MESSAGE + 1);
+    c.writer.write_all(&long).await.unwrap();
+    let reply = c.read().await.expect("refus attendu");
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+    assert!(c.read().await.is_none());
+    engine.shutdown().await;
+}
+
 /// Outils de la vidéo (SPEC §7.17) : état, installation sur demande seulement (portée
 /// `admin`), annoncée par `media.tools` ; réglage `media.autoUpdate`, vrai par défaut.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

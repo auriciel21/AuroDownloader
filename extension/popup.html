@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title data-i18n="name">AuroDownloader</title>
+  <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1 data-i18n="popupTitle"></h1>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <form id="choice" hidden>
+      <p class="video-title"><strong id="title"></strong> <span class="hint" id="duration"></span></p>
+      <fieldset>
+        <legend data-i18n="popupQuality"></legend>
+        <div id="qualities"></div>
+      </fieldset>
+      <fieldset id="subs-box" hidden>
+        <legend data-i18n="popupSubtitles"></legend>
+        <div id="subs"></div>
+      </fieldset>
+      <p><button type="submit" id="download" data-i18n="popupDownload"></button></p>
+    </form>
+    <p class="footer"><button type="button" id="retry" hidden data-i18n="popupRetry"></button>
+      <a href="#" id="options" data-i18n="popupOptions"></a></p>
+  </main>
+  <script src="video.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

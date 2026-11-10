@@ -28,8 +28,9 @@ pub use session::serve;
 /// Versions du protocole que ce moteur parle, de la plus ancienne à la plus récente.
 pub const PROTOCOL_VERSIONS: &[(u32, u32)] = &[(1, 0)];
 
-/// Longueur maximale d'un message reçu : au-delà, la connexion est fermée.
-pub const MAX_MESSAGE: usize = 1 << 20;
+/// Longueur maximale d'un message reçu : au-delà, la connexion est fermée. Assez pour un
+/// `.torrent` de 16 Mio en base64 (`task.add`, SPEC §6.3).
+pub const MAX_MESSAGE: usize = 24 << 20;
 
 /// Erreur renvoyée au client (SPEC §6.7) : `code` numérique, `data.code` stable.
 #[derive(Debug, Clone, PartialEq, Eq)]

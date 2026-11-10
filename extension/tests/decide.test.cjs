@@ -111,3 +111,51 @@ test("magasin de cookies d'un téléchargement", () => {
   assert.equal(cookieStore(item({ incognito: true })), "1");
   assert.equal(cookieStore(item()), undefined);
 });
+
+// Étape 5d : fichiers .torrent et liens magnet.
+test("un fichier .torrent est capturé comme torrent, quelle que soit sa taille", () => {
+  const { isTorrentDownload } = globalThis.AuroDecide;
+  const small = { totalBytes: 20 * 1024 };
+  for (const it of [
+    item({ ...small, mime: "application/x-bittorrent" }),
+    item({ ...small, mime: "application/x-bittorrent; charset=binary" }),
+    item({ ...small, filename: "C:\Users\moi\Downloads\debian.iso.torrent" }),
+    item({ ...small, url: "https://exemple.org/debian-13.iso.torrent?x=1" }),
+    item({ ...small, url: "https://exemple.org/dl?id=4", finalUrl: "https://cdn.exemple.org/a.TORRENT" }),
+  ]) {
+    assert.ok(isTorrentDownload(it), JSON.stringify(it));
+    assert.deepEqual(decide(it, {}), { capture: true, reason: "", torrent: true });
+  }
+  assert.equal(isTorrentDownload(item()), false);
+  assert.equal(isTorrentDownload(item({ url: "https://exemple.org/torrent/page.html" })), false);
+  // Les autres règles passent avant : site exclu, Alt, navigation privée, capture coupée.
+  const torrent = item({ ...small, mime: "application/x-bittorrent" });
+  assert.equal(decide(torrent, { excludedSites: ["exemple.org"] }).reason, "site exclu");
+  assert.equal(decide(torrent, { capture: false }).capture, false);
+  assert.equal(decide({ ...torrent, incognito: true }, {}).reason, "navigation privée");
+  const now = 5_000_000;
+  assert.equal(decide(torrent, {}, { now, altClickAt: now - 10 }).reason, "clic avec Alt");
+});
+
+test("contenu d'un .torrent vérifié avant l'envoi, puis en base64", () => {
+  const { torrentProblem, toBase64, MAX_TORRENT_BYTES } = globalThis.AuroDecide;
+  const bytes = new TextEncoder().encode("d4:infod4:name1:xee");
+  assert.equal(torrentProblem(bytes), null);
+  assert.equal(toBase64(bytes), Buffer.from(bytes).toString("base64"));
+  assert.ok(torrentProblem(new Uint8Array(0)));
+  assert.ok(torrentProblem(new TextEncoder().encode("<!doctype html>")));
+  assert.ok(torrentProblem(new Uint8Array(MAX_TORRENT_BYTES + 1).fill(0x64)));
+  // Gros contenu : par morceaux, identique au base64 de Node.
+  const big = new Uint8Array(3 * 1024 * 1024 + 7).map((_, i) => (i * 31) % 256);
+  assert.equal(toBase64(big), Buffer.from(big).toString("base64"));
+});
+
+test("liens magnet : reconnus, option active par défaut", () => {
+  const { isMagnet } = globalThis.AuroDecide;
+  assert.ok(isMagnet("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"));
+  assert.ok(isMagnet("MAGNET:?dn=x"));
+  assert.equal(isMagnet("https://exemple.org/magnet:?x"), false);
+  assert.equal(isMagnet(undefined), false);
+  assert.equal(settings({}).captureMagnet, true);
+  assert.equal(settings({ captureMagnet: false }).captureMagnet, false);
+});
