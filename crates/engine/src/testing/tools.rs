@@ -275,7 +275,7 @@ pub fn fake_ffmpeg(
              :loop\r\nif \"%~1\"==\"\" goto done\r\n\
              if \"%~1\"==\"-i\" (if defined inputs (set inputs=!inputs!+\"%~2\") else \
              (set inputs=\"%~2\"))\r\nset last=%~1\r\nshift\r\ngoto loop\r\n\
-             :done\r\ncopy /b !inputs! \"%last%\" >nul\r\nexit /b %errorlevel%\r\n",
+             :done\r\ncopy /b !inputs! \"%last%\" 1>&2\r\nexit /b %errorlevel%\r\n",
         )
         .unwrap();
         let ffprobe = dir.join("ffprobe.cmd");
@@ -332,7 +332,7 @@ pub fn fake_ytdlp_media(
                  echo %*>>\"%~dp0downloads.txt\"\r\n\
                  :loop\r\nif \"%~1\"==\"\" exit /b 2\r\nif \"%~1\"==\"-o\" goto found\r\n\
                  shift\r\ngoto loop\r\n:found\r\n{wait}\
-                 copy /b /y \"%~dp0stream.bin\" \"%~2\" >nul\r\n\
+                 copy /b /y \"%~dp0stream.bin\" \"%~2\" 1>&2\r\n\
                  echo AURO 100 100 NA\r\nexit /b %errorlevel%\r\n"
             ),
         )

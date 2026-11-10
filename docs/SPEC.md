@@ -1240,6 +1240,7 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 **Fichiers.**
 - Torrent à un fichier : `destDir/<nom>`. À plusieurs fichiers : `destDir/<nom du torrent>/<chemins>`.
 - Chaque composant de nom passe par `net::filename::sanitize` (section 8.1 : un chemin du torrent ne sort jamais du dossier).
+- Refusés à l'ajout (`INVALID_PARAMS`, « fichier .torrent invalide ») : un composant `..`, un séparateur dans un nom, un fichier sans nom, deux noms identiques (librqbit) ; et, depuis la porte de la phase 5 (2026-11-10, décision de l'utilisateur), deux fichiers au même chemin une fois les noms nettoyés (`CON` et `_CON` sous Windows, `a\0b` et `a_b`) ou un fichier et un dossier de même nom (`fin` et `fin/x`), sans distinguer la casse sous Windows et Android. Sinon deux fichiers s'écriraient dans le même `.part`. Tests de propriétés (`torrent::fuzz`) : octets quelconques, `.torrent` abîmés ou aux noms hostiles, liens magnet quelconques ; jamais de panique, et un torrent accepté reste dans son dossier, chaque nom étant un seul composant nettoyé.
 - Le premier élément (fichier ou dossier) évite un nom déjà pris, comme en HTTP (« nom (1) »).
 - Chaque fichier s'écrit sous `<nom>.part` jusqu'à la fin du torrent.
 - Les morceaux à cheval sur un fichier non choisi écrivent une partie de ce fichier : il reste en `.part` et part avec la tâche.
@@ -1518,6 +1519,8 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   - `ffmpeg -c copy -f <format>` vers le `.part` du nom final, puis `ffprobe` (durée annoncée, à 2 s près). Le fichier est vidé sur disque, renommé, et les flux sont effacés.
   - Un flux seul déjà dans le bon conteneur est seulement contrôlé et renommé.
   - Un arrêt pendant la fusion la recommence au démarrage : `post_processing` fait partie des tâches reprises.
+  - Un arrêt après le renommage du fichier final et avant l'enregistrement de la fin (flux en cours d'effacement, ou tous effacés) : au démarrage, un flux manquant à côté du fichier final veut dire que la fusion est faite ; les flux restants sont effacés et la fin est enregistrée (`already_merged`, porte de la phase 5, 2026-11-10). Jusque-là, la fusion était relancée sur des flux effacés, et la vidéo, pourtant complète, finissait en échec `MERGE_FAILED` (trouvé par le banc des vidéos sous Windows, 3 passages sur 8).
+  - Un outil (ffmpeg, ffprobe) qui échoue sans message est nommé, avec son code de sortie (le message de repli nommait yt-dlp).
   - Sous Windows, vider un fichier ouvert en lecture seule est refusé : il est ouvert en écriture, sans troncature.
 - **Annulation et retrait** : les fichiers des flux, leurs `.part`, ceux des tâches internes et le `.part` du nom final sont effacés.
 - **Protocole** : `task.add` avec `media`, et la capacité `media` (section 6.5).
@@ -1639,6 +1642,13 @@ Campagnes du 2026-11-09, 150 lancements chacune, sans défaut :
 
 Les premières campagnes avaient trouvé deux défauts du moteur, corrigés depuis (section 7.17, étape 4d) : une vidéo arrêtée pendant sa fusion restait bloquée, et, sous Linux, des outils survivaient à un `aurod` tué.
 
+Campagne de la porte de la phase 5 (2026-11-10), sur le code de la fin de l'étape 5, à 150 cycles (300 pour le banc de reprise) :
+- Windows 11 : reprise, 70 fichiers vérifiés ; `aurod`, 64 ; torrents, 225 torrents vérifiés et 33 plages effacées ; vidéos : le premier passage a échoué (vidéo `MERGE_FAILED` après un arrêt tombé entre le renommage du fichier final et l'enregistrement de la fin), et trois passages sur huit en tout. Défaut corrigé (section 7.17, `already_merged`), puis onze passages de suite réussis. Un des passages en échec comptait aussi cinq fichiers de trop dans le dossier, sans que leurs noms aient été relevés ; non revu depuis la correction, le banc les nomme désormais.
+- Linux (WSL), après la correction : reprise, 71 fichiers ; `aurod`, 71 ; torrents, 221 et 47 plages effacées ; vidéos, 144 vérifiées dont 30 arrêts pendant une fusion.
+- Fuzzing des `.torrent` et des liens magnet (`torrent::fuzz`, section 7.16) : il a trouvé deux fichiers d'un torrent écrits au même chemin une fois les noms nettoyés ; ces torrents sont désormais refusés.
+- Essais réels : vidéos libres (`real_probe`, `real_free`) sous Windows et Linux ; netinst Debian complet par lien magnet sous Linux (23 s, empreinte juste) ; torrents sur le téléphone Android (section 4.4) ; extension sous Edge (section 4.5).
+- Licences : `cargo deny check licenses` sur les deux espaces de travail ; dépendances Gradle inchangées depuis leur relevé du 2026-11-09.
+
 Version de la porte de phase 1, passée le 2026-10-15 sous Windows 11, sans aucun défaut. Le banc a fait 1 000 lancements sur un fichier de 1 Gio, en 1 h 41 (graine 1792094471405815701) :
 - 845 arrêts brutaux, dont 456 sur un découpage redécoupé ;
 - 782 reprises avec des octets déjà enregistrés ;
@@ -1679,7 +1689,7 @@ Les phases s'enchaînent dans l'ordre ; chaque porte (losange) est un critère �
 | 6. Fonctions avancées | Miroirs, analyse de liens, plugins, interface web distante | Revue de sécurité de l'API distante et des plugins |
 | 7. Version 1 | Installateurs signés, mises à jour, documentation, accessibilité | Tous les tests bloquants du plan de la section 9.1 réussis |
 
-État des portes : phase 1 franchie le 2026-10-16. Phase 2 franchie le 2026-11-08, déclarée par l'utilisateur : l'application installée sert tous les jours depuis le 2026-11-07, sans perte de données. Phase 3 franchie le 2026-11-08 : les 9 essais de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que CCleaner Browser (Chromium). Phase 4 franchie le 2026-11-09, déclarée par l'utilisateur : la porte se jugeait sur deux appareils réels, une tablette Teclast T70 (Android 15) et un Galaxy S25 Ultra (Android 16), sans émulateur (décision de l'utilisateur du 2026-11-08) ; Android 8 à 14 (N-08) restent sans essai sur appareil. Essais de la porte faits le 2026-11-09 (section 7.15) : DVD Debian de 3,7 Gio mené à terme avec l'empreinte publiée sur les deux appareils, à travers un redémarrage sur la tablette et un arrêt brutal du processus sur le téléphone, passé entre-temps à Android 17 ; Android 17 accepté par l'utilisateur à la place d'Android 16.
+État des portes : phase 1 franchie le 2026-10-16. Phase 2 franchie le 2026-11-08, déclarée par l'utilisateur : l'application installée sert tous les jours depuis le 2026-11-07, sans perte de données. Phase 3 franchie le 2026-11-08 : les 9 essais de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Firefox, Chrome et Edge, ainsi que CCleaner Browser (Chromium). Phase 4 franchie le 2026-11-09, déclarée par l'utilisateur : la porte se jugeait sur deux appareils réels, une tablette Teclast T70 (Android 15) et un Galaxy S25 Ultra (Android 16), sans émulateur (décision de l'utilisateur du 2026-11-08) ; Android 8 à 14 (N-08) restent sans essai sur appareil. Essais de la porte faits le 2026-11-09 (section 7.15) : DVD Debian de 3,7 Gio mené à terme avec l'empreinte publiée sur les deux appareils, à travers un redémarrage sur la tablette et un arrêt brutal du processus sur le téléphone, passé entre-temps à Android 17 ; Android 17 accepté par l'utilisateur à la place d'Android 16. Phase 5 : critères tenus le 2026-11-10 (campagne de la section 9.1 : tests d'intégration vidéo et torrent, bancs, essais réels, fuzzing des `.torrent`, licences), en attente de la déclaration de l'utilisateur ; restent pour plus tard les essais de l'extension sous Firefox et Chrome, le partage d'un torrent et l'ouverture d'un `.torrent` depuis Fichiers sur Android.
 
 En phase 1, la ligne de commande appelle le moteur comme une bibliothèque ; l'API JSON-RPC (section 6) arrive en phase 2, avec l'application de bureau.
 

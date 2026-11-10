@@ -946,6 +946,29 @@ async fn finish(
     let ffmpeg = &status.ffmpeg.as_ref().expect("outils prêts").path;
     let ffprobe = status.ffprobe.as_ref().expect("outils prêts");
 
+    // Fin interrompue par un arrêt brutal, après le renommage du fichier final et avant
+    // l'enregistrement de la fin (porte de la phase 5, banc des vidéos sous Windows) : la
+    // fusion est faite, il ne reste qu'à effacer les flux restants et à l'enregistrer.
+    if already_merged(&inputs, &final_path) {
+        let synced = tokio::task::spawn_blocking({
+            let (final_path, part) = (final_path.clone(), part.clone());
+            move || -> std::io::Result<u64> {
+                let len = sync_file(&final_path)?;
+                let _ = std::fs::remove_file(&part);
+                Ok(len)
+            }
+        })
+        .await?;
+        let size = match synced {
+            Ok(size) => size,
+            Err(e) => return Ok(failed("DISK_IO", e.to_string())),
+        };
+        for input in &inputs {
+            let _ = std::fs::remove_file(input);
+        }
+        complete_task(conn, task_id, &final_path.to_string_lossy(), size)?;
+        return Ok(End::Completed(final_path));
+    }
     let single_as_is = matches!(&streams[..], [one] if one.ext == container);
     if !single_as_is {
         let _ = std::fs::remove_file(&part);
@@ -980,6 +1003,14 @@ async fn finish(
     }
     complete_task(conn, task_id, &final_path.to_string_lossy(), size)?;
     Ok(End::Completed(final_path))
+}
+
+/// La fusion d'une vidéo est-elle déjà faite ? Les flux ne s'effacent qu'une fois le
+/// fichier final à son nom (`finish`) : un flux manquant à côté du fichier final veut dire
+/// qu'un arrêt est tombé entre ce renommage et l'enregistrement de la fin. Le nom final est
+/// réservé à la tâche dès sa préparation : un fichier à ce nom est le sien.
+fn already_merged(inputs: &[PathBuf], final_path: &Path) -> bool {
+    final_path.is_file() && inputs.iter().any(|input| !input.exists())
 }
 
 /// Vide un fichier sur disque et rend sa taille. Ouvert en écriture, sans le tronquer :
@@ -1059,12 +1090,21 @@ async fn run_tool(
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
     super::process::prepare(&mut command);
+    let tool = Path::new(command.as_std().get_program())
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "l'outil".to_owned());
     let (child, _tree) = super::process::spawn(&mut command).map_err(|e| e.to_string())?;
     let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| "délai dépassé".to_owned())?
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
+        // Sans message, l'outil et son code de sortie : le message de repli de
+        // `error_message` nomme yt-dlp.
+        if String::from_utf8_lossy(&output.stderr).trim().is_empty() {
+            return Err(format!("{tool} a échoué sans message ({})", output.status));
+        }
         return Err(extract::error_message(&output.stderr));
     }
     Ok(output.stdout)

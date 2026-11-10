@@ -412,6 +412,38 @@ fn add_video(setup: &Setup, page: &str) -> AddTask {
     }
 }
 
+/// Fin d'une vidéo interrompue (porte de la phase 5) : un flux effacé à côté du fichier
+/// final veut dire que la fusion est faite ; sans fichier final, ou avec tous les flux,
+/// elle est (re)faite.
+#[test]
+fn a_merge_interrupted_after_the_rename_is_recognised() {
+    let dir = tempfile::tempdir().unwrap();
+    let video = dir.path().join("v.f1.mp4");
+    let audio = dir.path().join("v.f2.m4a");
+    let finale = dir.path().join("v.mkv");
+    let inputs = [video.clone(), audio.clone()];
+    std::fs::write(&video, b"v").unwrap();
+    std::fs::write(&audio, b"a").unwrap();
+    // Flux complets, pas encore de fichier final : à fusionner.
+    assert!(!super::already_merged(&inputs, &finale));
+    // Renommé, flux encore là (arrêt avant leur effacement) : refaite, sans perte.
+    std::fs::write(&finale, b"va").unwrap();
+    assert!(!super::already_merged(&inputs, &finale));
+    // Un flux déjà effacé : faite.
+    std::fs::remove_file(&video).unwrap();
+    assert!(super::already_merged(&inputs, &finale));
+    // Tous effacés (arrêt juste avant l'enregistrement de la fin) : faite.
+    std::fs::remove_file(&audio).unwrap();
+    assert!(super::already_merged(&inputs, &finale));
+    // Flux perdus sans fichier final : rien n'est fait, la fusion échouera.
+    std::fs::remove_file(&finale).unwrap();
+    assert!(!super::already_merged(&inputs, &finale));
+    // Flux seul gardé tel quel, renommé en fichier final.
+    let single = [dir.path().join("w.mkv.f1")];
+    std::fs::write(dir.path().join("w.mkv"), b"w").unwrap();
+    assert!(super::already_merged(&single, &dir.path().join("w.mkv")));
+}
+
 fn files_in(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()

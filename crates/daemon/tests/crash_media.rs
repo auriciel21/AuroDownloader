@@ -434,5 +434,16 @@ fn killed_engine_finishes_its_videos_without_corruption() {
     );
     assert!(left.is_empty(), "restent : {left:?}");
     assert_eq!(bench.verified, bench.added);
-    assert_eq!(finals as u64, bench.added, "ni flux ni .part restant");
+    if finals as u64 != bench.added {
+        // Les noms en trop commencent aussi par « Banc » : tout le dossier, pour les voir.
+        let mut all: Vec<String> = std::fs::read_dir(&bench.downloads)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        all.sort();
+        panic!(
+            "ni flux ni .part restant : {finals} fichiers pour {} vidéos\n{all:#?}",
+            bench.added
+        );
+    }
 }

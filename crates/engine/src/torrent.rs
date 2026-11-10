@@ -12,6 +12,8 @@
 //! écritures perdues, librqbit et libtorrent finissent tous deux avec un fichier faux s'ils
 //! se fient à leur état de reprise.
 
+#[cfg(test)]
+mod fuzz;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -443,6 +445,39 @@ fn with_name(magnet: &str, name: &str) -> String {
     format!("{magnet}&dn={encoded}")
 }
 
+/// Deux fichiers d'un torrent au même chemin, une fois les noms nettoyés (`CON` et `_CON`
+/// sous Windows, `a\0b` et `a_b`), ou un fichier et un dossier de même nom (`fin` et
+/// `fin/x`) : le torrent est refusé (décision de l'utilisateur du 2026-11-10, porte de la
+/// phase 5). Sinon deux fichiers s'écriraient dans le même `.part`. librqbit ne refuse que
+/// les noms bruts identiques. Les fichiers de remplissage, jamais écrits, ne comptent pas.
+/// Sous Windows et Android (stockage partagé), la casse ne distingue pas deux noms.
+fn check_collisions(files: &[LayoutFile]) -> Result<(), String> {
+    let fold = |c: &String| {
+        if cfg!(any(windows, target_os = "android")) {
+            c.to_lowercase()
+        } else {
+            c.clone()
+        }
+    };
+    let mut paths: Vec<Vec<String>> = files
+        .iter()
+        .filter(|f| !f.padding)
+        .map(|f| f.components.iter().map(fold).collect())
+        .collect();
+    paths.sort();
+    // Triés, un chemin et ceux qui le prolongent se suivent : il suffit de comparer voisins.
+    for pair in paths.windows(2) {
+        if pair[1].starts_with(&pair[0]) {
+            return Err(
+                "fichier .torrent invalide : deux fichiers au même chemin une fois les noms \
+                 nettoyés"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Disposition d'un torrent sur le disque.
 #[derive(Debug, Clone)]
 struct Layout {
@@ -510,7 +545,8 @@ impl Layout {
                 length: details.len,
                 padding: details.attrs().padding,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        check_collisions(&files)?;
         Ok(Layout {
             info_hash,
             info_hash_id,
