@@ -89,6 +89,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "login.list" | "login.set" | "login.delete" => Scope::Admin,
         // Télécharge et installe des programmes (SPEC §7.17).
         "media.installTools" => Scope::Admin,
+        // Interfaces réseau de la machine, pour régler `torrent.interface` (SPEC §7.16).
+        "torrent.interfaces" => Scope::Admin,
         _ => return None,
     })
 }
@@ -130,5 +132,6 @@ mod tests {
         );
         assert_eq!(required("schedule.set", &none), Some(Scope::Admin));
         assert_eq!(required("engine.shutdown", &none), Some(Scope::Admin));
+        assert_eq!(required("torrent.interfaces", &none), Some(Scope::Admin));
     }
 }

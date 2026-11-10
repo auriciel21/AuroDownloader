@@ -2247,6 +2247,22 @@ async fn the_torrent_interface_goes_through_the_protocol() {
     assert_eq!(values["torrent.interface"], Value::Null, "{values}");
     let snapshot = c.result("sync.snapshot", json!({})).await;
     assert_eq!(snapshot["torrentInterfaceUp"], true);
+    // Les interfaces de la machine, pour choisir : jamais la boucle locale, sans doublon,
+    // triées ; chacune est reconnue par le réglage.
+    let names: Vec<String> = c.result("torrent.interfaces", json!({})).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "lo" || n.contains("Loopback")),
+        "{names:?}"
+    );
+    assert!(names.windows(2).all(|w| w[0] < w[1]), "{names:?}");
+    for name in &names {
+        assert!(crate::torrent::system_interface(name).is_some(), "{name}");
+    }
 
     // Une interface qui n'existe pas : les torrents l'attendent.
     let absent = "auro-essai-interface-absente";

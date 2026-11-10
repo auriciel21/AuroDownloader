@@ -55,7 +55,7 @@ export const EN = {
   "Supprimer…": "Delete…",
   // Ajout
   "Ajouter des téléchargements": "Add downloads",
-  "Adresses, une par ligne": "Addresses, one per line",
+  "Adresses ou liens magnet, un par ligne": "Addresses or magnet links, one per line",
   "Enregistrer dans": "Save to",
   "Parcourir…": "Browse…",
   "Changer le dossier de destination": "Change the destination folder",
@@ -119,8 +119,8 @@ export const EN = {
   "Empreinte": "Checksum",
   "Empreinte attendue": "Expected checksum",
   "Empreinte attendue (facultatif)": "Expected checksum (optional)",
-  "SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.":
-    "SHA-256, SHA-1 or MD5, for a single address: the file only gets its name if it matches.",
+  "SHA-256, SHA-1 ou MD5, pour une seule adresse HTTP : le fichier ne prend son nom que s'il y correspond. Un torrent vérifie ses morceaux lui-même.":
+    "SHA-256, SHA-1 or MD5, for a single HTTP address: the file only gets its name if it matches. A torrent checks its own pieces.",
   "SHA-256, SHA-1 ou MD5 ; vide pour n'en vérifier aucune. Après un échec, Relancer vérifie de nouveau le fichier reçu, sans le retélécharger.":
     "SHA-256, SHA-1 or MD5; empty to check none. After a failure, Retry checks the received file again, without downloading it again.",
   "{0} {1}": "{0} {1}",
@@ -237,7 +237,7 @@ export const EN = {
   "{0} téléchargement(s) en cours, {1}": "{0} download(s) in progress, {1}",
   "Aucun téléchargement en cours": "No download in progress",
   "Action refusée : {0}": "Action refused: {0}",
-  "{0} adresse(s) refusée(s) : {1}": "{0} address(es) refused: {1}",
+  "{0} ajout(s) refusé(s) : {1}": "{0} addition(s) refused: {1}",
   "(aucun)": "(none)",
   // Planification (F-16)
   "Planification": "Schedule",
@@ -297,6 +297,63 @@ export const EN = {
   "Démarrer avec la session, dans la zone de notification": "Start with the session, in the notification area",
   "Quitter et arrêter les téléchargements": "Quit and stop downloads",
   "AuroDownloader {0}, moteur {1}": "AuroDownloader {0}, engine {1}",
+  // Torrents (étape 5b)
+  "En attente de l'interface réseau": "Waiting for the network interface",
+  "Partage (ratio {0})": "Seeding (ratio {0})",
+  "↑ {0}": "↑ {0}",
+  "Envoi : {0}": "Upload: {0}",
+  "Pairs": "Peers",
+  "{0} (ratio {1})": "{0} (ratio {1})",
+  "Arrêter le partage": "Stop seeding",
+  "Télécharger {0}": "Download {0}",
+  "Choisissez au moins un fichier.": "Choose at least one file.",
+  "{0} fichier(s) choisi(s), {1} à télécharger": "{0} file(s) chosen, {1} to download",
+  "Retirer {0}": "Remove {0}",
+  "Un lien ou un fichier .torrent vous attend dans « Ajouter ».":
+    "A link or .torrent file is waiting for you in “Add”.",
+  "Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.":
+    "A torrent checks its own pieces: no checksum to give.",
+  "Sans limite, jusqu'à ce que je l'arrête": "No limit, until I stop it",
+  "Ne pas partager": "Do not seed",
+  "Jusqu'à avoir envoyé autant que reçu (ratio 1)": "Until as much is sent as received (ratio 1)",
+  "Jusqu'au ratio {0}": "Up to ratio {0}",
+  "Aucune : toutes les interfaces": "None: all interfaces",
+  "{0} est là : les torrents ne passent que par elle.": "{0} is up: torrents only go through it.",
+  "{0} est absente : les torrents attendent son retour.": "{0} is missing: torrents wait for it to come back.",
+  "AuroDownloader ouvre les liens magnet et les fichiers .torrent":
+    "AuroDownloader opens magnet links and .torrent files",
+  "Liens magnet et fichiers .torrent rendus au programme d'avant":
+    "Magnet links and .torrent files given back to the previous program",
+  "Partage des torrents réglé": "Torrent seeding set",
+  "UPnP activé": "UPnP on",
+  "UPnP désactivé": "UPnP off",
+  "Interface des torrents réglée": "Torrent interface set",
+  "Fichiers .torrent": ".torrent files",
+  "Choisir des fichiers .torrent…": "Choose .torrent files…",
+  "Ou glissez-les sur la fenêtre.": "Or drop them on the window.",
+  "Envoyé aux autres pairs": "Sent to other peers",
+  "Fichiers du torrent": "Torrent files",
+  "La liste des fichiers arrive avec les métadonnées du torrent, une fois qu'il a démarré.":
+    "The file list arrives with the torrent's metadata, once it has started.",
+  "Télécharger": "Download",
+  "Reçu": "Received",
+  "Appliquer le choix": "Apply the choice",
+  "Pour un torrent, une nouvelle limite vaut à sa prochaine reprise.":
+    "For a torrent, a new limit applies when it next resumes.",
+  "BitTorrent": "BitTorrent",
+  "Après le téléchargement, partager": "After downloading, seed",
+  "Le ratio compare ce qui est envoyé aux autres pairs à la taille reçue. Sur un réseau facturé au volume, rien n'est partagé.":
+    "The ratio compares what is sent to other peers with the size received. On a metered network, nothing is seeded.",
+  "Limite d'envoi": "Upload limit",
+  "Interface réseau des torrents (VPN)": "Network interface for torrents (VPN)",
+  "Actualiser la liste": "Refresh the list",
+  "Ouvrir le port d'écoute sur le routeur (UPnP)": "Open the listening port on the router (UPnP)",
+  "Plus de pairs joignables. Vaut à la prochaine ouverture des torrents.":
+    "More reachable peers. Applies the next time torrents start.",
+  "Ouvrir les liens magnet et les fichiers .torrent avec AuroDownloader":
+    "Open magnet links and .torrent files with AuroDownloader",
+  "Décochée, le programme d'avant est rétabli. Sous Windows, un choix fait dans les paramètres du système passe avant : Windows peut demander quel programme utiliser.":
+    "Unchecked, the previous program is restored. On Windows, a choice made in the system settings comes first: Windows may ask which program to use.",
   // Unités
   "o": "B", "Kio": "KiB", "Mio": "MiB", "Gio": "GiB", "Tio": "TiB",
   "{0} s": "{0} s",

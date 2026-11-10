@@ -112,7 +112,11 @@ téléchargement.
   l'Ubuntu 20.04 de WSL). `bridge` : liaison avec le moteur (démarrage d'`aurod`, session,
   abonnement, reconnexion, avancement suspendu fenêtre cachée), sans dépendre de Tauri ;
   `prefs` : préférences de l'interface (JSON, aucun secret) ; `files` : ouverture d'un
-  fichier terminé, jamais d'un exécutable (SPEC 8.1). Paquets : `bundle.ps1`,
+  fichier terminé, jamais d'un exécutable (SPEC 8.1) ; `opened` : liens magnet et
+  `.torrent` reçus (arguments, relance, glisser-déposer), lus pour le moteur ; `links` :
+  association aux liens magnet et aux `.torrent` (option, désactivée par défaut ; ses tests
+  n'écrivent que sous `HKCU\Software\AuroDownloaderEssai` ou dans un dossier temporaire ;
+  ne jamais l'activer pour de vrai sans l'accord de l'utilisateur). Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).
@@ -125,7 +129,11 @@ téléchargement.
 - Essais manuels de l'application : `--endpoint`, `--db` et `--prefs` d'essai (elle lance
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
-  `engine stop` sur ce point d'accès.
+  `engine stop` sur ce point d'accès. Pour essayer sans fermer l'application de
+  l'utilisateur : la construire avec l'identifiant d'essai (`cargo tauri build --no-bundle
+  --config tauri.essai.json`), qui a sa propre instance unique. Ne jamais arrêter les
+  processus `aurodownloader` ou `aurod` par leur nom : seulement ceux de `target\` ou du
+  dossier d'essai (celui de l'utilisateur porte le même nom).
 - L'utilisateur se sert de l'application installée (depuis le 2026-11-07) : instance
   unique, donc un essai de l'application ne démarre pas tant que la sienne est ouverte
   (il lui passe la main et se ferme). Ne jamais fermer ni piloter la sienne, ni toucher à
@@ -440,7 +448,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   SPEC 7.1 et 7.4) ; 5. interfaces, plan du 2026-11-09 (validé) : 5a. CLI (fait le
   2026-11-09 : `auro video`, `auro config`, `auro files`, `.torrent` local, `limit
   --upload`, SPEC 4.6 ; essais réels Framatube sous Windows et netinst Debian sous WSL),
-  5b. bureau : torrents, 5c. bureau : vidéo, 5d. extension (magnet, pages de vidéo), 5e.
+  5b. bureau : torrents (écrit le 2026-11-09 : ajout magnet et `.torrent`, glisser-déposer,
+  « Ouvrir avec », Propriétés et choix des fichiers, rubrique BitTorrent, association en
+  option désactivée, `torrent.interfaces`, SPEC 4.6 ; `opened.rs`, `links.rs`), 5c. bureau :
+  vidéo, 5d. extension (magnet, pages de vidéo), 5e.
   torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

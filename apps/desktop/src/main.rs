@@ -7,18 +7,23 @@
 //!
 //! Options : `--endpoint`, `--db` et `--prefs` (essais sur un moteur et des préférences à
 //! part), `--hidden` (démarrage dans la zone de notification, utilisé par le démarrage avec
-//! la session).
+//! la session), `--unregister-links` (retire l'association aux liens magnet et aux
+//! `.torrent`, puis quitte : appelé par la désinstallation). Un lien magnet ou un fichier
+//! `.torrent` passé en argument préremplit la boîte « Ajouter » (étape 5b).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
 mod files;
+mod links;
+mod opened;
 mod prefs;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use bridge::{Bridge, CallError, Outgoing, Retry, Sink, Status};
+use opened::Opened;
 use prefs::Prefs;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -60,6 +65,8 @@ struct App {
     /// Une zone de notification existe : fermer la fenêtre peut l'y replier.
     tray: bool,
     menu: Mutex<Option<TrayMenu>>,
+    /// Liens et fichiers reçus du système, pas encore pris par la page.
+    opened: Mutex<Vec<Opened>>,
 }
 
 struct TrayMenu {
@@ -246,6 +253,60 @@ fn reveal_file(app: AppHandle, dir: String, name: String) -> Result<(), String> 
         .map_err(|e| e.to_string())
 }
 
+/// Liens magnet et fichiers `.torrent` reçus du système depuis la dernière demande ; la page
+/// les met dans la boîte « Ajouter », à confirmer.
+#[tauri::command]
+fn take_opened(state: State<'_, App>) -> Vec<Opened> {
+    std::mem::take(&mut *state.opened.lock().unwrap())
+}
+
+/// Garde ce qui a été ouvert avec l'application et prévient la page (événement `opened`).
+fn receive(app: &AppHandle, found: Vec<Opened>) {
+    if found.is_empty() {
+        return;
+    }
+    if let Some(state) = app.try_state::<App>() {
+        state.opened.lock().unwrap().extend(found);
+    }
+    show(app);
+    let _ = app.emit_to("main", "opened", ());
+}
+
+/// Lit un fichier `.torrent` choisi ou reçu, pour `task.add` (base64).
+#[tauri::command]
+fn read_torrent(path: String) -> Result<opened::TorrentFile, String> {
+    opened::read_torrent(&path)
+}
+
+/// Choix de fichiers `.torrent` ; aucun si l'utilisateur renonce.
+#[tauri::command]
+async fn pick_torrents(app: AppHandle) -> Vec<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Torrent", &["torrent"])
+        .pick_files(move |files| {
+            let _ = tx.send(files.unwrap_or_default());
+        });
+    rx.await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Association aux liens magnet et aux fichiers `.torrent` (option, désactivée par défaut).
+#[tauri::command]
+fn links_status() -> links::Status {
+    links::status()
+}
+
+#[tauri::command]
+fn set_links(enabled: bool) -> Result<links::Status, String> {
+    links::set(enabled)
+}
+
 /// Quitte l'application ; avec `stop_engine`, arrête aussi le moteur, après sauvegarde.
 #[tauri::command]
 async fn quit(app: AppHandle, bridge: State<'_, Arc<Bridge>>, stop_engine: bool) -> Result<(), ()> {
@@ -356,8 +417,17 @@ fn prepare_webview() {
 fn prepare_webview() {}
 
 fn main() {
+    // Désinstallation : retirer l'association, sans rien ouvrir.
+    if std::env::args().skip(1).any(|a| a == "--unregister-links") {
+        let _ = links::set(false);
+        return;
+    }
     prepare_webview();
     let options = options();
+    let first_opened = opened::from_args(
+        std::env::args().skip(1),
+        std::env::current_dir().ok().as_deref(),
+    );
     let endpoint = options
         .endpoint
         .clone()
@@ -367,9 +437,13 @@ fn main() {
     let tray = tray_available();
 
     tauri::Builder::default()
-        // Une seule instance : relancer l'application rouvre sa fenêtre.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show(app)
+        // Une seule instance : relancer l'application rouvre sa fenêtre ; un lien magnet ou
+        // un .torrent passé à la nouvelle instance va à la boîte « Ajouter » de celle-ci.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            show(app);
+            let found =
+                opened::from_args(args.into_iter().skip(1), Some(std::path::Path::new(&cwd)));
+            receive(app, found);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -388,6 +462,11 @@ fn main() {
             open_file,
             reveal_file,
             save_text,
+            take_opened,
+            read_torrent,
+            pick_torrents,
+            links_status,
+            set_links,
             quit
         ])
         .setup(move |app| {
@@ -402,6 +481,8 @@ fn main() {
                 prefs_path,
                 tray,
                 menu: Mutex::new(menu),
+                // Pris par la page à son démarrage (`take_opened`).
+                opened: Mutex::new(first_opened),
             };
             let lang = info(app.handle(), &state).lang;
             if let Some(menu) = state.menu.lock().unwrap().as_ref() {
@@ -430,6 +511,10 @@ fn main() {
                 }
             }
             WindowEvent::Focused(true) => resync_if_missed(window.app_handle()),
+            // Fichiers .torrent glissés sur la fenêtre (étape 5b).
+            WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                receive(window.app_handle(), opened::from_paths(paths));
+            }
             _ => {}
         })
         .run(tauri::generate_context!())

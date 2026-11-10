@@ -148,6 +148,33 @@ pub fn system_interface(name: &str) -> Option<Binding> {
     Some(binding)
 }
 
+/// Noms des interfaces réseau du système auxquelles des torrents peuvent se lier (réglage
+/// `torrent.interface`) : celles qui ont une adresse utilisable, hors boucle locale ;
+/// triés.
+pub fn system_interfaces() -> Vec<String> {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let Ok(nics) = NetworkInterface::show() else {
+        return Vec::new();
+    };
+    // Une interface de boucle locale peut porter d'autres adresses (`lo` de WSL a aussi
+    // 10.255.255.254) : elle est écartée dès qu'une de ses adresses est locale. Sous Linux,
+    // une entrée par adresse.
+    let loopbacks: Vec<&str> = nics
+        .iter()
+        .filter(|n| n.addr.iter().any(|a| a.ip().is_loopback()))
+        .map(|n| n.name.as_str())
+        .collect();
+    let mut names: Vec<String> = nics
+        .iter()
+        .filter(|n| !loopbacks.contains(&n.name.as_str()))
+        .filter(|n| n.addr.iter().any(|a| usable_addr(&a.ip())))
+        .map(|n| n.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Une adresse où l'interface est joignable : pas une adresse locale au lien (169.254/16,
 /// fe80::/10), que Windows donne à une carte sans configuration.
 fn usable_addr(ip: &IpAddr) -> bool {

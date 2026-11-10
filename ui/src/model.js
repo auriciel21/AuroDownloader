@@ -99,7 +99,8 @@ export function sortTasks(tasks, column = "added", descending = true) {
 
 // Actions permises par la table des états (SPEC §5.5).
 // `verifying` : le calcul de l'empreinte s'interrompt, et reprend depuis le début (F-11).
-export const canPause = (state) => ["queued", "active", "retry_wait", "verifying"].includes(state);
+// `seeding` : arrêter un torrent qui partage le termine (SPEC §7.16), ses fichiers restent.
+export const canPause = (state) => ["queued", "active", "retry_wait", "verifying", "seeding"].includes(state);
 export const canResume = (state) => ["paused", "failed"].includes(state);
 export const canCancel = (state) =>
   ["queued", "active", "paused", "retry_wait", "verifying", "seeding"].includes(state);
@@ -115,12 +116,29 @@ export const detailsOutdated = (details, taskId) =>
 export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
 /// « Déplacer/Renommer » et « Actualiser l'adresse » (SPEC §7.12 et §7.13) : une tâche qui ne
 /// tourne pas, et dont le fichier n'est pas déjà en cours de déplacement.
+/// Un torrent n'a ni adresse à actualiser, ni nom ou dossier à changer (SPEC §6.5).
 export const canRelocate = (task) =>
-  !task.moving && ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"].includes(task.state);
+  task.kind !== "torrent" && !task.moving
+  && ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"].includes(task.state);
 /// Empreinte attendue (F-11) : modifiable tant que le fichier n'est ni terminé, ni annulé, ni en
-/// cours de vérification.
+/// cours de vérification. Un torrent vérifie ses morceaux lui-même.
 export const canSetChecksum = (task) =>
-  ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+  task.kind !== "torrent" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+/// Fichiers d'un torrent à choisir (`task.setFiles`, SPEC §6.5) : pas une fois reçu ni annulé.
+export const canChooseFiles = (task) =>
+  task.kind === "torrent" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+/// Un torrent qui partage a fini de recevoir : supprimé, il garde ses fichiers sauf demande,
+/// comme un téléchargement terminé.
+export const isFinishedDownload = (task) => task.state === "completed" || task.state === "seeding";
+
+/// Lien magnet (BitTorrent).
+export const isMagnet = (text) => /^magnet:\?/i.test(text.trim());
+
+/// Ratio de partage d'un torrent : octets envoyés sur sa taille ; `null` s'il est inconnu.
+export function shareRatio(task) {
+  if (task.uploadedBytes == null || !(task.totalBytes > 0)) return null;
+  return task.uploadedBytes / task.totalBytes;
+}
 
 const HEX_LENGTHS = { 64: "sha256", 40: "sha1", 32: "md5" };
 
@@ -168,6 +186,12 @@ function outcome() {
     endActionError: null,
     /// Déplacements vers un autre volume qui ont échoué, à montrer : `{taskId, error}`.
     moveErrors: [],
+    /// Avertissements du moteur, à montrer : `{code, message, taskId}` (SPEC §6.5).
+    warnings: [],
+    /// L'interface réseau des torrents est apparue ou a disparu (SPEC §7.16).
+    torrentInterface: false,
+    /// L'état des outils de la vidéo a changé (SPEC §7.17).
+    tools: false,
   };
 }
 
@@ -180,6 +204,10 @@ function merge(into, other) {
   into.planning ||= other.planning;
   into.endActionError ??= other.endActionError;
   into.finished.push(...other.finished);
+  into.moveErrors.push(...other.moveErrors);
+  into.warnings.push(...other.warnings);
+  into.torrentInterface ||= other.torrentInterface;
+  into.tools ||= other.tools;
 }
 
 /// Tâche telle que la liste la garde : l'avancement manque à l'instantané.
@@ -201,6 +229,10 @@ export class TaskStore {
     this.schedules = new Map();
     /// Action de fin annoncée (`{queueId, action, at}`), ou `null`.
     this.endAction = null;
+    /// L'interface réseau des torrents est là, ou aucune n'est demandée (SPEC §7.16).
+    this.torrentInterfaceUp = true;
+    /// État des outils de la vidéo (`media.tools`), une fois annoncé ; `null` avant.
+    this.tools = null;
     /// Révision de l'état chargé ; `null` tant qu'un instantané est attendu.
     this.rev = null;
     /// Notifications reçues en attendant l'instantané.
@@ -222,12 +254,14 @@ export class TaskStore {
     this.settings = { ...snapshot.settings };
     this.schedules = new Map((snapshot.schedules ?? []).map((s) => [s.scheduleId, s]));
     this.endAction = snapshot.endAction ?? null;
+    this.torrentInterfaceUp = snapshot.torrentInterfaceUp ?? true;
     this.rev = snapshot.rev;
     const result = outcome();
     result.list = true;
     result.limits = true;
     result.settings = true;
     result.planning = true;
+    result.torrentInterface = true;
     for (const id of this.tasks.keys()) result.changed.add(id);
     const waiting = this.waiting;
     this.waiting = [];
@@ -255,8 +289,13 @@ export class TaskStore {
         }
         return result;
       case "engine.warning":
-        if (params.code === "EVENTS_LOST") result.resync = true;
-        return result;
+        // Notifications perdues : propre à la connexion, sans révision.
+        if (params.code === "EVENTS_LOST") {
+          result.resync = true;
+          return result;
+        }
+        // Les autres (yt-dlp mis à jour, sous-titres manquants…) sont numérotées.
+        break;
       case "task.added":
       case "task.stateChanged":
       case "task.updated":
@@ -269,6 +308,8 @@ export class TaskStore {
       case "engine.endAction":
       // Réseau utilisable ou non (SPEC §7.15, application Android) : numérotée, sans effet ici.
       case "engine.network":
+      case "engine.torrentInterface":
+      case "media.tools":
         break;
       default:
         return result;
@@ -359,6 +400,19 @@ export class TaskStore {
       case "settings.updated":
         Object.assign(this.settings, params.values);
         result.settings = true;
+        break;
+      case "engine.torrentInterface":
+        this.torrentInterfaceUp = params.up !== false;
+        result.torrentInterface = true;
+        break;
+      case "media.tools": {
+        const { rev: _rev, ...tools } = params;
+        this.tools = tools;
+        result.tools = true;
+        break;
+      }
+      case "engine.warning":
+        result.warnings.push({ code: params.code, message: params.message, taskId: params.taskId ?? null });
         break;
     }
     return result;

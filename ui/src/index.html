@@ -126,14 +126,20 @@
     <form method="dialog" id="add-form">
       <h2 id="add-title" data-i18n="Ajouter des téléchargements">Ajouter des téléchargements</h2>
       <label class="field">
-        <span data-i18n="Adresses, une par ligne">Adresses, une par ligne</span>
+        <span data-i18n="Adresses ou liens magnet, un par ligne">Adresses ou liens magnet, un par ligne</span>
         <textarea id="urls" rows="4" spellcheck="false" autocomplete="off"></textarea>
       </label>
+      <div class="field" id="add-torrents-field">
+        <span id="add-torrents-title" data-i18n="Fichiers .torrent">Fichiers .torrent</span>
+        <ul id="add-torrents" class="torrent-list" aria-labelledby="add-torrents-title"></ul>
+        <span class="row"><button type="button" id="add-torrent-pick" data-i18n="Choisir des fichiers .torrent…">Choisir des fichiers .torrent…</button></span>
+        <span class="note" data-i18n="Ou glissez-les sur la fenêtre.">Ou glissez-les sur la fenêtre.</span>
+      </div>
       <label class="field">
         <span data-i18n="Empreinte attendue (facultatif)">Empreinte attendue (facultatif)</span>
         <input id="add-checksum" type="text" spellcheck="false" autocomplete="off" aria-describedby="add-checksum-note">
       </label>
-      <p class="note flush" id="add-checksum-note" data-i18n="SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.">SHA-256, SHA-1 ou MD5, pour une seule adresse : le fichier ne prend son nom que s'il y correspond.</p>
+      <p class="note flush" id="add-checksum-note" data-i18n="SHA-256, SHA-1 ou MD5, pour une seule adresse HTTP : le fichier ne prend son nom que s'il y correspond. Un torrent vérifie ses morceaux lui-même.">SHA-256, SHA-1 ou MD5, pour une seule adresse HTTP : le fichier ne prend son nom que s'il y correspond. Un torrent vérifie ses morceaux lui-même.</p>
       <div class="field">
         <span data-i18n="Enregistrer dans">Enregistrer dans</span>
         <span class="row"><span id="dest" class="path"></span>
@@ -308,7 +314,8 @@
         <div id="f-done"><dt data-i18n="Téléchargé">Téléchargé</dt><dd id="d-done"></dd></div>
         <div id="f-rate"><dt data-i18n="Débit">Débit</dt><dd id="d-rate"></dd></div>
         <div id="f-eta"><dt data-i18n="Temps restant">Temps restant</dt><dd id="d-eta"></dd></div>
-        <div id="f-connections"><dt data-i18n="Connexions">Connexions</dt><dd id="d-connections"></dd></div>
+        <div id="f-connections"><dt id="d-connections-label" data-i18n="Connexions">Connexions</dt><dd id="d-connections"></dd></div>
+        <div id="f-uploaded"><dt data-i18n="Envoyé aux autres pairs">Envoyé aux autres pairs</dt><dd id="d-uploaded"></dd></div>
         <div id="f-resume"><dt data-i18n="Reprise possible">Reprise possible</dt><dd id="d-resume"></dd></div>
         <div id="f-checksum"><dt data-i18n="Empreinte">Empreinte</dt><dd id="d-checksum" class="path"></dd></div>
         <div id="f-added"><dt data-i18n="Ajouté le">Ajouté le</dt><dd id="d-added"></dd></div>
@@ -329,11 +336,28 @@
           </table>
         </div>
       </section>
+      <section id="d-files-section" class="files-section" aria-labelledby="d-files-title" hidden>
+        <h3 id="d-files-title" data-i18n="Fichiers du torrent">Fichiers du torrent</h3>
+        <p id="d-files-wait" class="note flush" data-i18n="La liste des fichiers arrive avec les métadonnées du torrent, une fois qu'il a démarré.">La liste des fichiers arrive avec les métadonnées du torrent, une fois qu'il a démarré.</p>
+        <div class="segments-box" id="d-files-box">
+          <table id="d-files">
+            <thead><tr>
+              <th scope="col" data-i18n="Télécharger">Télécharger</th>
+              <th scope="col" data-i18n="Fichier">Fichier</th>
+              <th scope="col" data-i18n="Taille">Taille</th>
+              <th scope="col" data-i18n="Reçu">Reçu</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <span class="row"><button type="button" id="d-files-apply" data-i18n="Appliquer le choix">Appliquer le choix</button></span>
+      </section>
       <div class="field limit-field" id="d-limit-field">
         <label for="d-limit" data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</label>
         <span class="row"><select id="d-limit"></select>
           <button type="button" id="d-limit-apply" data-i18n="Appliquer">Appliquer</button></span>
         <span class="note" data-i18n="La limite globale s'applique aussi : la plus basse l'emporte.">La limite globale s'applique aussi : la plus basse l'emporte.</span>
+        <span class="note" id="d-limit-torrent-note" hidden data-i18n="Pour un torrent, une nouvelle limite vaut à sa prochaine reprise.">Pour un torrent, une nouvelle limite vaut à sa prochaine reprise.</span>
       </div>
       <div class="field" id="d-checksum-field">
         <label for="d-checksum-input" data-i18n="Empreinte attendue">Empreinte attendue</label>
@@ -385,6 +409,7 @@
         <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true" data-i18n="Général">Général</button>
         <button type="button" role="tab" id="tab-save" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
         <button type="button" role="tab" id="tab-connection" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
+        <button type="button" role="tab" id="tab-torrent" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
         <button type="button" role="tab" id="tab-logins" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
@@ -426,6 +451,31 @@
           <select id="pref-limit"></select>
         </label>
         <p class="note flush" data-i18n="Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.">Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.</p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-torrent" aria-labelledby="tab-torrent" hidden>
+        <label class="field">
+          <span data-i18n="Après le téléchargement, partager">Après le téléchargement, partager</span>
+          <select id="pref-ratio" aria-describedby="pref-ratio-note"></select>
+        </label>
+        <p class="note flush" id="pref-ratio-note" data-i18n="Le ratio compare ce qui est envoyé aux autres pairs à la taille reçue. Sur un réseau facturé au volume, rien n'est partagé.">Le ratio compare ce qui est envoyé aux autres pairs à la taille reçue. Sur un réseau facturé au volume, rien n'est partagé.</p>
+        <label class="field">
+          <span data-i18n="Limite d'envoi">Limite d'envoi</span>
+          <select id="pref-upload"></select>
+        </label>
+        <div class="field">
+          <label for="pref-interface" data-i18n="Interface réseau des torrents (VPN)">Interface réseau des torrents (VPN)</label>
+          <span class="row"><select id="pref-interface" aria-describedby="pref-interface-state"></select>
+            <button type="button" id="pref-interface-refresh" data-i18n="Actualiser la liste">Actualiser la liste</button></span>
+          <span class="note" id="pref-interface-state" role="status"></span>
+        </div>
+        <label class="check"><input type="checkbox" id="pref-upnp" aria-describedby="pref-upnp-note">
+          <span data-i18n="Ouvrir le port d'écoute sur le routeur (UPnP)">Ouvrir le port d'écoute sur le routeur (UPnP)</span></label>
+        <p class="note" id="pref-upnp-note" data-i18n="Plus de pairs joignables. Vaut à la prochaine ouverture des torrents.">Plus de pairs joignables. Vaut à la prochaine ouverture des torrents.</p>
+        <div id="pref-links-box">
+          <label class="check"><input type="checkbox" id="pref-links" aria-describedby="pref-links-note">
+            <span data-i18n="Ouvrir les liens magnet et les fichiers .torrent avec AuroDownloader">Ouvrir les liens magnet et les fichiers .torrent avec AuroDownloader</span></label>
+          <p class="note" id="pref-links-note" data-i18n="Décochée, le programme d'avant est rétabli. Sous Windows, un choix fait dans les paramètres du système passe avant : Windows peut demander quel programme utiliser.">Décochée, le programme d'avant est rétabli. Sous Windows, un choix fait dans les paramètres du système passe avant : Windows peut demander quel programme utiliser.</p>
+        </div>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-logins" aria-labelledby="tab-logins" hidden>
         <p class="note flush" id="logins-note" data-i18n="Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.">Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.</p>

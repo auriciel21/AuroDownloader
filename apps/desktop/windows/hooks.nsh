@@ -57,8 +57,16 @@
   WriteRegStr HKCU "${AURO_FIREFOX}" "" "$INSTDIR\relay-firefox.json"
 !macroend
 
+; Association aux liens magnet et aux .torrent (option de l'application, étape 5b) : retirée
+; par l'application elle-même, qui ne touche qu'à ce qui désigne son propre exécutable et
+; rétablit le client d'avant. Gardée lors d'une mise à jour.
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro AURO_STOP_ALL
+  ${If} $UpdateMode <> 1
+  ${AndIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    nsExec::Exec /TIMEOUT=10000 '"$INSTDIR\${MAINBINARYNAME}.exe" --unregister-links'
+    Pop $0
+  ${EndIf}
 !macroend
 
 ; Case « Supprimer aussi les données » (décochée par défaut) : Tauri efface les

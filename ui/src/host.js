@@ -9,7 +9,13 @@
 // - info(), savePrefs(prefs), setAutostart(on), pickFolder(current), openFile(dir, name),
 //   revealFile(dir, name), saveText(name, text), quit(stopEngine) : services de
 //   l'application. saveText enregistre un texte dans un fichier que l'utilisateur choisit,
-//   et rend son chemin, ou null s'il renonce.
+//   et rend son chemin, ou null s'il renonce ;
+// - torrents (étape 5b), facultatifs : un hôte sans eux n'offre ni choix de fichier
+//   .torrent ni association. onOpened(fn) prévient quand des liens magnet ou des .torrent
+//   ont été ouverts avec l'application, que takeOpened() rend ({kind: "magnet", link} ou
+//   {kind: "torrent", path}) ; readTorrent(path) rend {name, data} (base64) ;
+//   pickTorrents() rend des chemins ; linksStatus() et setLinks(on) rendent
+//   {available, enabled}.
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -26,5 +32,11 @@ export function tauriHost() {
     revealFile: (dir, name) => invoke("reveal_file", { dir, name }),
     saveText: (name, text) => invoke("save_text", { name, text }),
     quit: (stopEngine) => invoke("quit", { stopEngine }),
+    onOpened: (fn) => listen("opened", () => fn()),
+    takeOpened: () => invoke("take_opened"),
+    readTorrent: (path) => invoke("read_torrent", { path }),
+    pickTorrents: () => invoke("pick_torrents"),
+    linksStatus: () => invoke("links_status"),
+    setLinks: (enabled) => invoke("set_links", { enabled }),
   };
 }

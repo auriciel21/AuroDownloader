@@ -5,7 +5,8 @@ import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
-  parseChecksum, ALGO_LABELS, historyCsv, localStamp,
+  parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
+  shareRatio,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -158,8 +159,18 @@ function taskStateText(task) {
   if (task.state === "queued" && store.waitsForWindow(task.queueId)) {
     return t("En attente de la plage horaire");
   }
+  // Torrent qui attend son interface réseau (VPN, SPEC §7.16).
+  if (task.kind === "torrent" && task.state === "queued" && !store.torrentInterfaceUp) {
+    return t("En attente de l'interface réseau");
+  }
+  const ratio = task.state === "seeding" ? shareRatio(task) : null;
+  if (ratio !== null) return t("Partage (ratio {0})", ratioText(ratio));
   return stateText(task, t);
 }
+
+/// Ratio de partage, deux décimales.
+const ratioText = (ratio) =>
+  ratio.toLocaleString(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // ---------- Arborescence ----------
 
@@ -332,7 +343,10 @@ function renderRow(taskId) {
   cell("state").title = cell("state").textContent;
   const active = task.state === "active";
   cell("eta").textContent = active ? duration(task.etaS, t) : "";
-  cell("rate").textContent = active ? rate(task.bps ?? 0) : "";
+  // Un torrent qui partage : son débit d'envoi.
+  cell("rate").textContent = active
+    ? rate(task.bps ?? 0)
+    : task.state === "seeding" ? t("↑ {0}", rate(task.uploadBps ?? 0)) : "";
   cell("added").textContent = dateText(task.createdAt);
   cell("added").title = dateText(task.createdAt, longDateFormat);
 }
@@ -612,13 +626,14 @@ function openRemove() {
   const chosen = selectedTasks();
   if (!chosen.length || !connected) return;
   removing = chosen.map((task) => task.taskId);
-  const completed = chosen.some((task) => task.state === "completed");
+  // Un torrent qui partage a ses fichiers complets : comme un téléchargement terminé.
+  const completed = chosen.some(isFinishedDownload);
   $("remove-text").textContent = chosen.length === 1
     ? t("Supprimer « {0} » de la liste ?", taskName(chosen[0]))
     : t("Supprimer {0} téléchargements de la liste ?", chosen.length);
   $("remove-files").checked = false;
   $("remove-files-label").hidden = !completed;
-  $("remove-note").hidden = chosen.every((task) => task.state === "completed");
+  $("remove-note").hidden = chosen.every(isFinishedDownload);
   const dialog = $("remove-dialog");
   dialog.returnValue = "";
   dialog.showModal();
@@ -633,22 +648,27 @@ async function closeRemove() {
 
 /// Supprime des tâches de la liste. Un fichier terminé ne part que si on le demande ; un
 /// fichier partiel part toujours, il ne servirait plus. Les tâches inachevées s'annulent
-/// d'abord, puis se retirent quand le moteur annonce l'annulation.
+/// d'abord, puis se retirent quand le moteur annonce l'annulation. Un torrent qui partage a
+/// ses fichiers complets : annulé, il ne les perd que si on le demande (son retrait, ensuite,
+/// n'efface que des fichiers partiels, qu'il n'a plus).
 async function deleteTasks(ids, deleteCompleted) {
   const tasks = ids.map((id) => store.tasks.get(id)).filter(Boolean);
   const done = tasks.filter((task) => task.state === "completed").map((task) => task.taskId);
   const finished = tasks.filter((task) => canRemove(task.state) && task.state !== "completed")
     .map((task) => task.taskId);
-  const running = tasks.filter((task) => canCancel(task.state)).map((task) => task.taskId);
+  const sharing = tasks.filter((task) => task.state === "seeding").map((task) => task.taskId);
+  const running = tasks.filter((task) => canCancel(task.state) && task.state !== "seeding")
+    .map((task) => task.taskId);
   if (done.length) await act("task.remove", { taskIds: done, deleteFiles: deleteCompleted });
   if (finished.length) await act("task.remove", { taskIds: finished, deleteFiles: true });
-  if (running.length) {
-    for (const id of running) removeWhenCancelled.add(id);
-    const result = await act("task.cancel", { taskIds: running, deleteFiles: true });
+  for (const [list, deleteFiles] of [[sharing, deleteCompleted], [running, true]]) {
+    if (!list.length) continue;
+    for (const id of list) removeWhenCancelled.add(id);
+    const result = await act("task.cancel", { taskIds: list, deleteFiles });
     for (const error of result?.errors ?? []) removeWhenCancelled.delete(error.taskId);
-    if (!result) for (const id of running) removeWhenCancelled.delete(id);
-    removeCancelled();
+    if (!result) for (const id of list) removeWhenCancelled.delete(id);
   }
+  removeCancelled();
 }
 
 function removeCancelled() {
@@ -831,8 +851,10 @@ async function refreshDetails() {
   // Une tâche finie ne change plus : une seule lecture suffit, faite après la fin.
   if (!detailsOutdated(detailsFull, id)) return;
   let full;
+  // Un torrent : ses fichiers (SPEC §6.5) ; il n'a pas de segments.
+  const include = store.tasks.get(id)?.kind === "torrent" ? ["sources", "files"] : ["segments", "sources"];
   try {
-    full = await host.call("task.get", { taskId: id, include: ["segments", "sources"] });
+    full = await host.call("task.get", { taskId: id, include });
   } catch {
     return; // Tâche retirée ou moteur perdu : la notification suivra.
   }
@@ -846,6 +868,8 @@ function openDetails(taskId, { focusLimit = false } = {}) {
   if (!task) return;
   detailsTask = taskId;
   detailsFull = null;
+  fileChoice.clear();
+  $("d-files").tBodies[0].replaceChildren();
   clearInterval(detailsTimer);
   detailsTimer = setInterval(refreshDetails, 1000);
   refreshDetails();
@@ -872,6 +896,8 @@ function renderDetails() {
     $(`f-${key}`).hidden = !text;
   };
   const active = task.state === "active";
+  const seeding = task.state === "seeding";
+  const torrent = task.kind === "torrent";
   const source = detailsFull?.sources?.[0];
   set("name", name);
   set("dir", task.destDir ?? "");
@@ -879,9 +905,13 @@ function renderDetails() {
   set("state", taskStateText(task));
   set("size", task.totalBytes != null ? bytes(task.totalBytes, lang, t) : t("inconnue"));
   set("done", pct ? t("{0} ({1})", bytes(task.doneBytes, lang, t), pct) : bytes(task.doneBytes, lang, t));
-  set("rate", active ? rate(task.bps ?? 0) : "");
+  set("rate", active ? rate(task.bps ?? 0) : seeding ? t("Envoi : {0}", rate(task.uploadBps ?? 0)) : "");
   set("eta", active ? duration(task.etaS, t) : "");
-  set("connections", active && task.connections > 0 ? String(task.connections) : "");
+  // Un torrent compte des pairs, pas des connexions.
+  $("d-connections-label").textContent = torrent ? t("Pairs") : t("Connexions");
+  set("connections", (active || seeding) && task.connections > 0 ? String(task.connections) : "");
+  const ratio = torrent ? shareRatio(task) : null;
+  set("uploaded", ratio === null ? "" : t("{0} (ratio {1})", bytes(task.uploadedBytes, lang, t), ratioText(ratio)));
   // F-04 : un serveur sans reprise le dit clairement.
   set("resume", source?.acceptsRanges === true
     ? t("Oui")
@@ -919,18 +949,88 @@ function renderDetails() {
   const toggleButton = $("d-toggle");
   const retry = task.state === "failed";
   const resumable = canResume(task.state);
-  toggleButton.textContent = retry ? t("Relancer") : resumable ? t("Reprendre") : t("Pause");
+  toggleButton.textContent = retry
+    ? t("Relancer")
+    : resumable ? t("Reprendre") : seeding ? t("Arrêter le partage") : t("Pause");
   toggleButton.hidden = !(resumable || canPause(task.state));
   toggleButton.disabled = !connected;
-  $("d-cancel").hidden = !canCancel(task.state);
+  // Pendant le partage, les fichiers sont complets : l'annulation les effacerait.
+  $("d-cancel").hidden = !canCancel(task.state) || seeding;
   $("d-cancel").disabled = !connected;
   const done = task.state === "completed" && task.fileName;
   // Programmes et scripts : jamais ouverts depuis l'application (SPEC §8.1).
   $("d-open").hidden = !done || isExecutable(task.fileName);
   $("d-reveal").hidden = !done;
-  $("d-limit-field").hidden = !(canPause(task.state) || canResume(task.state));
+  $("d-limit-field").hidden = seeding || !(canPause(task.state) || canResume(task.state));
   $("d-limit-apply").disabled = !connected;
+  $("d-limit-torrent-note").hidden = !torrent;
   renderSegments(task);
+  renderTorrentFiles(task);
+}
+
+/// Choix des fichiers d'un torrent pas encore appliqué : rang → coché. Il passe avant ce que
+/// dit le moteur, relu chaque seconde.
+const fileChoice = new Map();
+
+/// Fichiers d'un torrent (SPEC §7.16) : cases à cocher tant qu'on peut choisir, taille et
+/// part reçue. Mis à jour sur place, pour garder le focus d'une case.
+function renderTorrentFiles(task) {
+  const section = $("d-files-section");
+  section.hidden = task.kind !== "torrent";
+  if (section.hidden) return;
+  const files = detailsFull?.files ?? [];
+  $("d-files-wait").hidden = files.length > 0;
+  $("d-files-box").hidden = !files.length;
+  const editable = canChooseFiles(task) && connected;
+  $("d-files-apply").hidden = !files.length || !canChooseFiles(task);
+  $("d-files-apply").disabled = !editable || fileChoice.size === 0;
+  const tbody = $("d-files").tBodies[0];
+  if (tbody.rows.length !== files.length) {
+    tbody.replaceChildren(...files.map((f) => {
+      const row = document.createElement("tr");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.index = String(f.index);
+      const check = document.createElement("td");
+      check.append(box);
+      row.append(check, ...[0, 1, 2].map(() => document.createElement("td")));
+      return row;
+    }));
+  }
+  files.forEach((f, i) => {
+    const row = tbody.rows[i];
+    const box = row.cells[0].firstElementChild;
+    box.dataset.index = String(f.index);
+    box.checked = fileChoice.get(f.index) ?? f.selected;
+    box.disabled = !editable;
+    box.setAttribute("aria-label", t("Télécharger {0}", f.path));
+    row.cells[1].textContent = f.path;
+    row.cells[1].className = "path";
+    row.cells[2].textContent = bytes(f.length, lang, t);
+    const part = f.length > 0 ? Math.floor((100 * Math.min(f.doneBytes, f.length)) / f.length) : 100;
+    row.cells[3].textContent = f.selected || f.doneBytes > 0 ? t("{0} %", part) : "";
+    row.classList.toggle("skipped", !box.checked);
+  });
+}
+
+/// Applique le choix des fichiers (`task.setFiles`) ; au moins un.
+async function applyFileChoice() {
+  const boxes = [...$("d-files").querySelectorAll("input[type=checkbox]")];
+  const selected = boxes.filter((b) => b.checked).map((b) => Number(b.dataset.index));
+  if (!selected.length) {
+    showError(t("Choisissez au moins un fichier."));
+    return;
+  }
+  try {
+    const task = await host.call("task.setFiles", { taskId: detailsTask, selected });
+    fileChoice.clear();
+    detailsFull = null;
+    showError("");
+    announce(t("{0} fichier(s) choisi(s), {1} à télécharger", selected.length, bytes(task.totalBytes, lang, t)));
+    refreshDetails();
+  } catch (e) {
+    showError(refused(e));
+  }
 }
 
 /// Carte des segments (chacun à sa place dans le fichier, rempli de ce qu'il a reçu) et
@@ -1310,6 +1410,7 @@ async function resync() {
   renderLimit();
   renderDest();
   renderPlanning();
+  renderTorrentSettings();
   removeCancelled();
   if (result.resync) resync();
 }
@@ -1322,6 +1423,10 @@ function onStatus(status) {
     banner.hidden = true;
     engineVersion = status.engine?.engine?.version ?? "";
     resync();
+    if (openedWaiting) {
+      showError("");
+      openAdd();
+    }
   } else {
     banner.hidden = false;
     banner.textContent = status.state === "connecting"
@@ -1330,6 +1435,7 @@ function onStatus(status) {
         ? t("Moteur injoignable : {0}. Nouvel essai automatique.", status.message)
         : t("Moteur injoignable.");
   }
+  renderTorrentSettings();
   renderToolbar();
   renderLimit();
   renderDest();
@@ -1364,6 +1470,9 @@ function onEngine(event) {
       schedule(result);
       if (result.limits) renderLimit();
       if (result.settings) renderDest();
+      if (result.limits || result.settings || result.torrentInterface) renderTorrentSettings();
+      // Une file en attente de son interface change d'état affiché.
+      if (result.torrentInterface) renderAll();
       if (result.planning) renderPlanning();
       for (const { taskId, error } of result.moveErrors) {
         const task = store.tasks.get(taskId);
@@ -1430,9 +1539,85 @@ async function saveNeighbor() {
   }
 }
 
+/// Fichiers `.torrent` à ajouter : `{name, data}` (base64), lus par l'hôte.
+let addTorrents = [];
+/// Des liens reçus attendent que la boîte « Ajouter » puisse s'ouvrir (moteur pas encore joint).
+let openedWaiting = false;
+
+function renderAddTorrents() {
+  const list = $("add-torrents");
+  list.replaceChildren(...addTorrents.map((file, i) => {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "path";
+    name.textContent = file.name;
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = t("Retirer");
+    drop.setAttribute("aria-label", t("Retirer {0}", file.name));
+    drop.addEventListener("click", () => {
+      addTorrents.splice(i, 1);
+      renderAddTorrents();
+      $("add-torrent-pick").focus();
+    });
+    item.append(name, drop);
+    return item;
+  }));
+  list.hidden = !addTorrents.length;
+  // Sans hôte capable de lire un fichier (interface distante), pas de choix de fichier.
+  $("add-torrents-field").hidden = !host.readTorrent;
+}
+
+/// Lit des fichiers `.torrent` (chemins) et les ajoute à la boîte ; un refus est montré.
+async function takeTorrentFiles(paths) {
+  for (const path of paths) {
+    try {
+      const file = await host.readTorrent(path);
+      if (!addTorrents.some((f) => f.data === file.data)) addTorrents.push(file);
+    } catch (e) {
+      showError(refused(e));
+    }
+  }
+  renderAddTorrents();
+}
+
+async function pickTorrentFiles() {
+  const paths = await host.pickTorrents().catch(() => []);
+  await takeTorrentFiles(paths);
+  $("add-torrent-pick").focus();
+}
+
+/// Liens magnet et fichiers `.torrent` ouverts avec l'application (« Ouvrir avec… »,
+/// association, glisser-déposer) : mis dans la boîte « Ajouter », jamais ajoutés d'office.
+async function takeOpened() {
+  let opened;
+  try {
+    opened = await host.takeOpened();
+  } catch {
+    return;
+  }
+  if (!opened?.length) return;
+  const field = $("urls");
+  const lines = field.value.split(/\s+/).filter(Boolean);
+  for (const item of opened) {
+    if (item.kind === "magnet" && !lines.includes(item.link)) lines.push(item.link);
+  }
+  field.value = lines.join("\n");
+  await takeTorrentFiles(opened.filter((item) => item.kind === "torrent").map((item) => item.path));
+  if ($("add-dialog").open) return;
+  if (!connected || document.querySelector("dialog[open]")) {
+    openedWaiting = true;
+    showError(t("Un lien ou un fichier .torrent vous attend dans « Ajouter »."));
+    return;
+  }
+  openAdd();
+}
+
 function openAdd() {
   if (!connected || document.querySelector("dialog[open]")) return;
+  openedWaiting = false;
   renderDest();
+  renderAddTorrents();
   const dialog = $("add-dialog");
   dialog.returnValue = "";
   dialog.showModal();
@@ -1447,32 +1632,51 @@ async function closeAdd() {
   }
   const field = $("urls");
   const urls = field.value.split(/\s+/).filter(Boolean);
-  if (!urls.length || !connected) return;
-  // F-11 : l'empreinte est celle d'un seul fichier.
+  if ((!urls.length && !addTorrents.length) || !connected) return;
+  // F-11 : l'empreinte est celle d'un seul fichier, téléchargé en HTTP.
   const { checksum, error } = parseChecksum($("add-checksum").value);
-  if (error || (checksum && urls.length > 1)) {
-    showError(error ? checksumError() : t("Une empreinte ne vaut que pour une seule adresse."));
+  const torrents = addTorrents.length > 0 || urls.some(isMagnet);
+  if (error || (checksum && (urls.length + addTorrents.length > 1 || torrents))) {
+    showError(error
+      ? checksumError()
+      : torrents
+        ? t("Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.")
+        : t("Une empreinte ne vaut que pour une seule adresse."));
     openAdd();
     $("add-checksum").focus();
     return;
   }
   const failed = [];
+  const failedTorrents = [];
   let firstError = null;
+  // Sans destDir : le dossier des téléchargements du moteur.
+  const add = async (source) => {
+    const params = { sources: [source], startPaused: choice === "later" };
+    if (checksum) params.checksum = checksum;
+    await host.call("task.add", params);
+  };
   for (const url of urls) {
     try {
-      // Sans destDir : le dossier des téléchargements du moteur.
-      const params = { sources: [{ url }], startPaused: choice === "later" };
-      if (checksum) params.checksum = checksum;
-      await host.call("task.add", params);
+      await add({ url });
     } catch (e) {
       failed.push(url);
       firstError ??= e;
     }
   }
+  for (const file of addTorrents) {
+    try {
+      await add({ torrent: file.data });
+    } catch (e) {
+      failedTorrents.push(file);
+      firstError ??= e;
+    }
+  }
   field.value = failed.join("\n");
-  if (!failed.length) $("add-checksum").value = "";
-  if (failed.length) {
-    showError(t("{0} adresse(s) refusée(s) : {1}", failed.length, firstError?.message ?? ""));
+  addTorrents = failedTorrents;
+  const refusedCount = failed.length + failedTorrents.length;
+  if (!refusedCount) $("add-checksum").value = "";
+  if (refusedCount) {
+    showError(t("{0} ajout(s) refusé(s) : {1}", refusedCount, firstError?.message ?? ""));
     openAdd();
     return;
   }
@@ -1629,6 +1833,119 @@ function renderLimit() {
   }
 }
 
+// ---------- BitTorrent (SPEC §7.16) ----------
+
+/// Ratios proposés ; `null` : sans limite, jusqu'à l'arrêt du partage.
+const RATIOS = [0, 0.5, 1, 2, 3, null];
+/// Interfaces réseau de la machine (`torrent.interfaces`), lues à l'ouverture de la rubrique.
+let interfaces = [];
+
+function ratioOption(value) {
+  const option = document.createElement("option");
+  option.value = value === null ? "none" : String(value);
+  option.textContent = value === null
+    ? t("Sans limite, jusqu'à ce que je l'arrête")
+    : value === 0
+      ? t("Ne pas partager")
+      : value === 1
+        ? t("Jusqu'à avoir envoyé autant que reçu (ratio 1)")
+        : t("Jusqu'au ratio {0}", value.toLocaleString(lang));
+  return option;
+}
+
+/// Réglages des torrents : suivis par l'instantané, `settings.updated`, `limits.updated` et
+/// `engine.torrentInterface`.
+function renderTorrentSettings() {
+  const ratio = store.settings["torrent.ratioLimit"];
+  const current = ratio === undefined ? 1 : ratio;
+  const values = RATIOS.includes(current) ? RATIOS : [...RATIOS, current].sort((a, b) =>
+    (a ?? Infinity) - (b ?? Infinity));
+  $("pref-ratio").replaceChildren(...values.map(ratioOption));
+  $("pref-ratio").value = current === null ? "none" : String(current);
+  fillLimits($("pref-upload"), store.limits?.uploadBps ?? null);
+  $("pref-upnp").checked = store.settings["torrent.upnp"] === true;
+  const chosen = store.settings["torrent.interface"] ?? "";
+  const names = [...interfaces];
+  if (chosen && !names.includes(chosen)) names.push(chosen);
+  const select = $("pref-interface");
+  select.replaceChildren(
+    new Option(t("Aucune : toutes les interfaces"), ""),
+    ...names.map((name) => new Option(name, name)),
+  );
+  select.value = chosen;
+  $("pref-interface-state").textContent = !chosen
+    ? ""
+    : store.torrentInterfaceUp
+      ? t("{0} est là : les torrents ne passent que par elle.", chosen)
+      : t("{0} est absente : les torrents attendent son retour.", chosen);
+  $("pref-interface-state").classList.toggle("warn", Boolean(chosen) && !store.torrentInterfaceUp);
+  for (const id of ["pref-ratio", "pref-upload", "pref-upnp", "pref-interface", "pref-interface-refresh"]) {
+    $(id).disabled = !connected;
+  }
+}
+
+async function loadInterfaces() {
+  try {
+    interfaces = (await host.call("torrent.interfaces")).items ?? [];
+  } catch {
+    interfaces = [];
+  }
+  renderTorrentSettings();
+}
+
+/// Change un réglage du moteur ; le moteur l'annonce, la réponse le donne aussitôt.
+async function saveSetting(key, value, done) {
+  try {
+    const result = await host.call("settings.set", { values: { [key]: value } });
+    Object.assign(store.settings, result.values);
+    if (done) announce(done);
+  } catch (e) {
+    showError(refused(e));
+  }
+  renderTorrentSettings();
+}
+
+async function changeUploadLimit(event) {
+  const value = Number(event.target.value);
+  try {
+    store.limits = await host.call("limits.set", { uploadBps: value > 0 ? value : null });
+  } catch (e) {
+    showError(refused(e));
+  }
+  renderTorrentSettings();
+}
+
+/// Association aux liens magnet et aux `.torrent` (option de l'application, désactivée par
+/// défaut) ; absente d'un hôte qui ne la permet pas.
+async function renderLinks() {
+  const box = $("pref-links-box");
+  if (!host.linksStatus) {
+    box.hidden = true;
+    return;
+  }
+  try {
+    const status = await host.linksStatus();
+    box.hidden = !status.available;
+    $("pref-links").checked = status.enabled;
+  } catch {
+    box.hidden = true;
+  }
+}
+
+async function changeLinks(event) {
+  const wanted = event.target.checked;
+  try {
+    const status = await host.setLinks(wanted);
+    event.target.checked = status.enabled;
+    announce(status.enabled
+      ? t("AuroDownloader ouvre les liens magnet et les fichiers .torrent")
+      : t("Liens magnet et fichiers .torrent rendus au programme d'avant"));
+  } catch (e) {
+    event.target.checked = !wanted;
+    showError(refused(e));
+  }
+}
+
 async function changeLimit(event) {
   const value = Number(event.target.value);
   try {
@@ -1771,6 +2088,8 @@ function applyInfo(next) {
   $("grid").setAttribute("aria-label", t("Téléchargements : {0}", viewLabel(view)));
   renderAbout();
   renderLimit();
+  renderTorrentSettings();
+  renderAddTorrents();
   renderPlanning();
   renderAll();
 }
@@ -1871,6 +2190,8 @@ function wire() {
     selectTab($("tab-general"));
     $("settings").showModal();
     if (connected) loadLogins();
+    if (connected) loadInterfaces();
+    renderLinks();
   });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {
@@ -1997,6 +2318,26 @@ function wire() {
   $("d-reveal").addEventListener("click", () => detailsTask && withFile(detailsTask, host.revealFile));
   $("d-limit-apply").addEventListener("click", applyTaskLimit);
   $("d-checksum-apply").addEventListener("click", applyChecksum);
+  $("d-files-apply").addEventListener("click", applyFileChoice);
+  $("d-files").addEventListener("change", (event) => {
+    const box = event.target.closest("input[type=checkbox]");
+    if (!box) return;
+    fileChoice.set(Number(box.dataset.index), box.checked);
+    box.closest("tr").classList.toggle("skipped", !box.checked);
+    $("d-files-apply").disabled = !connected;
+  });
+  $("add-torrent-pick").addEventListener("click", pickTorrentFiles);
+  $("pref-ratio").addEventListener("change", (e) => {
+    const value = e.target.value === "none" ? null : Number(e.target.value);
+    saveSetting("torrent.ratioLimit", value, t("Partage des torrents réglé"));
+  });
+  $("pref-upload").addEventListener("change", changeUploadLimit);
+  $("pref-upnp").addEventListener("change", (e) =>
+    saveSetting("torrent.upnp", e.target.checked, e.target.checked ? t("UPnP activé") : t("UPnP désactivé")));
+  $("pref-interface").addEventListener("change", (e) =>
+    saveSetting("torrent.interface", e.target.value || null, t("Interface des torrents réglée")));
+  $("pref-interface-refresh").addEventListener("click", loadInterfaces);
+  $("pref-links").addEventListener("change", changeLinks);
 
   for (const tab of document.querySelectorAll('#settings [role="tab"]')) {
     tab.addEventListener("click", () => selectTab(tab));
@@ -2034,6 +2375,12 @@ async function start() {
   // S'abonner d'abord, puis demander l'état de la connexion : rien n'est manqué.
   await host.listen(onEngine);
   onStatus(await host.status());
+  // Liens magnet et .torrent ouverts avec l'application (étape 5b) : ceux du lancement,
+  // puis ceux d'une relance ou d'un glisser-déposer.
+  if (host.onOpened) {
+    await host.onOpened(takeOpened);
+    takeOpened();
+  }
   (cursor ? rows.get(cursor) : $("tb-add"))?.focus();
 }
 

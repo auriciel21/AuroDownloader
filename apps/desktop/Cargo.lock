@@ -335,6 +335,7 @@ name = "auro-desktop"
 version = "0.1.0"
 dependencies = [
  "auro-engine",
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "sys-locale",
@@ -346,6 +347,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "tokio",
+ "winreg 0.56.0",
  "zbus",
 ]
 

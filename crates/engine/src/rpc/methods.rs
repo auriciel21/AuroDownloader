@@ -318,6 +318,8 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(probe_json(&ctx.engine.probe_media(&page).await?))
         }
         // Outils de la vidéo (SPEC §7.17).
+        // Interfaces réseau où lier les torrents (SPEC §7.16, étape 5b).
+        "torrent.interfaces" => Ok(json!({"items": crate::torrent::system_interfaces()})),
         "media.tools" => Ok(tools_json(&ctx.engine.media_tools()?)),
         "media.installTools" => {
             let force = match p.get("force") {

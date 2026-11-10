@@ -20,6 +20,8 @@ tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 auro-engine = { path = "../../crates/engine" }
+# Fichiers .torrent lus pour le moteur (`task.add`, SPEC §6.5).
+base64 = "0.22.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Langue du système, pour le menu de l'icône avant que la page ne soit chargée.
@@ -30,6 +32,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+
+# Association aux liens magnet et aux .torrent (clés de l'utilisateur), étape 5b.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
 
 # Présence d'une zone de notification (`org.kde.StatusNotifierWatcher` sur le bus de session).
 [target.'cfg(target_os = "linux")'.dependencies]

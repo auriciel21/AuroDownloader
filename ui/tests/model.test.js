@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
-  canRelocate, canSetChecksum, parseChecksum, detailsOutdated,
+  canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
+  isMagnet, shareRatio,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -383,4 +384,42 @@ test("l'annonce du réseau (Android) avance la révision sans recharger", () => 
   assert.equal(store.rev, 11);
   const next = store.apply("task.stateChanged", { rev: 12, taskId: "a", from: "queued", to: "active" });
   assert.ok(!next.resync, "pas de trou dans les révisions");
+});
+
+test("torrents : partage arrêtable, ni adresse ni empreinte, fichiers à choisir (SPEC §7.16)", () => {
+  const torrent = (state) => task("t", state, { kind: "torrent" });
+  assert.ok(canPause("seeding"), "arrêter le partage");
+  assert.ok(!canRelocate(torrent("paused")) && canRelocate(task("h", "paused")));
+  assert.ok(!canSetChecksum(torrent("active")) && canSetChecksum(task("h", "active")));
+  assert.ok(canChooseFiles(torrent("active")) && canChooseFiles(torrent("paused")));
+  assert.ok(!canChooseFiles(torrent("seeding")) && !canChooseFiles(torrent("completed")));
+  assert.ok(!canChooseFiles(task("h", "active")), "pas un torrent");
+  assert.ok(isFinishedDownload(torrent("seeding")) && isFinishedDownload(task("h", "completed")));
+  assert.ok(!isFinishedDownload(torrent("active")));
+  assert.ok(isMagnet("magnet:?xt=urn:btih:abc") && isMagnet(" MAGNET:?xt=urn:btih:abc "));
+  assert.ok(!isMagnet("https://exemple.org/a.torrent") && !isMagnet("magnet:"));
+  assert.equal(shareRatio(torrent("seeding")), null, "envoi inconnu");
+  assert.equal(shareRatio({ ...torrent("seeding"), uploadedBytes: 50 }), 0.5);
+});
+
+test("annonces numérotées : interface des torrents, outils de la vidéo, avertissements", () => {
+  const store = new TaskStore();
+  store.load({ ...snapshot(1, []), torrentInterfaceUp: false });
+  assert.equal(store.torrentInterfaceUp, false);
+  let r = store.apply("engine.torrentInterface", { rev: 2, up: true });
+  assert.ok(r.torrentInterface && !r.resync);
+  assert.equal(store.torrentInterfaceUp, true);
+  r = store.apply("media.tools", { rev: 3, ready: true, installing: false, ytdlp: { version: "1" } });
+  assert.ok(r.tools && !r.resync);
+  assert.equal(store.tools.ready, true);
+  assert.ok(!("rev" in store.tools));
+  r = store.apply("engine.warning", { rev: 4, code: "SUBTITLES_MISSING", message: "m", taskId: "a" });
+  assert.ok(!r.resync, "un avertissement numéroté ne crée pas de trou");
+  assert.deepEqual(r.warnings, [{ code: "SUBTITLES_MISSING", message: "m", taskId: "a" }]);
+  // La notification suivante ne voit aucun trou.
+  r = store.apply("engine.network", { rev: 5, usable: true });
+  assert.ok(!r.resync);
+  // Notifications perdues : propre à la connexion, sans révision.
+  assert.ok(store.apply("engine.warning", { code: "EVENTS_LOST" }).resync);
+  assert.equal(store.rev, 5);
 });
