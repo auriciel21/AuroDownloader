@@ -2,12 +2,12 @@
 <!-- English texts; French is the source (values/strings.xml). -->
 <resources>
     <string name="engine_failed">The engine did not start: %1$s</string>
-    <string name="empty">No downloads yet. Tap “Add”, or share a link with AuroDownloader from another app.</string>
+    <string name="empty">No downloads yet. Tap “Add”, or share a link, a magnet link or a .torrent file with AuroDownloader from another app.</string>
 
     <string name="add">Add</string>
     <string name="add_title">Add a download</string>
     <string name="address">Address</string>
-    <string name="address_invalid">An http:// or https:// address is expected.</string>
+    <string name="address_invalid">An http://, https:// address or a magnet link is expected.</string>
     <string name="added">Download added</string>
     <string name="cancel">Cancel</string>
     <string name="close">Close</string>
@@ -107,4 +107,32 @@
     <string name="notice_failed">Download failed</string>
     <string name="notice_resume_title">Downloads to resume</string>
     <string name="notice_resume_text">Tap to resume unfinished downloads.</string>
+
+    <string name="address_hint">https://… or magnet:?…</string>
+    <string name="state_seeding">Seeding</string>
+    <string name="state_seeding_ratio">Seeding (ratio %1$s)</string>
+    <string name="stop_seeding">Stop seeding</string>
+    <string name="upload_rate">↑ %1$s</string>
+    <string name="f_uploaded">Sent to other peers</string>
+    <string name="uploaded_ratio">%1$s (ratio %2$s)</string>
+    <string name="choose_torrent">Choose a .torrent file…</string>
+    <string name="torrent_unreadable">unreadable .torrent file</string>
+    <string name="torrent_too_big">.torrent file over 16 MiB</string>
+    <string name="torrent_invalid">not a .torrent file</string>
+    <string name="torrent_files">Torrent files</string>
+    <string name="torrent_files_wait">The file list arrives with the torrent\'s metadata, once it has started.</string>
+    <string name="torrent_files_summary">%1$d file(s) chosen, %2$s to download</string>
+    <string name="torrent_files_none">Choose at least one file.</string>
+    <string name="torrent_files_apply">Apply the choice</string>
+    <string name="torrent_file_row">%1$s, %2$s</string>
+    <string name="bittorrent">BitTorrent</string>
+    <string name="seed_after">After downloading, seed</string>
+    <string name="seed_note">The ratio compares what is sent to other peers with the size received. Nothing is seeded on a metered connection, nor once downloads are finished and AuroDownloader is no longer on screen.</string>
+    <string name="seed_none">Do not seed</string>
+    <string name="seed_one">Until as much is sent as received (ratio 1)</string>
+    <string name="seed_upto">Up to ratio %1$s</string>
+    <string name="seed_unlimited">No limit, until I stop it</string>
+    <string name="upload_limit">Upload limit</string>
+    <string name="error_TORRENT_SESSION">torrent session unavailable (network, listening port)</string>
+    <string name="error_TORRENT_FAILED">torrent error</string>
 </resources>

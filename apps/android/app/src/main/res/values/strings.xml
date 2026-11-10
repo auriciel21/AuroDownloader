@@ -4,14 +4,14 @@
 <resources>
     <string name="app_name">AuroDownloader</string>
     <string name="engine_failed">Le moteur n\'a pas démarré : %1$s</string>
-    <string name="empty">Aucun téléchargement. Touchez « Ajouter », ou partagez un lien vers AuroDownloader depuis une autre application.</string>
+    <string name="empty">Aucun téléchargement. Touchez « Ajouter », ou partagez un lien, un lien magnet ou un fichier .torrent vers AuroDownloader depuis une autre application.</string>
 
     <!-- Actions -->
     <string name="add">Ajouter</string>
     <string name="add_title">Ajouter un téléchargement</string>
     <string name="address">Adresse</string>
-    <string name="address_hint">https://…</string>
-    <string name="address_invalid">Adresse http:// ou https:// attendue.</string>
+    <string name="address_hint">https://… ou magnet:?…</string>
+    <string name="address_invalid">Adresse http://, https:// ou lien magnet attendu.</string>
     <string name="added">Téléchargement ajouté</string>
     <string name="cancel">Annuler</string>
     <string name="close">Fermer</string>
@@ -123,4 +123,32 @@
     <string name="notice_failed">Échec du téléchargement</string>
     <string name="notice_resume_title">Téléchargements à reprendre</string>
     <string name="notice_resume_text">Touchez pour reprendre les téléchargements inachevés.</string>
+
+    <!-- Torrents (étape 5e, SPEC §7.16 ; libellés de l'application de bureau) -->
+    <string name="state_seeding">Partage</string>
+    <string name="state_seeding_ratio">Partage (ratio %1$s)</string>
+    <string name="stop_seeding">Arrêter le partage</string>
+    <string name="upload_rate">↑ %1$s</string>
+    <string name="f_uploaded">Envoyé aux autres pairs</string>
+    <string name="uploaded_ratio">%1$s (ratio %2$s)</string>
+    <string name="choose_torrent">Choisir un fichier .torrent…</string>
+    <string name="torrent_unreadable">fichier .torrent illisible</string>
+    <string name="torrent_too_big">fichier .torrent de plus de 16 Mio</string>
+    <string name="torrent_invalid">ce n\'est pas un fichier .torrent</string>
+    <string name="torrent_files">Fichiers du torrent</string>
+    <string name="torrent_files_wait">La liste des fichiers arrive avec les métadonnées du torrent, une fois qu\'il a démarré.</string>
+    <string name="torrent_files_summary">%1$d fichier(s) choisi(s), %2$s à télécharger</string>
+    <string name="torrent_files_none">Choisissez au moins un fichier.</string>
+    <string name="torrent_files_apply">Appliquer le choix</string>
+    <string name="torrent_file_row">%1$s, %2$s</string>
+    <string name="bittorrent">BitTorrent</string>
+    <string name="seed_after">Après le téléchargement, partager</string>
+    <string name="seed_note">Le ratio compare ce qui est envoyé aux autres pairs à la taille reçue. Rien n\'est partagé sur une connexion facturée au volume, ni quand AuroDownloader n\'est plus à l\'écran une fois les téléchargements finis.</string>
+    <string name="seed_none">Ne pas partager</string>
+    <string name="seed_one">Jusqu\'à avoir envoyé autant que reçu (ratio 1)</string>
+    <string name="seed_upto">Jusqu\'au ratio %1$s</string>
+    <string name="seed_unlimited">Sans limite, jusqu\'à ce que je l\'arrête</string>
+    <string name="upload_limit">Limite d\'envoi</string>
+    <string name="error_TORRENT_SESSION">session des torrents impossible (réseau, port d\'écoute)</string>
+    <string name="error_TORRENT_FAILED">erreur du torrent</string>
 </resources>

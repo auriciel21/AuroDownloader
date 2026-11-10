@@ -188,7 +188,8 @@ téléchargement.
   vectorielle (`mipmap-anydpi-v26/ic_launcher.xml`, `drawable/ic_launcher_*`), recopiée de
   `apps/desktop/icons/icon.svg`. `MainActivity` : Compose,
   `--es url <adresse>` (essais), ouverture par `FileProvider`. `ShareActivity` : liens
-  partagés ou ouverts (activité sans fenêtre, toujours neuve). `Background` (SPEC 7.15) :
+  partagés ou ouverts (activité sans fenêtre, toujours neuve ; liens magnet et `.torrent`
+  depuis l'étape 5e, lus par `AuroApp.readTorrent`). `Background` (SPEC 7.15) :
   dit au moteur si le réseau est utilisable (`engine.setNetwork`), demande la protection
   d'Android (`Transfers.kt` : `TransferJob`, transfert lancé par l'utilisateur, Android 14
   et plus ; `TransferService`, Android 8 à 13), notifications, « Wi-Fi seulement »,
@@ -465,8 +466,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   relais ; messages du moteur et du relais portés à 24 Mio ; décisions de l'utilisateur ;
   essais 10 à 17 de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Edge le même
   jour, Firefox et Chrome à la porte ; lien magnet rendu au navigateur seulement si
-  AuroDownloader est injoignable ; menus contextuels recréés à chaque démarrage), 5e.
-  torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
+  AuroDownloader est injoignable ; menus contextuels recréés à chaque démarrage),
+  5e. torrents sur Android (fait le 2026-11-10 : périmètre du bureau, ajout direct de ce
+  qu'une autre application confie, partage seulement application à l'écran ou
+  téléchargement protégé, pas de liaison à une interface ; décisions de l'utilisateur ;
+  essai réel sur le téléphone, SPEC 4.4 ; « Annuler » et « Retirer » effacent le `.part`) ;
+  6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

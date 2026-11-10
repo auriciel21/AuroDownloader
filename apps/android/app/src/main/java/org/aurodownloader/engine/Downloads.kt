@@ -23,17 +23,37 @@ data class Task(
     /** Empreinte attendue : `{algo, value, source}`, ou `null`. */
     val checksum: JSONObject?,
     val createdAt: Long,
+    /** `http`, `torrent` ou `media` (SPEC §6.4). */
+    val kind: String = "http",
+    /** Torrent : octets envoyés aux autres pairs, et débit d'envoi (`task.progress`). */
+    val uploadedBytes: Long? = null,
+    val uploadBps: Long = 0,
 ) {
-    val canPause get() = state in setOf("queued", "active", "retry_wait", "verifying")
+    // Mêmes règles que l'application de bureau (`ui/src/model.js`, SPEC §5.5). `seeding` :
+    // arrêter un torrent qui partage le termine (SPEC §7.16), ses fichiers restent.
+    val canPause get() = state in setOf("queued", "active", "retry_wait", "verifying", "seeding")
     val canResume get() = state in setOf("paused", "failed")
-    val canCancel get() = state in setOf("queued", "active", "paused", "retry_wait", "verifying")
+    val canCancel get() = state in setOf("queued", "active", "paused", "retry_wait", "verifying", "seeding")
     val canRemove get() = state in setOf("completed", "failed", "cancelled")
     val canRestart get() = state in setOf("completed", "failed", "cancelled", "paused", "retry_wait")
+
+    val isTorrent get() = kind == "torrent"
+
+    /** Fichiers d'un torrent à choisir (`task.setFiles`) : pas une fois reçu ni annulé. */
+    val canChooseFiles get() = isTorrent && state in setOf("queued", "active", "paused", "retry_wait", "failed")
+
+    /** Un torrent qui partage a fini de recevoir. */
+    val isFinished get() = state == "completed" || state == "seeding"
+
+    /** Ratio de partage : octets envoyés sur la taille ; `null` s'il est inconnu. */
+    val shareRatio: Double?
+        get() = if (uploadedBytes == null || totalBytes == null || totalBytes <= 0) null
+        else uploadedBytes.toDouble() / totalBytes
 
     /** Avancement de 0 à 1 ; `null` si la taille est inconnue. */
     val fraction: Float?
         get() = when {
-            state == "completed" -> 1f
+            isFinished -> 1f
             totalBytes == null || totalBytes <= 0 -> null
             else -> (doneBytes.toDouble() / totalBytes).coerceIn(0.0, 1.0).toFloat()
         }
@@ -52,6 +72,28 @@ data class Task(
             errorDetail = json.text("errorDetail"),
             checksum = json.optJSONObject("checksum"),
             createdAt = json.optLong("createdAt"),
+            kind = json.text("kind") ?: "http",
+        )
+    }
+}
+
+/** Un fichier d'un torrent (`task.get` avec `files`, SPEC §6.5). */
+data class TorrentFile(
+    val index: Int,
+    /** Chemin dans le torrent, composants séparés par `/`. */
+    val path: String,
+    val length: Long,
+    val selected: Boolean,
+    /** Indication seulement (SPEC §7.16). */
+    val doneBytes: Long,
+) {
+    companion object {
+        fun from(json: JSONObject) = TorrentFile(
+            index = json.optInt("index"),
+            path = json.optString("path"),
+            length = json.optLong("length"),
+            selected = json.optBoolean("selected", true),
+            doneBytes = json.optLong("doneBytes"),
         )
     }
 }
@@ -69,6 +111,8 @@ class Downloads(private val engine: EngineClient) {
     val settings = mutableStateMapOf<String, Any?>()
     /** Limite de débit globale, en octets par seconde ; `null` : aucune. */
     val downloadLimit = mutableStateOf<Long?>(null)
+    /** Limite d'envoi globale des torrents, en octets par seconde ; `null` : aucune. */
+    val uploadLimit = mutableStateOf<Long?>(null)
     /** Faux tant que le premier instantané n'est pas arrivé. */
     val loaded = mutableStateOf(false)
 
@@ -100,10 +144,13 @@ class Downloads(private val engine: EngineClient) {
     }
 
     private fun load(snapshot: JSONObject) {
+        // Octets envoyés d'un torrent : seulement dans `task.progress` ; gardés d'un
+        // instantané à l'autre.
+        val uploaded = tasks.mapValues { it.value.uploadedBytes }
         tasks.clear()
         val list = snapshot.optJSONArray("tasks") ?: JSONArray()
         for (i in 0 until list.length()) {
-            val task = Task.from(list.getJSONObject(i))
+            val task = Task.from(list.getJSONObject(i)).let { it.copy(uploadedBytes = uploaded[it.id]) }
             tasks[task.id] = task
         }
         settings.clear()
@@ -111,7 +158,8 @@ class Downloads(private val engine: EngineClient) {
             for (key in values.keys()) settings[key] = values.opt(key).takeUnless { it == JSONObject.NULL }
         }
         downloadLimit.value = snapshot.optJSONObject("limits")?.long("downloadBps")
-        rev = snapshot.optLong("rev")
+        uploadLimit.value = snapshot.optJSONObject("limits")?.long("uploadBps")
+        rev =snapshot.optLong("rev")
         loaded.value = true
         val pending = waiting.toList()
         waiting.clear()
@@ -142,6 +190,8 @@ class Downloads(private val engine: EngineClient) {
                     bps = item.optLong("bps"),
                     etaS = item.long("etaS"),
                     verifiedBytes = if (item.has("verifiedBytes")) item.long("verifiedBytes") else task.verifiedBytes,
+                    uploadedBytes = if (item.has("uploadedBytes")) item.long("uploadedBytes") else task.uploadedBytes,
+                    uploadBps = item.optLong("uploadBps"),
                 )
             }
             return
@@ -170,9 +220,12 @@ class Downloads(private val engine: EngineClient) {
                 )
                 if (to != "active") next = next.copy(bps = 0, etaS = null)
                 if (to != "verifying") next = next.copy(verifiedBytes = null)
-                if (to == "completed" && (next.totalBytes ?: 0) > 0) next = next.copy(doneBytes = next.totalBytes!!)
+                if (next.isFinished && (next.totalBytes ?: 0) > 0) next = next.copy(doneBytes = next.totalBytes!!)
+                if (to != "seeding") next = next.copy(uploadBps = 0)
                 tasks[task.id] = next
-                if (to == "completed") onCompleted(next)
+                // Fichiers à leur nom final : à la fin d'un téléchargement, ou dès le partage
+                // d'un torrent (SPEC §7.16) ; pas une seconde fois quand le partage s'arrête.
+                if (to == "seeding" || (to == "completed" && task.state != "seeding")) onCompleted(next)
                 if (to == "failed") onFailed(next)
             }
             "task.updated" -> {
@@ -192,7 +245,10 @@ class Downloads(private val engine: EngineClient) {
             "settings.updated" -> params.optJSONObject("values")?.let { values ->
                 for (key in values.keys()) settings[key] = values.opt(key).takeUnless { it == JSONObject.NULL }
             }
-            "limits.updated" -> downloadLimit.value = params.long("downloadBps")
+            "limits.updated" -> {
+                if (params.has("downloadBps")) downloadLimit.value = params.long("downloadBps")
+                if (params.has("uploadBps")) uploadLimit.value = params.long("uploadBps")
+            }
         }
     }
 

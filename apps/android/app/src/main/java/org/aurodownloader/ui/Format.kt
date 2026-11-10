@@ -52,6 +52,8 @@ fun Context.stateText(task: Task): String {
         "paused" -> getString(R.string.state_paused)
         "retry_wait" -> getString(R.string.state_retry_wait)
         "verifying" -> getString(R.string.state_verifying)
+        "seeding" -> task.shareRatio?.let { getString(R.string.state_seeding_ratio, ratio(it)) }
+            ?: getString(R.string.state_seeding)
         "completed" -> getString(R.string.state_completed)
         "failed" -> getString(R.string.state_failed)
         "cancelled" -> getString(R.string.state_cancelled)
@@ -74,14 +76,30 @@ fun Context.doneText(task: Task): String {
     return getString(R.string.done_of, bytes(task.doneBytes), bytes(total))
 }
 
-/** Ligne d'état d'une tâche dans la liste : état, octets, débit et temps restant. */
+/** Ligne d'état d'une tâche dans la liste : état, octets, débit et temps restant ; débit
+ * d'envoi d'un torrent qui envoie. */
 fun Context.summary(task: Task): String {
     val parts = mutableListOf(stateText(task), doneText(task))
     if (task.state == "active") {
         if (task.bps > 0) parts += rate(task.bps)
         duration(task.etaS).takeIf { it.isNotEmpty() }?.let { parts += getString(R.string.eta_left, it) }
     }
+    if (task.isTorrent && task.uploadBps > 0 && task.state in setOf("active", "seeding")) {
+        parts += getString(R.string.upload_rate, rate(task.uploadBps))
+    }
     return parts.joinToString(" · ")
+}
+
+/** Ratio proposé dans les réglages, sans zéros inutiles : « 0,5 », « 2 ». */
+fun Context.ratioChoice(value: Double): String {
+    val locale = resources.configuration.locales[0] ?: Locale.getDefault()
+    return java.text.NumberFormat.getNumberInstance(locale).apply { maximumFractionDigits = 2 }.format(value)
+}
+
+/** Ratio de partage, deux décimales, à la manière de la langue. */
+fun Context.ratio(value: Double): String {
+    val locale = resources.configuration.locales[0] ?: Locale.getDefault()
+    return String.format(locale, "%.2f", value)
 }
 
 private fun Context.named(name: String): String? {
