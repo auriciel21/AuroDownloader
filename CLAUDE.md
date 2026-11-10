@@ -448,7 +448,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   SPEC 7.1 et 7.4) ; 5. interfaces, plan du 2026-11-09 (validé) : 5a. CLI (fait le
   2026-11-09 : `auro video`, `auro config`, `auro files`, `.torrent` local, `limit
   --upload`, SPEC 4.6 ; essais réels Framatube sous Windows et netinst Debian sous WSL),
-  5b. bureau : torrents (écrit le 2026-11-09 : ajout magnet et `.torrent`, glisser-déposer,
+  5b. bureau : torrents (fait le 2026-11-09, essai de l'interface validé par l'utilisateur
+  sur la variante d'essai : ajout magnet et `.torrent`, glisser-déposer,
   « Ouvrir avec », Propriétés et choix des fichiers, rubrique BitTorrent, association en
   option désactivée, `torrent.interfaces`, SPEC 4.6 ; `opened.rs`, `links.rs`), 5c. bureau :
   vidéo, 5d. extension (magnet, pages de vidéo), 5e.
