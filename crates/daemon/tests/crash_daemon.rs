@@ -95,6 +95,9 @@ struct Bench {
     endpoint: String,
     log: PathBuf,
     base_url: String,
+    /// Miroir du même fichier (SPEC §7.7, phase 6) : deux tâches sur trois l'ont.
+    mirror_url: String,
+    mirrored: u64,
     checker: Checker,
     added: u64,
     /// Empreinte du fichier servi.
@@ -102,7 +105,7 @@ struct Bench {
 }
 
 impl Bench {
-    fn new(base_url: String, size: u64) -> Self {
+    fn new(base_url: String, mirror_url: String, size: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let downloads = dir.path().join("dl");
         std::fs::create_dir(&downloads).unwrap();
@@ -119,6 +122,8 @@ impl Bench {
             log: dir.path().join("aurod.log"),
             endpoint,
             base_url,
+            mirror_url,
+            mirrored: 0,
             dir,
             added: 0,
             sha256: content_sha256(size),
@@ -173,6 +178,16 @@ impl Bench {
             self.added += 1;
             let url = format!("{}/f{}.bin", self.base_url, self.added);
             let mut params = json!({"sources": [{"url": url}], "destDir": dest});
+            // Deux tâches sur trois ont un miroir, validé pendant le téléchargement puis
+            // utilisé : des arrêts tombent pendant sa validation et pendant la répartition.
+            if self.added % 3 != 0 {
+                let mirror = format!("{}/miroir/f{}.bin", self.mirror_url, self.added);
+                params["sources"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"url": mirror}));
+                self.mirrored += 1;
+            }
             // Une tâche sur deux a son empreinte (F-11) : des arrêts tombent pendant son
             // calcul.
             if self.added % 2 == 0 {
@@ -248,7 +263,8 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
         delay: Duration::from_secs_f64(chunk as f64 / per_connection.max(1.0)),
     };
     let server = serve_file_paced(Arc::new(Mutex::new(FileSite::new(size))), Some(pace));
-    let mut bench = Bench::new(server.url(""), size);
+    let mirror = serve_file_paced(Arc::new(Mutex::new(FileSite::new(size))), Some(pace));
+    let mut bench = Bench::new(server.url(""), mirror.url(""), size);
     let mut rng = Rng(seed);
     let horizon_ms = (seconds * 1000.0) as u64;
     let (mut kills, mut shutdowns) = (0, 0);
@@ -283,11 +299,12 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
     bench.shutdown(&mut child);
     bench.check();
     eprintln!(
-        "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} tâches ajoutées, \
-         {} arrêts sur un découpage redécoupé, {} arrêts entre le renommage et \
+        "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} tâches ajoutées dont {} avec \
+         un miroir, {} arrêts sur un découpage redécoupé, {} arrêts entre le renommage et \
          l'enregistrement de la fin, {} arrêts pendant le calcul de l'empreinte, {} fichiers \
          terminés et vérifiés octet par octet (dossier {})",
         bench.added,
+        bench.mirrored,
         bench.checker.split_layouts,
         bench.checker.renamed_unrecorded,
         bench.checker.checking,
@@ -295,4 +312,16 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
         bench.dir().display()
     );
     assert_eq!(bench.checker.verified.len() as u64, bench.added);
+    // Le miroir a servi des segments, pas seulement les échantillons de sa validation.
+    let ranged = mirror
+        .requests()
+        .iter()
+        .filter(|r| r.header("range").is_some())
+        .count() as u64;
+    eprintln!("{ranged} requêtes par plage servies par le miroir");
+    assert!(
+        bench.mirrored == 0 || ranged > 3 * bench.mirrored,
+        "miroir peu utilisé : {ranged} requêtes pour {} tâches",
+        bench.mirrored
+    );
 }

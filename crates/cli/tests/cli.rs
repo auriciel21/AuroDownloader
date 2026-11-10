@@ -242,15 +242,23 @@ async fn a_video_is_described_then_followed_through_its_merge() {
 async fn mirrors_are_given_checked_and_shown() {
     use std::sync::{Arc, Mutex};
 
-    use auro_engine::testing::{FileSite, serve_file};
-    const LEN: u64 = 300_000;
-    let site = |shift: u64| {
-        serve_file(Arc::new(Mutex::new(FileSite {
-            shift,
-            ..FileSite::new(LEN)
-        })))
+    use auro_engine::testing::{FileSite, Pace, serve_file_paced};
+    const LEN: u64 = 1024 * 1024;
+    let site = |shift: u64, pace: Option<Pace>| {
+        serve_file_paced(
+            Arc::new(Mutex::new(FileSite {
+                shift,
+                ..FileSite::new(LEN)
+            })),
+            pace,
+        )
     };
-    let (reference, good, other) = (site(0), site(0), site(3));
+    // Référence lente : les miroirs se valident pendant le téléchargement (étape 1b).
+    let slow = Pace {
+        chunk: 16 * 1024,
+        delay: Duration::from_millis(30),
+    };
+    let (reference, good, other) = (site(0, Some(slow)), site(0, None), site(3, None));
     let dir = tempfile::tempdir().unwrap();
     let (engine, ep) = serve(dir.path(), "miroirs", Options::default()).await;
     let dest = dir.path().join("dl");

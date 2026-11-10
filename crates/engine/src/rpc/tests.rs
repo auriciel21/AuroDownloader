@@ -2472,8 +2472,16 @@ async fn mirrors_are_validated_against_the_reference() {
     let mut c = TestClient::connect(&engine);
     c.result("events.subscribe", json!({"topics": ["tasks"]}))
         .await;
-    const LEN: u64 = 200_000;
-    let reference = site(LEN);
+    const LEN: u64 = 1024 * 1024;
+    // Référence lente : les miroirs se valident pendant le téléchargement, et le bon y
+    // prend part (étape 1b).
+    let reference = serve_file_paced(
+        Arc::new(Mutex::new(FileSite::new(LEN))),
+        Some(Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(30),
+        }),
+    );
     let good = site(LEN);
     let other = serve_file(Arc::new(Mutex::new(FileSite {
         shift: 1,
@@ -2519,6 +2527,21 @@ async fn mirrors_are_validated_against_the_reference() {
         "{task}"
     );
     assert!(sources[0]["sourceId"].is_string());
+    // Le bon miroir a servi des segments, au-delà des échantillons de sa validation ;
+    // l'autre, seulement ses échantillons.
+    let ranged = |server: &Server| {
+        server
+            .requests()
+            .iter()
+            .filter(|r| r.header("range").is_some())
+            .count()
+    };
+    assert!(ranged(&good) > crate::mirrors::SAMPLES, "{}", ranged(&good));
+    assert!(
+        ranged(&other) <= crate::mirrors::SAMPLES,
+        "{}",
+        ranged(&other)
+    );
     assert_eq!(
         std::fs::read(dir.path().join("f.bin")).unwrap(),
         crate::testing::content(LEN as usize)

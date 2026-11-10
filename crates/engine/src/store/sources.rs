@@ -101,6 +101,43 @@ pub fn set_failed(conn: &Connection, source_id: &str, reason: &str) -> Result<()
     Ok(())
 }
 
+/// État et débit d'une source à la fin d'une exécution, ou quand ils changent (SPEC §7.7) :
+/// une source écartée garde la raison, et ses échecs se comptent ; une source bonne les
+/// remet à zéro.
+pub fn save_run(
+    conn: &Connection,
+    source_id: &str,
+    state: SourceState,
+    avg_bps: Option<u64>,
+    reason: Option<&str>,
+) -> Result<(), StoreError> {
+    let bps = avg_bps.map(|b| i64::try_from(b).unwrap_or(i64::MAX));
+    match state {
+        SourceState::Failed => conn.execute(
+            "UPDATE sources SET state = 'failed', avg_bps = COALESCE(?2, avg_bps),
+                    last_error = COALESCE(?3, last_error), fail_count = fail_count + 1
+             WHERE id = ?1",
+            params![source_id, bps, reason],
+        )?,
+        other => conn.execute(
+            "UPDATE sources SET state = ?2, avg_bps = COALESCE(?3, avg_bps), fail_count = 0
+             WHERE id = ?1",
+            params![source_id, other.as_sql(), bps],
+        )?,
+    };
+    Ok(())
+}
+
+/// Débit lissé d'une source, pour l'affichage et l'exécution suivante.
+pub fn save_speed(conn: &Connection, source_id: &str, avg_bps: u64) -> Result<(), StoreError> {
+    let bps = i64::try_from(avg_bps).unwrap_or(i64::MAX);
+    conn.execute(
+        "UPDATE sources SET avg_bps = ?2 WHERE id = ?1",
+        params![source_id, bps],
+    )?;
+    Ok(())
+}
+
 /// Miroir injoignable à sa validation : il reste à valider (`unknown`), la raison et ses
 /// échecs notés.
 pub fn set_unreachable(conn: &Connection, source_id: &str, reason: &str) -> Result<(), StoreError> {

@@ -88,8 +88,10 @@ téléchargement.
   publications des tests : `testing::tools`.
   Miroirs (SPEC 7.7, phase 6) : `mirrors` (validation d'un miroir face à la référence :
   taille et échantillons ; en-têtes envoyés à chaque source), `store::sources` (ajout d'un
-  miroir, état, refus, échecs) ; `task.addSource` ; validation à la première exécution
-  (`transfer::validate_mirrors`). Le serveur de test `FileSite` a `shift` pour servir un
+  miroir, état, refus, échecs) ; `task.addSource`. Répartition dans `transfer::pool` :
+  une `Slot` par source (état, débit lissé, repos), `pick_slot`, `measure_slots`, miroirs
+  validés pendant le téléchargement (`check_mirror`) ; le nombre de connexions vaut par
+  source ; tests dans `transfer/mirror_tests.rs`. Le serveur de test `FileSite` a `shift` pour servir un
   autre fichier de même taille.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de

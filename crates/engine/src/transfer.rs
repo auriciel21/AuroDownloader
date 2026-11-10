@@ -282,6 +282,21 @@ impl Failure {
         }
     }
 
+    /// Un échec qui tient à la source (réseau, serveur), et non au disque ou au coffre :
+    /// avec des miroirs, il n'écarte que cette source (SPEC §7.7).
+    fn caused_by_source(&self) -> bool {
+        matches!(self, Failure::Net(_) | Failure::Truncated)
+    }
+
+    /// Un échec définitif pour la source : son fichier a changé, ou le serveur refuse.
+    fn source_gone(&self) -> bool {
+        match self {
+            Failure::Net(NetError::FileChanged) => true,
+            Failure::Net(e) => !e.retryable(),
+            _ => false,
+        }
+    }
+
     fn retryable(&self) -> bool {
         match self {
             Failure::Net(e) => e.retryable(),
@@ -612,19 +627,6 @@ async fn execute(
         task = load_task(conn, task_id)?;
     }
     let source = primary_source(conn, task_id)?;
-    // Miroirs à valider (SPEC §7.7, phase 6) : face à la référence préparée, qui doit
-    // accepter les plages et avoir une taille.
-    if let (Some(total), Some(true)) = (task.total_bytes, source.accepts_ranges) {
-        let reference = MirrorReference {
-            source: &source,
-            headers: &task_headers,
-            auth: auth.as_deref(),
-            total,
-        };
-        if let Err(stop) = validate_mirrors(conn, client, task_id, &reference, opts, stop).await? {
-            return Ok(Err(stop));
-        }
-    }
     let file_name = task
         .file_name
         .as_deref()
@@ -676,15 +678,7 @@ async fn execute(
 
     let ranged = source.accepts_ranges == Some(true);
     let fetch = match total {
-        Some(total) if ranged => Fetch::Ranges {
-            total,
-            // `If-Range` n'accepte qu'un ETag fort et bien formé, sinon la date (RFC 9110
-            // §13.1.5).
-            if_range: headers::if_range_validator(
-                source.etag.as_deref(),
-                source.last_modified.as_deref(),
-            ),
-        },
+        Some(total) if ranged => Fetch::Ranges { total },
         total => Fetch::Whole { total },
     };
     let plan = if ranged {
@@ -692,11 +686,19 @@ async fn execute(
     } else {
         Plan::Fixed(1)
     };
+    let (targets, checks) =
+        match mirror_targets(conn, task_id, &source, &task_headers, &fetch, opts).await? {
+            Ok(found) => found,
+            Err(stop) => return Ok(Err(stop)),
+        };
+    let mut all = vec![Arc::new(Target::of(&source, task_headers, auth))];
+    all.extend(targets);
     part.checkpoint_after(opts.checkpoint_bytes);
     let part = Arc::new(part);
     let ctx = Pool {
         client,
-        target: Arc::new(Target::new(source.url.clone(), task_headers, auth)),
+        targets: all,
+        checks,
         fetch,
         plan,
         host: host_of(&source.url),
@@ -744,94 +746,50 @@ async fn execute(
     .await
 }
 
-/// Temps donné à la validation des miroirs avant le départ du téléchargement.
-const MIRROR_CHECK_LIMIT: Duration = Duration::from_secs(20);
-
-/// La source de référence d'une tâche préparée, telle que la validation des miroirs la lit.
-struct MirrorReference<'a> {
-    source: &'a SourceRow,
-    headers: &'a [(String, String)],
-    auth: Option<&'a Auth>,
-    total: u64,
-}
-
-/// Valide les miroirs qui attendent (`unknown`) face à la référence (SPEC §7.7) : accepté,
-/// un miroir garde ses validateurs ; refusé, il passe à `failed` avec la raison ;
-/// injoignable, il reste à valider. Un problème de la référence elle-même arrête la
-/// validation : le transfert le verra.
-async fn validate_mirrors(
+/// Miroirs d'une exécution (SPEC §7.7) : ceux déjà validés deviennent des cibles, ceux à
+/// valider le seront pendant le téléchargement. Seulement avec des plages et une taille.
+/// Une source validée puis écartée (fichier changé, échecs) est réessayée à chaque
+/// exécution ; un miroir refusé à sa validation (jamais validé) ne l'est plus.
+async fn mirror_targets(
     conn: &mut Connection,
-    client: &Client,
     task_id: &str,
-    reference: &MirrorReference<'_>,
+    reference: &SourceRow,
+    task_headers: &[(String, String)],
+    fetch: &Fetch,
     opts: &Options,
-    stop: &mut watch::Receiver<bool>,
-) -> Step<()> {
-    let pending: Vec<SourceRow> = load_sources(conn, task_id)?
-        .into_iter()
-        .filter(|s| s.rank > 0 && s.state == SourceState::Unknown)
-        .collect();
-    if pending.is_empty() {
-        return Ok(Ok(()));
-    }
-    let if_range = headers::if_range_validator(
-        reference.source.etag.as_deref(),
-        reference.source.last_modified.as_deref(),
-    );
-    let reference_side = mirrors::Side {
-        url: &reference.source.url,
-        headers: reference.headers,
-        auth: reference.auth,
-        if_range: if_range.as_deref(),
+) -> Step<(Vec<Arc<Target>>, Vec<PendingCheck>)> {
+    let (mut targets, mut checks) = (Vec::new(), Vec::new());
+    let Fetch::Ranges { total } = *fetch else {
+        return Ok(Ok((targets, checks)));
     };
-    let deadline = Instant::now() + MIRROR_CHECK_LIMIT;
-    for mirror in pending {
-        let mirror_headers =
-            mirrors::headers_for(reference.headers, &reference.source.url, &mirror.url);
-        let login = site_login(conn, &mirror.url, &mirror_headers)?;
-        let mirror_auth = match reveal_login(login, &opts.vault).await? {
-            Ok(auth) => auth,
-            Err(stop) => return Ok(Err(stop)),
+    for mirror in load_sources(conn, task_id)?
+        .into_iter()
+        .filter(|s| s.rank > 0)
+    {
+        let validated = mirror.content_length.is_some();
+        let pending = mirror.state == SourceState::Unknown;
+        if !pending && !(validated && mirror.content_length == Some(total)) {
+            continue;
+        }
+        let headers = mirrors::headers_for(task_headers, &reference.url, &mirror.url);
+        let login = site_login(conn, &mirror.url, &headers)?;
+        // Un mot de passe du coffre illisible pour un miroir : il part sans.
+        let auth = match reveal_login(login, &opts.vault).await? {
+            Ok(auth) => auth.map(Arc::new),
+            Err(_) => None,
         };
-        let side = mirrors::Side {
-            url: &mirror.url,
-            headers: &mirror_headers,
-            auth: mirror_auth.as_ref(),
-            if_range: None,
-        };
-        let verdict = tokio::select! {
-            verdict = mirrors::validate(client, &reference_side, &side, reference.total) => verdict,
-            _ = asked_to_stop(stop) => return Ok(Err(Stop::User)),
-            // Le téléchargement n'attend pas plus : les miroirs restants le seront à la
-            // prochaine exécution.
-            _ = tokio::time::sleep_until(deadline) => break,
-        };
-        match verdict {
-            mirrors::Verdict::Accepted(facts) => {
-                let checked = sources::Checked {
-                    accepts_ranges: true,
-                    etag: facts.etag.as_deref(),
-                    last_modified: facts.last_modified.as_deref(),
-                    content_length: Some(facts.content_length),
-                };
-                sources::set_checked(conn, &mirror.id, &checked)?;
-            }
-            mirrors::Verdict::Refused(reason) => sources::set_failed(conn, &mirror.id, &reason)?,
-            mirrors::Verdict::Unreachable(e) => {
-                sources::set_unreachable(conn, &mirror.id, &e.to_string())?;
-            }
-            mirrors::Verdict::Reference(_) => break,
+        if pending {
+            checks.push(PendingCheck {
+                source_id: mirror.id,
+                url: mirror.url,
+                headers,
+                auth,
+            });
+        } else {
+            targets.push(Arc::new(Target::of(&mirror, headers, auth)));
         }
     }
-    Ok(Ok(()))
-}
-
-/// Attend une demande d'arrêt ; sans émetteur (exécution hors du planificateur), aucune ne
-/// viendra : attend sans fin.
-async fn asked_to_stop(stop: &mut watch::Receiver<bool>) {
-    if stop.wait_for(|h| *h).await.is_err() {
-        std::future::pending::<()>().await;
-    }
+    Ok(Ok((targets, checks)))
 }
 
 /// Fin d'une tâche dont le `.part` est complet et vidé sur disque : son empreinte, s'il
@@ -1064,11 +1022,8 @@ fn fresh_stream_part(dest: &Path) -> Result<Option<PartFile>, IoError> {
 /// Manière de demander les octets d'un segment.
 #[derive(Debug, Clone)]
 enum Fetch {
-    /// Requêtes par plage, avec `If-Range`.
-    Ranges {
-        total: u64,
-        if_range: Option<String>,
-    },
+    /// Requêtes par plage, avec l'`If-Range` de chaque source.
+    Ranges { total: u64 },
     /// Un seul flux depuis le début ; taille inconnue si `None`.
     Whole { total: Option<u64> },
 }
@@ -1192,26 +1147,56 @@ fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u3
 /// Adresse d'une tâche et en-têtes de ses requêtes, secrets compris (SPEC §5.1), et les
 /// connexions dont le serveur a accepté la requête (SPEC §7.3).
 struct Target {
+    /// Source de la tâche (SPEC §7.7) : la référence ou un miroir.
+    source_id: String,
     url: String,
     headers: Vec<(String, String)>,
     /// Identifiants du site, s'il en a (SPEC §7.14).
     auth: Option<Arc<Auth>>,
+    /// `If-Range` de cette source (SPEC §7.4) : `ETag` fort ou date, propres à chaque
+    /// serveur.
+    if_range: Option<String>,
     /// Connexions acceptées et ouvertes en ce moment.
     open: AtomicUsize,
     /// Le plus de connexions acceptées en même temps pendant l'exécution : ce que le
     /// serveur tolère, au moins.
     peak: AtomicUsize,
+    /// Octets reçus de cette source pendant l'exécution, pour son débit (SPEC §7.7).
+    received: AtomicU64,
 }
 
 impl Target {
-    fn new(url: String, headers: Vec<(String, String)>, auth: Option<Arc<Auth>>) -> Self {
+    fn new(
+        source_id: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        auth: Option<Arc<Auth>>,
+        if_range: Option<String>,
+    ) -> Self {
         Target {
+            source_id,
             url,
             headers,
             auth,
+            if_range,
             open: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            received: AtomicU64::new(0),
         }
+    }
+
+    /// Cible d'une source enregistrée : son `If-Range` vient de ses validateurs (un
+    /// `ETag` fort et bien formé, sinon la date, RFC 9110 §13.1.5).
+    fn of(source: &SourceRow, headers: Vec<(String, String)>, auth: Option<Arc<Auth>>) -> Self {
+        let if_range =
+            headers::if_range_validator(source.etag.as_deref(), source.last_modified.as_deref());
+        Target::new(
+            source.id.clone(),
+            source.url.clone(),
+            headers,
+            auth,
+            if_range,
+        )
     }
 
     /// Le serveur a accepté une requête : compte la connexion jusqu'à la fin du garde.
@@ -1238,8 +1223,11 @@ impl Drop for Accepted<'_> {
 /// Ce que partagent les connexions d'une exécution.
 struct Pool<'a> {
     client: &'a Client,
-    /// Adresse et en-têtes des requêtes, partagés par les connexions.
-    target: Arc<Target>,
+    /// Sources utilisables au départ : la référence d'abord, puis les miroirs déjà validés
+    /// (SPEC §7.7). Une tâche sans plages n'a que la référence.
+    targets: Vec<Arc<Target>>,
+    /// Miroirs à valider pendant le téléchargement ; acceptés, ils s'y joignent.
+    checks: Vec<PendingCheck>,
     fetch: Fetch,
     plan: Plan,
     /// Hôte de la source, pour le plafond appris d'un serveur qui résiste.
@@ -1255,13 +1243,227 @@ struct Pool<'a> {
 /// Fin d'une connexion : compteur vidé sur disque et issue.
 struct ConnEnd {
     idx: u32,
+    /// Rang de sa source dans les sources de l'exécution.
+    slot: usize,
     progress: Result<SyncedProgress, IoError>,
     result: Result<(), Failure>,
+}
+
+/// Un miroir à valider pendant le téléchargement (SPEC §7.7).
+#[derive(Clone)]
+struct PendingCheck {
+    source_id: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    auth: Option<Arc<Auth>>,
+}
+
+/// Issue de la validation d'un miroir.
+struct CheckEnd {
+    check: PendingCheck,
+    verdict: mirrors::Verdict,
+}
+
+/// Valide un miroir face à la référence (taille et échantillons).
+async fn check_mirror(
+    client: Client,
+    reference: Arc<Target>,
+    check: PendingCheck,
+    total: u64,
+) -> CheckEnd {
+    let reference_side = mirrors::Side {
+        url: &reference.url,
+        headers: &reference.headers,
+        auth: reference.auth.as_deref(),
+        if_range: reference.if_range.as_deref(),
+    };
+    let side = mirrors::Side {
+        url: &check.url,
+        headers: &check.headers,
+        auth: check.auth.as_deref(),
+        if_range: None,
+    };
+    let verdict = mirrors::validate(&client, &reference_side, &side, total).await;
+    CheckEnd { check, verdict }
+}
+
+/// Échecs d'affilée d'une source avant son repos (SPEC §7.7).
+const SOURCE_STRIKES: u32 = 3;
+/// Repos d'une source après [`SOURCE_STRIKES`] échecs : doublé à chaque fois, plafonné.
+const SOURCE_REST: Duration = Duration::from_secs(30);
+const SOURCE_REST_MAX: Duration = Duration::from_secs(600);
+/// Mesures de débit (une par affichage) avant de juger une source lente.
+const SLOW_AFTER_MEASURES: u32 = 4;
+/// Écart minimal entre deux mesures de débit.
+const MIN_MEASURE_SECONDS: f64 = 0.2;
+
+/// État d'une source pendant l'exécution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SlotState {
+    /// Reçoit de nouveaux segments.
+    Usable,
+    /// Trop lente : garde ses connexions, n'en reçoit plus (SPEC §7.7).
+    Slow,
+    /// Au repos jusqu'à cet instant, après des échecs d'affilée.
+    Resting(Instant),
+    /// Écartée pour cette exécution : fichier changé, refus du serveur.
+    Dropped,
+}
+
+/// Une source de l'exécution : sa cible, son état et son débit mesuré.
+struct Slot {
+    target: Arc<Target>,
+    state: SlotState,
+    /// Connexions ouvertes sur elle.
+    connections: usize,
+    /// Échecs d'affilée, et repos déjà pris.
+    strikes: u32,
+    rests: u32,
+    /// Débit lissé (octets par seconde) et mesures prises.
+    rate: f64,
+    measures: u32,
+    /// Octets reçus à la dernière mesure.
+    last_received: u64,
+}
+
+impl Slot {
+    fn new(target: Arc<Target>) -> Slot {
+        Slot {
+            target,
+            state: SlotState::Usable,
+            connections: 0,
+            strikes: 0,
+            rests: 0,
+            rate: 0.0,
+            measures: 0,
+            last_received: 0,
+        }
+    }
+
+    /// Un échec qui tient à elle. Définitif : écartée. Sinon, au repos après
+    /// [`SOURCE_STRIKES`] échecs d'affilée. Rend l'état à enregistrer, s'il change.
+    fn on_failure(&mut self, gone: bool, now: Instant) -> Option<SlotState> {
+        if gone {
+            self.state = SlotState::Dropped;
+            return Some(self.state);
+        }
+        self.strikes += 1;
+        if self.strikes < SOURCE_STRIKES {
+            return None;
+        }
+        self.strikes = 0;
+        let rest = SOURCE_REST
+            .saturating_mul(1 << self.rests.min(8))
+            .min(SOURCE_REST_MAX);
+        self.rests += 1;
+        self.state = SlotState::Resting(now + rest);
+        Some(self.state)
+    }
+}
+
+/// Source à qui confier une nouvelle connexion : parmi celles qui reçoivent des segments
+/// et ont moins de `width` connexions ouvertes, celle dont le débit par connexion ouverte serait le meilleur ; une source pas encore
+/// mesurée compte pour la médiane des autres, et, à égalité, la référence passe avant.
+fn pick_slot(slots: &[Slot], width: usize) -> Option<usize> {
+    let measured: Vec<f64> = slots
+        .iter()
+        .filter(|s| s.state == SlotState::Usable && s.measures > 0)
+        .map(|s| s.rate)
+        .collect();
+    let fallback = median(&measured).unwrap_or(1.0).max(1.0);
+    slots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.state == SlotState::Usable && s.connections < width)
+        .map(|(i, s)| {
+            let rate = if s.measures > 0 {
+                s.rate.max(1.0)
+            } else {
+                fallback
+            };
+            (i, rate / (s.connections + 1) as f64)
+        })
+        .fold(None, |best: Option<(usize, f64)>, (i, score)| match best {
+            Some((_, b)) if b >= score => best,
+            _ => Some((i, score)),
+        })
+        .map(|(i, _)| i)
+}
+
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    Some(sorted[sorted.len() / 2])
+}
+
+/// Débits de chaque source, depuis la mesure précédente il y a `elapsed` ; une source qui
+/// tombe sous le quart de la médiane des autres passe à `slow` (SPEC §7.7). Rend les
+/// sources devenues lentes ; `None` si la mesure est remise (trop peu de temps écoulé).
+fn measure_slots(slots: &mut [Slot], elapsed: f64) -> Option<Vec<usize>> {
+    // Trop tôt (premier affichage, au départ) : la mesure attend, les octets s'ajoutent.
+    if elapsed < MIN_MEASURE_SECONDS {
+        return None;
+    }
+    for slot in slots.iter_mut() {
+        let received = slot.target.received.load(Ordering::Relaxed);
+        let delta = received.saturating_sub(slot.last_received);
+        slot.last_received = received;
+        if slot.connections == 0 && delta == 0 {
+            continue;
+        }
+        let now = delta as f64 / elapsed;
+        slot.rate = if slot.measures == 0 {
+            now
+        } else {
+            0.7 * slot.rate + 0.3 * now
+        };
+        slot.measures += 1;
+    }
+    let rates: Vec<f64> = slots
+        .iter()
+        .filter(|s| s.state == SlotState::Usable && s.measures >= SLOW_AFTER_MEASURES)
+        .map(|s| s.rate)
+        .collect();
+    let mut slowed = Vec::new();
+    if rates.len() < 2 {
+        return Some(slowed);
+    }
+    let median = median(&rates).unwrap_or(0.0);
+    for (i, slot) in slots.iter_mut().enumerate() {
+        if slot.state == SlotState::Usable
+            && slot.measures >= SLOW_AFTER_MEASURES
+            && slot.rate < median / 4.0
+        {
+            slot.state = SlotState::Slow;
+            slowed.push(i);
+        }
+    }
+    Some(slowed)
+}
+
+/// Enregistre l'état et le débit d'une source.
+fn save_slot(conn: &Connection, slot: &Slot, reason: Option<&str>) -> Result<(), TransferError> {
+    let bps = (slot.measures > 0).then_some(slot.rate as u64);
+    let state = match slot.state {
+        SlotState::Usable => SourceState::Ok,
+        SlotState::Slow => SourceState::Slow,
+        SlotState::Resting(_) | SlotState::Dropped => SourceState::Failed,
+    };
+    sources::save_run(conn, &slot.target.source_id, state, bps, reason)?;
+    Ok(())
 }
 
 /// Boucle de coordination : remplit les connexions libres avec les segments à faire,
 /// enregistre les compteurs et s'arrête au premier échec ou sur `stop`. Renvoie les
 /// octets écrits au total.
+///
+/// Miroirs (SPEC §7.7, phase 6) : chaque connexion va à une source choisie par
+/// [`pick_slot`] ; un échec qui tient à une source, tant qu'une autre reste, ne fait que
+/// l'écarter ou la mettre au repos, et son segment va aux autres. Le dernier recours suit
+/// la règle d'une source unique.
 async fn pool(
     conn: &mut Connection,
     task_id: &str,
@@ -1277,9 +1479,21 @@ async fn pool(
         .map(|s| (s.idx, s.written))
         .collect();
     let total = match ctx.fetch {
-        Fetch::Ranges { total, .. } => Some(total),
+        Fetch::Ranges { total } => Some(total),
         Fetch::Whole { total } => total,
     };
+    let mut slots: Vec<Slot> = ctx.targets.iter().cloned().map(Slot::new).collect();
+    let mut checks: JoinSet<CheckEnd> = JoinSet::new();
+    if let Fetch::Ranges { total } = ctx.fetch {
+        for check in &ctx.checks {
+            checks.spawn(check_mirror(
+                ctx.client.clone(),
+                Arc::clone(&slots[0].target),
+                check.clone(),
+                total,
+            ));
+        }
+    }
     let (halt_tx, halt_rx) = watch::channel(false);
     let mut running: JoinSet<ConnEnd> = JoinSet::new();
     let mut handles: HashMap<u32, ProgressHandle> = HashMap::new();
@@ -1293,6 +1507,7 @@ async fn pool(
     space.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut display = interval_at(start, Duration::from_millis(500));
     display.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut rated = start;
     let (mut width, mut auto) = match &ctx.plan {
         Plan::Fixed(n) => (*n as usize, None),
         Plan::Auto(a) => (a.width() as usize, Some(a.clone())),
@@ -1305,9 +1520,22 @@ async fn pool(
     let (mut strikes, mut ended_ok, mut hold): (u32, bool, Option<Instant>) = (0, false, None);
 
     loop {
+        // Les sources au repos dont le délai est passé reçoivent de nouveau des segments.
+        let now = Instant::now();
+        for slot in &mut slots {
+            if matches!(slot.state, SlotState::Resting(until) if until <= now) {
+                slot.state = SlotState::Usable;
+                save_slot(conn, slot, None)?;
+            }
+        }
         // Après un refus, pas de nouvelle connexion avant la fin de la pause.
         let held = hold.filter(|t| Instant::now() < *t);
-        while failure.is_none() && !user_stop && held.is_none() && running.len() < width {
+        // Le nombre de connexions (`width`) vaut pour chaque source, comme les connexions
+        // par serveur d'aria2 : un miroir accepté a les siennes (SPEC §7.7).
+        while failure.is_none() && !user_stop && held.is_none() {
+            let Some(pick) = pick_slot(&slots, width) else {
+                break;
+            };
             let segment = match todo.pop_front() {
                 Some(segment) => segment,
                 // Plus rien en attente : la connexion libre coupe le plus gros segment en
@@ -1325,9 +1553,11 @@ async fn pool(
             };
             let writer = ctx.part.writer(&segment, ctx.opts.buffer);
             handles.insert(segment.idx, writer.progress());
+            slots[pick].connections += 1;
             running.spawn(connection(
                 ctx.client.clone(),
-                Arc::clone(&ctx.target),
+                Arc::clone(&slots[pick].target),
+                pick,
                 ctx.fetch.clone(),
                 segment.start,
                 writer,
@@ -1336,8 +1566,22 @@ async fn pool(
             ));
         }
         if running.is_empty() {
-            // Plus aucune connexion, mais des segments attendent la fin d'une pause.
-            match held {
+            // Plus aucune connexion, mais des segments attendent : la fin d'une pause
+            // après un refus, ou le retour d'une source au repos.
+            let resting = slots
+                .iter()
+                .filter_map(|s| match s.state {
+                    SlotState::Resting(until) => Some(until),
+                    _ => None,
+                })
+                .min();
+            let usable = slots.iter().any(|s| s.state == SlotState::Usable);
+            let wake = match (held, usable) {
+                (Some(until), _) => Some(until),
+                (None, false) => resting,
+                (None, true) => None,
+            };
+            match wake {
                 Some(until) if failure.is_none() && !user_stop && !todo.is_empty() => {
                     tokio::select! {
                         _ = tokio::time::sleep_until(until) => {}
@@ -1361,10 +1605,27 @@ async fn pool(
             }
             let _ = halt_tx.send(true);
         };
+        // Un segment interrompu attend son tour depuis ses octets enregistrés.
+        let requeue = |handle: Option<ProgressHandle>,
+                       written: Option<u64>,
+                       idx: u32,
+                       todo: &mut VecDeque<Segment>| {
+            if let (Some(h), Some(written)) = (handle, written) {
+                let (_, last) = h.accepted_and_end();
+                todo.push_front(Segment {
+                    idx,
+                    start: h.start(),
+                    end: last,
+                    written,
+                    state: SegmentState::Pending,
+                });
+            }
+        };
         tokio::select! {
             joined = running.join_next() => {
                 let end = joined.expect("au moins une connexion")?;
                 let handle = handles.remove(&end.idx);
+                slots[end.slot].connections -= 1;
                 let mut written = None;
                 match end.progress {
                     Ok(p) => {
@@ -1376,8 +1637,18 @@ async fn pool(
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
                 }
+                // Une autre source qui travaille peut prendre le relais (SPEC §7.7). Une
+                // source au repos ne compte pas : sans aucune autre, la règle d'une source
+                // unique s'applique (nouvel essai par le planificateur, pause, échec), et
+                // jamais une attente sans fin.
+                let others = slots.iter().enumerate().any(|(i, s)| {
+                    i != end.slot && matches!(s.state, SlotState::Usable | SlotState::Slow)
+                });
                 match end.result {
-                    Ok(()) => ended_ok = true,
+                    Ok(()) => {
+                        ended_ok = true;
+                        slots[end.slot].strikes = 0;
+                    }
                     // Le serveur refuse une connexion alors que d'autres tournent : elles
                     // deviennent la cible et le plafond retenu pour l'hôte, et le segment
                     // attend son tour depuis ses octets enregistrés (SPEC §7.3).
@@ -1404,26 +1675,61 @@ async fn pool(
                         // que le serveur compte encore), pas sous ce qu'il a déjà accepté
                         // ensemble.
                         let keep = match strikes {
-                            n if n >= REFUSALS_TO_LOWER => running.len(),
-                            _ => running.len().max(ctx.target.peak()),
+                            n if n >= REFUSALS_TO_LOWER => slots[end.slot].connections,
+                            _ => slots[end.slot].connections.max(slots[end.slot].target.peak()),
                         };
                         let cap = a.on_overload(u32::try_from(keep).unwrap_or(u32::MAX));
                         width = a.width() as usize;
                         if let Some(host) = &ctx.host {
                             ctx.client.limit_host(host, cap);
                         }
-                        if let (Some(h), Some(written)) = (handle, written) {
-                            let (_, last) = h.accepted_and_end();
-                            todo.push_front(Segment {
-                                idx: end.idx,
-                                start: h.start(),
-                                end: last,
-                                written,
-                                state: SegmentState::Pending,
-                            });
+                        requeue(handle, written, end.idx, &mut todo);
+                    }
+                    // Échec d'une source alors qu'une autre reste : seule cette source est
+                    // écartée ou mise au repos (décision de l'utilisateur du 2026-11-10 :
+                    // un fichier changé n'arrête pas la tâche s'il reste un miroir).
+                    Err(f) if failure.is_none() && f.caused_by_source() && others => {
+                        let slot = &mut slots[end.slot];
+                        if let Some(_changed) = slot.on_failure(f.source_gone(), Instant::now()) {
+                            save_slot(conn, slot, Some(&f.detail()))?;
                         }
+                        requeue(handle, written, end.idx, &mut todo);
                     }
                     Err(f) => first_failure(f, &mut failure),
+                }
+            }
+            // Un miroir validé pendant le téléchargement s'y joint ; refusé, il est écarté
+            // avec la raison ; injoignable, il reste à valider.
+            Some(done) = checks.join_next(), if !checks.is_empty() => {
+                let Ok(CheckEnd { check, verdict }) = done else { continue };
+                match verdict {
+                    mirrors::Verdict::Accepted(facts) => {
+                        let checked = sources::Checked {
+                            accepts_ranges: true,
+                            etag: facts.etag.as_deref(),
+                            last_modified: facts.last_modified.as_deref(),
+                            content_length: Some(facts.content_length),
+                        };
+                        sources::set_checked(conn, &check.source_id, &checked)?;
+                        let if_range = headers::if_range_validator(
+                            facts.etag.as_deref(),
+                            facts.last_modified.as_deref(),
+                        );
+                        slots.push(Slot::new(Arc::new(Target::new(
+                            check.source_id,
+                            check.url,
+                            check.headers,
+                            check.auth,
+                            if_range,
+                        ))));
+                    }
+                    mirrors::Verdict::Refused(reason) => {
+                        sources::set_failed(conn, &check.source_id, &reason)?;
+                    }
+                    mirrors::Verdict::Unreachable(e) => {
+                        sources::set_unreachable(conn, &check.source_id, &e.to_string())?;
+                    }
+                    mirrors::Verdict::Reference(_) => {}
                 }
             }
             _ = checkpoint.tick(), if ctx.persist && !handles.is_empty() => {
@@ -1438,6 +1744,12 @@ async fn pool(
                         }
                     }
                     Err(e) => first_failure(Failure::Io(e), &mut failure),
+                }
+                // Débit de chaque source, pour l'affichage (avec plusieurs sources).
+                if slots.len() > 1 {
+                    for slot in slots.iter().filter(|s| s.measures > 0) {
+                        sources::save_speed(conn, &slot.target.source_id, slot.rate as u64)?;
+                    }
                 }
             }
             // Assez d'octets reçus depuis le dernier point : le suivant tout de suite, puis
@@ -1471,6 +1783,13 @@ async fn pool(
             }
             _ = display.tick() => {
                 on_progress(progress(&saved, &handles, total, running.len()));
+                let now = Instant::now();
+                if let Some(slowed) = measure_slots(&mut slots, now.duration_since(rated).as_secs_f64()) {
+                    for i in slowed {
+                        save_slot(conn, &slots[i], None)?;
+                    }
+                    rated = now;
+                }
             }
             changed = async { stop.wait_for(|s| *s).await.is_ok() }, if !user_stop && !stop_gone => {
                 if changed {
@@ -1483,6 +1802,12 @@ async fn pool(
         }
     }
     on_progress(progress(&saved, &handles, total, 0));
+    // Débits de cette exécution, gardés pour la suivante et pour l'affichage.
+    if slots.len() > 1 {
+        for slot in slots.iter().filter(|s| s.measures > 0) {
+            sources::save_speed(conn, &slot.target.source_id, slot.rate as u64)?;
+        }
+    }
 
     if let Some(f) = failure {
         return fail(f);
@@ -1578,9 +1903,11 @@ fn progress(
 }
 
 /// Une connexion : télécharge le segment de `writer`, puis vide ce qu'elle a reçu.
+#[allow(clippy::too_many_arguments)]
 async fn connection(
     client: Client,
     target: Arc<Target>,
+    slot: usize,
     fetch: Fetch,
     start: u64,
     mut writer: SegmentWriter,
@@ -1603,6 +1930,7 @@ async fn connection(
         .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
     ConnEnd {
         idx,
+        slot,
         progress,
         result,
     }
@@ -1625,12 +1953,12 @@ async fn pump(
         let last = first + writer.remaining() - 1;
         let request = async {
             match fetch {
-                Fetch::Ranges { total, if_range } => {
+                Fetch::Ranges { total } => {
                     let req = RangeRequest {
                         first,
                         last,
                         total: *total,
-                        if_range: if_range.as_deref(),
+                        if_range: target.if_range.as_deref(),
                     };
                     client
                         .get_range_as(&target.url, &target.headers, &req, target.auth.as_deref())
@@ -1661,6 +1989,9 @@ async fn pump(
             };
             let Some(chunk) = chunk else { break };
             throttle.pay(chunk.len());
+            target
+                .received
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
             writer.write(&chunk).map_err(Failure::Io)?;
             if writer.remaining() == 0 {
                 return Ok(());
@@ -1703,5 +2034,7 @@ pub fn requeue(conn: &mut Connection, task_id: &str) -> Result<(), TransferError
     Ok(())
 }
 
+#[cfg(test)]
+mod mirror_tests;
 #[cfg(test)]
 mod tests;
