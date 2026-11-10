@@ -159,3 +159,13 @@ test("liens magnet : reconnus, option active par défaut", () => {
   assert.equal(settings({}).captureMagnet, true);
   assert.equal(settings({ captureMagnet: false }).captureMagnet, false);
 });
+
+test("lien magnet refusé : rendu au navigateur seulement si AuroDownloader est injoignable", () => {
+  const { givesBackMagnet } = globalThis.AuroDecide;
+  assert.equal(givesBackMagnet({ ok: true, taskId: "t" }), false);
+  assert.equal(givesBackMagnet({ ok: false, code: "RELAY_MISSING" }), true);
+  assert.equal(givesBackMagnet({ ok: false, code: "ENGINE_UNAVAILABLE" }), true);
+  // Refus du moteur : torrent déjà dans la liste, lien invalide.
+  assert.equal(givesBackMagnet({ ok: false, code: "INVALID_PARAMS" }), false);
+  assert.equal(givesBackMagnet({ ok: false, code: "BAD_MESSAGE" }), false);
+});

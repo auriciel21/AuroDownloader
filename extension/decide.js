@@ -99,6 +99,14 @@
     return /^magnet:\?/i.test(String(url ?? ""));
   }
 
+  /// Un lien magnet refusé retourne-t-il au navigateur (programme associé du système) ?
+  /// Seulement si AuroDownloader est injoignable ; un refus du moteur (torrent déjà dans la
+  /// liste, lien invalide) reste un refus, signalé sur l'icône (décision du 2026-11-10).
+  function givesBackMagnet(reply) {
+    if (reply?.ok) return false;
+    return reply?.code === "RELAY_MISSING" || reply?.code === "ENGINE_UNAVAILABLE";
+  }
+
   /// Contenu lu d'un `.torrent`, vérifié avant l'envoi : pas vide, pas trop gros, et un
   /// dictionnaire bencode (premier octet `d`) ; une page d'erreur HTML est écartée.
   /// Renvoie un message d'erreur, ou `null` s'il convient.
@@ -186,6 +194,7 @@
     decide,
     isTorrentDownload,
     isMagnet,
+    givesBackMagnet,
     torrentProblem,
     toBase64,
     requestId,

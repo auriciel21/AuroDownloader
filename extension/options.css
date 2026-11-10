@@ -38,4 +38,4 @@ input, textarea, button {
 }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.hint, .status { color: var(--muted); margin: 6px 0; }
+.hint, .status { color: var(--muted); margin: 6px 0; overflow-wrap: anywhere; }

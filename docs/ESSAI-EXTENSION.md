@@ -108,7 +108,7 @@ les pages libres ci-dessous. Les outils vidéo doivent être installés (Options
 | N° | Essai | Ce qu'il faut faire | Résultat attendu |
 | --- | --- | --- | --- |
 | 10 | Lien magnet, clic | Sur la page d'essai fournie (lien magnet du netinst Debian), cliquer sur le lien | Badge « ✓ » ; un torrent `debian-…-netinst.iso` apparaît dans AuroDownloader ; le navigateur n'ouvre rien d'autre |
-| 11 | Lien magnet avec Alt | Même lien, avec Alt | Le navigateur le traite lui-même (il propose d'ouvrir un programme, ou rien) ; rien de nouveau dans AuroDownloader |
+| 11 | Lien magnet avec Alt | Même lien, avec Alt | Le navigateur le traite lui-même (il propose d'ouvrir un programme, ou rien) ; rien de nouveau dans AuroDownloader. Un lien déjà dans la liste, cliqué sans Alt, donne « ! » sur l'icône et reste à AuroDownloader (depuis le 2026-11-10) |
 | 12 | Option magnet coupée | Options : décocher « Confier les liens magnet à AuroDownloader » ; refaire l'essai 10 ; puis recocher | Comme l'essai 11 |
 | 13 | Fichier `.torrent` | Ouvrir `https://cdimage.debian.org/debian-cd/current/amd64/bt-cd/` et cliquer sur le `.torrent` du netinst | Badge « ✓ » ; un torrent (et non un fichier `.torrent`) apparaît dans AuroDownloader ; rien dans la liste du navigateur |
 | 14 | Vidéo, fenêtre | Ouvrir `https://framatube.org/w/4Tg9KUhgBQSYB383W7VUKV`, cliquer sur l'icône AuroDownloader | « Lecture de la page… », puis le titre (« Bruce Schneier… »), la durée, les qualités avec leur taille, un sous-titre « anglais (en) ». Choisir une qualité, cocher le sous-titre, « Télécharger » : « Ajoutée à AuroDownloader. », badge « ✓ » ; la vidéo se termine, avec `….en.vtt` à côté |
@@ -117,3 +117,13 @@ les pages libres ci-dessous. Les outils vidéo doivent être installés (Options
 | 17 | Réglages | Dans la fenêtre, « Réglages » | Les options s'ouvrent, avec la case des liens magnet |
 
 Pour ces essais, renvoyer aussi les messages exacts de la fenêtre quand ils diffèrent.
+
+Résultat de l'étape 5d : 2026-11-10, essais 10 à 17 validés par l'utilisateur sous Edge,
+avec l'application installée mise à jour le même jour. Deux corrections en sont sorties :
+l'entrée vidéo du menu contextuel manquait jusqu'au rechargement de l'extension (menus
+recréés désormais à chaque démarrage), et un lien magnet déjà dans la liste était rendu
+au navigateur (qBittorrent) : il ne l'est plus que si AuroDownloader est injoignable.
+Pendant l'essai, la « Protection bancaire » de la suite de sécurité de l'utilisateur
+(cadre vert) coupait le réseau des autres programmes, et un port réservé par Windows
+(plage de WSL et Hyper-V) a fait servir la page d'essai sur le port 18765. Firefox et
+Chrome repasseront à la porte de la phase 5.

@@ -7,8 +7,17 @@
 // d'une page (fenêtre `popup.html`, menu contextuel).
 if (typeof importScripts === "function" && !globalThis.AuroDecide) importScripts("decide.js");
 
-const { decide, requestId, pageHeaders, cookieStore, isMagnet, torrentProblem, toBase64, MAX_TORRENT_BYTES } =
-  globalThis.AuroDecide;
+const {
+  decide,
+  requestId,
+  pageHeaders,
+  cookieStore,
+  isMagnet,
+  givesBackMagnet,
+  torrentProblem,
+  toBase64,
+  MAX_TORRENT_BYTES,
+} = globalThis.AuroDecide;
 const HOST = "org.aurodownloader.relay";
 const t = (key, ...subs) => chrome.i18n.getMessage(key, subs) || key;
 const freshKey = (kind) => `${kind}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -122,13 +131,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       altClickAt = Date.now();
       return false;
     // Clic sur un lien magnet (`content.js`) : la page attend la réponse, pour rendre le
-    // lien au navigateur en cas de refus.
+    // lien au navigateur si AuroDownloader est injoignable (`givesBackMagnet`).
     case "magnet": {
       if (!isMagnet(message.url)) {
-        sendResponse({ ok: false });
+        sendResponse({ ok: false, giveBack: true });
         return false;
       }
-      hand(message.url, freshKey("magnet")).then((ok) => sendResponse({ ok }));
+      submit({ type: "add", url: message.url, requestId: freshKey("magnet") }, message.url).then((reply) =>
+        sendResponse({ ok: reply?.ok === true, giveBack: givesBackMagnet(reply) }),
+      );
       return true;
     }
     // Fenêtre de l'extension (`popup.js`).
@@ -167,8 +178,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
 });
 
 // Menus contextuels : un lien, une image, une vidéo, un son (lien magnet compris) ; la
-// vidéo de la page, en meilleure qualité.
-chrome.runtime.onInstalled.addListener(() => {
+// vidéo de la page, en meilleure qualité. Recréés à chaque démarrage de l'arrière-plan, et
+// pas seulement à l'installation : l'essai sous Edge du 2026-11-10 a montré une extension
+// mise à jour sans son entrée vidéo, revenue seulement après un rechargement.
+function createMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "auro-download",
@@ -182,7 +195,8 @@ chrome.runtime.onInstalled.addListener(() => {
       documentUrlPatterns: ["http://*/*", "https://*/*"],
     });
   });
-});
+}
+createMenus();
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "auro-video") {

@@ -11,7 +11,8 @@ téléchargement.
   (section 6), algorithmes (section 7), tests et feuille de route (section 9). À lire avant
   toute modification du moteur.
 - `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, faite
-  par l'utilisateur le 2026-11-08 (porte de la phase 3, franchie).
+  par l'utilisateur le 2026-11-08 (porte de la phase 3, franchie) ; essais 10 à 17 de
+  l'étape 5d (torrents et vidéo) validés sous Edge le 2026-11-10.
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
@@ -462,7 +463,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   défaut ; `.torrent` lu par l'extension et envoyé en base64 ; fenêtre de l'icône avec le
   choix de la qualité, menu contextuel en meilleure qualité ; messages `probe` et `video` du
   relais ; messages du moteur et du relais portés à 24 Mio ; décisions de l'utilisateur ;
-  essais 10 à 17 de `docs/ESSAI-EXTENSION.md` à faire par l'utilisateur), 5e.
+  essais 10 à 17 de `docs/ESSAI-EXTENSION.md` validés par l'utilisateur sous Edge le même
+  jour, Firefox et Chrome à la porte ; lien magnet rendu au navigateur seulement si
+  AuroDownloader est injoignable ; menus contextuels recréés à chaque démarrage), 5e.
   torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

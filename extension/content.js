@@ -2,8 +2,9 @@
 // - un clic avec Alt laisse le téléchargement qui suit au navigateur ; seul le fait
 //   qu'Alt était enfoncé est transmis ;
 // - un clic sur un lien magnet le confie à AuroDownloader (option, active par défaut) ;
-//   si l'ajout est refusé, le lien suit son chemin habituel (programme associé du
-//   système). Rien d'autre de la page n'est lu ni transmis.
+//   si AuroDownloader est injoignable, le lien suit son chemin habituel (programme
+//   associé du système) ; un refus du moteur est montré sur l'icône. Rien d'autre de la
+//   page n'est lu ni transmis.
 (() => {
   const send = (message) => {
     try {
@@ -58,8 +59,10 @@
         passing = a;
         a.click();
       };
+      // Rendu au navigateur seulement si AuroDownloader est injoignable (ou l'extension
+      // retirée) ; un refus du moteur est montré sur l'icône.
       send({ type: "magnet", url: a.href, page: location.href }).then(
-        (reply) => { if (!reply?.ok) giveBack(); },
+        (reply) => { if (reply?.giveBack) giveBack(); },
         giveBack,
       );
     },
