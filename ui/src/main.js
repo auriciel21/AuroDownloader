@@ -6,7 +6,7 @@ import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
-  shareRatio,
+  shareRatio, qualityChoices, exactFormat, formatContent,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -498,6 +498,7 @@ function renderToolbar() {
   const all = [...store.tasks.values()];
   const off = !connected;
   $("tb-add").disabled = off;
+  $("tb-video").disabled = off;
   $("tb-resume").disabled = off || !chosen.some((task) => canResume(task.state));
   $("tb-pause").disabled = off || !chosen.some((task) => canPause(task.state));
   $("tb-resume-all").disabled = off || !all.some((task) => canResume(task.state));
@@ -1422,7 +1423,12 @@ function onStatus(status) {
   if (status.state === "up") {
     banner.hidden = true;
     engineVersion = status.engine?.engine?.version ?? "";
+    // Vidéo : seulement si le moteur la sait (Windows et Linux, SPEC §7.17).
+    mediaCapable = status.engine?.capabilities?.includes("media") === true;
+    $("tb-video").hidden = !mediaCapable;
+    $("tab-media").hidden = !mediaCapable;
     resync();
+    loadTools();
     if (openedWaiting) {
       showError("");
       openAdd();
@@ -1471,6 +1477,13 @@ function onEngine(event) {
       if (result.limits) renderLimit();
       if (result.settings) renderDest();
       if (result.limits || result.settings || result.torrentInterface) renderTorrentSettings();
+      if (result.tools || result.settings) renderTools();
+      // Outils installés pendant que la boîte « Vidéo » attendait : la page est analysée.
+      if (result.tools && probeAfterInstall && store.tools?.ready && $("video-dialog").open) {
+        probeAfterInstall = false;
+        probeVideo();
+      }
+      showWarnings(result.warnings);
       // Une file en attente de son interface change d'état affiché.
       if (result.torrentInterface) renderAll();
       if (result.planning) renderPlanning();
@@ -1684,6 +1697,276 @@ async function closeAdd() {
   // Les nouvelles tâches doivent se voir.
   if (view.startsWith("completed")) chooseView("all");
   $("tb-add").focus();
+}
+
+// ---------- Vidéo (SPEC §7.17, étape 5c) ----------
+
+/// Le moteur sait télécharger des vidéos (capacité `media` : Windows et Linux).
+let mediaCapable = false;
+/// Dernière analyse (`media.probe`) et l'adresse analysée ; `null` tant qu'il n'y en a pas.
+let videoProbe = null;
+let probedPage = "";
+/// Numéro de la dernière analyse demandée : une réponse plus ancienne est écartée.
+let probeSeq = 0;
+/// Analyser dès que les outils seront installés.
+let probeAfterInstall = false;
+
+/// Taille estimée : « ≈ 12,3 Mio » ou « 12,3 Mio ».
+function sizeText(size) {
+  if (!size) return "";
+  const text = bytes(size.bytes, lang, t);
+  return size.approx ? t("≈ {0}", text) : text;
+}
+
+/// Nom d'une langue dans la langue de l'interface, sinon son code.
+function languageName(code) {
+  try {
+    const name = new Intl.DisplayNames([lang], { type: "language" }).of(code);
+    return name && name !== code ? t("{0} ({1})", name, code) : code;
+  } catch {
+    return code;
+  }
+}
+
+function toolText(tool) {
+  if (!tool?.version) return t("absent");
+  return tool.origin === "system"
+    ? t("{0}, celui du système", tool.version)
+    : t("{0}, téléchargé", tool.version);
+}
+
+/// État des outils, dans les Options et dans la boîte « Vidéo ».
+function renderTools() {
+  const tools = store.tools;
+  const ready = tools?.ready === true;
+  const installing = tools?.installing === true;
+  $("m-ytdlp").textContent = toolText(tools?.ytdlp);
+  $("m-ffmpeg").textContent = toolText(tools?.ffmpeg);
+  $("m-state").textContent = installing
+    ? t("Installation en cours…")
+    : tools?.error
+      ? t("Dernière installation en échec : {0}", tools.error)
+      : ready ? t("Outils prêts.") : t("Outils absents : les vidéos ne peuvent pas être téléchargées.");
+  $("m-state").classList.toggle("warn", Boolean(tools?.error));
+  $("m-install").hidden = ready;
+  $("m-reinstall").hidden = !ready;
+  for (const id of ["m-install", "m-reinstall", "v-tools-install"]) $(id).disabled = !connected || installing;
+  $("pref-ytdlp-update").checked = store.settings["media.autoUpdate"] !== false;
+  $("pref-ytdlp-update").disabled = !connected;
+  // Dans la boîte « Vidéo » : l'offre d'installation, tant que les outils manquent.
+  $("v-tools").hidden = ready || tools === null;
+  $("v-tools-install").textContent = installing ? t("Installation en cours…") : t("Installer yt-dlp et ffmpeg");
+}
+
+async function loadTools() {
+  if (!mediaCapable || !connected) return;
+  try {
+    store.tools = await host.call("media.tools");
+  } catch {
+    return;
+  }
+  renderTools();
+}
+
+/// Installe les outils (`media.installTools`) : la commande de l'utilisateur vaut accord
+/// (SPEC §7.17). La fin s'annonce par `media.tools`.
+async function installTools(force) {
+  try {
+    store.tools = await host.call("media.installTools", { force });
+  } catch (e) {
+    showError(refused(e));
+  }
+  renderTools();
+}
+
+function openVideo() {
+  if (!connected || !mediaCapable || document.querySelector("dialog[open]")) return;
+  $("v-dest").textContent = store.settings["downloads.dir"] ?? t("(aucun)");
+  $("v-error").hidden = true;
+  renderVideo();
+  loadTools();
+  const dialog = $("video-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("v-page").focus();
+}
+
+/// Analyse la page (`media.probe`) ; sans outils, propose de les installer.
+async function probeVideo() {
+  const page = $("v-page").value.trim();
+  if (!/^https?:\/\/\S+$/i.test(page)) {
+    $("v-status").textContent = t("Donnez l'adresse d'une page web (http ou https).");
+    $("v-page").focus();
+    return;
+  }
+  const mine = ++probeSeq;
+  videoProbe = null;
+  probedPage = "";
+  $("v-error").hidden = true;
+  $("v-status").textContent = t("Analyse de la page par yt-dlp…");
+  renderVideo();
+  try {
+    const probe = await host.call("media.probe", { pageUrl: page });
+    if (mine !== probeSeq) return;
+    videoProbe = probe;
+    probedPage = page;
+    $("v-status").textContent = "";
+  } catch (e) {
+    if (mine !== probeSeq) return;
+    if (e?.code === "TOOLS_MISSING") {
+      probeAfterInstall = true;
+      $("v-status").textContent = t("yt-dlp et ffmpeg sont nécessaires pour lire cette page.");
+      await loadTools();
+    } else {
+      $("v-status").textContent = t("Page non reconnue : {0}", e?.message ?? String(e));
+    }
+  }
+  renderVideo();
+  if (videoProbe) $("v-quality").focus();
+}
+
+/// Résultat de l'analyse : titre, qualités, formats, sous-titres.
+function renderVideo() {
+  const probe = videoProbe;
+  $("v-result").hidden = !probe;
+  $("v-probe").disabled = !connected;
+  const usable = Boolean(probe) && probe.formats.some((f) => !f.drm);
+  $("v-start").disabled = !usable || !connected;
+  $("v-later").disabled = !usable || !connected;
+  if (!probe) return;
+  if (!usable) $("v-status").textContent = t("Cette vidéo est protégée (DRM) : AuroDownloader ne la télécharge pas.");
+  $("v-name").textContent = probe.title;
+  $("v-duration").textContent = duration(probe.durationS, t);
+  $("v-duration-row").hidden = probe.durationS == null;
+  $("v-site").textContent = probe.extractor ?? "";
+  $("v-site-row").hidden = !probe.extractor;
+
+  const choices = qualityChoices(probe);
+  const label = (c) => {
+    const base = c.key === "best"
+      ? t("Meilleure qualité")
+      : c.key === "audio" ? t("Son seul") : t("{0}p", c.height);
+    const size = sizeText(c.size);
+    return size ? t("{0} — {1}", base, size) : base;
+  };
+  $("v-quality").replaceChildren(...choices.map((c) => {
+    const option = new Option(label(c), c.key);
+    option.dataset.format = c.format ?? "";
+    return option;
+  }));
+
+  $("v-formats").tBodies[0].replaceChildren(...probe.formats.map((f) => {
+    const row = document.createElement("tr");
+    const pick = document.createElement("input");
+    pick.type = "radio";
+    pick.name = "v-format";
+    pick.value = f.formatId;
+    pick.disabled = f.drm;
+    pick.setAttribute("aria-label", t("Format {0}", f.formatId));
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    const first = document.createElement("td");
+    first.append(pick);
+    const content = { av: t("image et son"), v: t("image"), a: t("son"), "?": "?" }[formatContent(f)];
+    const picture = f.width && f.height ? `${f.width}×${f.height}` : f.height ? t("{0}p", f.height) : "";
+    row.append(
+      first,
+      cell(f.formatId),
+      cell(f.drm ? t("{0}, protégé (DRM)", content) : content),
+      cell(picture),
+      cell(sizeText(f.filesize > 0 ? { bytes: f.filesize, approx: f.filesizeApprox } : null)),
+      cell(f.protocol),
+    );
+    if (f.drm) row.classList.add("skipped");
+    return row;
+  }));
+
+  const subs = probe.subtitles ?? [];
+  $("v-subs").replaceChildren(...subs.map((code) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = code;
+    const text = document.createElement("span");
+    text.textContent = languageName(code);
+    label.append(box, text);
+    return label;
+  }));
+  $("v-subs-none").hidden = subs.length > 0;
+}
+
+/// Un format précis choisi dans le détail : la liste des qualités le dit.
+function chooseExactFormat(formatId) {
+  const format = videoProbe?.formats.find((f) => f.formatId === formatId);
+  if (!format) return;
+  const select = $("v-quality");
+  select.querySelector('option[value="exact"]')?.remove();
+  const option = new Option(t("Format choisi : {0}", formatId), "exact");
+  option.dataset.format = exactFormat(format, videoProbe);
+  select.append(option);
+  select.value = "exact";
+}
+
+/// Ajoute la vidéo analysée (`task.add` avec `media`) ; la boîte ne se ferme qu'en cas de
+/// succès.
+async function addVideo(choice) {
+  const page = $("v-page").value.trim();
+  if (!videoProbe || page !== probedPage) {
+    // L'adresse a changé depuis l'analyse : on analyse de nouveau d'abord.
+    await probeVideo();
+    return;
+  }
+  const media = { pageUrl: page, title: videoProbe.title };
+  const format = $("v-quality").selectedOptions[0]?.dataset.format;
+  if (format) media.format = format;
+  const container = $("v-container").value;
+  if (container) media.container = container;
+  const subtitles = [...$("v-subs").querySelectorAll("input:checked")].map((b) => b.value);
+  if (subtitles.length) media.subtitles = subtitles;
+  $("v-start").disabled = true;
+  $("v-later").disabled = true;
+  try {
+    await host.call("task.add", { media, startPaused: choice === "later" });
+    $("video-dialog").close("added");
+    if (view.startsWith("completed")) chooseView("all");
+    announce(t("Vidéo « {0} » ajoutée", videoProbe.title));
+  } catch (e) {
+    $("v-error").textContent = refused(e);
+    $("v-error").hidden = false;
+    renderVideo();
+  }
+}
+
+function closeVideo() {
+  probeSeq++;
+  probeAfterInstall = false;
+  $("tb-video").focus();
+}
+
+/// Réinitialise la boîte pour la prochaine vidéo, une fois celle-ci ajoutée.
+function resetVideo() {
+  videoProbe = null;
+  probedPage = "";
+  $("v-page").value = "";
+  $("v-status").textContent = "";
+  $("v-container").value = "";
+  $("v-details").open = false;
+}
+
+/// Avertissements du moteur : sous-titres manquants et échec d'une mise à jour de yt-dlp
+/// montrés ; une mise à jour réussie seulement annoncée.
+function showWarnings(warnings) {
+  for (const w of warnings) {
+    if (w.code === "YTDLP_UPDATED") announce(w.message);
+    else {
+      showError(w.message);
+      announce(w.message);
+    }
+  }
 }
 
 // ---------- Historique (F-35) ----------
@@ -2090,6 +2373,7 @@ function applyInfo(next) {
   renderLimit();
   renderTorrentSettings();
   renderAddTorrents();
+  renderTools();
   renderPlanning();
   renderAll();
 }
@@ -2135,6 +2419,40 @@ async function chooseFolder(save) {
 
 function wire() {
   $("tb-add").addEventListener("click", openAdd);
+  $("tb-video").addEventListener("click", openVideo);
+  $("v-probe").addEventListener("click", probeVideo);
+  $("v-page").addEventListener("keydown", (event) => {
+    // Entrée analyse la page, au lieu d'actionner le premier bouton du formulaire.
+    if (event.key === "Enter") {
+      event.preventDefault();
+      probeVideo();
+    }
+  });
+  $("v-tools-install").addEventListener("click", () => {
+    probeAfterInstall = true;
+    installTools(false);
+  });
+  $("v-formats").addEventListener("change", (event) => {
+    if (event.target.name === "v-format") chooseExactFormat(event.target.value);
+  });
+  $("video-form").addEventListener("submit", (event) => {
+    const value = event.submitter?.value;
+    if (value !== "start" && value !== "later") return;
+    // Ajoutée d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    addVideo(value);
+  });
+  $("video-dialog").addEventListener("close", () => {
+    if ($("video-dialog").returnValue === "added") resetVideo();
+    closeVideo();
+  });
+  $("m-install").addEventListener("click", () => installTools(false));
+  $("m-reinstall").addEventListener("click", () => installTools(true));
+  $("pref-ytdlp-update").addEventListener("change", async (e) => {
+    await saveSetting("media.autoUpdate", e.target.checked,
+      e.target.checked ? t("yt-dlp se mettra à jour de lui-même") : t("yt-dlp ne se mettra plus à jour de lui-même"));
+    renderTools();
+  });
   $("tb-resume").addEventListener("click", () => resume(selectedTasks()));
   $("tb-pause").addEventListener("click", () => pause(selectedTasks()));
   $("tb-resume-all").addEventListener("click", () => resume([...store.tasks.values()]));
@@ -2192,6 +2510,7 @@ function wire() {
     if (connected) loadLogins();
     if (connected) loadInterfaces();
     renderLinks();
+    loadTools();
   });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {

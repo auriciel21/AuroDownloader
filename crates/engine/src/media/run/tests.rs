@@ -523,6 +523,35 @@ async fn two_direct_streams_become_one_video() {
     let (listed, _) = s.engine.list(Default::default()).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(s.engine.history(Default::default()).await.unwrap().len(), 1);
+    // Ni adresse à changer (celle de la page est relue à chaque exécution), ni déplacement
+    // (les sous-titres ne suivraient pas), ni empreinte.
+    use crate::scheduler::{EngineError, TaskUpdate};
+    let refused = |e: EngineError| matches!(e, EngineError::BadRequest(_));
+    assert!(refused(
+        s.engine
+            .set_url(&id, "https://exemple.org/autre")
+            .await
+            .unwrap_err()
+    ));
+    assert!(refused(
+        s.engine
+            .relocate(&id, None, Some("autre.mp4".into()))
+            .await
+            .unwrap_err()
+    ));
+    let checksum = crate::io::checksum::Checksum::parse("sha256", &"a".repeat(64)).unwrap();
+    assert!(refused(
+        s.engine
+            .update_task(
+                &id,
+                TaskUpdate {
+                    checksum: Some(Some(checksum)),
+                    ..TaskUpdate::default()
+                }
+            )
+            .await
+            .unwrap_err()
+    ));
     s.engine.shutdown().await;
 }
 

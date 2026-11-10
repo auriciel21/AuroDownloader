@@ -39,6 +39,10 @@
   <div class="toolbar" role="toolbar" data-i18n-label="Actions" aria-label="Actions">
     <button type="button" id="tb-add" class="tool add" aria-keyshortcuts="Control+N">
       <svg aria-hidden="true"><use href="#i-add"/></svg><span data-i18n="Ajouter">Ajouter</span></button>
+    <button type="button" id="tb-video" class="tool" hidden
+      data-i18n-title="Télécharger la vidéo d'une page web (sites sans DRM), par yt-dlp et ffmpeg"
+      title="Télécharger la vidéo d'une page web (sites sans DRM), par yt-dlp et ffmpeg">
+      <svg aria-hidden="true"><use href="#i-video"/></svg><span data-i18n="Vidéo">Vidéo</span></button>
     <button type="button" id="tb-resume" class="tool resume">
       <svg aria-hidden="true"><use href="#i-resume"/></svg><span data-i18n="Reprendre">Reprendre</span></button>
     <button type="button" id="tb-pause" class="tool pause">
@@ -150,6 +154,76 @@
         <span class="row">
           <button value="later" id="add-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
           <button value="start" id="add-start" class="primary" data-i18n="Démarrer">Démarrer</button>
+        </span>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="video-dialog" class="wide" aria-labelledby="video-title">
+    <form method="dialog" id="video-form">
+      <h2 id="video-title" data-i18n="Ajouter une vidéo">Ajouter une vidéo</h2>
+      <div class="field">
+        <label for="v-page" data-i18n="Adresse de la page de la vidéo">Adresse de la page de la vidéo</label>
+        <span class="row"><input id="v-page" type="url" spellcheck="false" autocomplete="off" aria-describedby="v-page-note">
+          <button type="button" id="v-probe" data-i18n="Analyser">Analyser</button></span>
+        <span class="note" id="v-page-note" data-i18n="Sites sans DRM : PeerTube, Wikimedia Commons, Internet Archive… La page est lue par yt-dlp.">Sites sans DRM : PeerTube, Wikimedia Commons, Internet Archive… La page est lue par yt-dlp.</span>
+      </div>
+      <p id="v-status" class="note flush" role="status"></p>
+      <div id="v-tools" class="tools-box" hidden>
+        <p id="v-tools-text" data-i18n="Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.">Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.</p>
+        <button type="button" id="v-tools-install" data-i18n="Installer yt-dlp et ffmpeg">Installer yt-dlp et ffmpeg</button>
+      </div>
+      <div id="v-result" hidden>
+        <dl class="facts">
+          <div><dt data-i18n="Titre">Titre</dt><dd id="v-name"></dd></div>
+          <div id="v-duration-row"><dt data-i18n="Durée">Durée</dt><dd id="v-duration"></dd></div>
+          <div id="v-site-row"><dt data-i18n="Site">Site</dt><dd id="v-site"></dd></div>
+        </dl>
+        <label class="field">
+          <span data-i18n="Qualité">Qualité</span>
+          <select id="v-quality"></select>
+        </label>
+        <details id="v-details">
+          <summary data-i18n="Tous les formats">Tous les formats</summary>
+          <div class="segments-box">
+            <table id="v-formats">
+              <thead><tr>
+                <th scope="col" data-i18n="Choisir">Choisir</th>
+                <th scope="col" data-i18n="Format">Format</th>
+                <th scope="col" data-i18n="Contenu">Contenu</th>
+                <th scope="col" data-i18n="Image">Image</th>
+                <th scope="col" data-i18n="Taille">Taille</th>
+                <th scope="col" data-i18n="Protocole">Protocole</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+        <label class="field">
+          <span data-i18n="Conteneur">Conteneur</span>
+          <select id="v-container">
+            <option value="" data-i18n="Automatique">Automatique</option>
+            <option value="mp4">MP4</option>
+            <option value="mkv">MKV</option>
+            <option value="webm">WebM</option>
+          </select>
+        </label>
+        <fieldset id="v-subs-box">
+          <legend data-i18n="Sous-titres, gardés à côté de la vidéo">Sous-titres, gardés à côté de la vidéo</legend>
+          <div id="v-subs" class="subs"></div>
+          <p id="v-subs-none" class="note flush" data-i18n="Aucun sous-titre proposé.">Aucun sous-titre proposé.</p>
+        </fieldset>
+      </div>
+      <div class="field">
+        <span data-i18n="Enregistrer dans">Enregistrer dans</span>
+        <span id="v-dest" class="path"></span>
+      </div>
+      <p id="v-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <span class="row">
+          <button value="later" id="v-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
+          <button value="start" id="v-start" class="primary" data-i18n="Démarrer">Démarrer</button>
         </span>
       </div>
     </form>
@@ -410,6 +484,7 @@
         <button type="button" role="tab" id="tab-save" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
         <button type="button" role="tab" id="tab-connection" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
         <button type="button" role="tab" id="tab-torrent" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
+        <button type="button" role="tab" id="tab-media" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
         <button type="button" role="tab" id="tab-logins" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
@@ -476,6 +551,21 @@
             <span data-i18n="Ouvrir les liens magnet et les fichiers .torrent avec AuroDownloader">Ouvrir les liens magnet et les fichiers .torrent avec AuroDownloader</span></label>
           <p class="note" id="pref-links-note" data-i18n="Décochée, le programme d'avant est rétabli. Sous Windows, un choix fait dans les paramètres du système passe avant : Windows peut demander quel programme utiliser.">Décochée, le programme d'avant est rétabli. Sous Windows, un choix fait dans les paramètres du système passe avant : Windows peut demander quel programme utiliser.</p>
         </div>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-media" aria-labelledby="tab-media" hidden>
+        <dl class="facts">
+          <div><dt>yt-dlp</dt><dd id="m-ytdlp"></dd></div>
+          <div><dt>ffmpeg</dt><dd id="m-ffmpeg"></dd></div>
+        </dl>
+        <p id="m-state" class="note flush" role="status"></p>
+        <span class="row">
+          <button type="button" id="m-install" data-i18n="Installer yt-dlp et ffmpeg">Installer yt-dlp et ffmpeg</button>
+          <button type="button" id="m-reinstall" data-i18n="Réinstaller">Réinstaller</button>
+        </span>
+        <p class="note flush" data-i18n="Téléchargés depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), signature et empreintes vérifiées, rangés à côté des données du moteur. Jamais sans votre accord.">Téléchargés depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), signature et empreintes vérifiées, rangés à côté des données du moteur. Jamais sans votre accord.</p>
+        <label class="check"><input type="checkbox" id="pref-ytdlp-update" aria-describedby="pref-ytdlp-update-note">
+          <span data-i18n="Mettre à jour yt-dlp de lui-même">Mettre à jour yt-dlp de lui-même</span></label>
+        <p class="note" id="pref-ytdlp-update-note" data-i18n="Au plus une fois par jour, quand une page est analysée ; la signature de la nouvelle version est vérifiée. Les sites changent souvent : un yt-dlp ancien finit par ne plus les lire.">Au plus une fois par jour, quand une page est analysée ; la signature de la nouvelle version est vérifiée. Les sites changent souvent : un yt-dlp ancien finit par ne plus les lire.</p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-logins" aria-labelledby="tab-logins" hidden>
         <p class="note flush" id="logins-note" data-i18n="Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.">Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.</p>

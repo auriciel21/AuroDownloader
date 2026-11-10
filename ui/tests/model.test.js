@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
   canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
-  isMagnet, shareRatio,
+  isMagnet, shareRatio, qualityChoices, exactFormat, formatContent,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -391,6 +391,8 @@ test("torrents : partage arrêtable, ni adresse ni empreinte, fichiers à choisi
   assert.ok(canPause("seeding"), "arrêter le partage");
   assert.ok(!canRelocate(torrent("paused")) && canRelocate(task("h", "paused")));
   assert.ok(!canSetChecksum(torrent("active")) && canSetChecksum(task("h", "active")));
+  assert.ok(!canRelocate(task("v", "paused", { kind: "media" })), "vidéo");
+  assert.ok(!canSetChecksum(task("v", "active", { kind: "media" })), "vidéo");
   assert.ok(canChooseFiles(torrent("active")) && canChooseFiles(torrent("paused")));
   assert.ok(!canChooseFiles(torrent("seeding")) && !canChooseFiles(torrent("completed")));
   assert.ok(!canChooseFiles(task("h", "active")), "pas un torrent");
@@ -422,4 +424,36 @@ test("annonces numérotées : interface des torrents, outils de la vidéo, avert
   // Notifications perdues : propre à la connexion, sans révision.
   assert.ok(store.apply("engine.warning", { code: "EVENTS_LOST" }).resync);
   assert.equal(store.rev, 5);
+});
+
+test("vidéo : qualités proposées, tailles estimées, DRM écarté, format précis (SPEC §7.17)", () => {
+  const probe = {
+    formats: [
+      { formatId: "a1", vcodec: null, acodec: "mp4a", filesize: 1000 },
+      { formatId: "a2", vcodec: null, acodec: "opus", filesize: 1500, filesizeApprox: true },
+      { formatId: "v720", vcodec: "avc1", acodec: null, height: 720, filesize: 9000 },
+      { formatId: "v1080", vcodec: "avc1", acodec: null, height: 1080, filesize: 20000 },
+      { formatId: "hls360", vcodec: "avc1", acodec: "mp4a", height: 360 },
+      { formatId: "drm4k", vcodec: "hev1", acodec: null, height: 2160, filesize: 1, drm: true },
+    ],
+  };
+  const choices = qualityChoices(probe);
+  assert.deepEqual(choices.map((c) => c.key), ["best", "h1080", "h720", "h360", "audio"]);
+  assert.equal(choices[0].format, null, "le sélecteur du moteur");
+  assert.deepEqual(choices[0].size, { bytes: 21500, approx: true }, "image et meilleur son");
+  assert.equal(choices[2].format, "bv*[height<=720]+ba/b[height<=720]");
+  assert.deepEqual(choices[2].size, { bytes: 10500, approx: true });
+  assert.equal(choices[3].size, null, "HLS sans taille");
+  assert.deepEqual(choices[4], { key: "audio", format: "ba", height: null, size: { bytes: 1500, approx: true } });
+  // Une vidéo à format unique, codecs inconnus (PeerTube) : une hauteur, pas de son seul.
+  const single = qualityChoices({ formats: [{ formatId: "400p", height: 400, filesize: 50 }] });
+  assert.deepEqual(single.map((c) => c.key), ["best", "h400"]);
+  assert.deepEqual(single[0].size, { bytes: 50, approx: false });
+  assert.deepEqual(qualityChoices({ formats: [] }).map((c) => c.key), ["best"]);
+  // Format précis : une image seule reçoit le meilleur son.
+  assert.equal(exactFormat(probe.formats[2], probe), "v720+ba");
+  assert.equal(exactFormat(probe.formats[4], probe), "hls360");
+  assert.equal(exactFormat(probe.formats[0], probe), "a1");
+  assert.deepEqual(probe.formats.map(formatContent), ["a", "a", "v", "v", "av", "v"]);
+  assert.equal(formatContent({ height: 400 }), "?");
 });

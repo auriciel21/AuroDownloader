@@ -116,14 +116,16 @@ export const detailsOutdated = (details, taskId) =>
 export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
 /// « Déplacer/Renommer » et « Actualiser l'adresse » (SPEC §7.12 et §7.13) : une tâche qui ne
 /// tourne pas, et dont le fichier n'est pas déjà en cours de déplacement.
-/// Un torrent n'a ni adresse à actualiser, ni nom ou dossier à changer (SPEC §6.5).
+/// Seulement un fichier HTTP : un torrent n'a ni adresse à actualiser, ni nom ou dossier à
+/// changer (SPEC §6.5) ; une vidéo non plus (sous-titres, adresse de la page, SPEC §7.17).
 export const canRelocate = (task) =>
-  task.kind !== "torrent" && !task.moving
+  (task.kind ?? "http") === "http" && !task.moving
   && ["queued", "paused", "retry_wait", "failed", "cancelled", "completed"].includes(task.state);
 /// Empreinte attendue (F-11) : modifiable tant que le fichier n'est ni terminé, ni annulé, ni en
-/// cours de vérification. Un torrent vérifie ses morceaux lui-même.
+/// cours de vérification. Un torrent vérifie ses morceaux lui-même ; une vidéo est assemblée
+/// sur place, sans empreinte publiée.
 export const canSetChecksum = (task) =>
-  task.kind !== "torrent" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+  (task.kind ?? "http") === "http" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
 /// Fichiers d'un torrent à choisir (`task.setFiles`, SPEC §6.5) : pas une fois reçu ni annulé.
 export const canChooseFiles = (task) =>
   task.kind === "torrent" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
@@ -502,4 +504,71 @@ export function historyCsv(items, { headers, stateLabel, sep = ";" }) {
     ]));
   }
   return `\ufeff${lines.join("\r\n")}\r\n`;
+}
+
+// ---------- Vidéo (SPEC §7.17) ----------
+
+/// Un format a de l'image (codec connu, ou codecs inconnus mais une hauteur : yt-dlp le
+/// prend pour complet).
+const hasVideo = (f) => Boolean(f.vcodec) || (!f.vcodec && !f.acodec && f.height > 0);
+/// Un format n'a que du son.
+const audioOnly = (f) => !f.vcodec && Boolean(f.acodec);
+
+/// Taille d'un format : `{bytes, approx}`, ou `null` si inconnue.
+const sizeOf = (f) => (f.filesize > 0 ? { bytes: f.filesize, approx: Boolean(f.filesizeApprox) } : null);
+
+function addSizes(a, b) {
+  if (!a) return null;
+  if (!b) return a;
+  return { bytes: a.bytes + b.bytes, approx: a.approx || b.approx };
+}
+
+/// Qualités proposées après l'analyse d'une page (`media.probe`) : « meilleure », chaque
+/// hauteur d'image (de la plus grande à la plus petite), puis « son seul » s'il existe.
+/// Chacune porte son sélecteur de yt-dlp (`null` : celui du moteur) et une taille estimée
+/// (image et meilleur son), ou `null`. Les formats protégés (DRM) sont écartés.
+export function qualityChoices(probe) {
+  const formats = (probe?.formats ?? []).filter((f) => !f.drm);
+  const audios = formats.filter(audioOnly);
+  const bestAudio = audios.map(sizeOf).filter(Boolean).sort((a, b) => b.bytes - a.bytes)[0] ?? null;
+  const heights = [...new Set(formats.filter((f) => hasVideo(f) && f.height > 0).map((f) => f.height))]
+    .sort((a, b) => b - a);
+  const sizeAt = (height) => {
+    const sizes = formats
+      .filter((f) => hasVideo(f) && f.height === height)
+      .map((f) => {
+        const own = sizeOf(f);
+        // Image seule : le son s'y ajoute.
+        return f.vcodec && !f.acodec ? addSizes(own, bestAudio) : own;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.bytes - a.bytes);
+    return sizes[0] ?? null;
+  };
+  const choices = [{ key: "best", format: null, height: null, size: heights.length ? sizeAt(heights[0]) : null }];
+  for (const height of heights) {
+    choices.push({
+      key: `h${height}`,
+      format: `bv*[height<=${height}]+ba/b[height<=${height}]`,
+      height,
+      size: sizeAt(height),
+    });
+  }
+  if (audios.length) choices.push({ key: "audio", format: "ba", height: null, size: bestAudio });
+  return choices;
+}
+
+/// Sélecteur d'un format précis choisi dans le détail : une image seule reçoit le meilleur
+/// son, s'il y en a un à part.
+export function exactFormat(format, probe) {
+  const withAudio = format.vcodec && !format.acodec && (probe?.formats ?? []).some((f) => !f.drm && audioOnly(f));
+  return withAudio ? `${format.formatId}+ba` : format.formatId;
+}
+
+/// Ce que contient un format, pour l'affichage : `av`, `v`, `a`, ou `?` (codecs inconnus).
+export function formatContent(f) {
+  if (f.vcodec && f.acodec) return "av";
+  if (f.vcodec) return "v";
+  if (f.acodec) return "a";
+  return "?";
 }

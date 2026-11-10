@@ -452,7 +452,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   sur la variante d'essai : ajout magnet et `.torrent`, glisser-déposer,
   « Ouvrir avec », Propriétés et choix des fichiers, rubrique BitTorrent, association en
   option désactivée, `torrent.interfaces`, SPEC 4.6 ; `opened.rs`, `links.rs`), 5c. bureau :
-  vidéo, 5d. extension (magnet, pages de vidéo), 5e.
+  vidéo (écrit le 2026-11-09 : boîte « Ajouter une vidéo », qualités et formats,
+  sous-titres, installation des outils sur accord, rubrique Vidéo ; le moteur refuse
+  empreinte, déplacement et adresse pour une vidéo), 5d. extension (magnet, pages de vidéo), 5e.
   torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

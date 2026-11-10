@@ -599,6 +599,34 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 #d-files td:nth-child(3), #d-files td:nth-child(4) { white-space: nowrap; text-align: right; }
 #d-files tr.skipped td:not(:first-child) { color: var(--muted); }
 
+/* Vidéo (étape 5c) : offre d'installation des outils, formats, sous-titres. */
+.tools-box { border: 1px solid var(--row-line); border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; }
+.tools-box p { margin: 0 0 8px; }
+#v-details { margin-bottom: 12px; }
+#v-details summary { cursor: pointer; margin-bottom: 6px; }
+#v-formats { width: 100%; border-collapse: collapse; font-size: 13px; }
+#v-formats th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+#v-formats td { padding: 2px 8px; border-top: 1px solid var(--row-line); font-variant-numeric: tabular-nums; }
+#v-formats td:first-child { width: 56px; text-align: center; }
+#v-formats tr.skipped td { color: var(--muted); }
+#v-subs-box { border: 1px solid var(--row-line); border-radius: 4px; margin: 0 0 12px; padding: 6px 12px; }
+.subs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 2px 12px;
+  max-height: 140px;
+  overflow: auto;
+}
+.subs .check { margin: 0; }
+#m-state.warn { color: var(--fail); }
+
 /* Fichiers .torrent de la boîte « Ajouter ». */
 .torrent-list { list-style: none; margin: 0 0 6px; padding: 0; }
 .torrent-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }

@@ -2073,6 +2073,13 @@ impl Scheduler {
                     "empreinte : un torrent vérifie déjà chacun de ses morceaux".into(),
                 ));
             }
+            // Une vidéo est assemblée par ffmpeg et contrôlée par ffprobe (SPEC §7.17) :
+            // aucune empreinte publiée ne peut lui correspondre.
+            if task.kind == TaskKind::Media {
+                return Err(EngineError::BadRequest(
+                    "empreinte : une vidéo est assemblée sur place, sans empreinte publiée".into(),
+                ));
+            }
             if matches!(
                 task.state,
                 TaskState::Verifying | TaskState::Completed | TaskState::Cancelled
@@ -2708,11 +2715,21 @@ impl Scheduler {
         if task.moving {
             return Err(EngineError::Moving(task_id.to_owned()));
         }
-        // Déplacer, renommer, changer d'adresse : pas pour un torrent en v1 (SPEC §7.16).
-        if task.kind == TaskKind::Torrent {
-            return Err(EngineError::BadRequest(format!(
-                "{action} : pas encore pour un torrent"
-            )));
+        // Déplacer, renommer, changer d'adresse : pas pour un torrent en v1 (SPEC §7.16), ni
+        // pour une vidéo : ses sous-titres ne suivraient pas, et son adresse est celle de
+        // la page, relue à chaque exécution (SPEC §7.17).
+        match task.kind {
+            TaskKind::Torrent => {
+                return Err(EngineError::BadRequest(format!(
+                    "{action} : pas encore pour un torrent"
+                )));
+            }
+            TaskKind::Media => {
+                return Err(EngineError::BadRequest(format!(
+                    "{action} : pas encore pour une vidéo"
+                )));
+            }
+            TaskKind::Http => {}
         }
         let allowed = matches!(
             task.state,
