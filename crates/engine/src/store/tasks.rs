@@ -178,7 +178,7 @@ pub struct TaskRow {
     pub checksum_source: Option<String>,
 }
 
-/// Une source de téléchargement.
+/// Une source de téléchargement : la référence (rang 0) ou un miroir (SPEC §7.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRow {
     pub id: String,
@@ -187,6 +187,49 @@ pub struct SourceRow {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub content_length: Option<u64>,
+    /// Ordre de préférence ; 0 pour la référence.
+    pub rank: u32,
+    pub state: SourceState,
+    /// Débit moyen lissé, octets par seconde (étape 1b).
+    pub avg_bps: Option<u64>,
+    /// Échecs consécutifs.
+    pub fail_count: u32,
+    /// Raison du dernier échec, ou du refus d'un miroir.
+    pub last_error: Option<String>,
+}
+
+/// État d'une source (SPEC §5.3 et §7.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceState {
+    /// Pas encore vérifiée : un miroir attend sa validation.
+    Unknown,
+    /// Vérifiée, utilisable.
+    Ok,
+    /// Trop lente : plus de nouveaux segments, sans être coupée.
+    Slow,
+    /// En échec, ou miroir refusé : jamais utilisée tant qu'elle l'est.
+    Failed,
+}
+
+impl SourceState {
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            SourceState::Unknown => "unknown",
+            SourceState::Ok => "ok",
+            SourceState::Slow => "slow",
+            SourceState::Failed => "failed",
+        }
+    }
+
+    pub fn from_sql(text: &str) -> Result<SourceState, StoreError> {
+        Ok(match text {
+            "unknown" => SourceState::Unknown,
+            "ok" => SourceState::Ok,
+            "slow" => SourceState::Slow,
+            "failed" => SourceState::Failed,
+            other => return Err(StoreError::BadValue(format!("état de source {other}"))),
+        })
+    }
 }
 
 fn to_u64(value: Option<i64>, what: &str) -> Result<Option<u64>, StoreError> {
@@ -304,6 +347,23 @@ pub fn create_task(
     conn: &mut Connection,
     new: &NewTask<'_>,
 ) -> Result<(String, String), StoreError> {
+    create_task_with_mirrors(conn, new, &[])
+}
+
+/// Crée une tâche `queued`, sa source de référence et ses miroirs (rangs 1 et plus, à
+/// valider, SPEC §7.7), dans une seule transaction ; renvoie les identifiants de la tâche et
+/// de la référence. Une adresse en double est refusée.
+pub fn create_task_with_mirrors(
+    conn: &mut Connection,
+    new: &NewTask<'_>,
+    mirrors: &[String],
+) -> Result<(String, String), StoreError> {
+    if 1 + mirrors.len() > super::sources::MAX_SOURCES {
+        return Err(StoreError::BadValue(format!(
+            "{} sources au plus par tâche",
+            super::sources::MAX_SOURCES
+        )));
+    }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (task_id, source_id, now) = (new_id(), new_id(), now_ms());
     let limit = limit_to_sql(new.speed_limit_bps)?;
@@ -333,6 +393,9 @@ pub fn create_task(
         "INSERT INTO sources (id, task_id, url) VALUES (?1, ?2, ?3)",
         params![source_id, task_id, new.url],
     )?;
+    for (rank, url) in mirrors.iter().enumerate() {
+        super::sources::insert(&tx, &task_id, url, rank as u32 + 1)?;
+    }
     headers::insert(&tx, &task_id, new.headers)?;
     tx.commit()?;
     Ok((task_id, source_id))
@@ -466,37 +529,54 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     rows.map(|r| r?.try_into()).collect()
 }
 
-const SOURCE_COLUMNS: &str = "id, url, accepts_ranges, etag, last_modified, content_length";
-
-type RawSource = (
-    String,
-    String,
-    Option<i64>,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-);
+const SOURCE_COLUMNS: &str = "id, url, accepts_ranges, etag, last_modified, content_length, \
+     rank, state, avg_bps, fail_count, last_error";
 
 fn raw_source(r: &Row<'_>) -> rusqlite::Result<RawSource> {
-    Ok((
-        r.get(0)?,
-        r.get(1)?,
-        r.get(2)?,
-        r.get(3)?,
-        r.get(4)?,
-        r.get(5)?,
-    ))
+    Ok(RawSource {
+        id: r.get(0)?,
+        url: r.get(1)?,
+        ranges: r.get(2)?,
+        etag: r.get(3)?,
+        last_modified: r.get(4)?,
+        length: r.get(5)?,
+        rank: r.get(6)?,
+        state: r.get(7)?,
+        avg_bps: r.get(8)?,
+        fail_count: r.get(9)?,
+        last_error: r.get(10)?,
+    })
+}
+
+/// Une ligne de `sources` telle que SQLite la rend, avant contrôle des valeurs.
+struct RawSource {
+    id: String,
+    url: String,
+    ranges: Option<i64>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    length: Option<i64>,
+    rank: i64,
+    state: String,
+    avg_bps: Option<i64>,
+    fail_count: i64,
+    last_error: Option<String>,
 }
 
 fn source_row(raw: RawSource) -> Result<SourceRow, StoreError> {
-    let (id, url, ranges, etag, last_modified, length) = raw;
     Ok(SourceRow {
-        id,
-        url,
-        accepts_ranges: ranges.map(|r| r != 0),
-        etag,
-        last_modified,
-        content_length: to_u64(length, "taille de la source")?,
+        id: raw.id,
+        url: raw.url,
+        accepts_ranges: raw.ranges.map(|r| r != 0),
+        etag: raw.etag,
+        last_modified: raw.last_modified,
+        content_length: to_u64(raw.length, "taille de la source")?,
+        rank: u32::try_from(raw.rank)
+            .map_err(|_| StoreError::BadValue(format!("rang de source {}", raw.rank)))?,
+        state: SourceState::from_sql(&raw.state)?,
+        avg_bps: to_u64(raw.avg_bps, "débit de la source")?,
+        fail_count: u32::try_from(raw.fail_count).unwrap_or(u32::MAX),
+        last_error: raw.last_error,
     })
 }
 

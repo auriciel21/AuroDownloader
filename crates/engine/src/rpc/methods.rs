@@ -231,6 +231,19 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         // Fichiers d'un torrent à télécharger (SPEC §7.16, depuis le 2026-11-09) : `selected`,
         // les rangs choisis ; les autres ne le sont plus.
+        // Miroir ajouté à une tâche HTTP (SPEC §7.7, phase 6) ; `rank` n'est pas pris en
+        // charge : le miroir se range après les autres.
+        "task.addSource" => {
+            if p.get("rank").is_some() {
+                return Err(RpcError::capability_missing(
+                    "task.addSource : rank pas encore pris en charge",
+                ));
+            }
+            let task_id = p.required_str("taskId")?;
+            let url = p.required_str("url")?;
+            let source_id = ctx.engine.add_source(&task_id, &url).await?;
+            Ok(json!({"sourceId": source_id}))
+        }
         "task.setFiles" => {
             let task_id = p.required_str("taskId")?;
             let selected = p
@@ -744,12 +757,29 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             }
         },
         [] => return Err(RpcError::invalid_params("sources vide")),
-        _ => {
-            return Err(RpcError::capability_missing(
-                "plusieurs sources par tâche : pas encore pris en charge",
-            ));
-        }
+        // Plusieurs sources (SPEC §7.7, phase 6) : la référence, puis ses miroirs, toutes
+        // des adresses.
+        [first, ..] => (
+            first
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::invalid_params("sources[0].url : texte attendu"))?,
+            None,
+        ),
     };
+    let mirrors: Vec<String> = sources
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(
+            |(i, s)| match (s.get("url").and_then(Value::as_str), s.get("torrent")) {
+                (Some(url), None) => Ok(url.to_owned()),
+                _ => Err(RpcError::invalid_params(format!(
+                    "sources[{i}].url : une adresse attendue (un .torrent n'a qu'une source)"
+                ))),
+            },
+        )
+        .collect::<Result<_, _>>()?;
     // Absent : le dossier des téléchargements du moteur (`settings.get`).
     let dest_dir = p.str("destDir")?;
     let max_connections = p.u32("maxConnections")?;
@@ -773,6 +803,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             checksum: p.checksum("checksum")?.flatten(),
             torrent,
             media,
+            mirrors,
         })
         .await?;
     Ok(json!({"taskId": task_id}))
@@ -860,7 +891,19 @@ fn details_json(d: &TaskDetails) -> Value {
     if let Some(sources) = &d.sources {
         task["sources"] = sources
             .iter()
-            .map(|s| json!({"url": s.url, "acceptsRanges": s.accepts_ranges}))
+            .map(|s| {
+                // Miroirs (SPEC §7.7, phase 6) : rang, état, débit, échecs et raison.
+                json!({
+                    "sourceId": s.id,
+                    "url": s.url,
+                    "acceptsRanges": s.accepts_ranges,
+                    "rank": s.rank,
+                    "state": s.state.as_sql(),
+                    "avgBps": s.avg_bps,
+                    "failCount": s.fail_count,
+                    "lastError": s.last_error,
+                })
+            })
             .collect();
     }
     // Fichiers d'un torrent (SPEC §7.16) ; `doneBytes` n'est qu'une indication.

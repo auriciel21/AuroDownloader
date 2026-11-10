@@ -86,6 +86,11 @@ téléchargement.
   `language`, migration 7) ; un flux direct est une tâche HTTP interne
   (`tasks.parent_id`, migration 6) téléchargée par `transfer::run` ; faux serveur de
   publications des tests : `testing::tools`.
+  Miroirs (SPEC 7.7, phase 6) : `mirrors` (validation d'un miroir face à la référence :
+  taille et échantillons ; en-têtes envoyés à chaque source), `store::sources` (ajout d'un
+  miroir, état, refus, échecs) ; `task.addSource` ; validation à la première exécution
+  (`transfer::validate_mirrors`). Le serveur de test `FileSite` a `shift` pour servir un
+  autre fichier de même taille.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -239,6 +244,7 @@ cargo run -p auro-cli -- add <url>… --paused ; list ; resume <id>… ; watch ;
 cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depuis le début
 cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
 cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
+cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # miroirs
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear
@@ -476,6 +482,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   aux fichiers au même chemin une fois nettoyés, refusés, et fin d'une vidéo interrompue
   après le renommage, `already_merged` ; SPEC 9.1 et 9.3). Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
+- Phase 6, plan du 2026-11-10 (validé par l'utilisateur) : 1. miroirs (F-26, F-28 :
+  plusieurs sources par tâche, répartition par débit, bascule ; puis Metalink, F-27) ;
+  2. analyse de liens (F-29, F-31 ; F-30 presse-papiers au bureau) ; 3. interface web
+  distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF) ; 4. plugins (F-41 :
+  prototype du bac à sable WebAssembly d'abord) ; 5. porte : revue de sécurité de l'API
+  distante et des plugins.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,

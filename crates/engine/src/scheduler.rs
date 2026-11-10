@@ -35,6 +35,7 @@ use crate::io::checksum::Checksum;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::media;
+use crate::mirrors;
 use crate::net::{self, Client, NetError};
 use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
 use crate::secrets::{Vault, VaultError};
@@ -432,6 +433,10 @@ pub enum EngineError {
     #[error("nouvelle adresse injoignable : {0}")]
     SourceUnreachable(#[source] NetError),
 
+    /// Un miroir qui ne sert pas le même fichier (SPEC §7.7).
+    #[error("miroir refusé : {0}")]
+    MirrorRefused(String),
+
     #[error("identifiants inconnus : {0}")]
     LoginNotFound(String),
 
@@ -478,6 +483,9 @@ pub struct AddTask {
     pub torrent: Option<Vec<u8>>,
     /// Vidéo d'une page (SPEC §7.17) ; `url` est alors ignorée.
     pub media: Option<MediaRequest>,
+    /// Miroirs du même fichier (SPEC §7.7, phase 6) : adresses HTTP(S) après la référence
+    /// `url`, validées à la première exécution.
+    pub mirrors: Vec<String>,
 }
 
 /// Vidéo demandée par `task.add` (SPEC §7.17).
@@ -548,6 +556,20 @@ pub struct SourceCheck {
     login: Option<store::logins::LoginRow>,
 }
 
+/// Ce qu'il faut pour valider un nouveau miroir (`task.addSource`, SPEC §7.7).
+pub struct MirrorCheck {
+    /// Source de référence de la tâche.
+    reference: SourceRow,
+    /// Taille du fichier, si le miroir peut être validé tout de suite (tâche préparée,
+    /// référence qui accepte les plages) ; `None` : à la première exécution.
+    total: Option<u64>,
+    /// En-têtes de la tâche ; le miroir n'en reçoit que ce que `mirrors::headers_for` permet.
+    headers: Vec<StoredHeader>,
+    /// Identifiants du site de la référence et de celui du miroir (SPEC §7.14).
+    reference_login: Option<store::logins::LoginRow>,
+    mirror_login: Option<store::logins::LoginRow>,
+}
+
 /// Ce que le moteur a appris de la nouvelle adresse.
 #[derive(Debug, Clone)]
 pub struct SourceFacts {
@@ -558,7 +580,8 @@ pub struct SourceFacts {
 }
 
 enum Command {
-    Add(AddTask, Reply<String>),
+    // Dans une boîte : la demande d'ajout (miroirs, en-têtes) est la plus grosse commande.
+    Add(Box<AddTask>, Reply<String>),
     Pause(String, Reply<()>),
     Resume(String, Reply<()>),
     Cancel {
@@ -593,6 +616,17 @@ enum Command {
         url: String,
         facts: Option<SourceFacts>,
         reply: Reply<TaskRow>,
+    },
+    CheckMirror {
+        task_id: String,
+        url: String,
+        reply: Reply<MirrorCheck>,
+    },
+    AddMirror {
+        task_id: String,
+        url: String,
+        facts: Option<mirrors::Facts>,
+        reply: Reply<String>,
     },
     Get(String, Reply<TaskRow>),
     Details(String, Include, Reply<TaskDetails>),
@@ -1032,7 +1066,7 @@ impl Engine {
 
     /// Ajoute une tâche `queued` (ou `paused`) ; renvoie son identifiant.
     pub async fn add(&self, task: AddTask) -> Result<String, EngineError> {
-        self.ask(|reply| Command::Add(task, reply)).await
+        self.ask(|reply| Command::Add(Box::new(task), reply)).await
     }
 
     /// Met une tâche en pause (cause `user`). Une tâche en cours s'arrête après son
@@ -1136,6 +1170,67 @@ impl Engine {
         };
         let (task_id, url) = (task_id.to_owned(), url.to_owned());
         self.ask(|reply| Command::ReplaceUrl {
+            task_id,
+            url,
+            facts,
+            reply,
+        })
+        .await
+    }
+
+    /// Ajoute un miroir à une tâche HTTP pas encore terminée (`task.addSource`, SPEC §7.7) ;
+    /// renvoie l'identifiant de la source. Une tâche préparée (taille connue, plages) voit
+    /// son miroir validé tout de suite (taille et échantillons) : un autre fichier est
+    /// refusé ici ; sinon il l'est à la première exécution.
+    pub async fn add_source(&self, task_id: &str, url: &str) -> Result<String, EngineError> {
+        net::check_url(url)?;
+        let (id, address) = (task_id.to_owned(), url.to_owned());
+        let check = self
+            .ask(|reply| Command::CheckMirror {
+                task_id: id,
+                url: address,
+                reply,
+            })
+            .await?;
+        let facts = match check.total {
+            None => None,
+            Some(total) => {
+                let headers = reveal(check.headers, &self.vault).await?;
+                let reference_auth = reveal_site_login(check.reference_login, &self.vault).await?;
+                let mirror_auth = reveal_site_login(check.mirror_login, &self.vault).await?;
+                let mirror_headers = mirrors::headers_for(&headers, &check.reference.url, url);
+                let if_range = net::headers::if_range_validator(
+                    check.reference.etag.as_deref(),
+                    check.reference.last_modified.as_deref(),
+                );
+                let reference = mirrors::Side {
+                    url: &check.reference.url,
+                    headers: &headers,
+                    auth: reference_auth.as_ref(),
+                    if_range: if_range.as_deref(),
+                };
+                let mirror = mirrors::Side {
+                    url,
+                    headers: &mirror_headers,
+                    auth: mirror_auth.as_ref(),
+                    if_range: None,
+                };
+                match mirrors::validate(&self.client, &reference, &mirror, total).await {
+                    mirrors::Verdict::Accepted(facts) => Some(facts),
+                    mirrors::Verdict::Refused(reason) => {
+                        return Err(EngineError::MirrorRefused(reason));
+                    }
+                    mirrors::Verdict::Unreachable(e) => {
+                        return Err(EngineError::SourceUnreachable(e));
+                    }
+                    // La référence ne répond pas comme prévu : le miroir sera validé à la
+                    // prochaine exécution.
+                    mirrors::Verdict::Reference(_) => None,
+                }
+            }
+        };
+        let (task_id, url) = (task_id.to_owned(), url.to_owned());
+        self.ask(|reply| Command::AddMirror {
             task_id,
             url,
             facts,
@@ -1726,7 +1821,7 @@ impl Scheduler {
     fn handle(&mut self, command: Command) {
         match command {
             Command::Add(task, reply) => {
-                let _ = reply.send(self.add(task));
+                let _ = reply.send(self.add(*task));
             }
             Command::Pause(task_id, reply) => {
                 let _ = reply.send(self.pause(&task_id));
@@ -1777,6 +1872,21 @@ impl Scheduler {
                 reply,
             } => {
                 let _ = reply.send(self.replace_url(&task_id, &url, facts));
+            }
+            Command::CheckMirror {
+                task_id,
+                url,
+                reply,
+            } => {
+                let _ = reply.send(self.check_mirror(&task_id, &url));
+            }
+            Command::AddMirror {
+                task_id,
+                url,
+                facts,
+                reply,
+            } => {
+                let _ = reply.send(self.add_mirror(&task_id, &url, facts));
             }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
@@ -2192,12 +2302,41 @@ impl Scheduler {
             return Ok(existing);
         }
         if task.torrent.is_some() || is_magnet(&task.url) {
+            if !task.mirrors.is_empty() {
+                return Err(EngineError::BadRequest(
+                    "un torrent n'a qu'une source : pas de miroir".into(),
+                ));
+            }
             return self.add_torrent(task);
         }
         if task.media.is_some() {
+            if !task.mirrors.is_empty() {
+                return Err(EngineError::BadRequest(
+                    "une vidéo n'a qu'une source : pas de miroir".into(),
+                ));
+            }
             return self.add_media(task);
         }
         net::check_url(&task.url)?;
+        // Miroirs (SPEC §7.7) : des adresses HTTP(S), toutes différentes.
+        for mirror in &task.mirrors {
+            net::check_url(mirror)?;
+        }
+        let mut all: Vec<&str> = std::iter::once(task.url.as_str())
+            .chain(task.mirrors.iter().map(String::as_str))
+            .collect();
+        all.sort_unstable();
+        if all.windows(2).any(|w| w[0] == w[1]) {
+            return Err(EngineError::BadRequest(
+                "la même adresse deux fois parmi les sources".into(),
+            ));
+        }
+        if all.len() > store::sources::MAX_SOURCES {
+            return Err(EngineError::BadRequest(format!(
+                "{} sources au plus par tâche",
+                store::sources::MAX_SOURCES
+            )));
+        }
         net::check_task_headers(&task.headers)
             .map_err(|e| EngineError::BadRequest(e.to_string()))?;
         Self::check_speed_limit(task.speed_limit_bps)?;
@@ -2212,7 +2351,7 @@ impl Scheduler {
         // Les secrets d'abord, leurs références ensuite (SPEC §5.1) ; si la tâche n'est
         // pas créée, ils sont effacés.
         let stored = self.store_secrets(task.headers)?;
-        let created = tasks::create_task(
+        let created = tasks::create_task_with_mirrors(
             &mut self.conn,
             &NewTask {
                 queue_id: &queue_id,
@@ -2227,6 +2366,7 @@ impl Scheduler {
                 headers: &stored,
                 parent_id: None,
             },
+            &task.mirrors,
         );
         let (task_id, _) = match created {
             Ok(created) => created,
@@ -2921,6 +3061,87 @@ impl Scheduler {
             other_host,
             login,
         })
+    }
+
+    /// Peut-on ajouter le miroir `url` à la tâche ? Une tâche HTTP pas encore terminée,
+    /// sans cette adresse parmi ses sources, qui en a moins de 16.
+    fn check_mirror(&self, task_id: &str, url: &str) -> Result<MirrorCheck, EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        if task.kind != TaskKind::Http || store::sources::is_internal(&self.conn, task_id)? {
+            return Err(EngineError::BadRequest(
+                "seul un téléchargement HTTP prend des miroirs".into(),
+            ));
+        }
+        if matches!(task.state, TaskState::Completed | TaskState::Cancelled) {
+            return Err(Self::invalid(&task, "ajout d'un miroir"));
+        }
+        let sources = tasks::load_sources(&self.conn, task_id)?;
+        if sources.iter().any(|s| s.url == url) {
+            return Err(EngineError::BadRequest(
+                "adresse déjà présente parmi les sources de la tâche".into(),
+            ));
+        }
+        if sources.len() >= store::sources::MAX_SOURCES {
+            return Err(EngineError::BadRequest(format!(
+                "{} sources au plus par tâche",
+                store::sources::MAX_SOURCES
+            )));
+        }
+        let reference = tasks::primary_source(&self.conn, task_id)?;
+        let headers = headers::load(&self.conn, task_id)?;
+        let explicit = headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+        let same_host = transfer::host_of(&reference.url) == transfer::host_of(url);
+        let reference_login = match explicit {
+            true => None,
+            false => store::logins::best_for(&self.conn, &reference.url)?,
+        };
+        // Un `Authorization` propre à la tâche ne part pas vers un autre hôte : le miroir y
+        // prend les identifiants de son site.
+        let mirror_login = match explicit && same_host {
+            true => None,
+            false => store::logins::best_for(&self.conn, url)?,
+        };
+        let total = task
+            .total_bytes
+            .filter(|_| task.file_name.is_some() && reference.accepts_ranges == Some(true));
+        Ok(MirrorCheck {
+            reference,
+            total,
+            headers,
+            reference_login,
+            mirror_login,
+        })
+    }
+
+    /// Enregistre le miroir vérifié par `add_source` ; avec `facts`, il est déjà validé.
+    /// Une tâche en cours repart aussitôt, pour s'en servir (étape 1b).
+    fn add_mirror(
+        &mut self,
+        task_id: &str,
+        url: &str,
+        facts: Option<mirrors::Facts>,
+    ) -> Result<String, EngineError> {
+        self.check_mirror(task_id, url)?;
+        let source_id = store::sources::add_source(&mut self.conn, task_id, url)?;
+        if let Some(facts) = &facts {
+            let checked = store::sources::Checked {
+                accepts_ranges: true,
+                etag: facts.etag.as_deref(),
+                last_modified: facts.last_modified.as_deref(),
+                content_length: Some(facts.content_length),
+            };
+            store::sources::set_checked(&self.conn, &source_id, &checked)?;
+        }
+        if let Some(run) = self.running.get_mut(task_id)
+            && run.then == Then::Keep
+            && !*run.stop.borrow()
+        {
+            run.then = Then::Requeue;
+            let _ = run.stop.send(true);
+        }
+        Ok(source_id)
     }
 
     /// Enregistre la nouvelle adresse, vérifiée par `set_url`. La tâche a pu changer

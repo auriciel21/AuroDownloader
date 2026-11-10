@@ -85,6 +85,10 @@ enum Command {
         /// son nom : « sha256:… », « sha1:… », « md5:… », ou la valeur seule
         #[arg(long, value_name = "EMPREINTE", value_parser = display::parse_checksum)]
         checksum: Option<Checksum>,
+        /// Miroir du même fichier (une seule adresse), à répéter : le moteur vérifie qu'il
+        /// sert bien les mêmes octets, puis répartit le téléchargement
+        #[arg(short = 'm', long = "mirror", value_name = "ADRESSE")]
+        mirrors: Vec<String>,
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
@@ -108,6 +112,9 @@ enum Command {
         /// Empreinte attendue du fichier (voir `add`)
         #[arg(long, value_name = "EMPREINTE", value_parser = display::parse_checksum)]
         checksum: Option<Checksum>,
+        /// Miroir du même fichier, à répéter (voir `add`)
+        #[arg(short = 'm', long = "mirror", value_name = "ADRESSE")]
+        mirrors: Vec<String>,
     },
     /// Liste les tâches
     List {
@@ -168,6 +175,12 @@ enum Command {
     /// Remplace l'adresse d'une tâche qui ne tourne pas, par exemple un lien expiré ; pour
     /// une tâche commencée, la nouvelle adresse doit donner le même fichier
     Refresh { task_id: String, url: String },
+    /// Ajoute un miroir à une tâche pas encore terminée (le même fichier ailleurs) ; sans
+    /// adresse, montre ses sources : rang, état, débit, raison d'un refus
+    Mirror {
+        task_id: String,
+        url: Option<String>,
+    },
     /// Donne, change ou retire l'empreinte attendue du fichier d'une tâche pas encore
     /// terminée ; après un échec CHECKSUM_MISMATCH, `auro resume` vérifie de nouveau le
     /// fichier reçu, sans le retélécharger
@@ -588,6 +601,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             limit,
             headers,
             checksum,
+            mirrors,
         } => {
             let opts = AddOptions {
                 dir: &dir,
@@ -597,6 +611,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 paused: false,
                 headers: &headers,
                 checksum: checksum.as_ref(),
+                mirrors: &mirrors,
             };
             remote::get(target, remote::NewTask::File(&url, &opts)).await
         }
@@ -619,9 +634,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     paused,
                     headers,
                     checksum,
+                    mirrors,
                 } => {
                     if checksum.is_some() && urls.len() > 1 {
                         bail!("--checksum : une seule adresse, l'empreinte est celle d'un fichier");
+                    }
+                    if !mirrors.is_empty() && urls.len() > 1 {
+                        bail!("--mirror : une seule adresse, les miroirs sont ceux d'un fichier");
                     }
                     let opts = AddOptions {
                         dir: &dir,
@@ -631,6 +650,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         paused,
                         headers: &headers,
                         checksum: checksum.as_ref(),
+                        mirrors: &mirrors,
                     };
                     remote::add(&mut rpc, &urls, &opts).await
                 }
@@ -670,6 +690,10 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Refresh { task_id, url } => {
                     remote::refresh(&mut rpc, &task_id, &url).await
                 }
+                Command::Mirror { task_id, url } => match url {
+                    Some(url) => remote::add_mirror(&mut rpc, &task_id, &url).await,
+                    None => remote::sources(&mut rpc, &task_id).await,
+                },
                 // `--clear` exclut une empreinte : sans elle, c'est un retrait.
                 Command::Checksum {
                     task_id, checksum, ..

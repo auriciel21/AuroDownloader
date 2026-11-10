@@ -57,6 +57,8 @@ pub struct AddOptions<'a> {
     pub headers: &'a [(String, String)],
     /// Empreinte attendue du fichier (F-11).
     pub checksum: Option<&'a Checksum>,
+    /// Miroirs du même fichier (SPEC §7.7).
+    pub mirrors: &'a [String],
 }
 
 /// Taille maximale d'un fichier `.torrent` lu par la CLI : un garde-fou (le moteur a le
@@ -89,6 +91,10 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
         "destDir": dest_dir(opts.dir)?,
         "startPaused": opts.paused,
     });
+    if !opts.mirrors.is_empty() {
+        let sources = params["sources"].as_array_mut().expect("liste");
+        sources.extend(opts.mirrors.iter().map(|m| json!({"url": m})));
+    }
     if let Some(c) = opts.connections {
         params["maxConnections"] = json!(c);
     }
@@ -959,6 +965,49 @@ pub async fn refresh(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
             println!("Adresse de {name} remplacée. Pour reprendre : auro resume {id}")
         }
         _ => println!("Adresse de {name} remplacée."),
+    }
+    Ok(())
+}
+
+/// Ajoute un miroir à une tâche (`task.addSource`, SPEC §7.7). Une tâche préparée le voit
+/// vérifié tout de suite : un autre fichier est refusé ici.
+pub async fn add_mirror(rpc: &mut Rpc, id: &str, url: &str) -> Result<()> {
+    rpc.call("task.addSource", json!({"taskId": id, "url": url}))
+        .await?;
+    println!("Miroir ajouté à {id}.");
+    Ok(())
+}
+
+/// Sources d'une tâche : rang, état, débit, raison d'un échec ou d'un refus.
+pub async fn sources(rpc: &mut Rpc, id: &str) -> Result<()> {
+    let task = rpc
+        .call("task.get", json!({"taskId": id, "include": ["sources"]}))
+        .await?;
+    for s in task["sources"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let rank = s["rank"].as_u64().unwrap_or(0);
+        let role = if rank == 0 { "référence" } else { "miroir" };
+        let state = match s["state"].as_str().unwrap_or("?") {
+            "unknown" => "à vérifier",
+            "ok" => "bonne",
+            "slow" => "lente",
+            "failed" => "écartée",
+            other => other,
+        };
+        let mut line = format!(
+            "{rank:>2}  {role:<9}  {state:<10}  {}",
+            s["url"].as_str().unwrap_or("")
+        );
+        if let Some(bps) = s["avgBps"].as_u64() {
+            line.push_str(&format!("  {}/s", display::size(bps)));
+        }
+        if let Some(error) = s["lastError"].as_str() {
+            line.push_str(&format!("  ({error})"));
+        }
+        println!("{line}");
     }
     Ok(())
 }

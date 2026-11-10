@@ -368,6 +368,9 @@ pub struct FileSite {
     /// `If-Range` n'est reconnu que sous la forme d'une étiquette conforme, entre
     /// guillemets, même si l'`ETag` envoyée n'en a pas (`upload.wikimedia.org`).
     pub strict_if_range: bool,
+    /// Décalage du contenu servi : le même fichier, mais d'autres octets (miroir qui sert
+    /// un autre fichier de même taille, SPEC §7.7) ; 0 par défaut.
+    pub shift: u64,
 }
 
 impl FileSite {
@@ -385,6 +388,7 @@ impl FileSite {
             neighbors: Vec::new(),
             neighbor_requests: Vec::new(),
             strict_if_range: false,
+            shift: 0,
         }
     }
 }
@@ -556,12 +560,18 @@ fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send
                     format!("bytes {first}-{last}/{total}"),
                 ));
                 let len = last - first + 1;
-                ("206 Partial Content", Body::Generated { first, len })
+                (
+                    "206 Partial Content",
+                    Body::Generated {
+                        first: first + site.shift,
+                        len,
+                    },
+                )
             }
             None => (
                 "200 OK",
                 Body::Generated {
-                    first: 0,
+                    first: site.shift,
                     len: total,
                 },
             ),

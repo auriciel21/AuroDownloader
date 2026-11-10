@@ -34,6 +34,7 @@ use crate::io::{
     SyncedProgress, segments_beyond,
 };
 use crate::limit::Throttle;
+use crate::mirrors;
 use crate::net::auth::{Auth, Login, Site};
 use crate::net::{Client, NetError, RangeRequest, headers, sums};
 use crate::secrets::{Vault, VaultError};
@@ -45,9 +46,11 @@ use crate::store::logins::{self, LoginRow};
 use crate::store::segments::{
     check_task_coverage, load_segments, reset_segments, save_progress, save_split,
 };
+use crate::store::sources;
 use crate::store::tasks::{
-    Change, PauseReason, Preparation, SourceRow, TaskRow, TaskState, change_state, complete_task,
-    load_task, primary_source, reserved_names, save_preparation, set_checksum,
+    Change, PauseReason, Preparation, SourceRow, SourceState, TaskRow, TaskState, change_state,
+    complete_task, load_sources, load_task, primary_source, reserved_names, save_preparation,
+    set_checksum,
 };
 use crate::store::{StoreError, now_ms};
 
@@ -609,6 +612,19 @@ async fn execute(
         task = load_task(conn, task_id)?;
     }
     let source = primary_source(conn, task_id)?;
+    // Miroirs à valider (SPEC §7.7, phase 6) : face à la référence préparée, qui doit
+    // accepter les plages et avoir une taille.
+    if let (Some(total), Some(true)) = (task.total_bytes, source.accepts_ranges) {
+        let reference = MirrorReference {
+            source: &source,
+            headers: &task_headers,
+            auth: auth.as_deref(),
+            total,
+        };
+        if let Err(stop) = validate_mirrors(conn, client, task_id, &reference, opts, stop).await? {
+            return Ok(Err(stop));
+        }
+    }
     let file_name = task
         .file_name
         .as_deref()
@@ -726,6 +742,96 @@ async fn execute(
         on_progress,
     )
     .await
+}
+
+/// Temps donné à la validation des miroirs avant le départ du téléchargement.
+const MIRROR_CHECK_LIMIT: Duration = Duration::from_secs(20);
+
+/// La source de référence d'une tâche préparée, telle que la validation des miroirs la lit.
+struct MirrorReference<'a> {
+    source: &'a SourceRow,
+    headers: &'a [(String, String)],
+    auth: Option<&'a Auth>,
+    total: u64,
+}
+
+/// Valide les miroirs qui attendent (`unknown`) face à la référence (SPEC §7.7) : accepté,
+/// un miroir garde ses validateurs ; refusé, il passe à `failed` avec la raison ;
+/// injoignable, il reste à valider. Un problème de la référence elle-même arrête la
+/// validation : le transfert le verra.
+async fn validate_mirrors(
+    conn: &mut Connection,
+    client: &Client,
+    task_id: &str,
+    reference: &MirrorReference<'_>,
+    opts: &Options,
+    stop: &mut watch::Receiver<bool>,
+) -> Step<()> {
+    let pending: Vec<SourceRow> = load_sources(conn, task_id)?
+        .into_iter()
+        .filter(|s| s.rank > 0 && s.state == SourceState::Unknown)
+        .collect();
+    if pending.is_empty() {
+        return Ok(Ok(()));
+    }
+    let if_range = headers::if_range_validator(
+        reference.source.etag.as_deref(),
+        reference.source.last_modified.as_deref(),
+    );
+    let reference_side = mirrors::Side {
+        url: &reference.source.url,
+        headers: reference.headers,
+        auth: reference.auth,
+        if_range: if_range.as_deref(),
+    };
+    let deadline = Instant::now() + MIRROR_CHECK_LIMIT;
+    for mirror in pending {
+        let mirror_headers =
+            mirrors::headers_for(reference.headers, &reference.source.url, &mirror.url);
+        let login = site_login(conn, &mirror.url, &mirror_headers)?;
+        let mirror_auth = match reveal_login(login, &opts.vault).await? {
+            Ok(auth) => auth,
+            Err(stop) => return Ok(Err(stop)),
+        };
+        let side = mirrors::Side {
+            url: &mirror.url,
+            headers: &mirror_headers,
+            auth: mirror_auth.as_ref(),
+            if_range: None,
+        };
+        let verdict = tokio::select! {
+            verdict = mirrors::validate(client, &reference_side, &side, reference.total) => verdict,
+            _ = asked_to_stop(stop) => return Ok(Err(Stop::User)),
+            // Le téléchargement n'attend pas plus : les miroirs restants le seront à la
+            // prochaine exécution.
+            _ = tokio::time::sleep_until(deadline) => break,
+        };
+        match verdict {
+            mirrors::Verdict::Accepted(facts) => {
+                let checked = sources::Checked {
+                    accepts_ranges: true,
+                    etag: facts.etag.as_deref(),
+                    last_modified: facts.last_modified.as_deref(),
+                    content_length: Some(facts.content_length),
+                };
+                sources::set_checked(conn, &mirror.id, &checked)?;
+            }
+            mirrors::Verdict::Refused(reason) => sources::set_failed(conn, &mirror.id, &reason)?,
+            mirrors::Verdict::Unreachable(e) => {
+                sources::set_unreachable(conn, &mirror.id, &e.to_string())?;
+            }
+            mirrors::Verdict::Reference(_) => break,
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Attend une demande d'arrêt ; sans émetteur (exécution hors du planificateur), aucune ne
+/// viendra : attend sans fin.
+async fn asked_to_stop(stop: &mut watch::Receiver<bool>) {
+    if stop.wait_for(|h| *h).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 /// Fin d'une tâche dont le `.part` est complet et vidé sur disque : son empreinte, s'il

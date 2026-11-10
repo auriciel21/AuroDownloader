@@ -109,6 +109,7 @@ impl From<EngineError> for RpcError {
             EngineError::FileMissing(_) => Self::new(-32025, "FILE_MISSING", message),
             EngineError::Move(_) => Self::new(-32026, "MOVE_FAILED", message),
             EngineError::SourceMismatch { .. } => Self::new(-32027, "SOURCE_MISMATCH", message),
+            EngineError::MirrorRefused(_) => Self::new(-32027, "SOURCE_MISMATCH", message),
             EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
             EngineError::CapabilityMissing(_) => Self::capability_missing(message),
             EngineError::ToolsMissing(_) => Self::new(-32031, "TOOLS_MISSING", message),

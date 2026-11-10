@@ -823,9 +823,11 @@ async fn unsupported_or_invalid_additions_are_refused() {
             "INVALID_PARAMS",
         ),
         (json!({"checksum": "sha256:00"}), "INVALID_PARAMS"),
+        // Plusieurs sources : des miroirs (SPEC §7.7) depuis la phase 6, tous des adresses
+        // HTTP(S).
         (
-            json!({"sources": [{"url": "http://a/f"}, {"url": "http://b/f"}]}),
-            "CAPABILITY_MISSING",
+            json!({"sources": [{"url": "http://a/f"}, {"url": "ftp://b/f"}]}),
+            "URL_INVALID",
         ),
         (json!({"sources": [{"url": "ftp://h/f"}]}), "URL_INVALID"),
         (json!({"destDir": "relatif"}), "DEST_NOT_WRITABLE"),
@@ -1119,10 +1121,13 @@ async fn task_get_shows_segments_and_sources_on_request() {
         let size = s["end"].as_u64().unwrap() - s["start"].as_u64().unwrap() + 1;
         assert!(s["doneBytes"].as_u64().unwrap() <= size, "{s}");
     }
-    assert_eq!(
-        running["sources"],
-        json!([{"url": url, "acceptsRanges": true}])
-    );
+    let sources = running["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 1, "{running}");
+    assert_eq!(sources[0]["url"], json!(url));
+    assert_eq!(sources[0]["acceptsRanges"], true);
+    assert_eq!(sources[0]["rank"], 0);
+    assert_eq!(sources[0]["state"], "ok");
+    assert_eq!(sources[0]["failCount"], 0);
 
     // Sans `include`, ni segments ni sources.
     let plain = c.result("task.get", json!({"taskId": id})).await;
@@ -2454,5 +2459,200 @@ async fn torrent_settings_limits_and_files_go_through_the_protocol() {
         )
         .await;
     assert_eq!(task["files"], json!([]), "{task}");
+    engine.shutdown().await;
+}
+
+/// Miroirs (SPEC §7.7, phase 6, étape 1a) : `task.add` avec plusieurs sources, validées à la
+/// première exécution face à la référence (taille et échantillons) ; un autre fichier de
+/// même taille est refusé, avec la raison.
+#[tokio::test]
+async fn mirrors_are_validated_against_the_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    const LEN: u64 = 200_000;
+    let reference = site(LEN);
+    let good = site(LEN);
+    let other = serve_file(Arc::new(Mutex::new(FileSite {
+        shift: 1,
+        ..FileSite::new(LEN)
+    })));
+    let dest = dir_text(dir.path());
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [
+                {"url": reference.url("/f.bin")},
+                {"url": good.url("/miroir/f.bin")},
+                {"url": other.url("/f.bin")},
+            ], "destDir": dest}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "completed"
+    })
+    .await;
+    let task = c
+        .result("task.get", json!({"taskId": id, "include": ["sources"]}))
+        .await;
+    let sources = task["sources"].as_array().unwrap();
+    let states: Vec<_> = sources
+        .iter()
+        .map(|s| (s["rank"].clone(), s["state"].clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (json!(0), json!("ok")),
+            (json!(1), json!("ok")),
+            (json!(2), json!("failed"))
+        ],
+        "{task}"
+    );
+    assert!(
+        sources[2]["lastError"]
+            .as_str()
+            .is_some_and(|e| e.contains("contenu différent")),
+        "{task}"
+    );
+    assert!(sources[0]["sourceId"].is_string());
+    assert_eq!(
+        std::fs::read(dir.path().join("f.bin")).unwrap(),
+        crate::testing::content(LEN as usize)
+    );
+
+    // Refus : la même adresse deux fois, un miroir pour un torrent.
+    for bad in [
+        json!({"sources": [{"url": reference.url("/g.bin")}, {"url": reference.url("/g.bin")}], "destDir": dest}),
+        json!({"sources": [{"url": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, {"url": good.url("/g.bin")}], "destDir": dest}),
+        json!({"sources": [{"url": reference.url("/g.bin")}, {"torrent": "ZA=="}], "destDir": dest}),
+    ] {
+        assert_eq!(
+            c.error_code("task.add", bad.clone()).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    // Une tâche terminée ne prend plus de miroir.
+    assert_eq!(
+        c.error_code(
+            "task.addSource",
+            json!({"taskId": id, "url": good.url("/autre")})
+        )
+        .await,
+        "INVALID_STATE"
+    );
+    engine.shutdown().await;
+}
+
+/// `task.addSource` (SPEC §7.7) : sur une tâche préparée, le miroir est validé tout de
+/// suite ; un autre fichier est refusé à l'appel ; sur une tâche pas encore préparée, il
+/// attend la première exécution.
+#[tokio::test]
+async fn a_mirror_added_to_a_prepared_task_is_checked_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    const LEN: u64 = 4 * 1024 * 1024;
+    // Lent : la tâche se met en pause avant la fin.
+    let reference = serve_file_paced(
+        Arc::new(Mutex::new(FileSite::new(LEN))),
+        Some(Pace {
+            chunk: 16 * 1024,
+            delay: Duration::from_millis(20),
+        }),
+    );
+    let good = site(LEN);
+    let other = serve_file(Arc::new(Mutex::new(FileSite {
+        shift: 7,
+        ..FileSite::new(LEN)
+    })));
+    let dest = dir_text(dir.path());
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": reference.url("/f.bin")}], "destDir": dest}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.updated", |p| {
+        p["taskId"] == id.as_str() && p.get("fileName").is_some()
+    })
+    .await;
+    c.result("task.pause", json!({"taskIds": [id]})).await;
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "paused"
+    })
+    .await;
+
+    let added = c
+        .result(
+            "task.addSource",
+            json!({"taskId": id, "url": good.url("/f.bin")}),
+        )
+        .await;
+    assert!(added["sourceId"].is_string());
+    assert_eq!(
+        c.error_code(
+            "task.addSource",
+            json!({"taskId": id, "url": other.url("/f.bin")})
+        )
+        .await,
+        "SOURCE_MISMATCH"
+    );
+    assert_eq!(
+        c.error_code(
+            "task.addSource",
+            json!({"taskId": id, "url": good.url("/f.bin")})
+        )
+        .await,
+        "INVALID_PARAMS",
+        "déjà là"
+    );
+    assert_eq!(
+        c.error_code(
+            "task.addSource",
+            json!({"taskId": id, "url": good.url("/x"), "rank": 1})
+        )
+        .await,
+        "CAPABILITY_MISSING"
+    );
+    let task = c
+        .result("task.get", json!({"taskId": id, "include": ["sources"]}))
+        .await;
+    let states: Vec<_> = task["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["state"].clone())
+        .collect();
+    assert_eq!(states, [json!("ok"), json!("ok")], "{task}");
+
+    // Pas encore préparée : le miroir attend sa validation.
+    let fresh = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": reference.url("/g.bin")}], "destDir": dest, "startPaused": true}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.result(
+        "task.addSource",
+        json!({"taskId": fresh, "url": other.url("/g.bin")}),
+    )
+    .await;
+    let task = c
+        .result("task.get", json!({"taskId": fresh, "include": ["sources"]}))
+        .await;
+    assert_eq!(task["sources"][1]["state"], "unknown", "{task}");
     engine.shutdown().await;
 }

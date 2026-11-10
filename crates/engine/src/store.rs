@@ -21,6 +21,7 @@ pub mod moves;
 pub mod schedules;
 pub mod segments;
 pub mod settings;
+pub mod sources;
 pub mod tasks;
 pub mod torrents;
 

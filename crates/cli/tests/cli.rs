@@ -235,3 +235,73 @@ async fn a_video_is_described_then_followed_through_its_merge() {
     assert!(listed.contains("[vidéo] Essai CLI"), "{listed}");
     engine.shutdown().await;
 }
+
+/// Miroirs (SPEC §7.7, phase 6) : `auro get --mirror` les donne au moteur, qui les vérifie ;
+/// `auro mirror` montre les sources et en ajoute une.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mirrors_are_given_checked_and_shown() {
+    use std::sync::{Arc, Mutex};
+
+    use auro_engine::testing::{FileSite, serve_file};
+    const LEN: u64 = 300_000;
+    let site = |shift: u64| {
+        serve_file(Arc::new(Mutex::new(FileSite {
+            shift,
+            ..FileSite::new(LEN)
+        })))
+    };
+    let (reference, good, other) = (site(0), site(0), site(3));
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "miroirs", Options::default()).await;
+    let dest = dir.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    let dest = dest.to_str().unwrap();
+
+    let (r, g, o) = (
+        reference.url("/f.bin"),
+        good.url("/f.bin"),
+        other.url("/f.bin"),
+    );
+    ok(&ep, &["get", &r, "-o", dest, "--mirror", &g, "-m", &o]).await;
+    assert_eq!(
+        std::fs::read(Path::new(dest).join("f.bin")).unwrap(),
+        auro_engine::testing::content(LEN as usize)
+    );
+    let listed = ok(&ep, &["list"]).await;
+    let id = listed.split_whitespace().next().unwrap().to_owned();
+    let shown = ok(&ep, &["mirror", &id]).await;
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines.len(), 3, "{shown}");
+    assert!(
+        lines[0].contains("référence") && lines[0].contains("bonne"),
+        "{shown}"
+    );
+    assert!(
+        lines[1].contains("miroir") && lines[1].contains("bonne"),
+        "{shown}"
+    );
+    assert!(
+        lines[2].contains("écartée") && lines[2].contains("contenu différent"),
+        "{shown}"
+    );
+    // Plusieurs adresses et des miroirs : refusé par la CLI.
+    let both = auro(&ep, &["add", &r, &g, "-o", dest, "--mirror", &o]).await;
+    assert!(!both.status.success());
+    // Une tâche en pause, pas encore préparée : le miroir attend sa vérification.
+    let added = ok(
+        &ep,
+        &["add", &reference.url("/g.bin"), "-o", dest, "--paused"],
+    )
+    .await;
+    let paused = added.split_whitespace().next().unwrap().to_owned();
+    ok(&ep, &["mirror", &paused, &good.url("/g.bin")]).await;
+    let shown = ok(&ep, &["mirror", &paused]).await;
+    assert!(
+        shown
+            .lines()
+            .nth(1)
+            .is_some_and(|l| l.contains("à vérifier")),
+        "{shown}"
+    );
+    engine.shutdown().await;
+}
