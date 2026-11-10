@@ -80,8 +80,9 @@ téléchargement.
   `tools/tools.json`, mise à jour de yt-dlp au plus une fois par jour),
   `media::extract` (`media.probe` : `yt-dlp -J`), `media::process` (arbre des processus tué :
   Job Object sous Windows, groupe sous Linux),
-  `media::run` (exécution d'une vidéo : résolution, flux, fusion par ffmpeg), `store::media`
-  (`media_jobs`, `media_streams`) ; un flux direct est une tâche HTTP interne
+  `media::run` (exécution d'une vidéo : résolution, flux, sous-titres gardés à côté, fusion
+  par ffmpeg), `store::media` (`media_jobs`, `media_streams` ; sous-titres : lignes avec
+  `language`, migration 7) ; un flux direct est une tâche HTTP interne
   (`tasks.parent_id`, migration 6) téléchargée par `transfer::run` ; faux serveur de
   publications des tests : `testing::tools`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
@@ -242,6 +243,9 @@ cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête propreme
 AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_probe --nocapture
 # … et vidéos fabriquées par ffmpeg, servies en local et téléchargées (sans Internet) :
 AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_local --nocapture
+# … et vidéos libres réelles téléchargées jusqu'au bout, sous-titres et HLS compris
+# (PeerTube, Commons, Archive, Framatube ; une centaine de Mio) :
+AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_free --nocapture
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
@@ -426,7 +430,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   yt-dlp et ffmpeg officiels) : 4a. outils (fait le 2026-11-09 : installation
   vérifiée, essai réel sous Windows et Linux) ; 4b. extraction (fait le 2026-11-09) ; 4c. ajout, flux et
   fusion (fait le 2026-11-09) ; 4d. banc de reprise des vidéos et limite de
-  débit des flux fragmentés (fait le 2026-11-09) ; 4e. essais réels, sous-titres ; 5. interfaces (bureau, CLI, extension ;
+  débit des flux fragmentés (fait le 2026-11-09) ; 4e. essais réels, sous-titres (fait le
+  2026-11-09 : sous-titres à côté de la vidéo, au format du site, langue manquante signalée
+  par `SUBTITLES_MISSING`, décisions de l'utilisateur ; essais réels sous Windows et Linux,
+  qui ont corrigé `If-Range` sans guillemets et les plages annoncées sans validateur,
+  SPEC 7.1 et 7.4) ; 5. interfaces (bureau, CLI, extension ;
   torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend

@@ -662,12 +662,12 @@ async fn execute(
     let fetch = match total {
         Some(total) if ranged => Fetch::Ranges {
             total,
-            // `If-Range` n'accepte qu'un ETag fort, sinon la date (RFC 9110 §13.1.5).
-            if_range: source
-                .etag
-                .clone()
-                .filter(|e| headers::is_strong_etag(e))
-                .or_else(|| source.last_modified.clone()),
+            // `If-Range` n'accepte qu'un ETag fort et bien formé, sinon la date (RFC 9110
+            // §13.1.5).
+            if_range: headers::if_range_validator(
+                source.etag.as_deref(),
+                source.last_modified.as_deref(),
+            ),
         },
         total => Fetch::Whole { total },
     };

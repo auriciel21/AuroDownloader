@@ -263,12 +263,14 @@ pub enum Event {
         rev: u64,
         status: media::tools::Status,
     },
-    /// Avertissement (`engine.warning`) : `YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`
-    /// (SPEC §7.17).
+    /// Avertissement (`engine.warning`) : `YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`,
+    /// `SUBTITLES_MISSING` (SPEC §7.17).
     Warning {
         rev: u64,
         code: &'static str,
         message: String,
+        /// La tâche concernée, s'il y en a une.
+        task_id: Option<String>,
     },
     /// Le réseau convient, ou non, aux téléchargements (SPEC §7.15) ; `metered` : facturé
     /// au volume, sans partage de torrents (SPEC §7.16).
@@ -1878,7 +1880,12 @@ impl Scheduler {
                 self.emit(|rev| Event::ToolsChanged { rev, status });
             }
             Command::Warn(code, message) => {
-                self.emit(|rev| Event::Warning { rev, code, message });
+                self.emit(|rev| Event::Warning {
+                    rev,
+                    code,
+                    message,
+                    task_id: None,
+                });
             }
             Command::TorrentInterface(reply) => {
                 let _ = reply.send(Ok(self.iface_name.clone()));
@@ -3138,6 +3145,9 @@ impl Scheduler {
             return;
         };
         self.changed(task_id, shown, task.state);
+        if task.kind == TaskKind::Media && matches!(result, Ok(Outcome::Completed(_))) {
+            self.warn_missing_subtitles(&task);
+        }
         let stopped_here = matches!(result, Ok(Outcome::Paused));
         let _ = match then {
             Then::Keep => Ok(()),
@@ -3165,6 +3175,27 @@ impl Scheduler {
             Then::Complete if task.state == TaskState::Seeding => self.stop_sharing(task_id),
             Then::Complete => Ok(()),
         };
+    }
+
+    /// Vidéo terminée sans certains des sous-titres demandés (F-24, SPEC §7.17) : absents
+    /// de la page ou refusés par le site. Annoncé par `engine.warning`.
+    fn warn_missing_subtitles(&mut self, task: &TaskRow) {
+        let missing = match store::media::missing_subtitles(&self.conn, &task.id) {
+            Ok(missing) if !missing.is_empty() => missing,
+            _ => return,
+        };
+        let message = format!(
+            "« {} » : sous-titres absents ou refusés par le site : {}",
+            task.display_name,
+            missing.join(", ")
+        );
+        let task_id = Some(task.id.clone());
+        self.emit(|rev| Event::Warning {
+            rev,
+            code: "SUBTITLES_MISSING",
+            message,
+            task_id,
+        });
     }
 
     /// Une exécution s'est arrêtée sur une erreur du moteur (base illisible, incohérence)

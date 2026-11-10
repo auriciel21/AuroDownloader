@@ -17,8 +17,14 @@ fn sample() -> Value {
         "extractor": "peertube",
         "extractor_key": "PeerTube",
         "thumbnail": "https://exemple.org/vignette.jpg",
-        "subtitles": {"fr": [{"ext": "vtt"}], "en": [{"ext": "vtt"}]},
-        "automatic_captions": {"de": [{"ext": "vtt"}]},
+        "subtitles": {
+            "fr": [{"ext": "vtt", "url": "https://exemple.org/fr.vtt"}],
+            "en": [{"ext": "vtt", "url": "https://exemple.org/en.vtt"}],
+            // Seulement en HLS : le moteur ne sait pas le télécharger, il n'est pas proposé.
+            "es": [{"ext": "vtt", "url": "https://exemple.org/es.m3u8",
+                    "protocol": "m3u8_native"}]
+        },
+        "automatic_captions": {"de": [{"ext": "vtt", "url": "https://exemple.org/de.vtt"}]},
         "formats": [
             {"format_id": "a1", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2",
              "tbr": 128.0, "filesize": 9_000_000, "protocol": "https",
@@ -71,6 +77,73 @@ fn a_ytdlp_answer_is_read() {
     assert!(probe.formats[3].drm, "« maybe » compte comme protégé");
 }
 
+/// Sous-titres (F-24) : `.srt` préféré, puis WebVTT ; formats propres à un site, HLS et
+/// codes de langue étranges écartés ; texte donné en ligne accepté ; en-têtes du format,
+/// sinon de la page.
+#[test]
+fn subtitles_are_picked_by_format_and_protocol() {
+    let answer = json!({
+        "title": "t", "format_id": "0", "ext": "mp4", "protocol": "https",
+        "url": "https://exemple.org/v.mp4",
+        "http_headers": {"User-Agent": "ua-page"},
+        "subtitles": {
+            "fr": [{"ext": "json3", "url": "https://exemple.org/fr.json3"},
+                   {"ext": "vtt", "url": "https://exemple.org/fr.vtt"},
+                   {"ext": "srt", "url": "https://exemple.org/fr.srt",
+                    "http_headers": {"User-Agent": "ua-sous-titre"}}],
+            "en": [{"ext": "vtt", "url": "https://exemple.org/en.vtt"}],
+            "de": [{"ext": "srt", "data": "1\n00:00:00,000 --> 00:00:01,000\nHallo\n"}],
+            "es": [{"ext": "vtt", "url": "https://exemple.org/es.m3u8",
+                    "protocol": "m3u8_native"}],
+            "it": [{"ext": "srv3", "url": "https://exemple.org/it.srv3"}],
+            "pt": [{"ext": "vtt", "url": "ftp://exemple.org/pt.vtt"}],
+            "../x": [{"ext": "vtt", "url": "https://exemple.org/x.vtt"}]
+        }
+    });
+    let resolution = parse_resolution(&answer).unwrap();
+    let mut got: Vec<(String, String)> = resolution
+        .subtitles
+        .iter()
+        .map(|s| (s.language.clone(), s.ext.clone()))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            ("de".to_owned(), "srt".to_owned()),
+            ("en".into(), "vtt".into()),
+            ("fr".into(), "srt".into()),
+        ]
+    );
+    let by = |lang: &str| {
+        resolution
+            .subtitles
+            .iter()
+            .find(|s| s.language == lang)
+            .unwrap()
+            .source
+            .clone()
+    };
+    assert_eq!(
+        by("fr"),
+        SubtitleSource::Url {
+            url: "https://exemple.org/fr.srt".into(),
+            headers: vec![("User-Agent".into(), "ua-sous-titre".into())],
+        }
+    );
+    assert_eq!(
+        by("en"),
+        SubtitleSource::Url {
+            url: "https://exemple.org/en.vtt".into(),
+            headers: vec![("User-Agent".into(), "ua-page".into())],
+        },
+        "en-têtes de la page"
+    );
+    assert!(matches!(by("de"), SubtitleSource::Data(t) if t.contains("Hallo")));
+    // `media.probe` ne propose que les mêmes langues.
+    assert_eq!(parse_probe(&answer).unwrap().subtitles, ["de", "en", "fr"]);
+}
+
 #[test]
 fn a_single_format_video_and_a_playlist() {
     // Vidéo à format unique : décrite à la racine.
@@ -117,7 +190,13 @@ async fn ytdlp_is_run_with_the_address_after_the_options() {
         .unwrap();
     assert_eq!(probe.title, "Un film libre");
     let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
-    for wanted in ["--ignore-config", "--no-cache-dir", "-J", "--no-playlist"] {
+    for wanted in [
+        "--ignore-config",
+        "--no-cache-dir",
+        "-J",
+        "--no-playlist",
+        "--write-subs",
+    ] {
         assert!(args.contains(wanted), "{wanted} absent : {args}");
     }
     let end = args.trim_end();
@@ -184,14 +263,20 @@ async fn garbage_output_and_a_missing_program_are_errors() {
 
 /// Pages de vidéos sous licence libre pour les essais réels (décision de l'utilisateur du
 /// 2026-11-09 : PeerTube, Wikimedia Commons, Internet Archive ; jamais YouTube).
-pub(crate) const FREE_PAGES: [&str; 3] = [
+pub(crate) const FREE_PAGES: [&str; 4] = [
     // Blender Foundation, PeerTube, CC BY-SA, 75 s.
     "https://video.blender.org/w/55bb3q2JuqERvT88aLEYCb",
-    // Big Buck Bunny (Blender Foundation, CC BY), Wikimedia Commons.
+    // Big Buck Bunny (Blender Foundation, CC BY), Wikimedia Commons ; 31 sous-titres WebVTT.
     "https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm",
     // Big Buck Bunny, Internet Archive.
     "https://archive.org/details/BigBuckBunny_124",
+    // « Bruce Schneier introduces FSF EncryptFest » (Free Software Foundation, CC BY,
+    // 119 s), PeerTube de Framasoft : HLS, son seul à part, sous-titre anglais.
+    FRAMATUBE_PAGE,
 ];
+
+/// La page de [`FREE_PAGES`] servie en HLS.
+pub(crate) const FRAMATUBE_PAGE: &str = "https://framatube.org/w/4Tg9KUhgBQSYB383W7VUKV";
 
 /// Essai réel (ignoré par défaut) : le vrai yt-dlp décrit des pages de vidéos sous licence
 /// libre. Outils installés dans `AURO_TOOLS_DIR` s'il est donné (gardés d'un essai à

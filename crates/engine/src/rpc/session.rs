@@ -400,10 +400,18 @@ async fn describe(
             json!({"rev": rev, "usable": usable, "metered": metered}),
         )),
         // Avertissements du moteur (mise à jour de yt-dlp, SPEC §7.17).
-        Event::Warning { rev, code, message } if topics.queues => Some(notification(
-            "engine.warning",
-            json!({"rev": rev, "code": code, "message": message}),
-        )),
+        Event::Warning {
+            rev,
+            code,
+            message,
+            task_id,
+        } if topics.queues => {
+            let mut params = json!({"rev": rev, "code": code, "message": message});
+            if let Some(id) = task_id {
+                params["taskId"] = json!(id);
+            }
+            Some(notification("engine.warning", params))
+        }
         // Outils de la vidéo (SPEC §7.17) : installation, mise à jour.
         Event::ToolsChanged { rev, status } if topics.queues => {
             let mut params = super::methods::tools_json(&status);
@@ -666,5 +674,39 @@ mod tests {
         let item = &message["params"]["items"][0];
         assert_eq!(item["verifiedBytes"], 4 << 20);
         assert_eq!(item["doneBytes"], 100 << 20);
+    }
+
+    /// `engine.warning` porte `taskId` quand l'avertissement vise une tâche (sous-titres
+    /// manquants, SPEC §7.17), et pas sinon.
+    #[tokio::test]
+    async fn a_warning_names_its_task_when_it_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::start(crate::scheduler::Config {
+            db_path: dir.path().join("auro.db"),
+            client: crate::net::Client::new().unwrap(),
+            transfer: crate::transfer::Options::default(),
+            disk_recheck: crate::scheduler::DISK_RECHECK,
+            planning: crate::scheduler::Planning::default(),
+        })
+        .unwrap();
+        let topics = Topics {
+            tasks: false,
+            queues: true,
+            progress: false,
+        };
+        let mut batch = ProgressBatch::default();
+        for (task_id, expected) in [(Some("t1".to_owned()), json!("t1")), (None, Value::Null)] {
+            let event = Event::Warning {
+                rev: 7,
+                code: "SUBTITLES_MISSING",
+                message: "m".into(),
+                task_id,
+            };
+            let message = describe(&engine, event, topics, &mut batch).await.unwrap();
+            assert_eq!(message["method"], "engine.warning");
+            assert_eq!(message["params"]["code"], "SUBTITLES_MISSING");
+            assert_eq!(message["params"]["taskId"], expected);
+        }
+        engine.shutdown().await;
     }
 }

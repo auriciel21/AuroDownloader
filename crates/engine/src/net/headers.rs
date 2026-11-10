@@ -85,6 +85,29 @@ pub fn is_strong_etag(etag: &str) -> bool {
     !etag.trim_start().starts_with("W/")
 }
 
+/// Validateur à envoyer dans `If-Range` (SPEC §7.4) : l'`ETag` fort et bien formé (entre
+/// guillemets), sinon la date `Last-Modified`, sinon l'`ETag` sans guillemets qu'on y met.
+///
+/// Certains serveurs envoient une `ETag` sans guillemets (`upload.wikimedia.org`, essai du
+/// 2026-11-09) mais n'acceptent dans `If-Range` qu'une étiquette conforme : renvoyée telle
+/// quelle, elle leur fait rendre le fichier entier (`200`), pris pour un fichier changé.
+pub fn if_range_validator(etag: Option<&str>, last_modified: Option<&str>) -> Option<String> {
+    let etag = etag.map(str::trim).filter(|e| !e.is_empty());
+    let quoted = |e: &&str| e.len() >= 2 && e.starts_with('"') && e.ends_with('"');
+    if let Some(e) = etag.filter(quoted) {
+        return Some(e.to_owned());
+    }
+    if let Some(date) = last_modified.map(str::trim).filter(|d| !d.is_empty()) {
+        return Some(date.to_owned());
+    }
+    etag.filter(|e| {
+        !e.starts_with("W/")
+            && e.bytes()
+                .all(|b| b != b'"' && (b == 0x21 || (0x23..=0x7e).contains(&b) || b >= 0x80))
+    })
+    .map(|e| format!("\"{e}\""))
+}
+
 /// `Retry-After` : nombre de secondes ou date HTTP, ramené à un délai depuis `now`.
 pub fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
     let value = value.trim();
@@ -228,6 +251,34 @@ mod tests {
         assert!(!is_encoded(""));
         assert!(is_strong_etag("\"abc\""));
         assert!(!is_strong_etag("W/\"abc\""));
+    }
+
+    #[test]
+    fn the_if_range_validator_is_a_well_formed_etag_or_the_date() {
+        let date = Some("Sat, 03 Oct 2020 17:29:25 GMT");
+        // ETag conforme : elle d'abord.
+        assert_eq!(
+            if_range_validator(Some("\"v1\""), date).as_deref(),
+            Some("\"v1\"")
+        );
+        // Faible : la date, sinon rien.
+        assert_eq!(if_range_validator(Some("W/\"v1\""), date).as_deref(), date);
+        assert_eq!(if_range_validator(Some("W/\"v1\""), None), None);
+        // Sans guillemets (upload.wikimedia.org) : la date, sinon l'ETag mise entre
+        // guillemets.
+        assert_eq!(
+            if_range_validator(Some("d087f893a1db4db2"), date).as_deref(),
+            date
+        );
+        assert_eq!(
+            if_range_validator(Some(" d087f893a1db4db2 "), None).as_deref(),
+            Some("\"d087f893a1db4db2\"")
+        );
+        // Mal formée au point de ne pas pouvoir être citée : rien.
+        assert_eq!(if_range_validator(Some("a\"b"), None), None);
+        assert_eq!(if_range_validator(Some("a b"), None), None);
+        assert_eq!(if_range_validator(Some(""), None), None);
+        assert_eq!(if_range_validator(None, None), None);
     }
 
     #[test]

@@ -131,6 +131,34 @@ async fn server_ignoring_range_means_a_single_stream() {
     assert_eq!(server.requests().len(), 2, "HEAD muet sur les plages : GET");
 }
 
+/// Annonce des plages sans validateur, puis plages ignorées (API de Wikimedia Commons,
+/// essai réel du 2026-11-09) : le `GET` d'un octet le révèle, un seul flux.
+#[tokio::test]
+async fn ranges_announced_without_a_validator_are_checked() {
+    let body = vec![b'w'; 2086];
+    let server = serve(move |r| match r.method.as_str() {
+        "HEAD" => reply(
+            "200 OK",
+            &[("Content-Length", "2086"), ("Accept-Ranges", "bytes")],
+            b"",
+        ),
+        _ => reply(
+            "200 OK",
+            &[("Content-Length", "2086"), ("Accept-Ranges", "bytes")],
+            &body,
+        ),
+    });
+    let probe = client()
+        .probe(&server.url("/w/api.php?lang=fr"), &[])
+        .await
+        .unwrap();
+    assert_eq!(probe.total_bytes, Some(2086));
+    assert!(!probe.accepts_ranges, "annonce démentie par le GET");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].header("range"), Some("bytes=0-0"));
+}
+
 #[tokio::test]
 async fn accept_ranges_none_is_trusted() {
     let server = serve(|_| {

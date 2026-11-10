@@ -1,5 +1,6 @@
 //! Tâches vidéo (SPEC §7.17) : la ligne `media_jobs` (page, format, conteneur), les flux
-//! retenus (`media_streams`, migration 6) et leurs tâches HTTP internes (`tasks.parent_id`).
+//! retenus (`media_streams`, migration 6), ses sous-titres (même table, avec leur langue,
+//! migration 7) et leurs tâches HTTP internes (`tasks.parent_id`).
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -118,12 +119,21 @@ pub struct StreamRow {
     pub child_id: Option<String>,
     /// Fichier complet et vidé sur disque.
     pub done: bool,
+    /// Langue d'un sous-titre (F-24) ; `None` : flux vidéo ou audio, à fusionner.
+    pub language: Option<String>,
+}
+
+impl StreamRow {
+    /// Un sous-titre, gardé à côté de la vidéo, jamais fusionné.
+    pub fn is_subtitle(&self) -> bool {
+        self.language.is_some()
+    }
 }
 
 pub fn load_streams(conn: &Connection, task_id: &str) -> Result<Vec<StreamRow>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT position, format_id, protocol, ext, has_video, has_audio, file_name, size,
-                child_id, done
+                child_id, done, language
          FROM media_streams WHERE task_id = ?1 ORDER BY position",
     )?;
     let rows = stmt.query_map([task_id], |r| {
@@ -138,6 +148,7 @@ pub fn load_streams(conn: &Connection, task_id: &str) -> Result<Vec<StreamRow>, 
             size: r.get::<_, Option<i64>>(7)?.map(|s| s.unsigned_abs()),
             child_id: r.get(8)?,
             done: r.get(9)?,
+            language: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -154,7 +165,12 @@ pub fn save_resolution(
     streams: &[StreamRow],
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let total: Option<u64> = streams.iter().map(|s| s.size).sum();
+    // Les sous-titres, petits et de taille souvent inconnue, ne comptent pas.
+    let total: Option<u64> = streams
+        .iter()
+        .filter(|s| !s.is_subtitle())
+        .map(|s| s.size)
+        .sum();
     let total = total
         .map(|t| i64::try_from(t).map_err(|_| StoreError::BadValue("taille".into())))
         .transpose()?;
@@ -170,8 +186,8 @@ pub fn save_resolution(
     for s in streams {
         tx.execute(
             "INSERT INTO media_streams (task_id, position, format_id, protocol, ext, has_video,
-                                        has_audio, file_name, size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                        has_audio, file_name, size, language)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task_id,
                 s.position,
@@ -181,7 +197,8 @@ pub fn save_resolution(
                 s.has_video,
                 s.has_audio,
                 s.file_name,
-                s.size.map(|v| v as i64)
+                s.size.map(|v| v as i64),
+                s.language
             ],
         )?;
     }
@@ -274,4 +291,20 @@ pub fn forget_streams(conn: &mut Connection, task_id: &str) -> Result<(), StoreE
     tx.execute("DELETE FROM tasks WHERE parent_id = ?1", [task_id])?;
     tx.commit()?;
     Ok(())
+}
+
+/// Langues demandées dont le sous-titre n'est pas sur le disque (F-24) : absentes de la
+/// page, ou refusées par le site. Dans l'ordre de la demande.
+pub fn missing_subtitles(conn: &Connection, task_id: &str) -> Result<Vec<String>, StoreError> {
+    let job = load_job(conn, task_id)?;
+    let streams = load_streams(conn, task_id)?;
+    Ok(job
+        .subtitles
+        .into_iter()
+        .filter(|lang| {
+            !streams
+                .iter()
+                .any(|s| s.done && s.language.as_deref() == Some(lang.as_str()))
+        })
+        .collect())
 }

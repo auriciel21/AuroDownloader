@@ -397,8 +397,9 @@ impl Client {
     /// Préparation d'une tâche (SPEC §7.1) : taille, acceptation des plages, validateurs
     /// et nom du fichier.
     ///
-    /// Un `HEAD` qui annonce `Accept-Ranges: bytes` et une taille suffit ; s'il échoue ou
-    /// reste muet sur l'un des deux, un `GET` avec `Range: bytes=0-0` tranche : `206`
+    /// Un `HEAD` qui annonce `Accept-Ranges: bytes`, une taille et un validateur (`ETag` ou
+    /// `Last-Modified`) suffit ; s'il échoue ou reste muet sur l'un des trois, un `GET` avec
+    /// `Range: bytes=0-0` tranche : `206`
     /// prouve les plages, `200` dit que le serveur les ignore (F-04). Chaque requête de
     /// segment vérifiera son `206` de toute façon.
     pub async fn probe(
@@ -432,7 +433,12 @@ impl Client {
                 (Some(false), length) => {
                     return Ok(conclude(&url, head_url, None, h, length, false));
                 }
-                (Some(true), Some(length)) if !h.encoded => {
+                // Sans validateur (contenu fabriqué à la demande), l'annonce ne suffit pas :
+                // l'API de Wikimedia Commons annonce les plages et les ignore (décision du
+                // 2026-11-09). Le `GET` ci-dessous les prouve.
+                (Some(true), Some(length))
+                    if !h.encoded && (h.etag.is_some() || h.last_modified.is_some()) =>
+                {
                     return Ok(conclude(&url, head_url, None, h, Some(length), true));
                 }
                 _ => {}

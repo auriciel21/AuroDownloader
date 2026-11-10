@@ -502,6 +502,10 @@ CREATE TABLE media_streams (
   done      INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
   PRIMARY KEY (task_id, position)
 );
+-- Migration 0007 (2026-11-09, section 7.17, étape 4e, F-24) : un sous-titre est une ligne
+-- de media_streams après les flux, avec sa langue ; téléchargé par une tâche HTTP interne
+-- comme un flux direct, gardé à côté de la vidéo, jamais fusionné. NULL : flux à fusionner.
+ALTER TABLE media_streams ADD COLUMN language TEXT;
 
 CREATE TABLE history (              -- survit à la suppression de la tâche
   id          TEXT PRIMARY KEY,
@@ -640,7 +644,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `engine.setNetwork` | `usable` (booléen) | `usable` : le réseau convient, ou non, aux téléchargements (section 7.15, depuis le 2026-11-09) |
 | `linkscan.run` | `text` ou `pageUrl`, `filters` | `links[]` avec nom, taille, type |
-| `media.probe` | `pageUrl` (`http` ou `https`) | `title`, `durationS`, `extractor`, `thumbnail`, `subtitles[]` (langues), `formats[]` : `formatId`, `ext`, `vcodec` et `acodec` (`null` : absent), `width`, `height`, `fps`, `tbr` (kbit/s), `filesize`, `filesizeApprox`, `protocol`, `drm`, `note` (section 7.17, depuis le 2026-11-09) |
+| `media.probe` | `pageUrl` (`http` ou `https`) | `title`, `durationS`, `extractor`, `thumbnail`, `subtitles[]` (langues que le moteur sait télécharger, depuis l'étape 4e), `formats[]` : `formatId`, `ext`, `vcodec` et `acodec` (`null` : absent), `width`, `height`, `fps`, `tbr` (kbit/s), `filesize`, `filesizeApprox`, `protocol`, `drm`, `note` (section 7.17, depuis le 2026-11-09) |
 | `media.tools` | aucun | État des outils de la vidéo : `ytdlp` et `ffmpeg` (`version`, `origin` : `download` ou `system`, ou `null`), `ready`, `installing`, `error` (section 7.17, depuis le 2026-11-09) |
 | `media.installTools` | `force` (booléen, faux par défaut : seulement ce qui manque) | Lance l'installation en arrière-plan et rend l'état aussitôt ; la fin s'annonce par `media.tools`. `CAPABILITY_MISSING` hors de Windows et Linux (section 7.17) |
 | `history.list` / `history.clear` | `query`, `before`, `limit`, `cursor` | Entrées d'historique ; nombre d'entrées effacées (section 6.5, depuis le 2026-11-08) |
@@ -668,7 +672,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `schedule.removed` | `scheduleId` (depuis le 2026-11-07) |
 | `engine.endAction` | `pending` : action de fin annoncée (`queueId`, `action`, `at`), ou `null` quand elle est exécutée ou annulée ; `error` : refus du système (depuis le 2026-11-07) |
 | `engine.stats` | Débit global, toutes les secondes |
-| `engine.warning` | `code`, `message` (disque presque plein, nouvelle version de yt-dlp disponible ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
+| `engine.warning` | `code`, `message`, `taskId` facultatif (la tâche concernée) (disque presque plein, nouvelle version de yt-dlp disponible ; `SUBTITLES_MISSING` : vidéo terminée sans certains sous-titres ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
@@ -704,6 +708,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Hors de Windows et Linux, les méthodes de la vidéo rendent `CAPABILITY_MISSING`.
 - **Vidéo, étape 4b** (2026-11-09, section 7.17) : `media.probe` (portée `add`) ; erreurs `TOOLS_MISSING` (-32031) et `EXTRACTOR_FAILED` (-32032) ; `engine.warning` porte aussi `YTDLP_UPDATED` et `YTDLP_UPDATE_FAILED`, sujet `queues`.
 - **Vidéo, étape 4c** (2026-11-09, section 7.17) : `task.add` accepte `media` à la place de `sources` : `pageUrl`, et facultatifs `format` (sélecteur de yt-dlp, 1 à 200 caractères ; `bv*+ba/b` par défaut), `container` (`mp4`, `mkv`, `webm`), `subtitles` (au plus 20 codes de langue), `title` (nom affiché en attendant la résolution). `media` et `sources` ensemble sont refusés ; sans outils, `TOOLS_MISSING`. La tâche porte `kind: media`. Capacité `media` dans `engine.hello` sous Windows et Linux.
+- **Vidéo, étape 4e** (2026-11-09, section 7.17) : `engine.warning` porte `SUBTITLES_MISSING` quand une vidéo se termine sans certains des sous-titres demandés, avec le champ facultatif `taskId` (la tâche concernée ; absent pour un avertissement du moteur entier).
 - **Paramètres refusés** : un paramètre prévu mais pas encore pris en charge est refusé par `CAPABILITY_MISSING`, et non ignoré en silence. Cela concerne :
   - dans `task.add` : plusieurs sources (`fileName` est pris en charge depuis le 2026-11-08, section 7.12 ; `checksum` depuis le 2026-11-08, section 7.9) ;
   - dans `task.update` : `maxConnections`. Sont pris en charge `speedLimitBps` ; `destDir` et `fileName` (section 7.12) ; `url` (section 7.13, depuis le 2026-11-08) ; `checksum` (section 7.9, depuis le 2026-11-08). Chacun de ces quatre groupes passe par un appel séparé (`INVALID_PARAMS` sinon) : chaque opération est vérifiée en entier avant de rien changer, mais pas leur combinaison ;
@@ -886,7 +891,7 @@ Les mécanismes ci-dessous décident de la vitesse et de la fiabilité du moteur
 
 ### 7.1 Préparation d'une tâche
 
-1. Le moteur envoie une requête `HEAD`. Si elle annonce `Accept-Ranges: bytes` et une taille (`Content-Length`), il s'arrête là ; `Accept-Ranges: none` suffit aussi, pour un seul flux. Sinon, ou si le serveur refuse le `HEAD`, il envoie un `GET` avec `Range: bytes=0-0` et lit `Content-Range` dans la réponse, sans lire le corps.
+1. Le moteur envoie une requête `HEAD`. Si elle annonce `Accept-Ranges: bytes`, une taille (`Content-Length`) et un validateur (`ETag` ou `Last-Modified`), il s'arrête là (le validateur est exigé depuis le 2026-11-09, décision de l'utilisateur : l'API de Wikimedia Commons annonce les plages sans validateur et les ignore) ; `Accept-Ranges: none` suffit aussi, pour un seul flux. Sinon, ou si le serveur refuse le `HEAD`, il envoie un `GET` avec `Range: bytes=0-0` et lit `Content-Range` dans la réponse, sans lire le corps.
 2. Une réponse `206` avec `Content-Range` prouve que `Range` est accepté, et donne la taille totale. Une réponse `200` signifie que le serveur l'ignore : tâche en un seul flux (F-04). Une réponse `416` avec `Content-Range: bytes */0` désigne un fichier vide. Un corps compressé (`Content-Encoding` autre que `identity`) rend la taille inconnue : un seul flux. Chaque requête de segment vérifie de toute façon son `206`. Une redirection n'est suivie que vers HTTP ou HTTPS, dix fois au plus ; sinon la tâche échoue avec `HTTP_STATUS`, sans nouvelle tentative.
 3. Le moteur mémorise `ETag`, `Last-Modified` et la taille dans `sources`, pour valider la reprise.
 4. Les requêtes par plage demandent `Accept-Encoding: identity`, car une compression ferait dérailler les décalages d'octets.
@@ -948,7 +953,7 @@ Au démarrage, pour chaque tâche `active` ou `retry_wait` :
 
 1. Le moteur ouvre le `.part` et vérifie que sa taille couvre tous les octets que `segments` déclare écrits. Sinon, les segments concernés repassent à `pending`, avec `written_bytes` remis à zéro.
 2. Il vérifie les invariants de couverture (section 5.6).
-3. Il rouvre les connexions avec `Range` et `If-Range` portant l'`ETag` mémorisé (ou la date `Last-Modified`).
+3. Il rouvre les connexions avec `Range` et `If-Range` portant l'`ETag` mémorisé (ou la date `Last-Modified`). Seule une `ETag` forte et bien formée (entre guillemets) sert telle quelle. Une `ETag` sans guillemets laisse la place à la date ; sans date, elle part entre guillemets (`net::headers::if_range_validator`). Depuis le 2026-11-09 : `upload.wikimedia.org` envoie ses `ETag` sans guillemets mais n'accepte dans `If-Range` que la forme conforme. Renvoyée telle quelle, elle lui faisait rendre le fichier entier, que le moteur prenait pour un fichier changé.
 4. Réponse `206` : le fichier n'a pas changé, le transfert reprend là où il s'était arrêté. Réponse `200` : le fichier distant a changé, la tâche passe en pause avec `pause_reason = file_changed` (F-13).
 5. Sans `ETag` ni `Last-Modified`, le moteur compare la taille et signale une validation faible ; une empreinte fournie par l'utilisateur reste alors la seule garantie.
 6. Une tâche sans plages, ou de taille inconnue, ne reprend pas en cours de route : elle repart du début.
@@ -1382,14 +1387,14 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   - `ffprobe` vérifie que le fichier produit se lit et qu'il a la durée annoncée, à 2 s près. Le fichier est vidé sur disque, renommé à son nom final (`nom (1).ext` si le nom est pris), puis les fichiers des flux sont effacés.
   - Un flux unique est seulement contrôlé par `ffprobe` et renommé, sans ffmpeg.
   - Une coupure pendant la fusion la recommence : le fichier provisoire est effacé au démarrage.
-- **Sous-titres** (F-24, priorité C) : téléchargés par le moteur, gardés à côté de la vidéo (`<nom>.<langue>.<ext>`). Sous-étape à part, après le reste.
+- **Sous-titres** (F-24, priorité C) : téléchargés par le moteur, gardés à côté de la vidéo (`<nom>.<langue>.<ext>`). Sous-étape à part, après le reste (étape 4e, détail plus bas).
 - **Erreurs** :
   - `EXTRACTOR_FAILED` : la résolution échoue ;
   - `TOOLS_MISSING` (nouveau, non réessayé) : yt-dlp ou ffmpeg absent ;
   - `MERGE_FAILED` (nouveau, non réessayé) : ffmpeg échoue, ou ffprobe refuse le fichier produit ;
   - les erreurs réseau et disque des flux sont celles d'une tâche HTTP.
 
-**Protocole** : `media.probe`, `media.tools`, `media.installTools` (portée `admin`), `task.add` avec `media`, réglage `media.autoUpdate`, `engine.warning` (`YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`). Capacité `media` annoncée sous Windows et Linux. Détail en section 6.5, à chaque sous-étape.
+**Protocole** : `media.probe`, `media.tools`, `media.installTools` (portée `admin`), `task.add` avec `media`, réglage `media.autoUpdate`, `engine.warning` (`YTDLP_UPDATED`, `YTDLP_UPDATE_FAILED`, `SUBTITLES_MISSING`). Capacité `media` annoncée sous Windows et Linux. Détail en section 6.5, à chaque sous-étape.
 
 **Tests** :
 - Faux yt-dlp et faux ffmpeg : petits programmes de test qui rendent une extraction donnée et écrivent des fichiers, sur un serveur HTTP local.
@@ -1506,6 +1511,24 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 - **Limite de débit des flux fragmentés** : yt-dlp reçoit `--limit-rate`, la plus petite des limites de la tâche, de sa file et globale, lue au lancement. Ce n'est pas un seau partagé avec les autres téléchargements, qui peuvent donc ensemble dépasser la limite globale ; un changement de limite vaut au flux suivant.
 - **Tests** : flux fragmenté par yt-dlp (`-o`, `--limit-rate` à la plus petite limite) suivi de la fusion ; passage annoncé en `post_processing`.
 - **Reste pour 4e** : essais réels sur PeerTube, Wikimedia Commons et Internet Archive ; sous-titres (F-24).
+
+**Mise en œuvre de l'étape 4e (2026-11-09) : sous-titres et essais réels.**
+- **Sous-titres** (F-24 ; décisions de l'utilisateur du 2026-11-09 : à côté de la vidéo, au format du site ; une langue qui manque ne bloque pas la vidéo, elle est signalée) :
+  - **Choix du format** (`media::extract`) : pour chaque langue demandée, parmi les sous-titres de la page (jamais les automatiques), le premier de `srt`, `vtt`, `ass`, `ssa`, `ttml`, `dfxp` qui se télécharge d'un seul tenant (`http`, `https`, sans fragments) ou que yt-dlp donne en ligne (`data`, 8 Mio au plus). Pas de conversion. Les formats propres à un site (`json3`, `srv3`…) et les sous-titres seulement en HLS ou DASH sont écartés : le moteur ne les télécharge pas par yt-dlp. Un code de langue hors lettres, chiffres, `-` et `_` est écarté (il entre dans un nom de fichier). `media.probe` ne propose que les langues ainsi téléchargeables.
+  - **Modèle** (migration 7, section 5.4) : un sous-titre est une ligne de `media_streams` après les flux, avec sa langue, créée à la première résolution si la page le propose. Les en-têtes sont ceux du sous-titre, sinon ceux de la page.
+  - **Téléchargement** : une fois les flux complets, avant la fusion. Un sous-titre à télécharger devient une tâche HTTP interne, comme un flux direct, sous `<nom>.<langue>.<ext>` (le nom final de la vidéo sans son extension) ; un sous-titre donné en ligne est écrit sous un nom libre, vidé sur disque puis renommé. Ils ne comptent ni dans la taille ni dans l'avancement de la vidéo.
+  - **Sous-titre manquant** : absent de la page, ou refusé par le site (`HTTP_STATUS` après une nouvelle résolution, au plus trois en tout comme pour les flux ; `AUTH_REQUIRED`, `AUTH_FAILED`, `FILE_CHANGED`) : la vidéo se termine sans lui. À la fin, le planificateur annonce `engine.warning` `SUBTITLES_MISSING`, avec `taskId` et les langues manquantes. Une coupure passagère, un disque plein ou un arrêt traitent la vidéo comme pour un flux.
+  - **Fusion** : les sous-titres n'y entrent pas.
+  - **Effacement** : les sous-titres d'une vidéo terminée sont des fichiers finaux : un retéléchargement sans effacer les garde, un retrait ou un retéléchargement avec les fichiers les efface. Ceux d'une vidéo inachevée partent avec ses flux.
+  - **Limite** : « Déplacer/Renommer » (section 7.12) ne déplace que la vidéo, pas ses sous-titres.
+- **Défauts trouvés par les essais réels et corrigés** :
+  - **Sous-titres invisibles** sur PeerTube : l'extracteur de yt-dlp ne les cherche que s'ils sont demandés. Le moteur lit donc les pages avec `--write-subs` (`-J` reste une simulation, rien n'est écrit).
+  - **`If-Range` refusé** par `upload.wikimedia.org` (ETag sans guillemets) : toute vidéo de Commons, et tout fichier de ce serveur, échouait en `FILE_CHANGED`. Corrigé dans `net` (section 7.4), pour toutes les tâches HTTP.
+  - **Plages annoncées puis ignorées** par l'API de Commons (sous-titres) : `Accept-Ranges: bytes` au `HEAD`, sans validateur, puis `200` à toute plage ; la vidéo échouait en `RANGE_UNSUPPORTED`. Un `HEAD` sans validateur ne suffit plus à prouver les plages (section 7.1, décision de l'utilisateur), pour toutes les tâches HTTP.
+- **Défaut de 4c corrigé** : les tâches internes d'une vidéo cherchaient une empreinte dans un fichier voisin (`downloads.neighborChecksum`, section 7.9), soit des requêtes inutiles vers les serveurs des vidéos. Elles ne la cherchent plus.
+- **Essais réels** (test ignoré `real_free_videos_are_downloaded_to_the_end`, vrais yt-dlp et ffmpeg) : flux direct seul (PeerTube de Blender ; Internet Archive, format `1`), flux direct et sous-titres WebVTT avec une langue absente (Wikimedia Commons, format `0`), HLS par yt-dlp et son seul direct fusionnés en mp4 avec un sous-titre (Framatube, PeerTube de Framasoft : « Bruce Schneier introduces FSF EncryptFest », CC BY, formats `3+Audio_only-0`).
+- **Tests** : choix du format des sous-titres ; vidéo avec sous-titre téléchargé, sous-titre en ligne, refusé, seulement en HLS et absent, avertissement, retéléchargement et retrait ; `taskId` de `engine.warning` ; `If-Range` avec une `ETag` sans guillemets (serveur strict) ; plages annoncées sans validateur puis ignorées.
+- **Résultats** (2026-11-09) : essai réel passé sous Windows et sous Linux (WSL), les quatre vidéos complètes, durées vérifiées par ffprobe, sous-titres `en` et `fr` de Commons et `en` de Framatube à côté, `xx` signalé, dossier sans flux ni `.part`. Bancs sans défaut : vidéos, 150 cycles (Windows 124 vidéos, Linux 132) ; `aurod`, 150 cycles (Linux, 56 tâches) ; reprise, 300 cycles (Linux, 73 fichiers).
 
 ## 8. Sécurité, vie privée et cadre légal
 

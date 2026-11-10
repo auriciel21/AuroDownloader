@@ -2018,7 +2018,7 @@ async fn media_probe_describes_a_page_through_ytdlp() {
 
     let answer = json!({
         "title": "Un film libre", "duration": 12.5, "extractor_key": "Generic",
-        "subtitles": {"fr": []},
+        "subtitles": {"fr": [{"ext": "vtt", "url": "https://exemple.org/fr.vtt"}]},
         "formats": [
             {"format_id": "a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
              "filesize": 1000, "protocol": "https"},
@@ -2221,6 +2221,8 @@ async fn ytdlp_updates_itself_on_a_probe_and_says_so() {
         warning["message"].as_str().unwrap().contains("2026.11.05"),
         "{warning}"
     );
+    // Avertissement du moteur entier : sans tâche.
+    assert!(warning.get("taskId").is_none(), "{warning}");
     let tools = c
         .notification("media.tools", |p| p["ytdlp"]["version"] == "2026.11.05")
         .await;

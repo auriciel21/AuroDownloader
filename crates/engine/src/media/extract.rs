@@ -26,7 +26,8 @@ pub struct Probe {
     pub extractor: Option<String>,
     pub thumbnail: Option<String>,
     pub formats: Vec<Format>,
-    /// Langues des sous-titres proposés (hors sous-titres automatiques).
+    /// Langues des sous-titres proposés que le moteur sait télécharger (hors sous-titres
+    /// automatiques ; formats retenus : `pick_subtitle`).
     pub subtitles: Vec<String>,
 }
 
@@ -84,10 +85,15 @@ pub(crate) fn ytdlp_command(ytdlp: &Path) -> tokio::process::Command {
     command
 }
 
+/// Options d'une lecture de page par yt-dlp (`-J` : simulation, rien n'est écrit).
+/// `--write-subs` : certains extracteurs (PeerTube) ne cherchent les sous-titres que s'ils
+/// sont demandés ; sans lui, ils n'en rendent aucun (essai réel du 2026-11-09).
+const READ_PAGE: [&str; 4] = ["-J", "--no-playlist", "--no-warnings", "--write-subs"];
+
 /// Décrit la vidéo de `page_url` (`yt-dlp -J --no-playlist`).
 pub async fn probe(ytdlp: &Path, page_url: &str, timeout: Duration) -> Result<Probe, ExtractError> {
     let mut command = ytdlp_command(ytdlp);
-    command.args(["-J", "--no-playlist", "--no-warnings", "--", page_url]);
+    command.args(READ_PAGE).args(["--", page_url]);
     let output = run(command, timeout).await?;
     let json: Value = serde_json::from_slice(&output)
         .map_err(|_| ExtractError::Failed("réponse de yt-dlp illisible".into()))?;
@@ -175,10 +181,10 @@ fn parse_probe(json: &Value) -> Result<Probe, ExtractError> {
     if formats.is_empty() {
         return Err(ExtractError::Failed("aucun format trouvé".into()));
     }
-    let mut subtitles: Vec<String> = json["subtitles"]
-        .as_object()
-        .map(|langs| langs.keys().cloned().collect())
-        .unwrap_or_default();
+    let mut subtitles: Vec<String> = parse_subtitles(json)
+        .into_iter()
+        .map(|s| s.language)
+        .collect();
     subtitles.sort();
     Ok(Probe {
         title: text(&json["title"]).unwrap_or_else(|| "vidéo".into()),
@@ -215,7 +221,7 @@ fn parse_format(f: &Value) -> Option<Format> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Les flux qu'un format retient (`yt-dlp -J -f <format>`), avec ce qu'il faut pour les
 /// télécharger : adresse et en-têtes, valables quelques heures.
@@ -224,6 +230,115 @@ pub struct Resolution {
     pub title: String,
     pub duration_s: Option<f64>,
     pub streams: Vec<Resolved>,
+    /// Sous-titres proposés que le moteur sait télécharger, un par langue.
+    pub subtitles: Vec<Subtitle>,
+}
+
+/// Un sous-titre d'une langue (F-24), au format retenu par [`pick_subtitle`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subtitle {
+    pub language: String,
+    /// `srt`, `vtt`… : l'extension de son fichier.
+    pub ext: String,
+    pub source: SubtitleSource,
+}
+
+/// D'où vient un sous-titre.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubtitleSource {
+    /// Fichier à télécharger d'un seul tenant (`http`, `https`), avec ses en-têtes.
+    Url {
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+    /// Texte donné tel quel par yt-dlp.
+    Data(String),
+}
+
+/// Formats de sous-titres retenus, par ordre de préférence : `.srt` d'abord (lu partout),
+/// puis WebVTT, puis les autres formats que les lecteurs savent lire. Les formats propres à
+/// un site (`json3`, `srv3`…) sont écartés. Pas de conversion (décision du 2026-11-09).
+const SUBTITLE_FORMATS: [&str; 6] = ["srt", "vtt", "ass", "ssa", "ttml", "dfxp"];
+
+/// Taille maximale d'un sous-titre donné en ligne par yt-dlp.
+const MAX_SUBTITLE_DATA: usize = 8 << 20;
+
+/// Le format retenu parmi ceux d'une langue : le premier de [`SUBTITLE_FORMATS`] qui se
+/// télécharge d'un seul tenant (ni HLS ni DASH : le moteur ne passe pas par yt-dlp pour un
+/// sous-titre), ou qui est donné en ligne.
+fn pick_subtitle(
+    language: &str,
+    formats: &[Value],
+    page_headers: &[(String, String)],
+) -> Option<Subtitle> {
+    SUBTITLE_FORMATS.iter().find_map(|wanted| {
+        formats.iter().find_map(|f| {
+            let ext = text(&f["ext"])?;
+            if ext != *wanted {
+                return None;
+            }
+            let source = if let Some(data) = f["data"].as_str() {
+                if data.len() > MAX_SUBTITLE_DATA {
+                    return None;
+                }
+                SubtitleSource::Data(data.to_owned())
+            } else {
+                let url = text(&f["url"])?;
+                let direct = text(&f["protocol"])
+                    .as_deref()
+                    .is_none_or(|p| matches!(p, "http" | "https"))
+                    && (url.starts_with("https://") || url.starts_with("http://"))
+                    && f.get("fragments").is_none_or(Value::is_null);
+                if !direct {
+                    return None;
+                }
+                let headers = if f["http_headers"].is_object() {
+                    headers_of(f)
+                } else {
+                    page_headers.to_vec()
+                };
+                SubtitleSource::Url { url, headers }
+            };
+            Some(Subtitle {
+                language: language.to_owned(),
+                ext,
+                source,
+            })
+        })
+    })
+}
+
+/// En-têtes `http_headers` d'un format ou de la page.
+fn headers_of(v: &Value) -> Vec<(String, String)> {
+    v["http_headers"]
+        .as_object()
+        .map(|h| {
+            h.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Les sous-titres de la page (hors automatiques) que le moteur sait télécharger, par
+/// langue. Un code de langue étrange (hors lettres, chiffres, `-` et `_`) est écarté : il
+/// entre dans un nom de fichier.
+fn parse_subtitles(json: &Value) -> Vec<Subtitle> {
+    let page_headers = headers_of(json);
+    let Some(langs) = json["subtitles"].as_object() else {
+        return Vec::new();
+    };
+    langs
+        .iter()
+        .filter(|(lang, _)| {
+            !lang.is_empty()
+                && lang.len() <= 20
+                && lang
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .filter_map(|(lang, formats)| pick_subtitle(lang, formats.as_array()?, &page_headers))
+        .collect()
 }
 
 /// Un flux retenu.
@@ -251,15 +366,7 @@ pub async fn resolve(
     timeout: Duration,
 ) -> Result<Resolution, ExtractError> {
     let mut command = ytdlp_command(ytdlp);
-    command.args([
-        "-J",
-        "--no-playlist",
-        "--no-warnings",
-        "-f",
-        format,
-        "--",
-        page_url,
-    ]);
+    command.args(READ_PAGE).args(["-f", format, "--", page_url]);
     let output = run(command, timeout).await?;
     let json: Value = serde_json::from_slice(&output)
         .map_err(|_| ExtractError::Failed("réponse de yt-dlp illisible".into()))?;
@@ -289,20 +396,14 @@ pub(crate) fn parse_resolution(json: &Value) -> Result<Resolution, ExtractError>
         title: text(&json["title"]).unwrap_or_else(|| "vidéo".into()),
         duration_s: json["duration"].as_f64(),
         streams,
+        subtitles: parse_subtitles(json),
     })
 }
 
 fn parse_resolved(f: &Value) -> Option<Resolved> {
     let format = parse_format(f)?;
     let url = text(&f["url"])?;
-    let headers = f["http_headers"]
-        .as_object()
-        .map(|h| {
-            h.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let headers = headers_of(f);
     let direct = matches!(format.protocol.as_str(), "http" | "https")
         && f.get("fragments").is_none_or(Value::is_null);
     // Sans codec annoncé, un format est pris pour complet (vidéo et son).

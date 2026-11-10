@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
 use tokio::sync::watch;
 
-use super::extract::{self, ExtractError, Resolution, Resolved};
+use super::extract::{self, ExtractError, Resolution, Resolved, Subtitle, SubtitleSource};
 use super::tools::{Status, Tools};
 use crate::io::{claim_name, part_path, sync_parent_dir};
 use crate::net::Client;
@@ -86,6 +86,17 @@ pub async fn run(
         }
     }
     let status = ctx.tools.map(|t| t.status()).unwrap_or_default();
+    // Pas d'empreinte cherchée à côté des adresses des flux et des sous-titres : des
+    // requêtes inutiles vers les serveurs de vidéos (étape 4e).
+    let opts = transfer::Options {
+        neighbor_checksum: false,
+        ..ctx.opts.clone()
+    };
+    let ctx = &Context {
+        client: ctx.client,
+        opts: &opts,
+        tools: ctx.tools,
+    };
     let end = if !status.ready() {
         failed(
             "TOOLS_MISSING",
@@ -239,11 +250,7 @@ async fn download(
         job.format.clone()
     } else {
         // Les mêmes flux qu'à la première résolution.
-        streams
-            .iter()
-            .map(|s| s.format_id.as_str())
-            .collect::<Vec<_>>()
-            .join("+")
+        selector_of(&streams)
     };
     let mut resolution = match resolve(status, &job.page_url, &selector, stop).await {
         Ok(Some(r)) => r,
@@ -271,7 +278,7 @@ async fn download(
             .strip_suffix(&format!(".{container}"))
             .unwrap_or(&final_name)
             .to_owned();
-        let rows: Vec<StreamRow> = resolution
+        let mut rows: Vec<StreamRow> = resolution
             .streams
             .iter()
             .enumerate()
@@ -286,8 +293,33 @@ async fn download(
                 size: s.size,
                 child_id: None,
                 done: false,
+                language: None,
             })
             .collect();
+        // Sous-titres demandés que la page propose (F-24), après les flux : à côté de la
+        // vidéo, sous `<nom>.<langue>.<ext>`. Les autres manqueront, signalés à la fin.
+        for lang in &job.subtitles {
+            if let Some(sub) = resolution.subtitles.iter().find(|s| &s.language == lang) {
+                rows.push(StreamRow {
+                    position: rows.len() as u32,
+                    format_id: format!("sub-{}", sub.ext),
+                    protocol: match &sub.source {
+                        SubtitleSource::Url { url, .. } if url.starts_with("http://") => "http",
+                        SubtitleSource::Url { .. } => "https",
+                        SubtitleSource::Data(_) => "data",
+                    }
+                    .into(),
+                    ext: sub.ext.clone(),
+                    has_video: false,
+                    has_audio: false,
+                    file_name: format!("{final_stem}.{lang}.{}", sub.ext),
+                    size: None,
+                    child_id: None,
+                    done: false,
+                    language: Some(lang.clone()),
+                });
+            }
+        }
         media::save_resolution(
             conn,
             task_id,
@@ -298,42 +330,40 @@ async fn download(
         )?;
         streams = media::load_streams(conn, task_id)?;
         task = load_task(conn, task_id)?;
-    } else {
-        let wanted: Vec<&str> = streams.iter().map(|s| s.format_id.as_str()).collect();
-        let got: Vec<&str> = resolution
-            .streams
-            .iter()
-            .map(|s| s.format_id.as_str())
-            .collect();
-        if wanted != got {
-            return Ok(failed(
-                "EXTRACTOR_FAILED",
-                "la page ne propose plus les mêmes flux",
-            ));
-        }
+    } else if !same_streams(&streams, &resolution) {
+        return Ok(failed(
+            "EXTRACTOR_FAILED",
+            "la page ne propose plus les mêmes flux",
+        ));
     }
 
     let mut done_bytes: u64 = streams
         .iter()
-        .filter(|s| s.done)
+        .filter(|s| s.done && !s.is_subtitle())
         .filter_map(|s| s.size)
         .sum();
     let mut refreshes = 0;
+    // Les flux d'abord (positions 0 à n-1, comme `resolution.streams`), les sous-titres
+    // ensuite.
     for index in 0..streams.len() {
-        if streams[index].done {
+        if streams[index].done || streams[index].is_subtitle() {
             continue;
         }
         loop {
             let stream = &streams[index];
             let resolved = &resolution.streams[index];
-            let total: Option<u64> = streams.iter().map(|s| s.size).sum();
+            let total: Option<u64> = streams
+                .iter()
+                .filter(|s| !s.is_subtitle())
+                .map(|s| s.size)
+                .sum();
             let step = if resolved.direct {
                 direct(
                     conn,
                     ctx,
                     &task,
                     stream,
-                    resolved,
+                    (resolved.url.as_str(), resolved.headers.as_slice()),
                     stop,
                     done_bytes,
                     total,
@@ -390,6 +420,21 @@ async fn download(
         streams = media::load_streams(conn, task_id)?;
     }
 
+    if let Some(end) = subtitles(
+        conn,
+        ctx,
+        status,
+        &task,
+        &job.page_url,
+        &mut resolution,
+        &mut refreshes,
+        stop,
+    )
+    .await?
+    {
+        return Ok(end);
+    }
+
     change_state(conn, task_id, &Change::to(TaskState::PostProcessing))?;
     // Annoncé par le planificateur.
     on_progress(Progress {
@@ -406,20 +451,137 @@ async fn download(
     finish(conn, status, task_id, resolution.duration_s).await
 }
 
+/// Sélecteur des flux retenus (sans les sous-titres).
 fn selector_of(streams: &[StreamRow]) -> String {
     streams
         .iter()
+        .filter(|s| !s.is_subtitle())
         .map(|s| s.format_id.as_str())
         .collect::<Vec<_>>()
         .join("+")
 }
 
+/// La résolution rend les flux retenus, dans le même ordre (sans les sous-titres).
 fn same_streams(streams: &[StreamRow], resolution: &Resolution) -> bool {
-    streams.len() == resolution.streams.len()
-        && streams
+    let media: Vec<&StreamRow> = streams.iter().filter(|s| !s.is_subtitle()).collect();
+    media.len() == resolution.streams.len()
+        && media
             .iter()
             .zip(&resolution.streams)
             .all(|(a, b)| a.format_id == b.format_id)
+}
+
+/// Codes d'une tâche HTTP qui disent que le site refuse le fichier : pour un sous-titre,
+/// la vidéo se termine sans lui (décision du 2026-11-09).
+const REFUSED: [&str; 4] = [
+    "HTTP_STATUS",
+    "AUTH_REQUIRED",
+    "AUTH_FAILED",
+    "FILE_CHANGED",
+];
+
+/// Les sous-titres de la vidéo (F-24), une fois ses flux complets. Un sous-titre que la
+/// page ne propose plus, ou que le site refuse (après une nouvelle résolution, comme un
+/// flux), est laissé : la vidéo se termine sans lui, et le planificateur le signale
+/// (`SUBTITLES_MISSING`). Une coupure passagère, un arrêt ou un disque plein arrêtent la
+/// vidéo comme pour un flux (`Some`).
+#[allow(clippy::too_many_arguments)]
+async fn subtitles(
+    conn: &mut Connection,
+    ctx: &Context<'_>,
+    status: &Status,
+    task: &TaskRow,
+    page_url: &str,
+    resolution: &mut Resolution,
+    refreshes: &mut u32,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<Option<End>, TransferError> {
+    let all = media::load_streams(conn, &task.id)?;
+    let selector = selector_of(&all);
+    let rows: Vec<StreamRow> = all
+        .into_iter()
+        .filter(|s| s.is_subtitle() && !s.done)
+        .collect();
+    // Même langue et même format qu'à la première résolution : le nom du fichier porte
+    // l'extension.
+    let offered = |resolution: &Resolution, row: &StreamRow| {
+        resolution
+            .subtitles
+            .iter()
+            .find(|s| row.language.as_deref() == Some(s.language.as_str()) && s.ext == row.ext)
+            .cloned()
+    };
+    for row in &rows {
+        while let Some(sub) = offered(resolution, row) {
+            let step = match &sub.source {
+                SubtitleSource::Data(text) => write_subtitle(conn, task, row, &sub, text)?,
+                SubtitleSource::Url { url, headers } => {
+                    direct(
+                        conn,
+                        ctx,
+                        task,
+                        row,
+                        (url.as_str(), headers.as_slice()),
+                        stop,
+                        0,
+                        None,
+                        &mut |_| {},
+                    )
+                    .await?
+                }
+            };
+            match step {
+                Step::Done(_) => break,
+                Step::Refresh if *refreshes < MAX_REFRESH => {
+                    *refreshes += 1;
+                    match resolve(status, page_url, &selector, stop).await {
+                        Ok(Some(r)) => *resolution = r,
+                        Ok(None) => return Ok(Some(End::Stopped)),
+                        // La page ne se lit plus : la vidéo est complète, elle se termine.
+                        Err(_) => break,
+                    }
+                }
+                Step::Refresh => break,
+                Step::End(End::Failed { code, .. }) if REFUSED.contains(&code) => break,
+                Step::End(end) => return Ok(Some(end)),
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Un sous-titre donné en ligne par yt-dlp : écrit sous un nom libre, vidé sur disque,
+/// puis renommé, comme un fichier téléchargé.
+fn write_subtitle(
+    conn: &Connection,
+    task: &TaskRow,
+    row: &StreamRow,
+    sub: &Subtitle,
+    text: &str,
+) -> Result<Step, TransferError> {
+    let dir = Path::new(&task.dest_dir);
+    let reserved = reserved_names(conn, &task.dest_dir, &task.id)?;
+    let written = claim_name(dir, &row.file_name, &reserved)
+        .map_err(std::io::Error::other)
+        .and_then(|name| {
+            let path = dir.join(&name);
+            let part = part_path(&path);
+            std::fs::write(&part, text.as_bytes())?;
+            let size = sync_file(&part)?;
+            std::fs::rename(&part, &path)?;
+            sync_parent_dir(&path).map_err(std::io::Error::other)?;
+            Ok((name, size))
+        });
+    match written {
+        Ok((name, size)) => {
+            media::stream_done(conn, &task.id, row.position, &name, size)?;
+            Ok(Step::Done(size))
+        }
+        Err(e) => Ok(Step::End(failed(
+            "DISK_IO",
+            format!("sous-titre {} : {e}", sub.language),
+        ))),
+    }
 }
 
 /// Issue d'un flux.
@@ -474,14 +636,15 @@ fn store_headers(
     Ok(stored)
 }
 
-/// Un flux direct, par sa tâche HTTP interne.
+/// Un flux direct, ou un sous-titre, par sa tâche HTTP interne ; `(url, headers)` : son
+/// adresse fraîche et les en-têtes de yt-dlp.
 #[allow(clippy::too_many_arguments)]
 async fn direct(
     conn: &mut Connection,
     ctx: &Context<'_>,
     task: &TaskRow,
     stream: &StreamRow,
-    resolved: &Resolved,
+    (url, headers): (&str, &[(String, String)]),
     stop: &mut watch::Receiver<bool>,
     base: u64,
     total: Option<u64>,
@@ -495,11 +658,11 @@ async fn direct(
         {
             Some(id) => {
                 // Adresse fraîche à chaque exécution ; ses validateurs restent, pour `If-Range`.
-                tasks::replace_url(conn, &id, &resolved.url, None, None)?;
+                tasks::replace_url(conn, &id, url, None, None)?;
                 id
             }
             None => {
-                let stored = match store_headers(&resolved.headers, &ctx.opts.vault) {
+                let stored = match store_headers(headers, &ctx.opts.vault) {
                     Ok(stored) => stored,
                     Err(e) => {
                         return Ok(Step::End(End::RetryLater {
@@ -512,7 +675,7 @@ async fn direct(
                     conn,
                     &NewTask {
                         queue_id: &task.queue_id,
-                        url: &resolved.url,
+                        url,
                         display_name: &stream.file_name,
                         dest_dir: &task.dest_dir,
                         max_connections: task.max_connections,
@@ -764,7 +927,11 @@ async fn finish(
 ) -> Result<End, TransferError> {
     let task = load_task(conn, task_id)?;
     let job = media::load_job(conn, task_id)?;
-    let streams = media::load_streams(conn, task_id)?;
+    // Les sous-titres restent à côté de la vidéo : ni fusionnés, ni effacés.
+    let streams: Vec<StreamRow> = media::load_streams(conn, task_id)?
+        .into_iter()
+        .filter(|s| !s.is_subtitle())
+        .collect();
     let Some(final_name) = task.file_name.clone() else {
         return Ok(failed("INTERNAL", "vidéo sans nom final"));
     };
@@ -904,20 +1071,31 @@ async fn run_tool(
 }
 
 /// Fichiers d'une vidéo à effacer (annulation, retrait) : ceux de ses flux et leurs
-/// `.part`, le `.part` du nom final ; avec `finals`, le fichier final aussi.
+/// `.part`, le `.part` du nom final ; avec `finals`, le fichier final aussi. Les
+/// sous-titres d'une vidéo terminée sont des fichiers finaux : effacés avec `finals`
+/// seulement ; ceux d'une vidéo inachevée partent avec ses flux.
 pub fn delete_files(conn: &Connection, task: &TaskRow, finals: bool) -> std::io::Result<()> {
     let dir = Path::new(&task.dest_dir);
     let remove = |path: PathBuf| match std::fs::remove_file(&path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     };
+    let keep_subtitles = !finals && task.state == TaskState::Completed;
     let streams = media::load_streams(conn, &task.id).map_err(std::io::Error::other)?;
+    let mut kept: Vec<&str> = Vec::new();
     for s in &streams {
+        if keep_subtitles && s.is_subtitle() {
+            kept.extend(s.child_id.as_deref());
+            continue;
+        }
         let path = dir.join(&s.file_name);
         remove(part_path(&path))?;
         remove(path)?;
     }
     for child in media::children(conn, &task.id).map_err(std::io::Error::other)? {
+        if kept.contains(&child.as_str()) {
+            continue;
+        }
         if let Ok(row) = load_task(conn, &child)
             && let Some(name) = row.file_name
         {

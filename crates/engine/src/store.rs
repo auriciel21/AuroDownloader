@@ -70,6 +70,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "media_streams",
         sql: include_str!("../migrations/0006_media_streams.sql"),
     },
+    Migration {
+        version: 7,
+        name: "media_subtitles",
+        sql: include_str!("../migrations/0007_media_subtitles.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

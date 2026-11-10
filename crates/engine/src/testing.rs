@@ -365,6 +365,9 @@ pub struct FileSite {
     pub neighbors: Vec<(String, Vec<u8>)>,
     /// Chemins des fichiers voisins demandés, dans l'ordre.
     pub neighbor_requests: Vec<String>,
+    /// `If-Range` n'est reconnu que sous la forme d'une étiquette conforme, entre
+    /// guillemets, même si l'`ETag` envoyée n'en a pas (`upload.wikimedia.org`).
+    pub strict_if_range: bool,
 }
 
 impl FileSite {
@@ -381,6 +384,7 @@ impl FileSite {
             auth: None,
             neighbors: Vec::new(),
             neighbor_requests: Vec::new(),
+            strict_if_range: false,
         }
     }
 }
@@ -525,6 +529,12 @@ fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send
         }
         let validators_match = match r.header("if-range") {
             None => true,
+            Some(v) if site.strict_if_range => site.etag.as_deref().is_some_and(|e| {
+                v.len() >= 2
+                    && v.starts_with('"')
+                    && v.ends_with('"')
+                    && v.trim_matches('"') == e.trim_matches('"')
+            }),
             Some(v) => site.etag.as_deref() == Some(v),
         };
         let range = r

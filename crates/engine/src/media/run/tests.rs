@@ -323,12 +323,16 @@ fn site(pace: Option<crate::testing::Pace>) -> crate::testing::Server {
         |request| match request.path.as_str() {
             "/v.mp4" => reply("200 OK", &[("Content-Type", "video/mp4")], &video_bytes()),
             "/a.m4a" => reply("200 OK", &[("Content-Type", "audio/mp4")], &audio_bytes()),
+            "/fr.vtt" => reply("200 OK", &[("Content-Type", "text/vtt")], FR_VTT.as_bytes()),
             p if p.starts_with("/old/") => reply("403 Forbidden", &[], b""),
             _ => reply("404 Not Found", &[], b""),
         },
         pace,
     )
 }
+
+const FR_VTT: &str = "WEBVTT\n\n00:00.000 --> 00:01.000\nBonjour\n";
+const DE_SRT: &str = "1\n00:00:00,000 --> 00:00:01,000\nHallo\n";
 
 /// Réponse de `yt-dlp -J -f …` : image et son directs, sous `prefix`.
 fn resolution(server: &crate::testing::Server, prefix: &str, drm: bool) -> String {
@@ -660,4 +664,242 @@ async fn a_fragmented_stream_goes_through_ytdlp_within_the_limit() {
     assert!(downloads.contains("hls-1"), "{downloads}");
     assert_eq!(files_in(&s.dest).len(), 1, "{:?}", files_in(&s.dest));
     s.engine.shutdown().await;
+}
+
+/// Attend l'avertissement `code` du moteur ; rend son message et sa tâche.
+async fn wait_warning(
+    events: &mut broadcast::Receiver<Event>,
+    code: &str,
+) -> (String, Option<String>) {
+    timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::Warning {
+                    code: c,
+                    message,
+                    task_id,
+                    ..
+                }) if c == code => return (message, task_id),
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+            }
+        }
+    })
+    .await
+    .expect("pas d'avertissement")
+}
+
+/// Sous-titres (F-24) : gardés à côté de la vidéo sous `<nom>.<langue>.<ext>`, au format du
+/// site ; ceux qui manquent (refusé par le site, seulement en HLS, absent) ne bloquent pas
+/// la vidéo et sont signalés. Un retéléchargement garde ceux de la vidéo précédente ; un
+/// retrait avec les fichiers efface ceux de la vidéo retirée.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subtitles_are_kept_beside_the_video_and_missing_ones_reported() {
+    let server = site(None);
+    let mut answer: serde_json::Value =
+        serde_json::from_str(&resolution(&server, "", false)).unwrap();
+    answer["subtitles"] = serde_json::json!({
+        "fr": [{"ext": "json3", "url": server.url("/fr.json3")},
+               {"ext": "vtt", "url": server.url("/fr.vtt")}],
+        "en": [{"ext": "vtt", "url": server.url("/en.vtt")}],
+        "de": [{"ext": "srt", "data": DE_SRT}],
+        "es": [{"ext": "vtt", "url": server.url("/es.m3u8"), "protocol": "m3u8_native"}]
+    });
+    let answer = answer.to_string();
+    let s = setup(&[&answer], true);
+    let mut events = s.engine.subscribe();
+    let mut add = add_video(&s, "https://exemple.org/page");
+    add.media.as_mut().unwrap().subtitles =
+        ["fr", "en", "de", "es", "it"].map(String::from).to_vec();
+    let id = s.engine.add(add).await.unwrap();
+    let end = wait_end(&mut events, &id).await;
+    let task = s.engine.get(&id).await.unwrap();
+    assert_eq!(end, TaskState::Completed, "{task:?}");
+    let (message, warned) = wait_warning(&mut events, "SUBTITLES_MISSING").await;
+    assert_eq!(warned.as_deref(), Some(id.as_str()));
+    assert!(message.ends_with(": en, es, it"), "{message}");
+
+    let name = task.file_name.clone().unwrap();
+    let stem = name.strip_suffix(".mp4").unwrap().to_owned();
+    let mut expected = video_bytes();
+    expected.extend(audio_bytes());
+    assert_eq!(
+        std::fs::read(s.dest.join(&name)).unwrap(),
+        expected,
+        "la fusion ne prend pas les sous-titres"
+    );
+    let first = [
+        format!("{stem}.de.srt"),
+        format!("{stem}.fr.vtt"),
+        name.clone(),
+    ];
+    assert_eq!(files_in(&s.dest), first);
+    assert_eq!(
+        std::fs::read_to_string(s.dest.join(&first[1])).unwrap(),
+        FR_VTT
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.dest.join(&first[0])).unwrap(),
+        DE_SRT
+    );
+    // Le site a refusé `en` : une nouvelle résolution, au plus trois fois, comme un flux.
+    let refused = server
+        .requests()
+        .iter()
+        .filter(|r| r.path == "/en.vtt")
+        .count();
+    assert!((1..=8).contains(&refused), "{refused} demandes de en.vtt");
+    assert!(
+        !server.requests().iter().any(|r| r.path.contains(".json3")
+            || r.path.contains(".m3u8")
+            || r.path.contains("SUMS")
+            || r.path.contains(".sha")),
+        "ni format écarté, ni empreinte voisine : {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // Retéléchargement sans effacer : les fichiers de la première fois restent.
+    s.engine.restart(&id, false).await.unwrap();
+    assert_eq!(wait_end(&mut events, &id).await, TaskState::Completed);
+    let again = s.engine.get(&id).await.unwrap().file_name.unwrap();
+    assert_ne!(again, name);
+    assert_eq!(files_in(&s.dest).len(), 6, "{:?}", files_in(&s.dest));
+    // Retrait avec les fichiers : ceux de la seconde vidéo partent, sous-titres compris.
+    s.engine.remove(&id, true).await.unwrap();
+    assert_eq!(files_in(&s.dest), first);
+    s.engine.shutdown().await;
+}
+
+/// Essai réel (Internet) : vidéos sous licence libre téléchargées jusqu'au bout par le
+/// moteur, avec les vrais yt-dlp et ffmpeg de `AURO_TOOLS_DIR` (installés s'ils manquent).
+/// Formats légers choisis (une centaine de Mio en tout) : flux direct seul (PeerTube de
+/// Blender, Internet Archive), flux direct et sous-titres WebVTT (Commons, une langue
+/// absente), HLS par yt-dlp et son seul direct fusionnés, avec un sous-titre (Framatube).
+/// `AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_free --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Internet : vraies pages de vidéos libres, vrais yt-dlp et ffmpeg (AURO_TOOLS_DIR)"]
+async fn real_free_videos_are_downloaded_to_the_end() {
+    use crate::media::extract::tests::{FRAMATUBE_PAGE, FREE_PAGES};
+    let tools_dir = PathBuf::from(std::env::var_os("AURO_TOOLS_DIR").expect("AURO_TOOLS_DIR"));
+    let sources = crate::media::tools::Sources {
+        system_ffmpeg: false,
+        ..Default::default()
+    };
+    let tools = crate::media::tools::Tools::open(
+        tools_dir.clone(),
+        sources.clone(),
+        Client::new().unwrap(),
+    );
+    if !tools.status().ready() {
+        assert!(tools.begin_install());
+        tools.install(false).await.unwrap();
+    }
+    let ffprobe = tools.status().ffprobe.clone().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(Config {
+        db_path: dir.path().join("auro.db"),
+        client: Client::new().unwrap(),
+        transfer: crate::transfer::Options {
+            media: crate::media::Options {
+                sources,
+                dir: Some(tools_dir),
+            },
+            ..crate::transfer::Options::default()
+        },
+        disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
+    })
+    .unwrap();
+    let dest = dir.path().join("videos");
+    std::fs::create_dir_all(&dest).unwrap();
+    // Page, format, sous-titres demandés, sous-titres attendus, flux attendus.
+    type Case<'a> = (&'a str, &'a str, &'a [&'a str], &'a [&'a str], &'a str);
+    let cases: [Case; 4] = [
+        // Tutoriel muet : image seule.
+        (FREE_PAGES[0], "bv*+ba/b", &[], &[], "video"),
+        (
+            FREE_PAGES[1],
+            "0",
+            &["fr", "en", "xx"],
+            &["en", "fr"],
+            "video audio",
+        ),
+        (FREE_PAGES[2], "1", &[], &[], "video audio"),
+        (
+            FRAMATUBE_PAGE,
+            "3+Audio_only-0",
+            &["en"],
+            &["en"],
+            "video audio",
+        ),
+    ];
+    let mut expected_files = 0;
+    for (page, format, asked, kept, kinds_wanted) in cases {
+        let started = std::time::Instant::now();
+        let mut events = engine.subscribe();
+        let id = engine
+            .add(AddTask {
+                dest_dir: Some(dest.to_string_lossy().into_owned()),
+                media: Some(MediaRequest {
+                    page_url: page.into(),
+                    format: Some(format.into()),
+                    subtitles: asked.iter().map(|s| s.to_string()).collect(),
+                    ..MediaRequest::default()
+                }),
+                ..AddTask::default()
+            })
+            .await
+            .unwrap();
+        let end = wait_end(&mut events, &id).await;
+        let task = engine.get(&id).await.unwrap();
+        assert_eq!(end, TaskState::Completed, "{page} : {task:?}");
+        let name = task.file_name.clone().unwrap();
+        let path = dest.join(&name);
+        let out = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:format=duration",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let described = String::from_utf8_lossy(&out.stdout).replace(['\r', '\n'], " ");
+        for kind in kinds_wanted.split(' ') {
+            assert!(described.contains(kind), "{page} : {described}");
+        }
+        let stem = Path::new(&name).file_stem().unwrap().to_string_lossy();
+        for lang in kept {
+            let sub = dest.join(format!("{stem}.{lang}.vtt"));
+            let text = std::fs::read_to_string(&sub)
+                .unwrap_or_else(|e| panic!("{page} : {} : {e}", sub.display()));
+            assert!(text.starts_with("WEBVTT") || text.starts_with("\u{feff}WEBVTT"));
+        }
+        if asked.len() > kept.len() {
+            let (message, _) = wait_warning(&mut events, "SUBTITLES_MISSING").await;
+            assert!(message.ends_with(": xx"), "{message}");
+        }
+        expected_files += 1 + kept.len();
+        eprintln!(
+            "{page} : « {} », {} ({} octets) en {:.1?}, flux et durée : {described}, \
+             sous-titres {kept:?}",
+            task.display_name,
+            name,
+            std::fs::metadata(&path).unwrap().len(),
+            started.elapsed()
+        );
+    }
+    // Rien d'autre que les vidéos et leurs sous-titres : ni flux, ni `.part`.
+    let left = files_in(&dest);
+    eprintln!("dossier : {left:?}");
+    assert_eq!(left.len(), expected_files, "{left:?}");
+    engine.shutdown().await;
 }

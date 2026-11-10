@@ -159,6 +159,32 @@ async fn segmented_download_completes() {
     }
 }
 
+/// Serveur qui envoie une `ETag` sans guillemets mais n'accepte dans `If-Range` que la
+/// forme conforme (`upload.wikimedia.org`, essai réel du 2026-11-09) : le moteur l'y met
+/// entre guillemets, et le fichier n'est pas pris pour un fichier changé.
+#[tokio::test]
+async fn an_unquoted_etag_is_quoted_in_if_range() {
+    let data = content(SIZE);
+    let (site, server) = site(data.clone());
+    {
+        let mut site = site.lock().unwrap();
+        site.etag = Some("d087f893a1db4db2".into());
+        site.strict_if_range = true;
+    }
+    let mut case = new_case(&server.url("/dossier/image.iso"));
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "image.iso", &data);
+    let gets: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "GET" && r.header("range").is_some())
+        .collect();
+    assert!(gets.len() >= 2, "{} requêtes", gets.len());
+    for r in &gets {
+        assert_eq!(r.header("if-range"), Some("\"d087f893a1db4db2\""));
+    }
+}
+
 #[tokio::test]
 async fn server_without_ranges_uses_one_stream() {
     let data = content(SIZE);
