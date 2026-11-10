@@ -98,6 +98,8 @@ fn execute(
             bps,
             connections: p.connections as u64,
             eta: None,
+            peers: false,
+            upload_bps: None,
         };
         status.show(&[line.render()]);
     };

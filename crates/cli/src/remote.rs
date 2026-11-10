@@ -59,9 +59,33 @@ pub struct AddOptions<'a> {
     pub checksum: Option<&'a Checksum>,
 }
 
+/// Taille maximale d'un fichier `.torrent` lu par la CLI : un garde-fou (le moteur a le
+/// sien).
+const MAX_TORRENT_FILE: u64 = 16 << 20;
+
+/// Source d'un ajout : un fichier `.torrent` local (envoyé en base64, SPEC §6.5), ou une
+/// adresse (HTTP, HTTPS ou lien magnet).
+fn source_of(arg: &str) -> Result<Value> {
+    let path = Path::new(arg);
+    let is_torrent = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+    if is_torrent && !arg.contains("://") && path.is_file() {
+        use base64::Engine as _;
+        let len = std::fs::metadata(path)?.len();
+        if len > MAX_TORRENT_FILE {
+            bail!("{arg} : fichier .torrent trop gros ({})", size(len));
+        }
+        let bytes = std::fs::read(path).with_context(|| format!("lecture de {arg}"))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return Ok(json!({"torrent": encoded}));
+    }
+    Ok(json!({"url": arg}))
+}
+
 async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<String> {
     let mut params = json!({
-        "sources": [{"url": url}],
+        "sources": [source_of(url)?],
         "destDir": dest_dir(opts.dir)?,
         "startPaused": opts.paused,
     });
@@ -85,11 +109,26 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
             .collect();
         params["headers"] = Value::Object(headers);
     }
-    let added = rpc.call("task.add", params).await?;
+    add_task(rpc, params).await
+}
+
+/// `task.add` ; l'identifiant de la tâche ajoutée.
+async fn add_task(rpc: &mut Rpc, params: Value) -> Result<String> {
+    let added = rpc.call("task.add", params).await.map_err(tools_hint)?;
     added["taskId"]
         .as_str()
         .map(str::to_owned)
         .context("réponse du moteur sans taskId")
+}
+
+/// Un refus `TOOLS_MISSING` (vidéo, SPEC §7.17) dit comment installer les outils.
+fn tools_hint(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast_ref::<EngineRefused>() {
+        Some(r) if r.code == "TOOLS_MISSING" => {
+            e.context("outils de la vidéo absents : auro video tools --install")
+        }
+        _ => e,
+    }
 }
 
 pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Result<()> {
@@ -100,13 +139,68 @@ pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Resul
     Ok(())
 }
 
+/// Une vidéo à ajouter (`auro video add`, `auro video get` ; SPEC §7.17).
+pub struct VideoOptions<'a> {
+    pub dir: &'a Path,
+    /// Sélecteur de formats de yt-dlp ; celui du moteur par défaut.
+    pub format: Option<&'a str>,
+    pub container: Option<&'a str>,
+    /// Langues des sous-titres.
+    pub subtitles: &'a [String],
+    pub queue: Option<&'a str>,
+    pub limit: Option<u64>,
+    pub paused: bool,
+}
+
+async fn add_video(rpc: &mut Rpc, page: &str, opts: &VideoOptions<'_>) -> Result<String> {
+    let mut media = json!({"pageUrl": page});
+    if let Some(f) = opts.format {
+        media["format"] = json!(f);
+    }
+    if let Some(c) = opts.container {
+        media["container"] = json!(c);
+    }
+    if !opts.subtitles.is_empty() {
+        media["subtitles"] = json!(opts.subtitles);
+    }
+    let mut params = json!({
+        "media": media,
+        "destDir": dest_dir(opts.dir)?,
+        "startPaused": opts.paused,
+    });
+    if let Some(l) = opts.limit {
+        params["speedLimitBps"] = json!(l);
+    }
+    if let Some(queue) = opts.queue {
+        params["queueId"] = json!(queue_id(rpc, queue).await?);
+    }
+    add_task(rpc, params).await
+}
+
+pub async fn video_add(rpc: &mut Rpc, pages: &[String], opts: &VideoOptions<'_>) -> Result<()> {
+    for page in pages {
+        let id = add_video(rpc, page, opts).await?;
+        println!("{id}  {page}");
+    }
+    Ok(())
+}
+
+/// Ce que `auro get` ou `auro video get` ajoute avant de le suivre.
+pub enum NewTask<'a> {
+    File(&'a str, &'a AddOptions<'a>),
+    Video(&'a str, &'a VideoOptions<'a>),
+}
+
 /// Ajoute une tâche et la suit jusqu'à la fin ; Ctrl-C la met en pause.
-pub async fn get(target: &Target, url: &str, opts: &AddOptions<'_>) -> Result<()> {
+pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
     let mut rpc = auro_cli::client::connect(target).await?;
     // Abonné avant l'ajout : aucun événement de la tâche ne peut manquer. Seule la tâche
     // ajoutée est suivie.
     let mut follow = Follow::start(&mut rpc, Some(HashSet::new())).await?;
-    let id = add_one(&mut rpc, url, opts).await?;
+    let id = match new {
+        NewTask::File(url, opts) => add_one(&mut rpc, url, opts).await?,
+        NewTask::Video(page, opts) => add_video(&mut rpc, page, opts).await?,
+    };
     println!("Tâche {id}");
     follow.targets.insert(id.clone());
     follow.refresh(&mut rpc).await?;
@@ -123,11 +217,20 @@ fn report(task: &Value) -> Result<()> {
         let text = t["errorDetail"].as_str().unwrap_or("");
         format!("{text} [{code}]")
     };
+    let dir = Path::new(task["destDir"].as_str().unwrap_or_default());
+    let name = task["fileName"].as_str().unwrap_or_default();
     match task["state"].as_str().unwrap_or_default() {
         "completed" => {
-            let dir = Path::new(task["destDir"].as_str().unwrap_or_default());
-            let name = task["fileName"].as_str().unwrap_or_default();
             println!("Terminé : {}", dir.join(name).display());
+            Ok(())
+        }
+        // Torrent reçu en entier, qui partage jusqu'au ratio (SPEC §7.16).
+        "seeding" => {
+            println!(
+                "Terminé : {}\nPartage en cours jusqu'au ratio réglé (auro config \
+                 torrent.ratioLimit) ; pour l'arrêter : auro pause {id}",
+                dir.join(name).display()
+            );
             Ok(())
         }
         "paused" => match task["pauseReason"].as_str() {
@@ -149,6 +252,9 @@ fn report(task: &Value) -> Result<()> {
              fichier à retélécharger : auro restart {id} --delete-files. {}",
             detail(task)
         ),
+        "failed" if task["errorCode"] == "TOOLS_MISSING" => {
+            bail!("outils de la vidéo absents : auro video tools --install, puis auro resume {id}")
+        }
         "failed" => bail!("échec : {}", detail(task)),
         "cancelled" => bail!("tâche annulée"),
         other => bail!("la tâche s'est arrêtée dans l'état {other}"),
@@ -176,14 +282,24 @@ pub async fn list(rpc: &mut Rpc, states: &[String], queue: Option<&str>) -> Resu
             .map(|n| format!(" ({n})"))
             .unwrap_or_default();
         println!(
-            "{}  {:<26} {:>22}  {}",
+            "{}  {:<26} {:>22}  {}{}",
             t["taskId"].as_str().unwrap_or_default(),
             format!("{}{note}", t["state"].as_str().unwrap_or_default()),
             amount,
+            kind_tag(t),
             t["displayName"].as_str().unwrap_or_default()
         );
     }
     Ok(())
+}
+
+/// Genre d'une tâche devant son nom : rien pour un fichier HTTP.
+fn kind_tag(task: &Value) -> &'static str {
+    match task["kind"].as_str() {
+        Some("torrent") => "[torrent] ",
+        Some("media") => "[vidéo] ",
+        _ => "",
+    }
 }
 
 /// `task.pause`, `task.resume`, `task.cancel`, `task.remove` ou `task.restart` sur plusieurs tâches ;
@@ -308,6 +424,8 @@ pub async fn download_dir(rpc: &mut Rpc, path: Option<&Path>, reset: bool) -> Re
 /// Ce dont `auro limit` lit ou change la limite.
 pub enum LimitOf<'a> {
     Global,
+    /// Limite d'envoi globale des torrents (SPEC §7.16).
+    Upload,
     Task(&'a str),
     Queue(&'a str),
 }
@@ -321,6 +439,16 @@ pub async fn limit(rpc: &mut Rpc, of: LimitOf<'_>, rate: Option<Limit>) -> Resul
                 None => rpc.call("limits.get", json!({})).await?,
             };
             ("globale".to_owned(), limits["downloadBps"].as_u64())
+        }
+        LimitOf::Upload => {
+            let limits = match rate {
+                Some(Limit(l)) => rpc.call("limits.set", json!({"uploadBps": l})).await?,
+                None => rpc.call("limits.get", json!({})).await?,
+            };
+            (
+                "d'envoi des torrents".to_owned(),
+                limits["uploadBps"].as_u64(),
+            )
         }
         LimitOf::Task(id) => {
             let task = match rate {
@@ -556,6 +684,8 @@ struct Followed {
     line: Option<Line>,
     /// Octets lus par la vérification de l'empreinte (`verifying`).
     checked: Option<u64>,
+    /// `http`, `torrent` ou `media`.
+    kind: String,
 }
 
 /// Suivi de tâches par les notifications : abonnement, puis instantané, puis
@@ -569,15 +699,21 @@ struct Follow {
     status: Status,
 }
 
+/// Tâche qui n'a pas fini de recevoir : la fusion d'une vidéo (`post_processing`) en fait
+/// partie, le partage d'un torrent reçu (`seeding`) non.
 fn running(state: &str) -> bool {
-    matches!(state, "queued" | "active" | "retry_wait" | "verifying")
+    matches!(
+        state,
+        "queued" | "active" | "retry_wait" | "verifying" | "post_processing"
+    )
 }
 
 impl Follow {
     async fn start(rpc: &mut Rpc, only: Option<HashSet<String>>) -> Result<Follow> {
         rpc.call(
             "events.subscribe",
-            json!({"topics": ["tasks", "progress"], "progressIntervalMs": 500}),
+            // `queues` : avertissements du moteur (sous-titres manquants, SPEC §7.17).
+            json!({"topics": ["tasks", "progress", "queues"], "progressIntervalMs": 500}),
         )
         .await?;
         let mut follow = Follow {
@@ -602,11 +738,13 @@ impl Follow {
                 self.targets.insert(id.clone());
             }
             let name = t["displayName"].as_str().unwrap_or_default().to_owned();
+            let kind = t["kind"].as_str().unwrap_or("http").to_owned();
             let entry = self.tasks.entry(id).or_insert(Followed {
                 name: name.clone(),
                 state: state.clone(),
                 line: None,
                 checked: None,
+                kind,
             });
             entry.name = name;
             entry.state = state;
@@ -630,6 +768,7 @@ impl Follow {
                 match (&t.line, t.state.as_str()) {
                     (_, "queued") => format!("{name:<32}  en file"),
                     (_, "retry_wait") => format!("{name:<32}  nouvelle tentative bientôt"),
+                    (_, "post_processing") => format!("{name:<32}  assemblage des flux (ffmpeg)"),
                     (line, "verifying") => {
                         let total = line.as_ref().and_then(|l| l.total).filter(|&n| n > 0);
                         match (t.checked, total) {
@@ -686,6 +825,7 @@ impl Follow {
                             state: t["state"].as_str().unwrap_or_default().to_owned(),
                             line: None,
                             checked: None,
+                            kind: t["kind"].as_str().unwrap_or("http").to_owned(),
                         },
                     );
                 }
@@ -702,6 +842,15 @@ impl Follow {
                         }
                     }
                 }
+                // Préparation : le nom du fichier, ou le titre d'une vidéo.
+                "task.updated" if rev > self.rev => {
+                    let id = params["taskId"].as_str().unwrap_or_default();
+                    if let (Some(t), Some(name)) =
+                        (self.tasks.get_mut(id), params["displayName"].as_str())
+                    {
+                        t.name = name.to_owned();
+                    }
+                }
                 "task.progress" => {
                     for item in params["items"].as_array().into_iter().flatten() {
                         let id = item["taskId"].as_str().unwrap_or_default();
@@ -713,6 +862,8 @@ impl Follow {
                                 bps: item["bps"].as_u64().unwrap_or(0),
                                 connections: item["connections"].as_u64().unwrap_or(0),
                                 eta: item["etaS"].as_u64(),
+                                peers: t.kind == "torrent",
+                                upload_bps: item["uploadBps"].as_u64(),
                             });
                         }
                     }
@@ -721,11 +872,47 @@ impl Follow {
                 "engine.warning" if params["code"] == "EVENTS_LOST" => {
                     self.refresh(rpc).await?;
                 }
+                // Avertissement sur une tâche suivie (sous-titres manquants, SPEC §7.17).
+                "engine.warning"
+                    if params["taskId"]
+                        .as_str()
+                        .is_some_and(|id| self.targets.contains(id)) =>
+                {
+                    self.render();
+                    self.status.finish();
+                    eprintln!(
+                        "Attention : {}",
+                        params["message"].as_str().unwrap_or_default()
+                    );
+                }
                 _ => {}
             }
             self.render();
         }
         self.status.finish();
+        // Une vidéo terminée sans certains sous-titres l'apprend juste après sa fin
+        // (`engine.warning`, SPEC §7.17) : un court délai pour le dire.
+        let videos = self
+            .targets
+            .iter()
+            .any(|id| self.tasks.get(id).is_some_and(|t| t.kind == "media"));
+        if videos && !interrupted {
+            let deadline = std::time::Duration::from_millis(500);
+            while let Ok(Ok((method, params))) =
+                tokio::time::timeout(deadline, rpc.notification()).await
+            {
+                if method == "engine.warning"
+                    && params["taskId"]
+                        .as_str()
+                        .is_some_and(|id| self.targets.contains(id))
+                {
+                    eprintln!(
+                        "Attention : {}",
+                        params["message"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -938,5 +1125,100 @@ pub async fn login_remove(rpc: &mut Rpc, site: &str) -> Result<()> {
         "Identifiants de {} retirés.",
         existing["site"].as_str().unwrap_or(site)
     );
+    Ok(())
+}
+
+/// Fichiers d'un torrent (`task.get` avec `files`) ; avec `select`, les rangs à garder
+/// (`task.setFiles`, SPEC §7.16), les autres n'étant pas téléchargés.
+pub async fn files(rpc: &mut Rpc, id: &str, select: Option<&[u32]>) -> Result<()> {
+    if let Some(selected) = select {
+        let task = rpc
+            .call("task.setFiles", json!({"taskId": id, "selected": selected}))
+            .await?;
+        println!(
+            "{} fichier(s) choisi(s), {} à télécharger",
+            selected.len(),
+            task["totalBytes"]
+                .as_u64()
+                .map_or_else(|| "taille inconnue".to_owned(), size)
+        );
+    }
+    let task = rpc
+        .call("task.get", json!({"taskId": id, "include": ["files"]}))
+        .await?;
+    let files = task["files"].as_array().cloned().unwrap_or_default();
+    if files.is_empty() {
+        match task["kind"].as_str() {
+            Some("torrent") => println!("Fichiers pas encore connus (métadonnées attendues)."),
+            _ => println!("Tâche d'un seul fichier : {}", task["displayName"]),
+        }
+        return Ok(());
+    }
+    for f in &files {
+        let length = f["length"].as_u64().unwrap_or(0);
+        let done = f["doneBytes"].as_u64().unwrap_or(0);
+        let mark = if f["selected"].as_bool() == Some(true) {
+            "x"
+        } else {
+            " "
+        };
+        println!(
+            "[{mark}] {:>4}  {:>21}  {}",
+            f["index"],
+            format!("{} / {}", size(done.min(length)), size(length)),
+            f["path"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// Une valeur de réglage tapée : booléen (`true`, `oui`, `on`…), `none` ou `null` (retirer
+/// la valeur), nombre, sinon texte. Le moteur vérifie le type attendu par chaque réglage.
+pub fn setting_value(text: &str) -> Value {
+    match text.to_lowercase().as_str() {
+        "true" | "oui" | "on" | "yes" => return json!(true),
+        "false" | "non" | "off" | "no" => return json!(false),
+        "none" | "null" | "aucun" | "aucune" => return Value::Null,
+        _ => {}
+    }
+    if let Ok(n) = text.parse::<u64>() {
+        return json!(n);
+    }
+    match text.parse::<f64>() {
+        Ok(f) if f.is_finite() => json!(f),
+        _ => json!(text),
+    }
+}
+
+/// Réglages du moteur (`settings.get`) ; avec une valeur, change d'abord le réglage
+/// (`settings.set`).
+pub async fn config(rpc: &mut Rpc, key: Option<&str>, value: Option<&str>) -> Result<()> {
+    let settings = match (key, value) {
+        (Some(k), Some(v)) => {
+            let mut values = serde_json::Map::new();
+            values.insert(k.to_owned(), setting_value(v));
+            rpc.call("settings.set", json!({"values": values})).await?
+        }
+        _ => rpc.call("settings.get", json!({})).await?,
+    };
+    let values = settings["values"].as_object().cloned().unwrap_or_default();
+    let shown = |v: &Value| match v {
+        Value::Null => "aucun".to_owned(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match key {
+        Some(k) => {
+            let v = values
+                .get(k)
+                .with_context(|| format!("réglage inconnu : {k}"))?;
+            println!("{k} = {}", shown(v));
+        }
+        None => {
+            for (k, v) in &values {
+                println!("{k:<28} {}", shown(v));
+            }
+        }
+    }
     Ok(())
 }

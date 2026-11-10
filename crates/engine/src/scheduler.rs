@@ -202,6 +202,8 @@ pub enum Event {
         rev: u64,
         task_id: String,
         file_name: Option<String>,
+        /// Nom affiché : celui du fichier, ou le titre d'une vidéo (SPEC §7.17).
+        display_name: String,
         total_bytes: Option<u64>,
         /// Empreinte lue dans un fichier voisin (F-11), avec le nom de ce fichier.
         found_checksum: Option<(Checksum, String)>,
@@ -1528,6 +1530,7 @@ impl Scheduler {
             rev,
             task_id: task.id,
             file_name: task.file_name,
+            display_name: task.display_name,
             total_bytes: task.total_bytes,
             found_checksum,
         });

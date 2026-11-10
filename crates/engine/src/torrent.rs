@@ -44,8 +44,8 @@ use crate::store::tasks::{
     primary_source, reserved_names,
 };
 use crate::store::torrents::{
-    TorrentFile, load_files, load_torrent, save_file_progress, save_metainfo, save_preparation,
-    save_progress, save_uploaded,
+    TorrentFile, files_complete, load_files, load_torrent, save_file_progress, save_metainfo,
+    save_preparation, save_progress, save_uploaded,
 };
 use crate::transfer::{MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
 
@@ -822,6 +822,7 @@ async fn drive(
                 return Ok(End::Failed(Failure::Disk(e)));
             }
         }
+        files_complete(conn, task_id)?;
         counters.total = load_task(conn, task_id)?
             .total_bytes
             .unwrap_or(counters.total);

@@ -254,6 +254,11 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 - **Bureau** : l'application démarre le moteur s'il n'est pas lancé et le laisse tourner dans la zone de notification ; démarrage avec la session en option. Un téléchargement ajouté par un autre client (extension, ligne de commande) fait apparaître la fenêtre au premier plan, même repliée dans la zone de notification (préférence de l'interface, activée par défaut, depuis le 2026-11-08) : l'utilisateur voit tout de suite que le téléchargement a été pris.
 - **Moteur** : binaire `aurod` (crate `crates/daemon`), sans interface. L'application de bureau le lance s'il ne tourne pas ; `auro` est le client en ligne de commande, et le lance de même, détaché de la console, avec son journal (`aurod.log`) à côté de sa base. `auro direct` exécute une tâche avec la bibliothèque du moteur, sans `aurod`, pour les bancs et le dépannage.
+- **Ligne de commande, torrents et vidéo** (phase 5, étape 5a, 2026-11-09 ; décisions de l'utilisateur : groupe `auro video`, commande générique `auro config`) :
+  - `auro add` et `auro get` prennent aussi un lien magnet ou un fichier `.torrent` local (envoyé en base64, 16 Mio au plus) ; `auro files <tâche> [--select 0,2-4]` montre les fichiers d'un torrent et choisit ceux à télécharger ; `auro limit --upload` règle la limite d'envoi.
+  - `auro video tools [--install [--force]]` montre ou installe yt-dlp et ffmpeg (la commande vaut accord de l'utilisateur) ; `auro video info <page>` décrit la page (formats, sous-titres) ; `auro video add` et `auro video get <page> [-f format] [--container] [--subs fr,en]` ajoutent une vidéo, `get` la suivant jusqu'au bout.
+  - `auro config [clé] [valeur]` lit et change tous les réglages du protocole ; la valeur est tapée (`true`, `oui`, un nombre, `none` pour retirer la valeur, sinon un texte), le moteur vérifie le type attendu.
+  - Le suivi (`get`, `watch`) compte la fusion d'une vidéo dans le téléchargement, s'arrête au partage d'un torrent (reçu en entier), montre les pairs et l'envoi d'un torrent, et dit les sous-titres manquants. `auro list` marque les torrents et les vidéos.
 - **Sans interface** : l'option `--headless` lance le moteur seul, pour un NAS ou un serveur, avec une image Docker et une unité `systemd` utilisateur. L'interface web est servie par le moteur lui-même.
 - **Windows** : installateur signé et version portable.
 - **Linux** : AppImage et paquet `.deb` ; Flatpak à étudier, car son bac à sable complique la messagerie native avec le navigateur.
@@ -696,7 +701,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Une tâche, telle que la décrivent `task.get`, `task.list`, `task.added` et `sync.snapshot`, porte `kind` : `http` ou `torrent`.
   - `task.update` refuse `checksum`, `destDir`, `fileName` et `url` pour un torrent (`INVALID_PARAMS`). Son `speedLimitBps` vaut à la prochaine reprise de la tâche : librqbit ne change pas la limite d'un torrent en cours.
   - `task.setFiles` (`taskId`, `selected[]`, les rangs des fichiers choisis ; portée `control`) : seulement pour un torrent préparé (fichiers connus), en file, en cours, en pause, en attente ou en échec ; au moins un fichier, rangs connus (`INVALID_PARAMS` sinon). Rend la tâche, avec sa nouvelle taille (celle des fichiers choisis) ; annoncé comme une préparation (`task.updated`). Une exécution en cours suit le nouveau choix.
-  - `task.get` avec `include: ["files"]` ajoute `files[]` : `index`, `path` (chemin dans le torrent, composants nettoyés et séparés par `/`), `length`, `selected`, `doneBytes` (indication). Vide pour une tâche HTTP.
+  - `task.get` avec `include: ["files"]` ajoute `files[]` : `index`, `path` (chemin dans le torrent, composants nettoyés et séparés par `/`), `length`, `selected`, `doneBytes` (indication ; la taille du fichier pour un fichier choisi, une fois le torrent reçu en entier, depuis l'étape 5a). Vide pour une tâche HTTP.
   - `task.progress` porte, pour un torrent, `uploadedBytes` (cumulés) et `uploadBps`.
   - `limits.set` et `limits.get` : `uploadBps`, limite d'envoi globale ; annoncée par `limits.updated`, avec `downloadBps`. La limite globale de réception vaut aussi pour les torrents, par le limiteur de librqbit, à part de celle du HTTP.
   - Réglages (`settings.get`, `settings.set`) : `torrent.ratioLimit` (nombre positif ou nul, `null` pour sans limite ; 1 par défaut ; `settings.updated`) et `torrent.upnp` (booléen, faux par défaut ; vaut à la prochaine ouverture de la session).
@@ -721,6 +726,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
 - **Nom et taille d'une tâche** (depuis le 2026-11-07) : `task.added` les ignore encore,
   la préparation les apprend (section 7.1). Après chaque préparation, le moteur annonce
   `task.updated` avec `fileName`, `displayName` et `totalBytes`, et une nouvelle révision.
+  `displayName` est le nom affiché de la tâche : celui du fichier, ou le titre d'une vidéo
+  (depuis le 2026-11-09, étape 5a ; avant, le nom du fichier même pour une vidéo).
   L'annonce peut suivre la fin d'une tâche rapide. Un client qui ouvre le fichier d'une
   tâche prend ce `fileName`, qui peut différer du nom de l'adresse (« nom (1).bin »).
 - **Dates d'une tâche** (depuis le 2026-11-07) : une tâche, telle que la décrivent

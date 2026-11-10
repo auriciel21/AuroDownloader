@@ -96,6 +96,10 @@ pub struct Line {
     pub bps: u64,
     pub connections: u64,
     pub eta: Option<u64>,
+    /// Torrent : `connections` compte des pairs.
+    pub peers: bool,
+    /// Torrent : débit d'envoi aux autres pairs.
+    pub upload_bps: Option<u64>,
 }
 
 impl Line {
@@ -113,8 +117,17 @@ impl Line {
             .eta
             .map(|s| format!("  reste {}", duration(s)))
             .unwrap_or_default();
+        let who = if self.peers {
+            "pair(s)"
+        } else {
+            "connexion(s)"
+        };
+        let upload = self
+            .upload_bps
+            .map(|bps| format!("  envoi {}/s", size(bps)))
+            .unwrap_or_default();
         format!(
-            "{done}  {}/s  {} connexion(s){eta}",
+            "{done}  {}/s  {} {who}{upload}{eta}",
             size(self.bps),
             self.connections
         )

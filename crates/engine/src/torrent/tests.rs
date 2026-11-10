@@ -600,8 +600,11 @@ async fn choosing_files_downloads_only_those() {
         )
         .await
         .unwrap();
-    let chosen: Vec<bool> = details.files.unwrap().iter().map(|f| f.selected).collect();
+    let files = details.files.unwrap();
+    let chosen: Vec<bool> = files.iter().map(|f| f.selected).collect();
     assert_eq!(chosen, vec![false, true, false]);
+    // Le fichier choisi est donné complet à la fin, pas au dernier relevé.
+    assert_eq!(files[1].done_bytes, LEN as u64);
     engine.shutdown().await;
 }
 

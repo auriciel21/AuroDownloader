@@ -95,7 +95,7 @@ téléchargement.
 - `crates/cli` (`auro-cli`, binaires `auro` et `auro-relay`) : ligne de commande, cliente
   d'`aurod` (bibliothèque `auro_cli` : `client`, connexion, appels, démarrage d'`aurod`
   par `launch` ; `relay`, hôte de messagerie native de l'extension, SPEC 4.5 ; binaire
-  `auro` : `remote`, commandes, et `display`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
+  `auro` : `remote`, commandes, et `display`), `video` (`auro video`). Le mode `direct` exécute une tâche avec la bibliothèque, sans moteur : les
   deux bancs l'utilisent, pour mesurer le transfert seul.
 - Essais manuels de la CLI : toujours sur un point d'accès et une base d'essai
   (`--endpoint`, `engine start --db`), jamais sur le moteur réel de l'utilisateur ; finir
@@ -234,6 +234,9 @@ cargo run -p auro-cli -- history [texte] [--csv] ; history --clear
 cargo run -p auro-cli -- schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep ; schedule list
 cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans dossier (extension)
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
+cargo run -p auro-cli -- add fichier.torrent ; files <id> --select 0,2-4 ; limit --upload 500K
+cargo run -p auro-cli -- config ; config torrent.ratioLimit 1.5 ; config media.autoUpdate false
+cargo run -p auro-cli -- video tools --install ; video info <page> ; video get <page> --subs fr,en
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
@@ -434,8 +437,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   2026-11-09 : sous-titres à côté de la vidéo, au format du site, langue manquante signalée
   par `SUBTITLES_MISSING`, décisions de l'utilisateur ; essais réels sous Windows et Linux,
   qui ont corrigé `If-Range` sans guillemets et les plages annoncées sans validateur,
-  SPEC 7.1 et 7.4) ; 5. interfaces (bureau, CLI, extension ;
-  torrent sur Android) ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
+  SPEC 7.1 et 7.4) ; 5. interfaces, plan du 2026-11-09 (validé) : 5a. CLI (fait le
+  2026-11-09 : `auro video`, `auro config`, `auro files`, `.torrent` local, `limit
+  --upload`, SPEC 4.6 ; essais réels Framatube sous Windows et netinst Debian sous WSL),
+  5b. bureau : torrents, 5c. bureau : vidéo, 5d. extension (magnet, pages de vidéo), 5e.
+  torrents sur Android ; 6. porte. Décisions du même jour : le torrent d'abord ; la vidéo
   seulement sous Windows et Linux en v1 (pas sur Android).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

@@ -302,15 +302,17 @@ async fn describe(
             rev,
             task_id,
             file_name,
+            display_name,
             total_bytes,
             found_checksum,
         } if topics.tasks => {
-            // Le nom du fichier sert aussi de nom affiché depuis la préparation.
+            // Le nom affiché depuis la préparation : celui du fichier, ou le titre d'une
+            // vidéo.
             let mut params = json!({
                 "rev": rev,
                 "taskId": task_id,
                 "fileName": file_name,
-                "displayName": file_name,
+                "displayName": display_name,
                 "totalBytes": total_bytes,
             });
             if let Some((checksum, source)) = &found_checksum {

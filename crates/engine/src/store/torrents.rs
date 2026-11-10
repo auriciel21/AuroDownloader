@@ -299,6 +299,16 @@ pub fn save_file_progress(
     Ok(())
 }
 
+/// Fichiers choisis reçus en entier et sous leur nom final : leur avancement indicatif
+/// devient leur taille (le dernier relevé pouvait la manquer de peu).
+pub fn files_complete(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE task_files SET done_bytes = length WHERE task_id = ?1 AND selected = 1",
+        [task_id],
+    )?;
+    Ok(())
+}
+
 /// Avancement indicatif d'un torrent (SPEC §7.16) : octets des morceaux vérifiés.
 pub fn save_progress(conn: &Connection, task_id: &str, done_bytes: u64) -> Result<(), StoreError> {
     let done = i64::try_from(done_bytes).map_err(|_| StoreError::BadValue("octets".into()))?;

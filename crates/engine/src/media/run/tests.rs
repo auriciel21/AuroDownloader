@@ -447,12 +447,35 @@ async fn two_direct_streams_become_one_video() {
     let answer = resolution(&server, "", false);
     let s = setup(&[&answer], true);
     let mut events = s.engine.subscribe();
+    let mut announced = s.engine.subscribe();
     let id = s
         .engine
         .add(add_video(&s, "https://exemple.org/page"))
         .await
         .unwrap();
     let states = states_until_end(&mut events, &id).await;
+    // La préparation annoncée porte le titre de la vidéo, pas le nom de son fichier.
+    let mut names = Vec::new();
+    while let Ok(event) = announced.try_recv() {
+        if let Event::Prepared {
+            task_id,
+            display_name,
+            file_name,
+            ..
+        } = event
+            && task_id == id
+        {
+            names.push((display_name, file_name));
+        }
+    }
+    assert!(!names.is_empty(), "préparation annoncée");
+    for (display, file) in &names {
+        assert_eq!(display, "Essai : vidéo");
+        assert!(
+            file.as_deref().is_some_and(|f| f.ends_with(".mp4")),
+            "{file:?}"
+        );
+    }
     assert_eq!(
         states,
         [

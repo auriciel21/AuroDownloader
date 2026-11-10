@@ -3,7 +3,8 @@
 //! La CLI est un client du moteur `aurod`, qu'elle joint par le protocole JSON-RPC sur le
 //! point d'accès local (SPEC §6) et qu'elle démarre s'il ne tourne pas. Commandes : `add`,
 //! `get` (ajoute et suit jusqu'à la fin), `list`, `pause`, `resume`, `cancel`, `remove`,
-//! `watch`, `limit` (limites de débit), `queue`, `engine`. Sans moteur : `probe` prépare
+//! `watch`, `files` (fichiers d'un torrent), `limit` (limites de débit), `config`
+//! (réglages), `video` (yt-dlp et ffmpeg), `queue`, `engine`. Sans moteur : `probe` prépare
 //! une tâche sans rien télécharger (SPEC §7.1), `db migrate` crée ou met à jour une base,
 //! et `direct` exécute une tâche avec la bibliothèque du moteur (bancs, dépannage).
 
@@ -19,6 +20,7 @@ use serde_json::json;
 mod direct;
 mod display;
 mod remote;
+mod video;
 
 use auro_cli::client;
 
@@ -56,7 +58,7 @@ fn connections() -> clap::builder::RangedI64ValueParser<u32> {
 enum Command {
     /// Ajoute des téléchargements au moteur, sans attendre
     Add {
-        /// Adresses HTTP ou HTTPS
+        /// Adresses HTTP ou HTTPS, liens magnet, ou fichiers .torrent
         #[arg(required = true)]
         urls: Vec<String>,
         /// Dossier de destination
@@ -86,7 +88,7 @@ enum Command {
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
-        /// Adresse HTTP ou HTTPS
+        /// Adresse HTTP ou HTTPS, lien magnet, ou fichier .torrent
         url: String,
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
@@ -181,6 +183,13 @@ enum Command {
     },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
+    /// Fichiers d'un torrent ; avec --select, ceux à télécharger (les autres sont laissés)
+    Files {
+        task_id: String,
+        /// Rangs des fichiers à garder : « 0,2-4 » (rangs montrés par auro files)
+        #[arg(long, value_name = "RANGS", value_parser = parse_selection)]
+        select: Option<Selection>,
+    },
     /// Limite de débit, globale par défaut, ou d'une tâche ou d'une file ; sans débit,
     /// l'affiche. Elle s'applique aussitôt aux téléchargements en cours.
     Limit {
@@ -188,11 +197,26 @@ enum Command {
         #[arg(value_name = "DÉBIT", value_parser = display::parse_limit)]
         rate: Option<Limit>,
         /// Tâche dont changer la limite
-        #[arg(short = 't', long, conflicts_with = "queue")]
+        #[arg(short = 't', long, conflicts_with_all = ["queue", "upload"])]
         task: Option<String>,
         /// File (nom ou identifiant) dont changer la limite
-        #[arg(short = 'q', long)]
+        #[arg(short = 'q', long, conflicts_with = "upload")]
         queue: Option<String>,
+        /// Limite d'envoi des torrents aux autres pairs, globale
+        #[arg(long)]
+        upload: bool,
+    },
+    /// Réglages du moteur : sans argument, tous ; avec une clé, le sien ; avec une valeur,
+    /// le change (true/false, un nombre, un texte, ou « none » pour retirer la valeur).
+    /// Par exemple : torrent.ratioLimit 1.5, torrent.interface none, media.autoUpdate false
+    Config {
+        key: Option<String>,
+        value: Option<String>,
+    },
+    /// Vidéos de pages web, par yt-dlp et ffmpeg (sites sans DRM)
+    Video {
+        #[command(subcommand)]
+        action: VideoAction,
     },
     /// Historique des téléchargements, les plus récents d'abord (terminés, et ceux en
     /// échec ou annulés une fois retirés de la liste)
@@ -255,6 +279,109 @@ enum Command {
         #[command(subcommand)]
         action: DirectAction,
     },
+}
+
+/// Options d'ajout d'une vidéo, communes à `video add` et `video get`.
+#[derive(clap::Args)]
+struct VideoArgs {
+    /// Dossier de destination
+    #[arg(short = 'o', long, default_value = ".")]
+    dir: PathBuf,
+    /// Format à télécharger (identifiants de auro video info, ou sélecteur de yt-dlp :
+    /// « 137+140 », « bv*[height<=720]+ba/b ») ; par défaut la meilleure image et le
+    /// meilleur son
+    #[arg(short = 'f', long)]
+    format: Option<String>,
+    /// Conteneur du fichier final (automatique sinon)
+    #[arg(long, value_parser = ["mp4", "mkv", "webm"])]
+    container: Option<String>,
+    /// Langues des sous-titres, gardés à côté de la vidéo : « fr,en »
+    #[arg(long = "subs", value_name = "LANGUES", value_delimiter = ',')]
+    subtitles: Vec<String>,
+    /// File (nom ou identifiant)
+    #[arg(short = 'q', long)]
+    queue: Option<String>,
+    /// Limite de débit de la tâche (500K, 2M…)
+    #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+    limit: Option<Limit>,
+}
+
+impl VideoArgs {
+    fn options(&self, paused: bool) -> remote::VideoOptions<'_> {
+        remote::VideoOptions {
+            dir: &self.dir,
+            format: self.format.as_deref(),
+            container: self.container.as_deref(),
+            subtitles: &self.subtitles,
+            queue: self.queue.as_deref(),
+            limit: self.limit.and_then(|l| l.0),
+            paused,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum VideoAction {
+    /// État de yt-dlp et ffmpeg ; avec --install, les télécharge depuis leurs
+    /// publications officielles (signature et empreintes vérifiées)
+    Tools {
+        #[arg(long)]
+        install: bool,
+        /// Réinstaller même ce qui est déjà là (avec --install)
+        #[arg(long, requires = "install")]
+        force: bool,
+    },
+    /// Décrit une page de vidéo : titre, durée, sous-titres et formats proposés
+    Info { page: String },
+    /// Ajoute des vidéos au moteur, sans attendre
+    Add {
+        /// Adresses des pages
+        #[arg(required = true)]
+        pages: Vec<String>,
+        #[command(flatten)]
+        args: VideoArgs,
+        /// Ajouter en pause
+        #[arg(long)]
+        paused: bool,
+    },
+    /// Télécharge une vidéo et suit l'avancement (Ctrl-C la met en pause)
+    Get {
+        page: String,
+        #[command(flatten)]
+        args: VideoArgs,
+    },
+}
+
+/// Rangs de fichiers d'un torrent.
+#[derive(Clone)]
+struct Selection(Vec<u32>);
+
+/// « 0,2-4 » : rangs et intervalles, sans doublon.
+fn parse_selection(text: &str) -> Result<Selection, String> {
+    let rank = |t: &str| {
+        t.trim()
+            .parse::<u32>()
+            .map_err(|_| format!("rang invalide : {t}"))
+    };
+    let mut ranks = Vec::new();
+    for part in text.split(',') {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b) = (rank(a)?, rank(b)?);
+                if a > b {
+                    return Err(format!("intervalle à l'envers : {part}"));
+                }
+                if b - a >= 100_000 {
+                    return Err(format!("intervalle trop grand : {part}"));
+                }
+                ranks.extend(a..=b);
+            }
+            None => ranks.push(rank(part)?),
+        }
+    }
+    ranks.sort_unstable();
+    ranks.dedup();
+    Ok(Selection(ranks))
 }
 
 #[derive(Subcommand)]
@@ -471,7 +598,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 headers: &headers,
                 checksum: checksum.as_ref(),
             };
-            remote::get(target, &url, &opts).await
+            remote::get(target, remote::NewTask::File(&url, &opts)).await
+        }
+        Command::Video {
+            action: VideoAction::Get { page, args },
+        } => {
+            let opts = args.options(false);
+            remote::get(target, remote::NewTask::Video(&page, &opts)).await
         }
         Command::Engine { action } => engine(action, target).await,
         command => {
@@ -542,14 +675,39 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     task_id, checksum, ..
                 } => remote::set_checksum(&mut rpc, &task_id, checksum.as_ref()).await,
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
-                Command::Limit { rate, task, queue } => {
-                    let to = match (task.as_deref(), queue.as_deref()) {
-                        (Some(t), _) => remote::LimitOf::Task(t),
-                        (None, Some(q)) => remote::LimitOf::Queue(q),
-                        (None, None) => remote::LimitOf::Global,
+                Command::Files { task_id, select } => {
+                    let select = select.as_ref().map(|s| s.0.as_slice());
+                    remote::files(&mut rpc, &task_id, select).await
+                }
+                Command::Limit {
+                    rate,
+                    task,
+                    queue,
+                    upload,
+                } => {
+                    let to = match (task.as_deref(), queue.as_deref(), upload) {
+                        (_, _, true) => remote::LimitOf::Upload,
+                        (Some(t), _, _) => remote::LimitOf::Task(t),
+                        (None, Some(q), _) => remote::LimitOf::Queue(q),
+                        (None, None, false) => remote::LimitOf::Global,
                     };
                     remote::limit(&mut rpc, to, rate).await
                 }
+                Command::Config { key, value } => {
+                    remote::config(&mut rpc, key.as_deref(), value.as_deref()).await
+                }
+                Command::Video { action } => match action {
+                    VideoAction::Tools { install, force } => {
+                        video::tools(&mut rpc, install, force).await
+                    }
+                    VideoAction::Info { page } => video::info(&mut rpc, &page).await,
+                    VideoAction::Add {
+                        pages,
+                        args,
+                        paused,
+                    } => remote::video_add(&mut rpc, &pages, &args.options(paused)).await,
+                    VideoAction::Get { .. } => unreachable!("suivie à part"),
+                },
                 Command::History { query, csv, clear } => match clear {
                     true => remote::clear_history(&mut rpc).await,
                     false => remote::history(&mut rpc, query.as_deref(), csv).await,
@@ -738,5 +896,26 @@ mod tests {
         for bad in ["0", "8", "5-1", "lun", ""] {
             assert!(parse_days(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn file_ranks_are_read_as_lists_and_ranges() {
+        assert_eq!(parse_selection("0").unwrap().0, [0]);
+        assert_eq!(parse_selection("4,0,2-3,3").unwrap().0, [0, 2, 3, 4]);
+        for bad in ["3-1", "a", "", "-1", "0-200000"] {
+            assert!(parse_selection(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn setting_values_are_typed() {
+        use serde_json::{Value, json};
+        assert_eq!(remote::setting_value("oui"), json!(true));
+        assert_eq!(remote::setting_value("OFF"), json!(false));
+        assert_eq!(remote::setting_value("none"), Value::Null);
+        assert_eq!(remote::setting_value("2"), json!(2));
+        assert_eq!(remote::setting_value("1.5"), json!(1.5));
+        assert_eq!(remote::setting_value("Ethernet 2"), json!("Ethernet 2"));
+        assert_eq!(remote::setting_value("inf"), json!("inf"));
     }
 }
