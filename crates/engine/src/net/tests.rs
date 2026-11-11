@@ -797,3 +797,27 @@ mod authentication {
         );
     }
 }
+
+/// Tâche venue d'une connexion à jeton (SPEC §7.19) : le client restreint ne joint pas le
+/// serveur local, ni par son adresse ni par `localhost`, et ne contacte jamais le serveur ;
+/// le client ordinaire le joint.
+#[tokio::test]
+async fn a_restricted_client_never_reaches_internal_addresses() {
+    let server = serve(|_| reply("200 OK", &[("Content-Length", "3")], b"abc"));
+    let open = client();
+    let restricted = open.restricted().unwrap();
+    assert!(restricted.is_public_only() && !open.is_public_only());
+    assert!(open.reaching(false).map(|c| !c.is_public_only()).unwrap());
+    let url = server.url("/f");
+    let by_name = url.replace("127.0.0.1", "localhost");
+    for target in [&url, &by_name] {
+        let refused = restricted.probe(target, &[]).await.unwrap_err();
+        assert!(matches!(refused, NetError::AddressForbidden), "{refused:?}");
+        assert_eq!(refused.error_code(), Some("ADDRESS_FORBIDDEN"));
+        assert!(!refused.retryable());
+    }
+    assert!(server.requests().is_empty());
+    assert_eq!(open.probe(&url, &[]).await.unwrap().total_bytes, Some(3));
+    // Le client restreint est fabriqué une fois, puis partagé.
+    assert!(restricted.restricted().unwrap().is_public_only());
+}

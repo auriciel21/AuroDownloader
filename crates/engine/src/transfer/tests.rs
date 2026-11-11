@@ -64,6 +64,7 @@ fn new_case_in(url: &str, dir: tempfile::TempDir) -> Case {
             checksum: None,
             headers: &[],
             parent_id: None,
+            public_only: false,
         },
     )
     .unwrap();
@@ -1041,6 +1042,7 @@ mod names {
                 checksum: None,
                 headers: &[],
                 parent_id: None,
+                public_only: false,
             },
         )
         .unwrap();
@@ -1167,6 +1169,7 @@ async fn a_secret_missing_from_the_vault_is_left_out() {
             checksum: None,
             headers: &stored,
             parent_id: None,
+            public_only: false,
         },
     )
     .unwrap();
@@ -1219,6 +1222,7 @@ async fn an_unreachable_vault_is_a_temporary_failure() {
             checksum: None,
             headers: &stored,
             parent_id: None,
+            public_only: false,
         },
     )
     .unwrap();

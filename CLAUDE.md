@@ -103,6 +103,13 @@ téléchargement.
   par proptest), `Engine::scan_page`, `Engine::probe_links` (tailles, 4 à la fois),
   `net::Client::fetch_page` ; méthodes `linkscan.run`, `linkscan.probe`, `task.addBatch`.
   Les filtres sont dans les clients (`crates/cli/src/links.rs`, page).
+  Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
+  seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
+  `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
+  `/logout` ; `Host` et `Origin` vérifiés), `store::remote`, `net::reach` (réseau public
+  seulement : résolveur filtrant, `Client::restricted`), `Engine::restricted` (poignée
+  d'une connexion à jeton : dossier des téléchargements, `tasks.public_only`),
+  `rpc::serve_messages` (tout transport) ; méthodes `token.*` et `remote.status`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -263,6 +270,8 @@ cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # m
 cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> --select 0,2   # Metalink
 cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
+cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
+cargo run -p auro-cli -- remote enable --listen 127.0.0.1:7380 ; remote ; remote disable
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear
 cargo run -p auro-cli -- history [texte] [--csv] ; history --clear

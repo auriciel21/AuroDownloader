@@ -252,6 +252,20 @@ async fn download(
         // Les mêmes flux qu'à la première résolution.
         selector_of(&streams)
     };
+    // Vidéo ajoutée par une connexion à jeton : yt-dlp résout le nom de la page lui-même,
+    // vérifié ici à chaque exécution (SPEC §7.19).
+    if ctx.client.is_public_only() {
+        let checked = match crate::net::parse_url(&job.page_url) {
+            Ok(url) => crate::net::reach::check_public(&url).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = checked {
+            return Ok(failed(
+                e.error_code().unwrap_or("ADDRESS_FORBIDDEN"),
+                e.to_string(),
+            ));
+        }
+    }
     let mut resolution = match resolve(status, &job.page_url, &selector, stop).await {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(End::Stopped),
@@ -685,6 +699,7 @@ async fn direct(
                         checksum: None,
                         headers: &stored,
                         parent_id: Some(&task.id),
+                        public_only: task.public_only,
                     },
                 )?;
                 id

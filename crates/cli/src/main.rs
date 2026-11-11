@@ -318,6 +318,16 @@ enum Command {
         #[command(subcommand)]
         action: LoginAction,
     },
+    /// Interface web distante : état, ouverture, adresse d'écoute
+    Remote {
+        #[command(subcommand)]
+        action: Option<RemoteAction>,
+    },
+    /// Jetons de l'interface distante (lecture, ajout ou contrôle ; jamais administration)
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
     /// Plages horaires d'une file et action de fin (veille, extinction)
     Schedule {
         #[command(subcommand)]
@@ -508,6 +518,42 @@ enum LoginAction {
     },
     /// Retire les identifiants d'un site
     Remove { site: String },
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// État : réglages et écoute (par défaut)
+    Status,
+    /// Ouvre l'interface distante (127.0.0.1:7380 par défaut ; hors de la boucle locale,
+    /// TLS sera exigé)
+    Enable {
+        /// Adresse et port d'écoute, par exemple 127.0.0.1:7380
+        #[arg(long)]
+        listen: Option<String>,
+    },
+    /// Ferme l'interface distante ; ses connexions se ferment
+    Disable,
+    /// Réseau interne pour les tâches des jetons (adresses privées, boucle locale) : on ou off
+    AllowPrivate {
+        #[arg(value_parser = ["on", "off"])]
+        value: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenAction {
+    /// Crée un jeton et l'affiche, une seule fois
+    Create {
+        /// Nom du jeton (l'appareil qui s'en servira)
+        name: String,
+        /// read : voir ; add : ajouter seulement ; control : tout piloter, sauf les réglages
+        #[arg(long, default_value = "control", value_parser = ["read", "add", "control"])]
+        scope: String,
+    },
+    /// Liste les jetons (jamais leur valeur)
+    List,
+    /// Révoque un jeton (identifiant ou nom) : ses sessions et ses connexions se ferment
+    Revoke { token: String },
 }
 
 #[derive(Subcommand)]
@@ -863,6 +909,25 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         remote::login_set(&mut rpc, &site, &username, password).await
                     }
                     LoginAction::Remove { site } => remote::login_remove(&mut rpc, &site).await,
+                },
+                Command::Remote { action } => match action.unwrap_or(RemoteAction::Status) {
+                    RemoteAction::Status => remote::remote_status(&mut rpc).await,
+                    RemoteAction::Enable { listen } => {
+                        remote::remote_set(&mut rpc, Some(true), listen.as_deref(), None).await
+                    }
+                    RemoteAction::Disable => {
+                        remote::remote_set(&mut rpc, Some(false), None, None).await
+                    }
+                    RemoteAction::AllowPrivate { value } => {
+                        remote::remote_set(&mut rpc, None, None, Some(value == "on")).await
+                    }
+                },
+                Command::Token { action } => match action {
+                    TokenAction::Create { name, scope } => {
+                        remote::token_create(&mut rpc, &name, &scope).await
+                    }
+                    TokenAction::List => remote::tokens(&mut rpc).await,
+                    TokenAction::Revoke { token } => remote::token_revoke(&mut rpc, &token).await,
                 },
                 Command::Schedule { action } => match action {
                     ScheduleAction::List => remote::schedules(&mut rpc).await,

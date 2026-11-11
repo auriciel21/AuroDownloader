@@ -161,6 +161,9 @@ async fn run(
         async move { local::listen(engine, &endpoint).await }
     });
     eprintln!("aurod : base {}, point d'accès {endpoint}", db.display());
+    // Interface distante (SPEC §7.19) : ouverte seulement si `remote.enabled` ; suit ses
+    // réglages jusqu'à l'arrêt du moteur.
+    tokio::spawn(auro_engine::remote::run(engine.clone()));
 
     tokio::select! {
         served = &mut listening => {

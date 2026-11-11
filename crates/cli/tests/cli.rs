@@ -510,3 +510,79 @@ async fn mirrors_are_given_checked_and_shown() {
     );
     engine.shutdown().await;
 }
+
+/// Jetons de l'interface distante (SPEC §7.19) : créés avec leur portée, montrés une seule
+/// fois, listés sans leur valeur, révoqués par nom ou identifiant ; `admin` refusé.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tokens_are_created_listed_and_revoked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "jetons", Options::default()).await;
+    assert!(ok(&ep, &["token", "list"]).await.contains("Aucun jeton."));
+    let created = ok(&ep, &["token", "create", "téléphone"]).await;
+    assert!(created.contains("portée control"), "{created}");
+    let secret = created
+        .lines()
+        .find(|l| l.starts_with("auro_"))
+        .expect("jeton affiché")
+        .to_owned();
+    ok(&ep, &["token", "create", "tableau", "--scope", "read"]).await;
+    let refused = auro(&ep, &["token", "create", "x", "--scope", "admin"]).await;
+    assert!(!refused.status.success());
+    let listed = ok(&ep, &["token", "list"]).await;
+    assert!(
+        listed.contains("téléphone") && listed.contains("tableau"),
+        "{listed}"
+    );
+    assert!(listed.contains("jamais"), "{listed}");
+    assert!(!listed.contains(&secret), "{listed}");
+    assert!(engine.authenticate(&secret).await.unwrap().is_some());
+
+    let revoked = ok(&ep, &["token", "revoke", "téléphone"]).await;
+    assert!(revoked.contains("révoqué"), "{revoked}");
+    assert!(engine.authenticate(&secret).await.unwrap().is_none());
+    let unknown = auro(&ep, &["token", "revoke", "téléphone"]).await;
+    assert!(!unknown.status.success());
+    let id = engine.tokens().await.unwrap()[0].id.clone();
+    ok(&ep, &["token", "revoke", &id]).await;
+    assert!(ok(&ep, &["token", "list"]).await.contains("Aucun jeton."));
+}
+
+/// `auro remote` (SPEC §7.19) : l'écoute suit les réglages ; hors de la boucle locale,
+/// elle reste fermée faute de TLS.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_remote_interface_is_opened_moved_and_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "distante", Options::default()).await;
+    tokio::spawn(auro_engine::remote::run(engine.clone()));
+    let status = ok(&ep, &["remote"]).await;
+    assert!(
+        status.contains("coupée") && status.contains("127.0.0.1:7380"),
+        "{status}"
+    );
+    assert!(status.contains("refusé"), "{status}");
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let listen = format!("127.0.0.1:{port}");
+    let opened = ok(&ep, &["remote", "enable", "--listen", &listen]).await;
+    assert!(
+        opened.contains(&format!("ouverte sur http://{listen}")),
+        "{opened}"
+    );
+    assert!(tokio::net::TcpStream::connect(&listen).await.is_ok());
+
+    let private = ok(&ep, &["remote", "allow-private", "on"]).await;
+    assert!(private.contains("permis"), "{private}");
+    let refused = ok(&ep, &["remote", "enable", "--listen", "192.0.2.10:7380"]).await;
+    assert!(
+        refused.contains("fermée") && refused.contains("TLS"),
+        "{refused}"
+    );
+    let closed = ok(&ep, &["remote", "disable"]).await;
+    assert!(closed.contains("coupée"), "{closed}");
+    let bad = auro(&ep, &["remote", "enable", "--listen", "pas-une-adresse"]).await;
+    assert!(!bad.status.success());
+}

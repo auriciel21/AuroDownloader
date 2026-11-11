@@ -319,6 +319,12 @@ pub enum Event {
         pending: Option<PendingEnd>,
         error: Option<String>,
     },
+    /// Un jeton de l'interface distante a été révoqué (SPEC §7.19) : ses connexions se
+    /// ferment.
+    TokenRevoked {
+        rev: u64,
+        token_id: String,
+    },
 }
 
 /// Ce que `task.get` demande en plus de la tâche (SPEC §6.4, `include`).
@@ -391,6 +397,10 @@ pub enum EngineError {
     #[error("dossier de destination refusé : {0}")]
     DestDir(String),
 
+    /// Connexion à jeton : hors du dossier des téléchargements (SPEC §7.19).
+    #[error("une tâche ajoutée à distance n'écrit que sous le dossier des téléchargements")]
+    DestForbidden,
+
     #[error("la tâche {task_id} est dans l'état {state} : {action} impossible")]
     InvalidState {
         task_id: String,
@@ -435,7 +445,7 @@ pub enum EngineError {
     )]
     SourceMismatch { expected: u64, found: String },
 
-    #[error("nouvelle adresse injoignable : {0}")]
+    #[error("{}", unreachable_text(.0))]
     SourceUnreachable(#[source] NetError),
 
     /// Un miroir qui ne sert pas le même fichier (SPEC §7.7).
@@ -494,6 +504,12 @@ pub struct AddTask {
     /// Dossiers sous `dest_dir`, créés s'ils manquent (fichiers d'un Metalink, SPEC §7.7) ;
     /// chacun doit être un nom sûr tel quel. Tâche HTTP seulement.
     pub sub_dir: Vec<String>,
+    /// Ajout par une connexion à jeton (SPEC §7.19) : fichier sous le dossier des
+    /// téléchargements.
+    pub remote: bool,
+    /// Réseau public seulement, pour toute la vie de la tâche (connexion à jeton, sauf
+    /// réglage `remote.allowPrivate`).
+    pub public_only: bool,
 }
 
 /// Fichier Metalink à lire (`metalink.read`, `metalink.add`, SPEC §7.7).
@@ -620,6 +636,7 @@ enum Command {
         task_id: String,
         dest_dir: Option<String>,
         file_name: Option<String>,
+        remote: bool,
         reply: Reply<TaskRow>,
     },
     /// Ce qu'il faut pour vérifier une nouvelle adresse, hors de la boucle.
@@ -632,6 +649,7 @@ enum Command {
         task_id: String,
         url: String,
         facts: Option<SourceFacts>,
+        public_only: bool,
         reply: Reply<TaskRow>,
     },
     CheckMirror {
@@ -643,6 +661,7 @@ enum Command {
         task_id: String,
         url: String,
         facts: Option<mirrors::Facts>,
+        public_only: bool,
         reply: Reply<String>,
     },
     Get(String, Reply<TaskRow>),
@@ -685,6 +704,8 @@ enum Command {
     /// Avertissement du moteur à annoncer (`engine.warning`).
     Warn(&'static str, String),
     SetTorrentInterface(Option<String>, Reply<()>),
+    RemoteListen(Reply<std::net::SocketAddr>),
+    SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
     SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
@@ -699,6 +720,8 @@ enum Command {
     Logins(Reply<Vec<LoginView>>),
     SetLogin(LoginChange, Reply<LoginView>),
     DeleteLogin(String, Reply<()>),
+    /// Jetons et sessions de l'interface distante (SPEC §7.19).
+    Tokens(crate::remote::TokenOp, Reply<crate::remote::TokenAnswer>),
     /// Secrets relevés dans le coffre au démarrage, pour le ramassage.
     CollectSecrets(Vec<String>),
     Shutdown(oneshot::Sender<()>),
@@ -718,6 +741,13 @@ pub struct Engine {
     stopped: watch::Receiver<bool>,
     /// Outils de la vidéo (SPEC §7.17) ; `None` hors de Windows et Linux.
     tools: Option<Arc<media::tools::Tools>>,
+    /// État de l'écoute de l'interface distante (SPEC §7.19), partagé par les copies.
+    remote_state: Arc<std::sync::Mutex<crate::remote::RemoteState>>,
+    /// Poignée d'une connexion à jeton (SPEC §7.19) : ajouts et déplacements sous le dossier
+    /// des téléchargements ; voir [`Engine::restricted`].
+    remote: bool,
+    /// Et réseau public seulement, sauf réglage `remote.allowPrivate`.
+    public_only: bool,
 }
 
 impl Engine {
@@ -779,7 +809,35 @@ impl Engine {
             rev,
             stopped,
             tools,
+            public_only: false,
+            remote: false,
+            remote_state: Arc::default(),
         })
+    }
+
+    /// La poignée d'une connexion à jeton (SPEC §7.19) : ses lectures du réseau passent
+    /// par le client restreint au réseau public ; ses ajouts, ses miroirs et ses
+    /// adresses marquent la tâche (`public_only`), qui n'écrit que sous le dossier des
+    /// téléchargements et ne joint que le réseau public, pour toute sa vie.
+    /// `allow_private` : réglage `remote.allowPrivate`, qui lève la limite au réseau public
+    /// (pas celle du dossier).
+    pub fn restricted(&self, allow_private: bool) -> Result<Engine, EngineError> {
+        let client = if allow_private {
+            self.client.clone()
+        } else {
+            self.client.restricted().map_err(EngineError::Url)?
+        };
+        Ok(Engine {
+            client,
+            remote: true,
+            public_only: !allow_private,
+            ..self.clone()
+        })
+    }
+
+    /// Poignée d'une connexion à jeton ?
+    pub fn is_restricted(&self) -> bool {
+        self.remote
     }
 
     /// Identifiant de la file par défaut.
@@ -1007,6 +1065,12 @@ impl Engine {
     pub async fn probe_media(&self, page_url: &str) -> Result<media::extract::Probe, EngineError> {
         let tools = Arc::clone(self.media_tools_handle()?);
         crate::net::check_url(page_url)?;
+        if self.public_only {
+            let url = net::parse_url(page_url)?;
+            net::reach::check_public(&url)
+                .await
+                .map_err(EngineError::SourceUnreachable)?;
+        }
         self.update_ytdlp_if_due(&tools).await;
         let Some((ytdlp, _running)) = tools.ytdlp().await else {
             return Err(EngineError::ToolsMissing(
@@ -1055,6 +1119,36 @@ impl Engine {
             .await
     }
 
+    /// Adresse et port d'écoute de l'interface distante (`remote.listen`, SPEC §7.19).
+    pub async fn remote_listen(&self) -> Result<std::net::SocketAddr, EngineError> {
+        self.ask(Command::RemoteListen).await
+    }
+
+    /// Change l'écoute de l'interface distante (`None` : celle par défaut) ; rend celle
+    /// retenue. L'écoute en cours repart sur la nouvelle (`remote::run`).
+    pub async fn set_remote_listen(
+        &self,
+        addr: Option<std::net::SocketAddr>,
+    ) -> Result<std::net::SocketAddr, EngineError> {
+        self.ask(|reply| Command::SetRemoteListen(addr, reply))
+            .await
+    }
+
+    /// État de l'écoute de l'interface distante, tenu par `remote::run`.
+    pub fn remote_state(&self) -> crate::remote::RemoteState {
+        self.remote_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_remote_state(&self, state: crate::remote::RemoteState) {
+        *self
+            .remote_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+    }
+
     /// Choisit les fichiers d'un torrent à télécharger (`task.setFiles`, SPEC §7.16), par
     /// rang ; renvoie la tâche, avec sa nouvelle taille.
     pub async fn set_files(
@@ -1082,7 +1176,19 @@ impl Engine {
     }
 
     /// Ajoute une tâche `queued` (ou `paused`) ; renvoie son identifiant.
-    pub async fn add(&self, task: AddTask) -> Result<String, EngineError> {
+    pub async fn add(&self, mut task: AddTask) -> Result<String, EngineError> {
+        task.remote |= self.remote;
+        if self.public_only {
+            task.public_only = true;
+            // yt-dlp résout lui-même le nom de la page : vérifié ici, avant l'ajout
+            // (SPEC §7.19).
+            if let Some(media) = &task.media {
+                let url = net::parse_url(&media.page_url)?;
+                net::reach::check_public(&url)
+                    .await
+                    .map_err(EngineError::SourceUnreachable)?;
+            }
+        }
         self.ask(|reply| Command::Add(Box::new(task), reply)).await
     }
 
@@ -1140,6 +1246,7 @@ impl Engine {
             task_id,
             dest_dir,
             file_name,
+            remote: self.remote,
             reply,
         })
         .await
@@ -1151,6 +1258,9 @@ impl Engine {
     /// la tâche ne suivent pas vers un autre hôte.
     pub async fn set_url(&self, task_id: &str, url: &str) -> Result<TaskRow, EngineError> {
         net::check_url(url)?;
+        if self.public_only {
+            check_public_literal(url)?;
+        }
         let (id, address) = (task_id.to_owned(), url.to_owned());
         let check = self
             .ask(|reply| Command::CheckSource {
@@ -1190,6 +1300,7 @@ impl Engine {
             task_id,
             url,
             facts,
+            public_only: self.public_only,
             reply,
         })
         .await
@@ -1281,6 +1392,9 @@ impl Engine {
 
     pub async fn add_source(&self, task_id: &str, url: &str) -> Result<String, EngineError> {
         net::check_url(url)?;
+        if self.public_only {
+            check_public_literal(url)?;
+        }
         let (id, address) = (task_id.to_owned(), url.to_owned());
         let check = self
             .ask(|reply| Command::CheckMirror {
@@ -1331,6 +1445,7 @@ impl Engine {
             task_id,
             url,
             facts,
+            public_only: self.public_only,
             reply,
         })
         .await
@@ -1398,6 +1513,108 @@ impl Engine {
     pub async fn delete_login(&self, id: &str) -> Result<(), EngineError> {
         let id = id.to_owned();
         self.ask(|reply| Command::DeleteLogin(id, reply)).await
+    }
+
+    async fn token_op(
+        &self,
+        op: crate::remote::TokenOp,
+    ) -> Result<crate::remote::TokenAnswer, EngineError> {
+        self.ask(|reply| Command::Tokens(op, reply)).await
+    }
+
+    /// Crée un jeton de l'interface distante (SPEC §7.19) ; rend sa ligne et le jeton
+    /// lui-même, qui ne sera plus jamais montré. Portée `read`, `add` ou `control`.
+    pub async fn create_token(
+        &self,
+        name: &str,
+        scope: &str,
+    ) -> Result<(store::remote::TokenRow, String), EngineError> {
+        if crate::remote::token_scope(scope).is_none() {
+            return Err(EngineError::BadRequest(format!(
+                "portée d'un jeton : read, add ou control, pas {scope}"
+            )));
+        }
+        let secret = crate::remote::new_secret();
+        let op = crate::remote::TokenOp::Create {
+            name: name.to_owned(),
+            scope: scope.to_owned(),
+            digest: crate::remote::digest(&secret),
+        };
+        match self.token_op(op).await? {
+            crate::remote::TokenAnswer::Token(row) => Ok((row, secret)),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Les jetons de l'interface distante, sans leur valeur.
+    pub async fn tokens(&self) -> Result<Vec<store::remote::TokenRow>, EngineError> {
+        match self.token_op(crate::remote::TokenOp::List).await? {
+            crate::remote::TokenAnswer::Tokens(rows) => Ok(rows),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Révoque un jeton : ses sessions s'effacent, ses connexions se ferment. Faux s'il
+    /// n'existait pas.
+    pub async fn revoke_token(&self, id: &str) -> Result<bool, EngineError> {
+        match self
+            .token_op(crate::remote::TokenOp::Revoke(id.to_owned()))
+            .await?
+        {
+            crate::remote::TokenAnswer::Done(done) => Ok(done),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Le jeton présenté par une connexion, s'il existe.
+    pub async fn authenticate(
+        &self,
+        secret: &str,
+    ) -> Result<Option<store::remote::TokenRow>, EngineError> {
+        if !crate::remote::looks_like_secret(secret) {
+            return Ok(None);
+        }
+        let op = crate::remote::TokenOp::UseToken(crate::remote::digest(secret));
+        match self.token_op(op).await? {
+            crate::remote::TokenAnswer::Found(found) => Ok(found),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Ouvre une session de navigateur pour ce jeton ; rend la valeur du cookie.
+    pub async fn open_session(&self, token_id: &str) -> Result<String, EngineError> {
+        let secret = crate::remote::new_secret();
+        let op = crate::remote::TokenOp::OpenSession {
+            digest: crate::remote::digest(&secret),
+            token_id: token_id.to_owned(),
+            expires_at: store::now_ms() + crate::remote::SESSION_TTL_MS,
+        };
+        self.token_op(op).await?;
+        Ok(secret)
+    }
+
+    /// Le jeton d'une session encore valable.
+    pub async fn session(
+        &self,
+        cookie: &str,
+    ) -> Result<Option<store::remote::TokenRow>, EngineError> {
+        if !crate::remote::looks_like_secret(cookie) {
+            return Ok(None);
+        }
+        let op = crate::remote::TokenOp::UseSession(crate::remote::digest(cookie));
+        match self.token_op(op).await? {
+            crate::remote::TokenAnswer::Found(found) => Ok(found),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Ferme une session (`POST /logout`).
+    pub async fn close_session(&self, cookie: &str) -> Result<(), EngineError> {
+        if crate::remote::looks_like_secret(cookie) {
+            let op = crate::remote::TokenOp::CloseSession(crate::remote::digest(cookie));
+            self.token_op(op).await?;
+        }
+        Ok(())
     }
 
     /// Arrête le moteur : les tâches en cours s'arrêtent après leur point de contrôle et
@@ -1951,9 +2168,10 @@ impl Scheduler {
                 task_id,
                 dest_dir,
                 file_name,
+                remote,
                 reply,
             } => {
-                let _ = reply.send(self.relocate(&task_id, dest_dir, file_name));
+                let _ = reply.send(self.relocate(&task_id, dest_dir, file_name, remote));
             }
             Command::CheckSource {
                 task_id,
@@ -1966,9 +2184,10 @@ impl Scheduler {
                 task_id,
                 url,
                 facts,
+                public_only,
                 reply,
             } => {
-                let _ = reply.send(self.replace_url(&task_id, &url, facts));
+                let _ = reply.send(self.replace_url(&task_id, &url, facts, public_only));
             }
             Command::CheckMirror {
                 task_id,
@@ -1981,9 +2200,10 @@ impl Scheduler {
                 task_id,
                 url,
                 facts,
+                public_only,
                 reply,
             } => {
-                let _ = reply.send(self.add_mirror(&task_id, &url, facts));
+                let _ = reply.send(self.add_mirror(&task_id, &url, facts, public_only));
             }
             Command::Get(task_id, reply) => {
                 let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
@@ -2021,6 +2241,9 @@ impl Scheduler {
             }
             Command::DeleteLogin(id, reply) => {
                 let _ = reply.send(self.delete_login(&id));
+            }
+            Command::Tokens(op, reply) => {
+                let _ = reply.send(self.tokens(op));
             }
             Command::CollectSecrets(found) => self.collect_secrets(found),
             Command::List(filter, reply) => {
@@ -2103,6 +2326,12 @@ impl Scheduler {
             Command::SetTorrentInterface(name, reply) => {
                 let _ = reply.send(self.set_torrent_interface(name));
             }
+            Command::RemoteListen(reply) => {
+                let _ = reply.send(settings::remote_listen(&self.conn).map_err(Into::into));
+            }
+            Command::SetRemoteListen(addr, reply) => {
+                let _ = reply.send(self.set_remote_listen(addr));
+            }
             Command::SetFiles(task_id, selected, reply) => {
                 let _ = reply.send(self.set_files(&task_id, &selected));
             }
@@ -2155,6 +2384,21 @@ impl Scheduler {
     fn download_dir(&self) -> Result<Option<String>, EngineError> {
         Ok(settings::download_dir(&self.conn)?
             .or_else(|| dirs::download_dir().and_then(|d| d.to_str().map(str::to_owned))))
+    }
+
+    /// Une connexion à jeton n'écrit que sous le dossier des téléchargements (SPEC §7.19,
+    /// décision du 2026-11-11) : chemins résolus (liens suivis), comparés composant par
+    /// composant.
+    fn check_within_downloads(&self, dir: &str) -> Result<(), EngineError> {
+        let refused = || EngineError::DestForbidden;
+        let base = self.download_dir()?.ok_or_else(refused)?;
+        let base = std::fs::canonicalize(base).map_err(|_| refused())?;
+        let target = std::fs::canonicalize(dir).map_err(|_| refused())?;
+        if target.starts_with(&base) {
+            Ok(())
+        } else {
+            Err(refused())
+        }
     }
 
     fn set_download_dir(&mut self, dir: Option<String>) -> Result<Option<String>, EngineError> {
@@ -2424,6 +2668,11 @@ impl Scheduler {
         for mirror in &task.mirrors {
             net::check_url(mirror)?;
         }
+        if task.public_only {
+            for url in std::iter::once(&task.url).chain(&task.mirrors) {
+                check_public_literal(url)?;
+            }
+        }
         let mut all: Vec<&str> = std::iter::once(task.url.as_str())
             .chain(task.mirrors.iter().map(String::as_str))
             .collect();
@@ -2448,11 +2697,16 @@ impl Scheduler {
         for part in &task.sub_dir {
             check_file_name(part)?;
         }
-        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
         let dest_dir = if task.sub_dir.is_empty() {
             dest_dir
         } else {
-            sub_dir(&dest_dir, &task.sub_dir)?
+            let dir = sub_dir(&dest_dir, &task.sub_dir)?;
+            // Un sous-dossier déjà là pourrait être un lien vers ailleurs.
+            if task.remote {
+                self.check_within_downloads(&dir)?;
+            }
+            dir
         };
         let display_name = task
             .file_name
@@ -2475,6 +2729,7 @@ impl Scheduler {
                 checksum: task.checksum.as_ref(),
                 headers: &stored,
                 parent_id: None,
+                public_only: task.public_only,
             },
             &task.mirrors,
         );
@@ -2495,10 +2750,13 @@ impl Scheduler {
 
     /// Dossier et file d'un ajout : ceux demandés, sinon le dossier des téléchargements du
     /// moteur et la file par défaut.
+    /// Dossier et file d'un ajout. `remote` : ajout par une connexion à jeton, qui
+    /// n'écrit que sous le dossier des téléchargements (SPEC §7.19).
     fn destination(
         &self,
         dest_dir: Option<String>,
         queue_id: Option<String>,
+        remote: bool,
     ) -> Result<(String, String), EngineError> {
         let dest_dir = match dest_dir {
             Some(dir) => dir,
@@ -2511,6 +2769,9 @@ impl Scheduler {
             })?,
         };
         check_dest_dir(&dest_dir)?;
+        if remote {
+            self.check_within_downloads(&dest_dir)?;
+        }
         let queue_id = queue_id.unwrap_or_else(|| self.default_queue.clone());
         if !tasks::queue_exists(&self.conn, &queue_id)? {
             return Err(EngineError::QueueNotFound(queue_id));
@@ -2561,7 +2822,7 @@ impl Scheduler {
                 "media.subtitles : au plus 20 codes de langue".into(),
             ));
         }
-        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
         let display_name = request
             .title
             .as_deref()
@@ -2581,6 +2842,7 @@ impl Scheduler {
                 format,
                 container: request.container.as_deref(),
                 subtitles: &request.subtitles,
+                public_only: task.public_only,
             },
         )?;
         let id = task_id.clone();
@@ -2611,7 +2873,7 @@ impl Scheduler {
                 "ce torrent est déjà dans la liste (tâche {other})"
             )));
         }
-        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
         let display_name = task.file_name.clone().unwrap_or(added.name);
         let task_id = store::torrents::create_torrent_task(
             &mut self.conn,
@@ -2740,6 +3002,45 @@ impl Scheduler {
     }
 
     /// Retire des identifiants : la référence d'abord, puis le mot de passe du coffre.
+    fn tokens(
+        &mut self,
+        op: crate::remote::TokenOp,
+    ) -> Result<crate::remote::TokenAnswer, EngineError> {
+        use crate::remote::{TokenAnswer, TokenOp};
+        use store::remote as rows;
+        Ok(match op {
+            TokenOp::Create {
+                name,
+                scope,
+                digest,
+            } => TokenAnswer::Token(rows::create_token(&self.conn, &name, &scope, &digest)?),
+            TokenOp::List => TokenAnswer::Tokens(rows::list_tokens(&self.conn)?),
+            TokenOp::Revoke(id) => {
+                let done = rows::revoke_token(&self.conn, &id)?;
+                if done {
+                    self.emit(|rev| Event::TokenRevoked { rev, token_id: id });
+                }
+                TokenAnswer::Done(done)
+            }
+            TokenOp::UseToken(digest) => TokenAnswer::Found(rows::use_token(&self.conn, &digest)?),
+            TokenOp::OpenSession {
+                digest,
+                token_id,
+                expires_at,
+            } => {
+                rows::create_session(&self.conn, &digest, &token_id, expires_at)?;
+                TokenAnswer::Done(true)
+            }
+            TokenOp::UseSession(digest) => {
+                TokenAnswer::Found(rows::use_session(&self.conn, &digest)?)
+            }
+            TokenOp::CloseSession(digest) => {
+                rows::delete_session(&self.conn, &digest)?;
+                TokenAnswer::Done(true)
+            }
+        })
+    }
+
     fn delete_login(&mut self, id: &str) -> Result<(), EngineError> {
         let secret = store::logins::delete(&self.conn, id)?
             .ok_or_else(|| EngineError::LoginNotFound(id.to_owned()))?;
@@ -3019,8 +3320,14 @@ impl Scheduler {
         task_id: &str,
         dest_dir: Option<String>,
         name: Option<String>,
+        remote: bool,
     ) -> Result<TaskRow, EngineError> {
         let task = self.idle(task_id, "déplacement")?;
+        // Connexion à jeton : un autre dossier, seulement sous celui des téléchargements.
+        if remote && let Some(dir) = &dest_dir {
+            check_dest_dir(dir)?;
+            self.check_within_downloads(dir)?;
+        }
         if let Some(name) = &name {
             check_file_name(name)?;
         }
@@ -3232,8 +3539,14 @@ impl Scheduler {
         task_id: &str,
         url: &str,
         facts: Option<mirrors::Facts>,
+        public_only: bool,
     ) -> Result<String, EngineError> {
         self.check_mirror(task_id, url)?;
+        // Miroir donné par une connexion à jeton : la tâche passe au réseau public seulement,
+        // avant que ce miroir ne serve (SPEC §7.19).
+        if public_only {
+            tasks::restrict_to_public(&self.conn, task_id)?;
+        }
         let source_id = store::sources::add_source(&mut self.conn, task_id, url)?;
         if let Some(facts) = &facts {
             let checked = store::sources::Checked {
@@ -3261,12 +3574,18 @@ impl Scheduler {
         task_id: &str,
         url: &str,
         facts: Option<SourceFacts>,
+        public_only: bool,
     ) -> Result<TaskRow, EngineError> {
         let check = self.check_source(task_id, url)?;
         if check.expect_bytes != facts.as_ref().map(|f| f.total_bytes) {
             return Err(EngineError::BadRequest(format!(
                 "la tâche {task_id} a changé pendant la vérification de l'adresse : réessayer"
             )));
+        }
+        // Adresse donnée par une connexion à jeton : la tâche passe au réseau public
+        // seulement (SPEC §7.19).
+        if public_only {
+            tasks::restrict_to_public(&self.conn, task_id)?;
         }
         let task = load_task(&self.conn, task_id)?;
         // Nom tiré de l'adresse, tant que ni le serveur ni l'utilisateur n'en ont donné.
@@ -3398,6 +3717,20 @@ impl Scheduler {
     }
 
     /// Interface réseau des torrents (SPEC §7.16) : un nom, ou `None` pour aucune.
+    fn set_remote_listen(
+        &mut self,
+        addr: Option<std::net::SocketAddr>,
+    ) -> Result<std::net::SocketAddr, EngineError> {
+        settings::set_remote_listen(&self.conn, addr)?;
+        let effective = settings::remote_listen(&self.conn)?;
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::REMOTE_LISTEN,
+            value: serde_json::Value::from(effective.to_string()),
+        });
+        Ok(effective)
+    }
+
     fn set_torrent_interface(&mut self, name: Option<String>) -> Result<(), EngineError> {
         if name
             .as_deref()
@@ -3677,6 +4010,25 @@ fn sub_dir(base: &str, parts: &[String]) -> Result<String, EngineError> {
         .map_err(|_| EngineError::DestDir("chemin de destination illisible".into()))
 }
 
+/// Texte de [`EngineError::SourceUnreachable`] : une adresse interne refusée (SPEC §7.19) se
+/// dit telle quelle.
+fn unreachable_text(e: &NetError) -> String {
+    match e {
+        NetError::AddressForbidden => e.to_string(),
+        _ => format!("nouvelle adresse injoignable : {e}"),
+    }
+}
+
+/// Connexion à jeton : une adresse écrite telle quelle hors du réseau public est refusée
+/// dès l'ajout ; un nom l'est à la connexion, après sa résolution (SPEC §7.19).
+fn check_public_literal(url: &str) -> Result<(), EngineError> {
+    let parsed = net::parse_url(url)?;
+    if net::reach::literal_forbidden(&parsed) {
+        return Err(EngineError::SourceUnreachable(NetError::AddressForbidden));
+    }
+    Ok(())
+}
+
 fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
     let path = Path::new(dir);
     if !path.is_absolute() || !path.is_dir() {
@@ -3780,14 +4132,21 @@ async fn execute(
             progress,
         });
     };
-    match load_task(&conn, task_id)?.kind {
+    let task = load_task(&conn, task_id)?;
+    // Ajoutée par une connexion à jeton : réseau public seulement, reprises comprises
+    // (SPEC §7.19).
+    let client = config
+        .client
+        .reaching(task.public_only)
+        .map_err(TransferError::RestrictedClient)?;
+    match task.kind {
         TaskKind::Torrent => {
             return torrent::run(&mut conn, torrents, task_id, stop, &mut on_progress).await;
         }
         // Vidéo (SPEC §7.17) : ses flux directs passent par `transfer::run`.
         TaskKind::Media => {
             let ctx = media::run::Context {
-                client: &config.client,
+                client: &client,
                 opts: &config.transfer,
                 tools,
             };
@@ -3797,7 +4156,7 @@ async fn execute(
     }
     transfer::run(
         &mut conn,
-        &config.client,
+        &client,
         task_id,
         &config.transfer,
         stop,

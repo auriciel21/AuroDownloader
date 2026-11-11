@@ -11,7 +11,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, 
 use tokio::io::{WriteHalf, duplex, split};
 use tokio::time::timeout;
 
-use super::serve;
 use crate::net::Client;
 use crate::scheduler::{Config, DISK_RECHECK, Engine, Planning};
 use crate::testing::{FileSite, Pace, Server, serve_file, serve_file_paced};
@@ -50,9 +49,14 @@ struct TestClient {
 
 impl TestClient {
     fn connect(engine: &Engine) -> Self {
+        Self::connect_as(engine, super::Peer::local())
+    }
+
+    /// Connexion d'un client donné (connexion par jeton, SPEC §7.19).
+    fn connect_as(engine: &Engine, peer: super::Peer) -> Self {
         let (ours, theirs) = duplex(1 << 20);
         let (read, write) = split(theirs);
-        tokio::spawn(serve(engine.clone(), read, write));
+        tokio::spawn(super::serve_as(engine.clone(), peer, read, write));
         let (read, writer) = split(ours);
         TestClient {
             lines: BufReader::new(read).lines(),
@@ -3045,4 +3049,267 @@ async fn a_mirror_added_to_a_prepared_task_is_checked_at_once() {
         .await;
     assert_eq!(task["sources"][1]["state"], "unknown", "{task}");
     engine.shutdown().await;
+}
+
+/// Interface distante (SPEC §7.19) : un jeton n'a jamais `admin` ; ses ajouts et ses
+/// changements ne joignent que le réseau public et n'écrivent que sous le dossier des
+/// téléchargements, pour toute la vie de la tâche ; sa révocation ferme ses connexions.
+#[tokio::test]
+async fn a_token_connection_reaches_only_the_public_network_and_the_download_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(downloads.join("sous")).unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let server = site(64 * 1024);
+    let engine = engine(dir.path());
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.dir": dir_text(&downloads)}}),
+        )
+        .await;
+
+    // Jetons : par le canal local seulement ; la valeur n'est rendue qu'à la création.
+    assert_eq!(
+        local
+            .error_code("token.create", json!({"name": "tél", "scope": "admin"}))
+            .await,
+        "INVALID_PARAMS"
+    );
+    let created = local
+        .result(
+            "token.create",
+            json!({"name": "téléphone", "scope": "control"}),
+        )
+        .await;
+    let token_id = created["id"].as_str().unwrap().to_owned();
+    assert!(created["token"].as_str().unwrap().starts_with("auro_"));
+    let listed = local.result("token.list", json!({})).await;
+    assert_eq!(listed["tokens"][0]["name"], "téléphone");
+    assert!(listed["tokens"][0].get("token").is_none(), "{listed}");
+
+    let peer = super::Peer::token(&token_id, super::Scope::Control);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    assert_eq!(
+        remote.result("engine.hello", hello()).await["scope"],
+        "control"
+    );
+    for (method, params) in [
+        ("token.list", json!({})),
+        ("token.create", json!({"name": "x"})),
+        (
+            "settings.set",
+            json!({"values": {"remote.allowPrivate": true}}),
+        ),
+        ("engine.shutdown", json!({})),
+        ("login.list", json!({})),
+        ("media.installTools", json!({})),
+    ] {
+        assert_eq!(
+            remote.error_code(method, params).await,
+            "UNAUTHORIZED",
+            "{method}"
+        );
+    }
+
+    // Adresses du réseau interne : refusées dès l'ajout, sans requête au serveur.
+    let inside = server.url("/f.bin");
+    let by_name = inside.replace("127.0.0.1", "localhost");
+    for url in [&inside, &by_name] {
+        assert_eq!(
+            remote
+                .error_code("task.add", json!({"sources": [{"url": url}]}))
+                .await,
+            "ADDRESS_FORBIDDEN"
+        );
+    }
+    let batch = remote
+        .result(
+            "task.addBatch",
+            json!({"items": [{"sources": [{"url": inside}]}]}),
+        )
+        .await;
+    assert_eq!(batch["errors"][0]["code"], "ADDRESS_FORBIDDEN", "{batch}");
+    assert_eq!(
+        remote
+            .error_code("linkscan.run", json!({"pageUrl": inside}))
+            .await,
+        "ADDRESS_FORBIDDEN"
+    );
+    assert_eq!(
+        remote
+            .error_code("metalink.read", json!({"url": inside}))
+            .await,
+        "ADDRESS_FORBIDDEN"
+    );
+    let probed = remote
+        .result("linkscan.probe", json!({"urls": [by_name]}))
+        .await;
+    assert_eq!(
+        probed["items"][0]["error"]["code"], "ADDRESS_FORBIDDEN",
+        "{probed}"
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+
+    // Dossier : sous celui des téléchargements seulement.
+    let public = "https://fichiers.invalid/f.iso";
+    assert_eq!(
+        remote
+            .error_code(
+                "task.add",
+                json!({"sources": [{"url": public}], "destDir": dir_text(&elsewhere)})
+            )
+            .await,
+        "DEST_FORBIDDEN"
+    );
+    let added = remote
+        .result(
+            "task.add",
+            json!({"sources": [{"url": public}], "destDir": dir_text(&downloads.join("sous")),
+                   "startPaused": true}),
+        )
+        .await;
+    let remote_task = added["taskId"].as_str().unwrap().to_owned();
+    let got = local
+        .result("task.get", json!({"taskId": remote_task}))
+        .await;
+    assert_eq!(got["publicOnly"], true, "{got}");
+    assert_eq!(
+        remote
+            .error_code(
+                "task.update",
+                json!({"taskId": remote_task, "destDir": dir_text(&elsewhere)})
+            )
+            .await,
+        "DEST_FORBIDDEN"
+    );
+
+    // Une tâche locale : un miroir donné par le jeton la restreint pour toujours, et son
+    // exécution ne joint plus le serveur local.
+    let mine = local
+        .result(
+            "task.add",
+            json!({"sources": [{"url": inside}], "startPaused": true}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        remote
+            .error_code(
+                "task.addSource",
+                json!({"taskId": mine, "url": "http://192.168.1.1/f.bin"})
+            )
+            .await,
+        "ADDRESS_FORBIDDEN"
+    );
+    let got = local.result("task.get", json!({"taskId": mine})).await;
+    assert_eq!(got["publicOnly"], false);
+    remote
+        .result(
+            "task.addSource",
+            json!({"taskId": mine, "url": "https://miroir.invalid/f.bin"}),
+        )
+        .await;
+    let got = local.result("task.get", json!({"taskId": mine})).await;
+    assert_eq!(got["publicOnly"], true);
+    local
+        .result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    local
+        .result("task.resume", json!({"taskIds": [mine]}))
+        .await;
+    let failed = local
+        .notification("task.stateChanged", |p| {
+            p["taskId"] == mine.as_str() && p["to"] == "failed"
+        })
+        .await;
+    assert_eq!(failed["errorCode"], "ADDRESS_FORBIDDEN", "{failed}");
+    assert!(server.requests().is_empty());
+
+    // Révocation : la connexion du jeton se ferme.
+    let revoked = local
+        .result("token.revoke", json!({"tokenId": token_id}))
+        .await;
+    assert_eq!(revoked["revoked"], true);
+    loop {
+        match remote.read().await {
+            None => break,
+            Some(message) => assert!(message.get("method").is_some(), "{message}"),
+        }
+    }
+    assert!(
+        local.result("token.list", json!({})).await["tokens"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `remote.allowPrivate` (SPEC §7.19) : réglé par le canal local, il ouvre le réseau
+/// interne aux connexions à jeton suivantes, sans lever la limite du dossier.
+#[tokio::test]
+async fn allow_private_opens_the_internal_network_but_not_other_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let server = site(32 * 1024);
+    let engine = engine(dir.path());
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    let values = local.result("settings.get", json!({})).await["values"].clone();
+    assert_eq!(values["remote.allowPrivate"], false, "{values}");
+    assert_eq!(values["remote.enabled"], false, "{values}");
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.dir": dir_text(&downloads), "remote.allowPrivate": true}}),
+        )
+        .await;
+    let token = local
+        .result("token.create", json!({"name": "nas", "scope": "add"}))
+        .await;
+    let peer = super::Peer::token(token["id"].as_str().unwrap(), super::Scope::Add);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    assert_eq!(remote.result("engine.hello", hello()).await["scope"], "add");
+    assert_eq!(
+        remote
+            .error_code(
+                "task.add",
+                json!({"sources": [{"url": server.url("/a.bin")}], "destDir": dir_text(dir.path())})
+            )
+            .await,
+        "DEST_FORBIDDEN"
+    );
+    let id = remote
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/a.bin")}]}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Portée `add` : ni lecture ni contrôle.
+    assert_eq!(
+        remote.error_code("task.get", json!({"taskId": id})).await,
+        "UNAUTHORIZED"
+    );
+    local
+        .result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let task = local.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["publicOnly"], false, "{task}");
+    if task["state"] != "completed" {
+        local
+            .notification("task.stateChanged", |p| {
+                p["taskId"] == id.as_str() && p["to"] == "completed"
+            })
+            .await;
+    }
+    assert!(downloads.join("a.bin").exists());
 }

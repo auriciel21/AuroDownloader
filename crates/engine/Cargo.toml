@@ -20,6 +20,14 @@ bytes = "1.12.1"
 # Dossier « Téléchargements » du système, dossier par défaut des ajouts.
 dirs = "7.0.0"
 httpdate = "1.0.3"
+# Interface distante (F-39, SPEC §7.19, module `remote`) : serveur HTTP/1.1 et WebSocket ;
+# hyper, hyper-util et http-body-util déjà tirés par reqwest ; tokio-tungstenite sans
+# client ni TLS (la poignée de main est faite ici, sur une connexion de hyper).
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }
 # Torrent (SPEC §7.16, module `torrent`, décision du 2026-11-09) : sans ses fonctions par
 # défaut, qui passent par OpenSSL ; `rust-tls` : rustls et ring/aws-lc, comme le moteur.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }

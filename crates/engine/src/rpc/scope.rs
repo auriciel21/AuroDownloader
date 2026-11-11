@@ -95,6 +95,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "media.installTools" => Scope::Admin,
         // Interfaces réseau de la machine, pour régler `torrent.interface` (SPEC §7.16).
         "torrent.interfaces" => Scope::Admin,
+        // Jetons de l'interface distante (SPEC §7.19) : un jeton n'a jamais `admin`, ces
+        // méthodes ne s'atteignent donc que par le canal local.
+        "token.create" | "token.list" | "token.revoke" | "remote.status" => Scope::Admin,
         _ => return None,
     })
 }
@@ -137,5 +140,8 @@ mod tests {
         assert_eq!(required("schedule.set", &none), Some(Scope::Admin));
         assert_eq!(required("engine.shutdown", &none), Some(Scope::Admin));
         assert_eq!(required("torrent.interfaces", &none), Some(Scope::Admin));
+        for method in ["token.create", "token.list", "token.revoke"] {
+            assert_eq!(required(method, &none), Some(Scope::Admin), "{method}");
+        }
     }
 }

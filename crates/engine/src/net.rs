@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod filename;
 pub mod headers;
+pub mod reach;
 pub mod sums;
 
 use std::collections::HashMap;
@@ -113,6 +114,12 @@ pub enum NetError {
     AuthRefused,
 
     #[error(
+        "adresse du réseau interne refusée : une tâche ajoutée à distance ne joint que le \
+         réseau public (réglage remote.allowPrivate)"
+    )]
+    AddressForbidden,
+
+    #[error(
         "le serveur demande le mot de passe en clair (Basic) sur une connexion non \
          chiffrée : refusé, il pourrait être lu en chemin ; utiliser l'adresse en https:// \
          si le site la propose"
@@ -123,7 +130,9 @@ pub enum NetError {
 impl NetError {
     fn from_reqwest(error: reqwest::Error) -> Self {
         let error = error.without_url();
-        if has_cause::<NoTls>(&error) {
+        if has_cause::<reach::Forbidden>(&error) {
+            NetError::AddressForbidden
+        } else if has_cause::<NoTls>(&error) {
             NetError::TlsUnavailable
         } else if error.is_redirect() {
             NetError::Redirect(error)
@@ -156,6 +165,7 @@ impl NetError {
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
             NetError::AuthRequired => Some("AUTH_REQUIRED"),
             NetError::AuthRefused | NetError::AuthInsecure => Some("AUTH_FAILED"),
+            NetError::AddressForbidden => Some("ADDRESS_FORBIDDEN"),
         }
     }
 
@@ -348,6 +358,12 @@ pub struct Client {
     read: Duration,
     /// Plafond de connexions par hôte, appris d'un serveur qui a résisté (SPEC §7.3).
     host_caps: Arc<Mutex<HashMap<String, u32>>>,
+    /// Réseau public seulement (tâche venue d'une connexion à jeton, SPEC §7.19).
+    public_only: bool,
+    /// De quoi fabriquer le client restreint au premier besoin, partagé par les copies.
+    connect: Duration,
+    roots: Arc<Vec<reqwest::Certificate>>,
+    restricted: Arc<Mutex<Option<reqwest::Client>>>,
 }
 
 impl Client {
@@ -383,7 +399,64 @@ impl Client {
         read: Duration,
         roots: Vec<reqwest::Certificate>,
     ) -> Result<Self, NetError> {
-        let policy = redirect::Policy::custom(|attempt| {
+        let http = Self::build_http(connect, &roots, false)?;
+        Ok(Client {
+            http,
+            read,
+            host_caps: Arc::default(),
+            public_only: false,
+            connect,
+            roots: Arc::new(roots),
+            restricted: Arc::default(),
+        })
+    }
+
+    /// Le même client, limité au réseau public (SPEC §7.19) : pour les tâches et les
+    /// lectures demandées par une connexion à jeton. Fabriqué une fois, puis partagé.
+    pub fn restricted(&self) -> Result<Client, NetError> {
+        if self.public_only {
+            return Ok(self.clone());
+        }
+        let mut slot = self
+            .restricted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let http = match slot.as_ref() {
+            Some(http) => http.clone(),
+            None => {
+                let http = Self::build_http(self.connect, &self.roots, true)?;
+                *slot = Some(http.clone());
+                http
+            }
+        };
+        drop(slot);
+        Ok(Client {
+            http,
+            public_only: true,
+            ..self.clone()
+        })
+    }
+
+    /// Ce client, ou sa version restreinte quand `public_only`.
+    pub fn reaching(&self, public_only: bool) -> Result<Client, NetError> {
+        if public_only {
+            self.restricted()
+        } else {
+            Ok(self.clone())
+        }
+    }
+
+    /// Réseau public seulement ?
+    pub fn is_public_only(&self) -> bool {
+        self.public_only
+    }
+
+    fn build_http(
+        connect: Duration,
+        roots: &[reqwest::Certificate],
+        public_only: bool,
+    ) -> Result<reqwest::Client, NetError> {
+        let policy = redirect::Policy::custom(move |attempt| {
             // `previous()` contient aussi l'adresse de départ.
             if attempt.previous().len() > MAX_REDIRECTS {
                 attempt.error("trop de redirections")
@@ -393,13 +466,16 @@ impl Client {
                 // barrière, si cela changeait.
                 let scheme = attempt.url().scheme().to_owned();
                 attempt.error(format!("redirection vers le protocole {scheme}"))
+            } else if public_only && reach::literal_forbidden(attempt.url()) {
+                // Une adresse écrite telle quelle ne passe pas par le résolveur.
+                attempt.error(reach::Forbidden)
             } else if attempt.url().scheme() == "https" && !tls_available() {
                 attempt.error(NoTls)
             } else {
                 attempt.follow()
             }
         });
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(connect)
             .redirect(policy)
@@ -407,14 +483,15 @@ impl Client {
             // qui redirige, signature comprise, à l'intention d'un autre hôte. Celui de la
             // tâche (page d'origine) reste, comme dans un navigateur.
             .referer(false)
-            .tls_certs_merge(roots)
-            .build()
-            .map_err(NetError::from_reqwest)?;
-        Ok(Client {
-            http,
-            read,
-            host_caps: Arc::default(),
-        })
+            .tls_certs_merge(roots.to_vec());
+        if public_only {
+            // Résolution filtrée, et sans mandataire, qui résoudrait les noms à sa place
+            // (SPEC §7.19).
+            builder = builder
+                .dns_resolver(Arc::new(reach::PublicResolver))
+                .no_proxy();
+        }
+        builder.build().map_err(NetError::from_reqwest)
     }
 
     /// Préparation d'une tâche (SPEC §7.1) : taille, acceptation des plages, validateurs
@@ -754,6 +831,9 @@ impl Client {
         extra: &HeaderMap,
         range: Option<&str>,
     ) -> Result<Response, NetError> {
+        if self.public_only && reach::literal_forbidden(url) {
+            return Err(NetError::AddressForbidden);
+        }
         if url.scheme() == "https" && !tls_available() {
             return Err(NetError::TlsUnavailable);
         }
@@ -860,7 +940,8 @@ pub fn check_url(url: &str) -> Result<(), NetError> {
     parse_url(url).map(|_| ())
 }
 
-fn parse_url(url: &str) -> Result<Url, NetError> {
+/// L'adresse analysée, HTTP ou HTTPS seulement.
+pub fn parse_url(url: &str) -> Result<Url, NetError> {
     let url = Url::parse(url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
     match url.scheme() {
         "http" | "https" => Ok(url),

@@ -135,6 +135,7 @@ mod tests {
             checksum: None,
             headers: &headers,
             parent_id: None,
+            public_only: false,
         };
         let (task, _) = create_task(&mut conn, &new).unwrap();
         let mut loaded = load(&conn, &task).unwrap();

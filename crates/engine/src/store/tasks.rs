@@ -176,6 +176,9 @@ pub struct TaskRow {
     /// Fichier voisin où le moteur a lu cette empreinte (« SHA256SUMS »…) ; `None` : donnée
     /// par l'utilisateur (SPEC §7.9).
     pub checksum_source: Option<String>,
+    /// Ajoutée par une connexion à jeton : réseau public seulement, pour toute sa vie
+    /// (SPEC §7.19).
+    pub public_only: bool,
 }
 
 /// Une source de téléchargement : la référence (rang 0) ou un miroir (SPEC §7.7).
@@ -340,6 +343,8 @@ pub struct NewTask<'a> {
     /// Tâche interne d'une vidéo (flux direct, SPEC §7.17) : sa tâche vidéo. Jamais lancée
     /// par le planificateur, absente des listes et de l'historique.
     pub parent_id: Option<&'a str>,
+    /// Ajoutée par une connexion à jeton : réseau public seulement (SPEC §7.19).
+    pub public_only: bool,
 }
 
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
@@ -370,10 +375,11 @@ pub fn create_task_with_mirrors(
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
                             max_connections, speed_limit_bps, idempotency_key, requested_name,
-                            checksum_algo, checksum_value, created_at, updated_at, parent_id)
+                            checksum_algo, checksum_value, created_at, updated_at, parent_id,
+                            public_only)
          VALUES (?1, ?2, 'http', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?7, ?8, ?9, ?10, ?11, ?6, ?6, ?12)",
+                 ?3, ?4, ?5, ?7, ?8, ?9, ?10, ?11, ?6, ?6, ?12, ?13)",
         params![
             task_id,
             new.queue_id,
@@ -386,7 +392,8 @@ pub fn create_task_with_mirrors(
             new.requested_name,
             new.checksum.map(|c| c.algo().as_sql()),
             new.checksum.map(Checksum::value),
-            new.parent_id
+            new.parent_id,
+            new.public_only
         ],
     )?;
     tx.execute(
@@ -405,7 +412,7 @@ const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
      queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
      EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id), checksum_algo, \
-     checksum_value, checksum_source, kind";
+     checksum_value, checksum_source, kind, public_only";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -432,6 +439,7 @@ struct RawTask {
     checksum_value: Option<String>,
     checksum_source: Option<String>,
     kind: String,
+    public_only: bool,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -459,6 +467,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         checksum_value: row.get(20)?,
         checksum_source: row.get(21)?,
         kind: row.get(22)?,
+        public_only: row.get(23)?,
     })
 }
 
@@ -476,6 +485,7 @@ impl TryFrom<RawTask> for TaskRow {
         };
         Ok(TaskRow {
             checksum_source: raw.checksum_source.filter(|_| checksum.is_some()),
+            public_only: raw.public_only,
             checksum,
             kind: TaskKind::from_sql(&raw.kind).ok_or_else(|| bad("type inconnu"))?,
             state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
@@ -684,6 +694,18 @@ pub struct Revalidation<'a> {
     pub etag: Option<&'a str>,
     pub last_modified: Option<&'a str>,
     pub total_bytes: Option<u64>,
+}
+
+/// La tâche ne joindra plus que le réseau public (SPEC §7.19) : un jeton y a donné une
+/// adresse ou un miroir. Jamais l'inverse.
+pub fn restrict_to_public(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
+    let changed = conn.execute("UPDATE tasks SET public_only = 1 WHERE id = ?1", [task_id])?;
+    if changed == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Remplace l'adresse de la source préférée d'une tâche, et oublie ses échecs. Avec
@@ -1286,6 +1308,7 @@ mod tests {
                 checksum: None,
                 headers: &[],
                 parent_id: None,
+                public_only: false,
             },
         )
         .unwrap()

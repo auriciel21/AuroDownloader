@@ -18,6 +18,7 @@ pub mod history;
 pub mod logins;
 pub mod media;
 pub mod moves;
+pub mod remote;
 pub mod schedules;
 pub mod segments;
 pub mod settings;
@@ -75,6 +76,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "media_subtitles",
         sql: include_str!("../migrations/0007_media_subtitles.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "remote",
+        sql: include_str!("../migrations/0008_remote.sql"),
     },
 ];
 
@@ -284,13 +290,15 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 17] = [
+    const EXPECTED_TABLES: [&str; 19] = [
         "event_log",
         "file_moves",
         "history",
         "media_jobs",
         "media_streams",
         "queues",
+        "remote_sessions",
+        "remote_tokens",
         "rules",
         "schedules",
         "schema_migrations",
@@ -346,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_17_tables_of_the_spec() {
+    fn migrations_create_the_19_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());

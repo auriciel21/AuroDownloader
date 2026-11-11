@@ -1435,3 +1435,144 @@ pub async fn config(rpc: &mut Rpc, key: Option<&str>, value: Option<&str>) -> Re
     }
     Ok(())
 }
+
+/// Crée un jeton de l'interface distante (SPEC §7.19) et l'affiche, une seule fois.
+pub async fn token_create(rpc: &mut Rpc, name: &str, scope: &str) -> Result<()> {
+    let created = rpc
+        .call("token.create", json!({"name": name, "scope": scope}))
+        .await?;
+    println!(
+        "Jeton « {} » créé (portée {}, identifiant {}).",
+        created["name"].as_str().unwrap_or(name),
+        created["scope"].as_str().unwrap_or(scope),
+        created["id"].as_str().unwrap_or_default()
+    );
+    println!("{}", created["token"].as_str().unwrap_or_default());
+    println!(
+        "Il ne sera plus jamais montré : le garder en lieu sûr. `auro token revoke` le retire."
+    );
+    Ok(())
+}
+
+/// Les jetons, sans leur valeur.
+pub async fn tokens(rpc: &mut Rpc) -> Result<()> {
+    let list = rpc.call("token.list", json!({})).await?;
+    let items = list["tokens"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Aucun jeton.");
+        return Ok(());
+    }
+    let clock = rusqlite::Connection::open_in_memory()?;
+    let local = |ms: Option<i64>| -> String {
+        let Some(ms) = ms else {
+            return "jamais".to_owned();
+        };
+        clock
+            .query_row(
+                "SELECT strftime('%Y-%m-%d %H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
+                [ms],
+                |r| r.get(0),
+            )
+            .unwrap_or_default()
+    };
+    println!(
+        "{:<36}  {:<8}  {:<16}  {:<16}  nom",
+        "identifiant", "portée", "créé", "dernier usage"
+    );
+    for t in items {
+        println!(
+            "{:<36}  {:<8}  {:<16}  {:<16}  {}",
+            t["id"].as_str().unwrap_or_default(),
+            t["scope"].as_str().unwrap_or_default(),
+            local(t["createdAt"].as_i64()),
+            local(t["lastUsedAt"].as_i64()),
+            t["name"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// Révoque un jeton, désigné par son identifiant ou par son nom s'il est seul à le porter.
+pub async fn token_revoke(rpc: &mut Rpc, which: &str) -> Result<()> {
+    let list = rpc.call("token.list", json!({})).await?;
+    let items = list["tokens"].as_array().cloned().unwrap_or_default();
+    let by_id: Vec<&Value> = items.iter().filter(|t| t["id"] == which).collect();
+    let by_name: Vec<&Value> = items.iter().filter(|t| t["name"] == which).collect();
+    let token = match (by_id.as_slice(), by_name.as_slice()) {
+        ([one], _) | ([], [one]) => *one,
+        ([], []) => bail!("aucun jeton {which}"),
+        _ => bail!("plusieurs jetons s'appellent « {which} » : donner l'identifiant"),
+    };
+    rpc.call("token.revoke", json!({"tokenId": token["id"]}))
+        .await?;
+    println!(
+        "Jeton « {} » révoqué : ses sessions et ses connexions sont fermées.",
+        token["name"].as_str().unwrap_or(which)
+    );
+    Ok(())
+}
+
+/// État de l'interface distante (SPEC §7.19) : réglages et écoute.
+pub async fn remote_status(rpc: &mut Rpc) -> Result<()> {
+    let state = rpc.call("remote.status", json!({})).await?;
+    let values = rpc.call("settings.get", json!({})).await?["values"].clone();
+    let listen = values["remote.listen"].as_str().unwrap_or_default();
+    match (
+        state["enabled"].as_bool().unwrap_or(false),
+        state["listening"].as_bool().unwrap_or(false),
+    ) {
+        (false, _) => println!("Interface distante : coupée (écoute prévue sur {listen})."),
+        (true, true) => println!("Interface distante : ouverte sur http://{listen}"),
+        (true, false) => println!(
+            "Interface distante : activée mais fermée ({}).",
+            state["error"].as_str().unwrap_or("pas encore ouverte")
+        ),
+    }
+    let private = values["remote.allowPrivate"].as_bool().unwrap_or(false);
+    println!(
+        "Réseau interne pour les jetons : {}.",
+        if private { "permis" } else { "refusé" }
+    );
+    Ok(())
+}
+
+/// Active ou coupe l'interface distante ; `listen` : nouvelle adresse d'écoute ;
+/// `allow_private` : réseau interne permis aux jetons.
+pub async fn remote_set(
+    rpc: &mut Rpc,
+    enabled: Option<bool>,
+    listen: Option<&str>,
+    allow_private: Option<bool>,
+) -> Result<()> {
+    let mut values = serde_json::Map::new();
+    if let Some(listen) = listen {
+        values.insert("remote.listen".into(), json!(listen));
+    }
+    if let Some(on) = allow_private {
+        values.insert("remote.allowPrivate".into(), json!(on));
+    }
+    if let Some(on) = enabled {
+        values.insert("remote.enabled".into(), json!(on));
+    }
+    rpc.call("settings.set", json!({"values": values})).await?;
+    // L'écoute suit les réglages dans le moteur, un instant après : attendre qu'elle
+    // corresponde à ceux qui sont enregistrés.
+    let values = rpc.call("settings.get", json!({})).await?["values"].clone();
+    let wanted = values["remote.enabled"].as_bool().unwrap_or(false);
+    for _ in 0..50 {
+        let state = rpc.call("remote.status", json!({})).await?;
+        let listening = state["listening"].as_bool().unwrap_or(false);
+        let applied = state["enabled"].as_bool() == Some(wanted)
+            && state["listen"] == values["remote.listen"];
+        let settled = if wanted {
+            listening || state["error"].is_string()
+        } else {
+            !listening
+        };
+        if applied && settled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    remote_status(rpc).await
+}

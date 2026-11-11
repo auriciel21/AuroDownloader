@@ -23,7 +23,7 @@ mod session;
 mod tests;
 
 pub use scope::Scope;
-pub use session::serve;
+pub use session::{Incoming, Peer, serve, serve_as, serve_messages};
 
 /// Versions du protocole que ce moteur parle, de la plus ancienne à la plus récente.
 pub const PROTOCOL_VERSIONS: &[(u32, u32)] = &[(1, 0)];
@@ -102,6 +102,7 @@ impl From<EngineError> for RpcError {
             EngineError::LoginNotFound(_) => Self::new(-32014, "LOGIN_NOT_FOUND", message),
             EngineError::Url(_) => Self::new(-32020, "URL_INVALID", message),
             EngineError::DestDir(_) => Self::new(-32021, "DEST_NOT_WRITABLE", message),
+            EngineError::DestForbidden => Self::new(-32029, "DEST_FORBIDDEN", message),
             EngineError::BadRequest(_) => Self::invalid_params(message),
             EngineError::Vault(_) => Self::new(-32023, "SECRET_UNAVAILABLE", message),
             EngineError::Moving(_) => Self::new(-32011, "INVALID_STATE", message),
@@ -110,6 +111,9 @@ impl From<EngineError> for RpcError {
             EngineError::Move(_) => Self::new(-32026, "MOVE_FAILED", message),
             EngineError::SourceMismatch { .. } => Self::new(-32027, "SOURCE_MISMATCH", message),
             EngineError::MirrorRefused(_) => Self::new(-32027, "SOURCE_MISMATCH", message),
+            EngineError::SourceUnreachable(crate::net::NetError::AddressForbidden) => {
+                Self::new(-32033, "ADDRESS_FORBIDDEN", message)
+            }
             EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
             EngineError::CapabilityMissing(_) => Self::capability_missing(message),
             EngineError::ToolsMissing(_) => Self::new(-32031, "TOOLS_MISSING", message),
@@ -156,6 +160,8 @@ pub fn task_json(t: &TaskRow) -> Value {
         "createdAt": t.created_at,
         "finishedAt": t.finished_at,
         "moving": t.moving,
+        // Ajoutée ou modifiée par une connexion à jeton : réseau public seulement (SPEC §7.19).
+        "publicOnly": t.public_only,
         "checksum": checksum_json(t.checksum.as_ref(), t.checksum_source.as_deref()),
     })
 }

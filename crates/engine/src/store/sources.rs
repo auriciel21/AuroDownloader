@@ -192,6 +192,7 @@ mod tests {
             checksum: None,
             headers: &[],
             parent_id: None,
+            public_only: false,
         };
         create_task_with_mirrors(conn, &new, mirrors).unwrap().0
     }
@@ -265,6 +266,7 @@ mod tests {
             checksum: None,
             headers: &[],
             parent_id: None,
+            public_only: false,
         };
         assert!(create_task_with_mirrors(&mut conn, &new, &too_many).is_err());
     }

@@ -44,6 +44,51 @@ pub const TORRENT_INTERFACE: &str = "torrent.interface";
 /// par défaut.
 pub const MEDIA_AUTO_UPDATE: &str = "media.autoUpdate";
 
+/// Interface distante (SPEC §7.19) : écoute HTTP et WebSocket active ; faux par défaut.
+pub const REMOTE_ENABLED: &str = "remote.enabled";
+
+/// Interface distante (SPEC §7.19) : les connexions à jeton peuvent joindre le réseau interne
+/// (adresses privées, boucle locale) ; faux par défaut (décision de l'utilisateur du
+/// 2026-11-11).
+pub const REMOTE_ALLOW_PRIVATE: &str = "remote.allowPrivate";
+
+/// Interface distante (SPEC §7.19) : adresse et port d'écoute ; [`REMOTE_DEFAULT_LISTEN`]
+/// par défaut.
+pub const REMOTE_LISTEN: &str = "remote.listen";
+
+/// Écoute par défaut de l'interface distante : la boucle locale seulement.
+pub const REMOTE_DEFAULT_LISTEN: &str = "127.0.0.1:7380";
+
+/// Adresse et port d'écoute de l'interface distante.
+pub fn remote_listen(conn: &Connection) -> Result<std::net::SocketAddr, StoreError> {
+    let text = match get(conn, REMOTE_LISTEN)? {
+        None | Some(Value::Null) => REMOTE_DEFAULT_LISTEN.to_owned(),
+        Some(Value::String(text)) => text,
+        Some(v) => {
+            return Err(StoreError::BadValue(format!(
+                "réglage {REMOTE_LISTEN} : {v} n'est pas une adresse"
+            )));
+        }
+    };
+    text.parse().map_err(|_| {
+        StoreError::BadValue(format!(
+            "réglage {REMOTE_LISTEN} : {text} n'est pas une adresse"
+        ))
+    })
+}
+
+/// Change l'écoute de l'interface distante ; `None` revient à celle par défaut.
+pub fn set_remote_listen(
+    conn: &Connection,
+    addr: Option<std::net::SocketAddr>,
+) -> Result<(), StoreError> {
+    set(
+        conn,
+        REMOTE_LISTEN,
+        &addr.map_or(Value::Null, |a| Value::from(a.to_string())),
+    )
+}
+
 /// Longueur maximale du nom d'une interface (caractères).
 pub const INTERFACE_NAME_MAX: usize = 256;
 
@@ -94,14 +139,21 @@ pub enum Flag {
     /// Mise à jour automatique de yt-dlp (F-25, SPEC §7.17) ; vrai par défaut, désactivable
     /// comme toute vérification de mise à jour (SPEC §8.2).
     MediaAutoUpdate,
+    /// Interface distante (SPEC §7.19) : les connexions à jeton peuvent joindre le réseau
+    /// interne ; faux par défaut.
+    RemoteAllowPrivate,
+    /// Interface distante (SPEC §7.19) : écoute active ; faux par défaut.
+    RemoteEnabled,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 4] = [
+    pub const ALL: [Flag; 6] = [
         Flag::Preallocate,
         Flag::NeighborChecksum,
         Flag::TorrentUpnp,
         Flag::MediaAutoUpdate,
+        Flag::RemoteAllowPrivate,
+        Flag::RemoteEnabled,
     ];
 
     /// Clé du réglage, dans la base et dans le protocole.
@@ -111,12 +163,17 @@ impl Flag {
             Flag::NeighborChecksum => NEIGHBOR_CHECKSUM,
             Flag::TorrentUpnp => TORRENT_UPNP,
             Flag::MediaAutoUpdate => MEDIA_AUTO_UPDATE,
+            Flag::RemoteAllowPrivate => REMOTE_ALLOW_PRIVATE,
+            Flag::RemoteEnabled => REMOTE_ENABLED,
         }
     }
 
     /// Valeur tant que rien n'est enregistré.
     pub fn default_on(self) -> bool {
-        !matches!(self, Flag::TorrentUpnp)
+        !matches!(
+            self,
+            Flag::TorrentUpnp | Flag::RemoteAllowPrivate | Flag::RemoteEnabled
+        )
     }
 
     pub fn from_key(key: &str) -> Option<Flag> {

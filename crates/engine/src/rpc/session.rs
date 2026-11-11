@@ -70,28 +70,75 @@ impl Drop for Ctx {
     }
 }
 
-/// Sert un client sur un flux d'octets, jusqu'à ce qu'il ferme la connexion.
+/// Qui est à l'autre bout d'une connexion.
+#[derive(Debug, Clone)]
+pub struct Peer {
+    /// Portée de départ ; le client peut la réduire à l'ouverture (`engine.hello`).
+    pub scope: Scope,
+    /// Jeton de l'interface distante (SPEC §7.19) ; `None` : canal local.
+    pub token_id: Option<String>,
+}
+
+impl Peer {
+    /// Canal local, réservé à l'utilisateur par le système : tous les droits, sauf ceux
+    /// que le client abandonne à l'ouverture.
+    pub fn local() -> Peer {
+        Peer {
+            scope: Scope::Admin,
+            token_id: None,
+        }
+    }
+
+    /// Connexion par jeton : sa portée, jamais `admin`.
+    pub fn token(token_id: &str, scope: Scope) -> Peer {
+        Peer {
+            scope: if scope == Scope::Admin {
+                Scope::Control
+            } else {
+                scope
+            },
+            token_id: Some(token_id.to_owned()),
+        }
+    }
+}
+
+/// Un message reçu d'un transport.
+#[derive(Debug)]
+pub enum Incoming {
+    Message(Vec<u8>),
+    /// Plus long que [`MAX_MESSAGE`] : la connexion se ferme après une erreur.
+    TooLong,
+}
+
+/// Sert un client du canal local sur un flux d'octets, jusqu'à ce qu'il ferme la
+/// connexion.
 pub async fn serve<R, W>(engine: Engine, reader: R, writer: W)
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    serve_as(engine, Peer::local(), reader, writer).await;
+}
+
+/// Comme [`serve`], pour un client donné : un message JSON par ligne.
+pub async fn serve_as<R, W>(engine: Engine, peer: Peer, reader: R, writer: W)
+where
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (out, outgoing) = mpsc::channel(OUTGOING);
     let writing = tokio::spawn(write_all(writer, outgoing));
-    let mut ctx = Ctx {
-        engine,
-        out: out.clone(),
-        events: None,
-        close_after: false,
-        shutdown_after: false,
-        // Canal local, réservé à l'utilisateur par le système : tous les droits, sauf
-        // ceux que le client abandonne à l'ouverture.
-        scope: Scope::Admin,
-    };
+    let (incoming, messages) = mpsc::channel(1);
+    let reading = tokio::spawn(read_lines(reader, incoming));
+    serve_messages(engine, peer, messages, out).await;
+    reading.abort();
+    let _ = writing.await;
+}
+
+async fn read_lines<R: AsyncRead + Unpin>(reader: R, incoming: mpsc::Sender<Incoming>) {
     let mut reader = BufReader::new(reader);
-    let mut line = Vec::new();
     loop {
-        line.clear();
+        let mut line = Vec::new();
         let n = match (&mut reader)
             .take(MAX_MESSAGE as u64 + 1)
             .read_until(b'\n', &mut line)
@@ -103,15 +150,70 @@ where
         if n == 0 {
             break;
         }
-        if line.len() > MAX_MESSAGE {
-            let e = RpcError::invalid_request("message trop long");
-            let _ = out.send(response(&Value::Null, Err(e)).to_string()).await;
+        let message = if line.len() > MAX_MESSAGE {
+            Incoming::TooLong
+        } else {
+            Incoming::Message(line)
+        };
+        let last = matches!(message, Incoming::TooLong);
+        if incoming.send(message).await.is_err() || last {
             break;
         }
-        if let Some(reply) = handle(&mut ctx, &line).await {
-            if out.send(reply.to_string()).await.is_err() {
+    }
+}
+
+/// Sert un client dont les messages arrivent un par un, quel que soit le transport
+/// (lignes du canal local, trames du WebSocket) ; les réponses et les notifications
+/// partent par `out`. Rend la main quand le client a fini, quand la connexion doit se
+/// fermer, ou quand le jeton de la connexion est révoqué.
+pub async fn serve_messages(
+    engine: Engine,
+    peer: Peer,
+    mut messages: mpsc::Receiver<Incoming>,
+    out: mpsc::Sender<String>,
+) {
+    // Connexion par jeton : la poignée restreinte (SPEC §7.19), et la révocation suivie.
+    let (engine, mut revoked) = match &peer.token_id {
+        None => (engine, None),
+        Some(id) => {
+            let allow_private = engine
+                .flag(crate::store::settings::Flag::RemoteAllowPrivate)
+                .await
+                .unwrap_or(false);
+            let Ok(restricted) = engine.restricted(allow_private) else {
+                return;
+            };
+            let events = engine.subscribe();
+            let watch = Box::pin(revocation(engine.clone(), events, id.clone()));
+            (restricted, Some(watch))
+        }
+    };
+    let mut ctx = Ctx {
+        engine,
+        out: out.clone(),
+        events: None,
+        close_after: false,
+        shutdown_after: false,
+        scope: peer.scope,
+    };
+    loop {
+        let message = tokio::select! {
+            message = messages.recv() => message,
+            () = async { revoked.as_mut().expect("suivi").await }, if revoked.is_some() => break,
+        };
+        let line = match message {
+            None => break,
+            Some(Incoming::TooLong) => {
+                let e = RpcError::invalid_request("message trop long");
+                let _ = out.send(response(&Value::Null, Err(e)).to_string()).await;
                 break;
             }
+            Some(Incoming::Message(line)) => line,
+        };
+        if let Some(reply) = handle(&mut ctx, &line).await
+            && out.send(reply.to_string()).await.is_err()
+        {
+            break;
         }
         if ctx.shutdown_after {
             ctx.shutdown_after = false;
@@ -122,9 +224,27 @@ where
             break;
         }
     }
-    drop(ctx);
-    drop(out);
-    let _ = writing.await;
+}
+
+/// Se termine quand le jeton `token_id` est révoqué, ou quand le moteur s'arrête.
+async fn revocation(engine: Engine, mut events: broadcast::Receiver<Event>, token_id: String) {
+    loop {
+        match events.recv().await {
+            Ok(Event::TokenRevoked { token_id: id, .. }) if id == token_id => return,
+            Ok(_) => {}
+            // Des événements perdus ont pu contenir la révocation : le jeton est relu.
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                let still = engine
+                    .tokens()
+                    .await
+                    .map(|rows| rows.iter().any(|t| t.id == token_id));
+                if !still.unwrap_or(false) {
+                    return;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
 }
 
 async fn write_all<W: AsyncWrite + Unpin>(mut writer: W, mut outgoing: mpsc::Receiver<String>) {

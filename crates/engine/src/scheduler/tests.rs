@@ -309,6 +309,7 @@ async fn higher_priority_starts_first() {
             checksum: None,
             headers: &[],
             parent_id: None,
+            public_only: false,
         };
         ids.push(tasks::create_task(&mut conn, &new).unwrap().0);
     }
@@ -493,6 +494,7 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
         checksum: None,
         headers: &[],
         parent_id: None,
+        public_only: false,
     };
     let (id, _) = tasks::create_task(&mut conn, &new).unwrap();
     change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
@@ -588,6 +590,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::SettingChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
+                | Event::TokenRevoked { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
                     revs.push(rev);
@@ -1371,6 +1374,7 @@ async fn orphan_secrets_are_collected_at_start() {
             checksum: None,
             headers: &stored,
             parent_id: None,
+            public_only: false,
         },
     )
     .unwrap();

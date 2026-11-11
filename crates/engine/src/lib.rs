@@ -21,6 +21,7 @@ pub mod moves;
 pub mod net;
 pub mod paths;
 pub mod power;
+pub mod remote;
 pub mod rpc;
 pub mod schedule;
 pub mod scheduler;

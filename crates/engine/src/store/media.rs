@@ -21,6 +21,9 @@ pub struct NewMedia<'a> {
     pub container: Option<&'a str>,
     /// Langues des sous-titres demandés.
     pub subtitles: &'a [String],
+    /// Ajoutée par une connexion à jeton : réseau public seulement (SPEC §7.19), flux
+    /// internes compris.
+    pub public_only: bool,
 }
 
 /// Crée une tâche vidéo `queued`, sa source (l'adresse de la page) et sa ligne
@@ -34,10 +37,10 @@ pub fn create_media_task(conn: &mut Connection, new: &NewMedia<'_>) -> Result<St
         .transpose()?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
-                            speed_limit_bps, idempotency_key, created_at, updated_at)
+                            speed_limit_bps, idempotency_key, created_at, updated_at, public_only)
          VALUES (?1, ?2, 'media', 'queued',
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE queue_id = ?2),
-                 ?3, ?4, ?5, ?6, ?7, ?7)",
+                 ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
         params![
             task_id,
             new.queue_id,
@@ -45,7 +48,8 @@ pub fn create_media_task(conn: &mut Connection, new: &NewMedia<'_>) -> Result<St
             new.dest_dir,
             limit,
             new.idempotency_key,
-            now
+            now,
+            new.public_only
         ],
     )?;
     tx.execute(

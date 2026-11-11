@@ -303,7 +303,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 ## 5. Modèle de données
 
-Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 16 tables (14 à l'origine, plus `file_moves` et `site_logins` depuis le 2026-11-08) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
+Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 18 tables (14 à l'origine, plus `file_moves` et `site_logins` depuis le 2026-11-08, `remote_tokens` et `remote_sessions` depuis le 2026-11-11) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
 
 ### 5.1 Conventions
 
@@ -399,6 +399,8 @@ CREATE TABLE tasks (
   checksum_value  TEXT,
   checksum_source TEXT,          -- fichier voisin où le moteur a lu l'empreinte ; NULL : celle de
                                  -- l'utilisateur (section 7.9, migration 5, depuis le 2026-11-08)
+  public_only     INTEGER NOT NULL DEFAULT 0 CHECK (public_only IN (0,1)),  -- ajoutée par jeton :
+                                 -- réseau public seulement (section 7.19, migration 8)
   pause_reason    TEXT CHECK (pause_reason IN ('user','schedule','disk_full','network','file_changed')),
   error_code      TEXT,
   error_detail    TEXT,
@@ -564,6 +566,24 @@ CREATE TABLE event_log (
   message TEXT NOT NULL
 );
 
+-- Migration 0008 (2026-11-11, section 7.19, F-39) : jetons et sessions de l'interface
+-- distante. Empreinte SHA-256 seulement, jamais le jeton ni la valeur du cookie.
+CREATE TABLE remote_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  scope        TEXT NOT NULL CHECK (scope IN ('read','add','control')),  -- jamais admin
+  digest       BLOB NOT NULL UNIQUE,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE TABLE remote_sessions (
+  digest     BLOB PRIMARY KEY,
+  token_id   TEXT NOT NULL REFERENCES remote_tokens (id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX remote_sessions_by_token ON remote_sessions (token_id);
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -679,6 +699,8 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `limits.get` / `limits.set` | `downloadBps`, `uploadBps` | Limites globales |
 | `schedule.list` / `schedule.set` / `schedule.delete` | `scheduleId`, `name`, `enabled`, `rules` | Planification, avec son ouverture (section 7.11) |
 | `login.list` / `login.set` / `login.delete` | `loginId`, `site`, `username`, `password` | Identifiants de sites, sans mot de passe (section 7.14, depuis le 2026-11-08) |
+| `token.create` / `token.list` / `token.revoke` | `name`, `scope` (`read`, `add` ou `control`, défaut `control`) ; `tokenId` | Jetons de l'interface distante : `id`, `name`, `scope`, `createdAt`, `lastUsedAt` ; `token` (le jeton lui-même) seulement dans la réponse de `token.create` ; `revoked`. Portée `admin`, donc canal local seulement (section 7.19, depuis le 2026-11-11) |
+| `remote.status` | aucun | État de l'interface distante : `enabled`, `listen`, `listening`, `error` (pourquoi elle est fermée alors qu'activée). Portée `admin` (section 7.19, depuis le 2026-11-11) |
 | `engine.cancelEndAction` | aucun | `cancelled` : une action de fin annoncée a été annulée |
 | `engine.setNetwork` | `usable` (booléen) | `usable` : le réseau convient, ou non, aux téléchargements (section 7.15, depuis le 2026-11-09) |
 | `linkscan.run` | `text` ou `pageUrl` | `links[]` (`url`, `name`, `ext`, `kind`), `pageUrl` après redirections |
@@ -716,7 +738,7 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
 
 État de la mise en œuvre (phase 2) :
-- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `engine.setNetwork`, `task.add`, `task.addSource` (depuis le 2026-11-10), `metalink.read` et `metalink.add` (depuis le 2026-11-11), `task.addBatch`, `linkscan.run` et `linkscan.probe` (depuis le 2026-11-11, section 7.18), `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `history.list`, `history.clear`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
+- **Méthodes servies** : `engine.hello`, `engine.shutdown`, `engine.cancelEndAction`, `engine.setNetwork`, `task.add`, `task.addSource` (depuis le 2026-11-10), `metalink.read` et `metalink.add` (depuis le 2026-11-11), `task.addBatch`, `linkscan.run` et `linkscan.probe` (depuis le 2026-11-11, section 7.18), `task.get`, `task.list`, `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `queue.list`, `queue.create`, `queue.update`, `limits.get`, `limits.set`, `settings.get`, `settings.set`, `schedule.list`, `schedule.set`, `schedule.delete`, `login.list`, `login.set`, `login.delete`, `token.create`, `token.list` et `token.revoke` (depuis le 2026-11-11, section 7.19), `remote.status`, `history.list`, `history.clear`, `events.subscribe`, `events.unsubscribe` et `sync.snapshot`. Les autres répondent « méthode inconnue » jusqu'à leur arrivée.
 - **Dossier des téléchargements** (décision du 2026-11-07) : c'est un réglage du moteur, `downloads.dir`, et non plus une préférence de l'application, pour que l'extension, la CLI et l'interface distante ajoutent au même endroit.
   - `task.add` sans `destDir` va dans ce dossier ; s'il n'est pas réglé, dans le dossier « Téléchargements » du système ; s'il n'y en a aucun (serveur sans session), le refus est `DEST_NOT_WRITABLE`.
   - `settings.get` rend tous les réglages pris en charge, avec la valeur retenue (le dossier du système si aucun n'est enregistré) ; `keys` est ignoré pour l'instant. `settings.set` prend `values` : les clés acceptées sont `downloads.dir`, un dossier existant en chemin absolu, ou `null` pour revenir à celui du système, `downloads.preallocate`, un booléen (section 7.6 bis, depuis le 2026-11-08), et `downloads.neighborChecksum`, un booléen (section 7.9, depuis le 2026-11-08) ; les valeurs sont vérifiées toutes avant d'en changer une ; une autre clé est refusée par `INVALID_PARAMS`, un dossier invalide par `DEST_NOT_WRITABLE`. La réponse est celle de `settings.get`.
@@ -745,6 +767,8 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
 - **Vidéo, étape 4a** (2026-11-09, section 7.17) :
   - `media.tools` (portée `read`) et `media.installTools` (portée `admin` : elle télécharge et installe des programmes) ; notification `media.tools` (sujet `queues`), avec les mêmes champs que `media.tools` et `rev`, à chaque début, fin ou échec d'une installation.
   - Réglage `media.autoUpdate` (booléen, vrai par défaut ; `settings.updated`) : mise à jour automatique de yt-dlp.
+  - Réglages `remote.enabled` et `remote.allowPrivate` (booléens, faux par défaut, depuis le 2026-11-11, section 7.19) : écoute de l'interface distante ; réseau interne permis aux connexions à jeton.
+  - Réglage `remote.listen` (texte `adresse:port`, `127.0.0.1:7380` par défaut, null pour y revenir ; `settings.updated`, depuis le 2026-11-11) : écoute de l'interface distante, qui s'y déplace aussitôt.
   - Hors de Windows et Linux, les méthodes de la vidéo rendent `CAPABILITY_MISSING`.
 - **Vidéo, étape 4b** (2026-11-09, section 7.17) : `media.probe` (portée `add`) ; erreurs `TOOLS_MISSING` (-32031) et `EXTRACTOR_FAILED` (-32032) ; `engine.warning` porte aussi `YTDLP_UPDATED` et `YTDLP_UPDATE_FAILED`, sujet `queues`.
 - **Vidéo, étape 4c** (2026-11-09, section 7.17) : `task.add` accepte `media` à la place de `sources` : `pageUrl`, et facultatifs `format` (sélecteur de yt-dlp, 1 à 200 caractères ; `bv*+ba/b` par défaut), `container` (`mp4`, `mkv`, `webm`), `subtitles` (au plus 20 codes de langue), `title` (nom affiché en attendant la résolution). `media` et `sources` ensemble sont refusés ; sans outils, `TOOLS_MISSING`. La tâche porte `kind: media`. Capacité `media` dans `engine.hello` sous Windows et Linux.
@@ -800,6 +824,7 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - Un nom choisi par l'utilisateur (section 7.12) est gardé, contrairement au nom appris du serveur.
 - **Déplacer/Renommer** (`task.update` avec `destDir` et `fileName`, depuis le 2026-11-08 ; portée `control`) : section 7.12.
   - Une tâche porte `moving`, vrai pendant une copie vers un autre volume.
+  - Une tâche porte `publicOnly` (depuis le 2026-11-11, section 7.19) : ajoutée, ou modifiée (adresse, miroir), par une connexion à jeton ; elle ne joint que le réseau public, pour toute sa vie.
   - Annonce : `task.updated` avec `destDir`, `fileName`, `displayName` et `moving` ; avec `moveError` en plus si une copie échoue (la tâche est restée à sa place).
   - L'application : « Déplacer/Renommer… » dans le menu contextuel ; nom et dossier, l'erreur éventuelle dans la boîte.
 - **Empreinte attendue** (`checksum` de `task.add` et de `task.update`, depuis le 2026-11-08 ; portée `add` pour l'ajout, `control` pour la modification) : section 7.9.
@@ -874,6 +899,8 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32030 | `CAPABILITY_MISSING` | Fonction non disponible dans ce moteur (torrent, vidéo) |
 | -32031 | `TOOLS_MISSING` | yt-dlp ou ffmpeg n'est pas installé : `media.installTools` (depuis le 2026-11-09, section 7.17) |
 | -32032 | `EXTRACTOR_FAILED` | yt-dlp n'a pas pu lire la page ; message sans l'adresse (section 7.17) |
+| -32029 | `DEST_FORBIDDEN` | Connexion à jeton : dossier hors de celui des téléchargements (section 7.19, depuis le 2026-11-11) |
+| -32033 | `ADDRESS_FORBIDDEN` | Connexion à jeton : adresse du réseau interne (écrite telle quelle, ou résolue ainsi), sauf `remote.allowPrivate` (section 7.19, depuis le 2026-11-11) |
 
 `INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
 
@@ -903,6 +930,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
 | `TOOLS_MISSING` | non | yt-dlp ou ffmpeg n'est pas installé (section 7.17, depuis le 2026-11-09) |
 | `MERGE_FAILED` | non | ffmpeg n'a pas pu fusionner les flux, ou ffprobe refuse le fichier produit (section 7.17) |
+| `ADDRESS_FORBIDDEN` | non | Tâche ajoutée ou modifiée par une connexion à jeton : une adresse (redirection ou miroir compris) mène au réseau interne (section 7.19, depuis le 2026-11-11) |
 
 ### 6.9 Portées des jetons
 
@@ -915,13 +943,13 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 
 Mise en œuvre (décision du 2026-11-07, phase 3) :
 - **Canal local** : une connexion a d'emblée la portée `admin`, le système réservant le canal à l'utilisateur (section 6.2). Un client peut se restreindre à l'ouverture (`engine.hello`, paramètre `scope`), jamais s'élargir. Le relais de l'extension se limite ainsi à `add`. Aucun jeton : un programme qui pourrait lire celui du relais pourrait aussi bien se connecter lui-même au canal.
-- **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6).
+- **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6). Depuis le 2026-11-11 (section 7.19) : un jeton a la portée `read`, `add` ou `control`, jamais `admin` (décision de l'utilisateur) ; une connexion à jeton passe par la poignée restreinte du moteur (dossier des téléchargements, réseau public), et se ferme quand son jeton est révoqué.
 - **Portées exigées** :
   - aucune : `engine.hello` ;
   - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats`, `media.tools` ;
   - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run`, `linkscan.probe` (depuis le 2026-11-11), `metalink.read` et `metalink.add` (depuis le 2026-11-11) ;
   - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction`, `engine.setNetwork`, `history.clear` ;
-  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14) ; `media.installTools` (installation de programmes, section 7.17).
+  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14) ; `media.installTools` (installation de programmes, section 7.17) ; `token.create`, `token.list` et `token.revoke` (jetons, section 7.19).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 
@@ -1616,6 +1644,24 @@ F-29 (texte ou page, filtres), F-31 (import d'une liste), F-30 (presse-papiers).
 - Mise en œuvre : 2a. moteur (module `linkscan`, `linkscan.run`, `linkscan.probe`, `task.addBatch`) et CLI (faite le 2026-11-11) ; 2b. bureau (faite le 2026-11-11, section 4.6 ; essai de l'interface validé par l'utilisateur sur la variante d'essai : page Debian réelle, liste CSV importée, texte collé, filtres, ajout groupé ; il a fait ajouter la lecture du type des liens sans extension) ; 2c. presse-papiers (faite le 2026-11-11, ci-dessous ; essai de l'interface validé par l'utilisateur sur la variante d'essai : notification, clic, copies sans effet, lien magnet, option décochée, avertissement ; étape 2 terminée).
 - **Presse-papiers** (F-30, étape 2c, décisions de l'utilisateur du 2026-11-11) : préférence de l'interface « Proposer d'ajouter les liens copiés » (Options, Général ; `watchClipboard`, désactivée par défaut ; le moteur n'en sait rien). Cochée, l'application lit le texte du presse-papiers une fois par seconde (`arboard`). Seule une nouvelle copie compte : ce qui était copié avant de cocher ne déclenche rien, ni une copie faite pendant que la fenêtre d'AuroDownloader est au premier plan. Déclenche une notification : une adresse HTTP(S) seule dont le dernier segment a une extension hors pages web (comme `linkscan`), ou un lien magnet avec `xt` ; une page, un texte, plusieurs adresses ne déclenchent rien. La notification (« Lien copié », nom du fichier) est celle du système : `tauri-winrt-notification` sous Windows (identifiant de l'application installée ; celui de PowerShell pour un exécutable lancé depuis `target`), `notify-rust` sous Linux (action par défaut), le greffon de notification de Tauri ne transmettant pas le clic sur ordinateur. Un clic ouvre la boîte « Ajouter » avec le lien, à confirmer ; rien n'est ajouté d'office. Vie privée (section 8.2) : le texte lu n'est ni gardé ni écrit ; seule une empreinte du dernier texte reste en mémoire, pour reconnaître une nouvelle copie. Notifications coupées dans Windows (interrupteur général `PushNotifications\ToastEnabled`, ou celles de l'application, `Notifications\Settings\<identifiant>\Enabled`, lus sans écrire) : un avertissement apparaît sous la case cochée, relu à chaque ouverture des Options (méthode de l'hôte `notificationsBlocked`) ; sans lui, l'option ne ferait rien sans le dire (trouvé pendant l'essai). Rien de tel sous Linux.
 
+### 7.19 Interface web distante (phase 6, étape 3, conception du 2026-11-11)
+
+F-39, transports de la section 6.2, menaces de la section 8.1. Les décisions de l'utilisateur du 2026-11-11 sont marquées « décision » ; le reste est un choix par défaut, à revoir à la porte de la phase (revue de sécurité).
+- **Serveur** (décision) : `aurod` lui-même, module `remote` du moteur, désactivé par défaut (réglage `remote.enabled`). Il sert la page de l'interface (`ui`, intégrée au binaire), le WebSocket `/ws` (un message JSON-RPC par trame texte, mêmes règles que le canal local) et `POST /rpc` (décision : dès la v1 ; une requête, une réponse, sans notifications).
+- **Écoute** (décision) : adresse et port choisis par l'utilisateur (`remote.listen`, défaut `127.0.0.1:7380`). Sur la boucle locale (`127.0.0.1`, `::1`), sans TLS ; toute autre adresse exige TLS, et le moteur refuse d'y écouter sans lui.
+- **Certificat** (décision) : fabriqué par le moteur à la première écoute en TLS (auto-signé, noms `localhost`, nom de la machine et adresse d'écoute), son empreinte SHA-256 montrée par la CLI et le bureau pour la comparer dans le navigateur ; ou fourni par l'utilisateur (certificat et clé PEM, réglages `remote.tlsCert` et `remote.tlsKey`). Garde de la clé fabriquée : précisée à l'étape 3b.
+- **Jetons** : `token.create` (nom, portée) rend le jeton une seule fois (32 octets aléatoires) ; la base n'en garde que l'empreinte SHA-256, le nom, la portée et les dates de création et de dernier usage ; `token.list`, `token.revoke` (ferme ses connexions et ses sessions). Portée `read`, `add` ou `control` (décision : jamais `admin`, qui reste au canal local). Les méthodes `token.*` et les réglages `remote.*` ne s'atteignent que par le canal local (décision : aucun jeton ne crée de jeton).
+- **Connexion du navigateur** (décision) : le jeton, saisi une fois dans la page, est envoyé à `POST /login`, qui pose un cookie de session `HttpOnly`, `SameSite=Strict`, `Secure` en TLS ; le navigateur ne garde jamais le jeton. Session aléatoire, empreinte seule en base, valable 30 jours, effacée par `POST /logout` ou avec son jeton. Le WebSocket accepte le cookie ou `Authorization: Bearer` ; `POST /rpc` seulement `Authorization` (décision : jamais le cookie, contre le CSRF). Le QR code du bureau porte l'adresse et le jeton dans l'ancre (`#token=…`, jamais envoyée au serveur) ; la page l'échange aussitôt contre une session et l'efface de la barre d'adresse.
+- **`Host` et `Origin`** (section 6.2) : `Host` doit nommer l'adresse d'écoute, `localhost`, le nom de la machine ou un nom ajouté par l'utilisateur (`remote.hosts`) : contre le DNS rebinding. Une requête avec `Origin` doit venir de la même origine ; sans `Origin` (scripts), seulement avec `Authorization`. Aucun CORS. Jetons comparés par empreinte ; au-delà de 10 échecs par minute d'une même adresse, refus (`429`) pendant une minute.
+- **SSRF** (décision : pour toute connexion par jeton, même sur la boucle locale) : les adresses de boucle locale, privées, de lien local, non spécifiées et de multidiffusion sont refusées, vérifiées à chaque connexion après la résolution DNS, redirections comprises ; la tâche garde cette restriction pour toute sa vie, reprises comprises. Valent aussi pour les miroirs, `linkscan.*`, `metalink.*`, `media.probe` et l'actualisation de l'adresse. Limites connues : yt-dlp fait ses propres requêtes (seule l'adresse de la page est vérifiée) ; les traqueurs et les pairs des torrents ne sont pas filtrés. Réglage `remote.allowPrivate` (faux) pour les autoriser.
+- **Dossiers** (décision) : une tâche ajoutée ou déplacée par jeton n'écrit que sous le dossier des téléchargements du moteur (`downloads.dir`) : chemin résolu, sans `..` ni lien qui en sorte.
+- **Fichiers terminés** (décision) : non servis en v1 ; la page distante pilote les téléchargements, les fichiers restent sur la machine du moteur.
+- **Page distante** : la page du bureau avec un hôte WebSocket, sans choix de dossier ni ouverture de fichier, zone de notification, démarrage avec la session, presse-papiers ni association ; sans les Options du moteur (`admin`). En-têtes : `Content-Security-Policy` stricte (`default-src 'self'`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`.
+- **Gestion** (décision : CLI et bureau) : `auro remote` (activer, couper, état, empreinte) et `auro token` (créer, lister, révoquer) ; rubrique « Accès à distance » des Options du bureau, avec le QR code pour le téléphone.
+- Mise en œuvre : 3a. moteur sur la boucle locale (jetons, sessions, WebSocket et `POST /rpc`, `Host` et `Origin`, SSRF, dossiers) et CLI ; 3b. TLS (certificat fabriqué ou fourni), écoute sur le réseau ; 3c. page servie par le moteur et son hôte WebSocket ; 3d. bureau (rubrique, QR code) ; 3e. essais réels (téléphone sur le Wi-Fi), banc `crash_daemon`, fuzzing des lecteurs de requêtes.
+- **3a, protections et jetons** (2026-11-11) : `net::reach` (adresses publiques, résolveur filtrant, adresses écrites telles quelles vérifiées à chaque requête et redirection ; le client restreint n'utilise aucun mandataire, qui résoudrait les noms à sa place), `net::Client::restricted` ; colonne `tasks.public_only` (migration 8), prise à chaque exécution, reprises comprises, et pour les vidéos (flux internes ; adresse de la page vérifiée avant yt-dlp) ; un miroir ou une adresse donnés par un jeton restreignent une tâche locale pour toujours ; `Engine::restricted` (poignée d'une connexion à jeton) ; `store::remote` et `remote` (jetons et sessions, empreintes SHA-256) ; méthodes `token.*` ; `rpc::serve_messages` (tout transport, révocation suivie) ; codes `ADDRESS_FORBIDDEN` et `DEST_FORBIDDEN` ; CLI `auro token`. Tests : classement des adresses, client restreint face à un serveur local (aucune requête reçue), jetons et sessions en base, connexion à jeton de bout en bout (refus, dossier, tâche locale restreinte qui échoue en `ADDRESS_FORBIDDEN`, révocation qui ferme la connexion), `remote.allowPrivate`, CLI.
+- **3a, écoute** (2026-11-11) : `remote::server` (hyper, HTTP/1.1 ; en-têtes reçus en 10 s ; corps reçu en 10 s pour `/login` (4 Kio au plus) et en 2 min pour `/rpc`, `408` sinon ; 64 connexions à la fois ; `GET /ws` : poignée de main faite ici, `tokio-tungstenite` sur la connexion de hyper, trames texte de 24 Mio au plus, binaire refusé, fermé à l'arrêt de l'écoute ou à la révocation ; `POST /rpc` : `Content-Type: application/json` exigé, notifications écartées, `204` sans réponse ; `POST /login` : `Origin` de même origine et JSON exigés, cookie `auro_session` de 30 jours, distinct du jeton ; `POST /logout`) ; `Host` accepté : l'adresse d'écoute avec son port, et pour la boucle locale `localhost`, `127.0.0.1` et `[::1]` (`421` sinon) ; `Origin` de même origine ou absent (`403` sinon) ; échecs comptés par adresse (`429`) ; en-têtes `nosniff`, `DENY`, `no-referrer`, `no-store`, CSP `default-src 'none'`. `remote::run` (lancé par `aurod`) tient l'écoute selon `remote.enabled` et `remote.listen`, la déplace ou la ferme (connexions comprises) à chaque changement, et refuse une adresse hors de la boucle locale tant que TLS manque (`remote.status`, `error`). CLI `auro remote` (`status`, `enable --listen`, `disable`, `allow-private on|off`). Tests : en-têtes falsifiés (`Host`, port, `Origin`, `null`), jeton absent, faux ou en cookie pour `/rpc`, type de contenu, portée, blocage après 10 échecs, session du navigateur (cookie `HttpOnly` et `SameSite=Strict`, refus sans `Origin` ou d'une autre origine, `/logout`), message binaire, révocation qui ferme les WebSocket, superviseur (ouverture, déplacement, refus hors de la boucle locale, fermeture), CLI.
+
 ## 8. Sécurité, vie privée et cadre légal
 
 Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ailleurs et ouvre un port réseau local : ce sont les deux surfaces d'attaque à traiter en priorité. Les parades ci-dessous sont des exigences de conception, vérifiées par des tests dédiés (section 9).
@@ -1651,6 +1697,7 @@ Ce qui suit n'est pas un avis juridique ; un juriste doit le valider avant la pr
 - **Composants externes.** yt-dlp et ffmpeg sont appelés comme processus séparés, sans être liés au programme, ce qui garde la licence du projet indépendante de la leur. Un contrôle automatique des licences (de type `cargo-deny`) vérifie à chaque build que chaque dépendance est compatible avec la GPL-3.0.
 - **Mise en œuvre du contrôle (2026-11-09, phase 5).** `deny.toml` liste les licences admises : permissives (MIT, MIT-0, 0BSD, ISC, BSD-3-Clause, Zlib, Unicode-3.0, CC0-1.0, Unlicense), Apache-2.0 (avec ou sans l'exception LLVM ; compatible avec la GPL-3.0, pas avec la GPL-2.0 seule), MPL-2.0 (compatible par sa section 3) et CDLA-Permissive-2.0 (licence de données, attribution seule : les certificats racines de Mozilla dans `webpki-root-certs`). `cargo deny check licenses` contrôle l'espace de travail principal et, avec `--manifest-path apps/desktop/Cargo.toml --config deny.toml`, l'application de bureau, toutes cibles comprises (Windows, Linux, Android). Ajouter une licence à la liste demande d'avoir vérifié sa compatibilité et de la noter ici. Sans intégration continue pour l'instant, le contrôle se lance à la main avec les tests ; il rejoindra la CI. Les dépendances Gradle de l'application Android (AndroidX, Jetpack Compose, Kotlin : Apache-2.0 ; partie Kotlin de `rustls-platform-verifier` : MIT ou Apache-2.0) ne passent pas par `cargo-deny` : relevé à la main le même jour.
 - **Copies corrigées de dépendances (2026-11-09, étape 3d de la phase 5).** `third_party/` contient `librqbit` 9.1.0 et `librqbit-dualstack-sockets` 0.7.0, modifiées pour la liaison à une interface sous Windows (section 7.16) et branchées par `[patch.crates-io]`. Leur licence, Apache-2.0, permet de les modifier et de les redistribuer : texte complet dans `third_party/LICENSE-APACHE-2.0`, et chaque fichier modifié le signale en tête (section 4 de la licence). `cargo deny` les contrôle comme les autres dépendances. La crate `network-interface` (MIT ou Apache-2.0), déjà tirée par librqbit, est désormais aussi une dépendance directe du moteur.
+- **Interface distante, phase 6, étape 3a (2026-11-11).** Nouvelles dépendances du moteur : `tokio-tungstenite` et `tungstenite` (MIT), et leurs dépendances `data-encoding` (MIT) et `httparse` (MIT ou Apache-2.0) ; `hyper`, `hyper-util`, `http-body-util` et `futures-util` (MIT, MIT ou Apache-2.0) étaient déjà dans l'arbre par reqwest. Aucune licence nouvelle.
 - **Presse-papiers du bureau, phase 6, étape 2c (2026-11-11).** Nouvelles dépendances de l'application de bureau : `arboard` (lecture du texte du presse-papiers) et sa dépendance Windows `clipboard-win`, sous Boost Software License 1.0 (BSL-1.0), ajoutée à `deny.toml` : licence permissive (conserver l'avis de licence dans les copies du code source, rien pour les binaires), que la FSF classe compatible avec la GPL ; `tauri-winrt-notification` (MIT ou Apache-2.0, Windows) et `notify-rust` (MIT ou Apache-2.0, Linux) pour les notifications avec clic.
 - **Vidéo, étape 4a (2026-11-09).** Nouvelles dépendances du moteur : `zip` (MIT, Windows), `tar` et `xz2` (MIT ou Apache-2.0, Linux ; `xz2` compile liblzma, du domaine public et sous 0BSD), `aws-lc-rs` en direct (déjà présente). yt-dlp (Unlicense) et ffmpeg (builds GPL de BtbN) ne sont ni liés ni fournis : le moteur les télécharge sur la demande de l'utilisateur et les lance comme processus séparés. La clé publique de yt-dlp copiée dans le dépôt vient d'un projet en Unlicense.
 - **Nom et marques.** Le projet porte un nom original ; il n'utilise ni les noms, ni les logos, ni le code d'IDM, JDownloader, FDM ou d'autres produits.

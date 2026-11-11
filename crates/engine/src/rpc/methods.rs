@@ -19,7 +19,9 @@ use crate::scheduler::{
     QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
-use crate::store::settings::{self, DOWNLOAD_DIR, Flag, TORRENT_INTERFACE, TORRENT_RATIO};
+use crate::store::settings::{
+    self, DOWNLOAD_DIR, Flag, REMOTE_LISTEN, TORRENT_INTERFACE, TORRENT_RATIO,
+};
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
 
@@ -333,6 +335,33 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             ctx.engine.delete_login(&p.required_str("loginId")?).await?;
             Ok(json!({}))
         }
+        // Jetons de l'interface distante (SPEC §7.19) ; le jeton n'est rendu qu'ici.
+        "token.create" => {
+            let name = p.required_str("name")?;
+            let scope = p.str("scope")?.unwrap_or_else(|| "control".to_owned());
+            let (row, token) = ctx.engine.create_token(&name, &scope).await?;
+            let mut view = token_json(&row);
+            view["token"] = json!(token);
+            Ok(view)
+        }
+        "token.list" => {
+            let rows = ctx.engine.tokens().await?;
+            Ok(json!({"tokens": rows.iter().map(token_json).collect::<Vec<_>>()}))
+        }
+        // État de l'écoute de l'interface distante (SPEC §7.19).
+        "remote.status" => {
+            let state = ctx.engine.remote_state();
+            Ok(json!({
+                "enabled": state.enabled,
+                "listen": state.listen,
+                "listening": state.listening,
+                "error": state.error,
+            }))
+        }
+        "token.revoke" => {
+            let revoked = ctx.engine.revoke_token(&p.required_str("tokenId")?).await?;
+            Ok(json!({"revoked": revoked}))
+        }
         // Vidéo d'une page (SPEC §7.17).
         "media.probe" => {
             let page = p.required_str("pageUrl")?;
@@ -360,12 +389,13 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 *k != DOWNLOAD_DIR
                     && *k != TORRENT_RATIO
                     && *k != TORRENT_INTERFACE
+                    && *k != REMOTE_LISTEN
                     && Flag::from_key(k).is_none()
             }) {
                 let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
                     "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, \
-                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {})",
+                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {REMOTE_LISTEN}, {})",
                     known.join(", ")
                 )));
             }
@@ -398,6 +428,22 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     ));
                 }
             };
+            // Écoute de l'interface distante (SPEC §7.19) : adresse:port, ou null pour celle par
+            // défaut.
+            let listen = match values.get(REMOTE_LISTEN) {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(Value::String(text)) => match text.parse::<std::net::SocketAddr>() {
+                    Ok(addr) => Some(Some(addr)),
+                    Err(_) => {
+                        return Err(Params::wrong(
+                            REMOTE_LISTEN,
+                            "adresse et port (127.0.0.1:7380, [::1]:7380) ou null",
+                        ));
+                    }
+                },
+                Some(_) => return Err(Params::wrong(REMOTE_LISTEN, "texte ou null")),
+            };
             // Tous vérifiés avant d'en changer un.
             let mut flags = Vec::new();
             for flag in Flag::ALL {
@@ -420,6 +466,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             }
             if let Some(interface) = interface {
                 ctx.engine.set_torrent_interface(interface).await?;
+            }
+            if let Some(listen) = listen {
+                ctx.engine.set_remote_listen(listen).await?;
             }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
@@ -583,7 +632,9 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let ratio = ctx.engine.torrent_ratio().await?;
     let ratio = ratio.map_or(Value::Null, Value::from);
     let interface = ctx.engine.torrent_interface().await?;
-    Ok(json!({"values": settings_json(dir, &flags, ratio, interface)}))
+    let mut values = settings_json(dir, &flags, ratio, interface);
+    values[REMOTE_LISTEN] = json!(ctx.engine.remote_listen().await?.to_string());
+    Ok(json!({"values": values}))
 }
 
 /// Valeurs des réglages, telles que `settings.get` et `sync.snapshot` les donnent.
@@ -660,6 +711,16 @@ async fn limits(ctx: &Ctx) -> Result<Value, RpcError> {
 }
 
 /// Identifiants d'un site tels que le protocole les montre, sans mot de passe.
+fn token_json(t: &crate::store::remote::TokenRow) -> Value {
+    json!({
+        "id": t.id,
+        "name": t.name,
+        "scope": t.scope,
+        "createdAt": t.created_at,
+        "lastUsedAt": t.last_used_at,
+    })
+}
+
 fn login_json(l: &LoginView) -> Value {
     json!({"loginId": l.id, "site": l.site, "username": l.username})
 }
@@ -814,6 +875,9 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             media,
             mirrors,
             sub_dir: Vec::new(),
+            // Posés par la poignée restreinte d'une connexion à jeton (SPEC §7.19).
+            remote: false,
+            public_only: false,
         })
         .await?;
     Ok(json!({"taskId": task_id}))

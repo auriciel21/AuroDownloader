@@ -241,6 +241,11 @@ pub enum TransferError {
 
     #[error("une connexion s'est arrêtée anormalement : {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    /// Le client restreint au réseau public n'a pas pu être fabriqué (SPEC §7.19) : la
+    /// tâche ne part pas, plutôt que sans la restriction.
+    #[error("client réseau restreint indisponible : {0}")]
+    RestrictedClient(NetError),
 }
 
 /// Cause d'échec d'un téléchargement.

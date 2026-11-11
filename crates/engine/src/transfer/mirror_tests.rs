@@ -54,6 +54,7 @@ impl Case {
                 checksum: None,
                 headers: &[],
                 parent_id: None,
+                public_only: false,
             },
         )
         .unwrap();
