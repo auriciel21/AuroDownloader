@@ -146,7 +146,7 @@ async fn torrents_settings_and_upload_limit() {
         "{:?}",
         text(&refused)
     );
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 /// Une vidéo suivie par `auro video get` jusqu'au bout, fusion comprise ; un sous-titre
@@ -233,7 +233,7 @@ async fn a_video_is_described_then_followed_through_its_merge() {
     assert!(dest.join("Essai CLI.fr.vtt").exists());
     let listed = ok(&ep, &["list"]).await;
     assert!(listed.contains("[vidéo] Essai CLI"), "{listed}");
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 /// Miroirs (SPEC §7.7, phase 6) : `auro get --mirror` les donne au moteur, qui les vérifie ;
@@ -313,7 +313,7 @@ async fn metalink_files_are_shown_added_and_followed() {
         let refused = auro(&ep, &args).await;
         assert!(!refused.status.success(), "{args:?}");
     }
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn links_of_a_page_or_a_list_are_filtered_and_added() {
     ] {
         assert!(!auro(&ep, &args).await.status.success(), "{args:?}");
     }
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -508,7 +508,7 @@ async fn mirrors_are_given_checked_and_shown() {
             .is_some_and(|l| l.contains("à vérifier")),
         "{shown}"
     );
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 /// Jetons de l'interface distante (SPEC §7.19) : créés avec leur portée, montrés une seule
@@ -545,6 +545,7 @@ async fn tokens_are_created_listed_and_revoked() {
     let id = engine.tokens().await.unwrap()[0].id.clone();
     ok(&ep, &["token", "revoke", &id]).await;
     assert!(ok(&ep, &["token", "list"]).await.contains("Aucun jeton."));
+    auro_engine::testing::stop(&engine).await;
 }
 
 /// `auro remote` (SPEC §7.19) : l'écoute suit les réglages ; hors de la boucle locale,
@@ -622,4 +623,5 @@ async fn the_remote_interface_is_opened_moved_and_closed() {
     assert!(closed.contains("coupée"), "{closed}");
     let bad = auro(&ep, &["remote", "enable", "--listen", "pas-une-adresse"]).await;
     assert!(!bad.status.success());
+    auro_engine::testing::stop(&engine).await;
 }

@@ -209,7 +209,7 @@ async fn a_single_file_torrent_ends_under_its_own_name() {
         data(0, 300 * 1024 + 17)
     );
     no_part_left(dir.path());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -236,7 +236,7 @@ async fn a_multi_file_torrent_keeps_its_folder_and_paths() {
         );
     }
     no_part_left(dir.path());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -260,7 +260,7 @@ async fn a_magnet_link_gets_its_metadata_from_the_peers() {
         std::fs::read(dir.path().join("magnet.bin")).unwrap(),
         data(0, 100 * 1024)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
     // Les métadonnées venues des pairs sont gardées : librqbit les réécrit autour du
     // dictionnaire `info` reçu, d'où la même empreinte d'information.
     let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
@@ -291,7 +291,7 @@ async fn a_name_already_taken_gets_a_number() {
         std::fs::read(dir.path().join("pris (1).bin")).unwrap(),
         data(0, 20 * 1024)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Un torrent mis en pause, dont le `.part` est abîmé pendant la pause (écritures perdues,
@@ -320,7 +320,7 @@ async fn a_damaged_part_is_found_and_fetched_again_on_resume() {
         std::fs::read(dir.path().join("lent.bin")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -333,7 +333,7 @@ async fn an_interrupted_torrent_resumes_after_an_engine_restart() {
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_progress(&mut events, &id, LEN as u64 / 4).await;
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 
     let engine = start(dir.path(), vec![seed.addr]).await;
     let mut events = engine.subscribe();
@@ -347,7 +347,7 @@ async fn an_interrupted_torrent_resumes_after_an_engine_restart() {
         );
     }
     no_part_left(dir.path());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -370,7 +370,7 @@ async fn cancelling_with_delete_files_leaves_nothing_behind() {
     })
     .await;
     assert!(gone.is_ok(), "{:?}", walk(dir.path()));
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -391,7 +391,7 @@ async fn the_same_torrent_twice_is_refused() {
         })
         .await;
     assert!(again.is_err(), "{again:?}");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -406,7 +406,7 @@ async fn http_only_options_and_bad_torrents_are_refused() {
     task.url = "magnet:?xt=urn:btih:7acf8fb590b2060dd9c3146ef770169d593433b0".into();
     task.max_connections = Some(4);
     assert!(engine.add(task).await.is_err());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Un `.torrent` écrit à la main (bencode), avec des noms donnés.
@@ -492,7 +492,7 @@ async fn sharing_goes_on_until_the_ratio_then_ends() {
     let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
     wait_state(&mut events, &id, TaskState::Completed).await;
     assert_eq!(leeched(&peer), LEN as u64);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
     let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
     let row = crate::store::torrents::load_torrent(&conn, &id).unwrap();
     assert!(row.uploaded_bytes >= LEN as u64, "{}", row.uploaded_bytes);
@@ -513,7 +513,7 @@ async fn pausing_while_sharing_ends_the_task() {
         std::fs::read(dir.path().join("pause.bin")).unwrap(),
         data(0, 50 * 1024)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Un partage interrompu par l'arrêt du moteur reprend au démarrage suivant, et finit au
@@ -528,7 +528,7 @@ async fn sharing_resumes_after_an_engine_restart() {
     let mut events = engine.subscribe();
     let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
     wait_state(&mut events, &id, TaskState::Seeding).await;
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
     assert_eq!(engine_state(dir.path(), &id), TaskState::Seeding);
 
     let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
@@ -536,7 +536,7 @@ async fn sharing_resumes_after_an_engine_restart() {
     let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
     wait_state(&mut events, &id, TaskState::Completed).await;
     assert_eq!(leeched(&peer), LEN as u64);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Sur un réseau facturé au volume (Android), le partage attend : rien ne part. Il reprend
@@ -562,7 +562,7 @@ async fn a_metered_network_holds_sharing_back() {
 
     engine.set_network(true, false).await.unwrap();
     wait_state(&mut events, &id, TaskState::Completed).await;
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `task.setFiles` en cours de téléchargement : seuls les fichiers choisis vont jusqu'au
@@ -605,7 +605,7 @@ async fn choosing_files_downloads_only_those() {
     assert_eq!(chosen, vec![false, true, false]);
     // Le fichier choisi est donné complet à la fin, pas au dernier relevé.
     assert_eq!(files[1].done_bytes, LEN as u64);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// État d'une tâche lu dans la base, moteur arrêté.
@@ -631,7 +631,7 @@ async fn a_folder_torrent_with_one_file_keeps_its_folder() {
         std::fs::read(dir.path().join("Seul").join("sous").join("f0.bin")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 // Liaison à une interface réseau (VPN, SPEC §7.16, étape 3d). Les interfaces simulées sont
@@ -739,7 +739,7 @@ async fn a_torrent_waits_for_its_interface() {
         std::fs::read(dir.path().join("attente.iso")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// L'interface disparaît en plein téléchargement (VPN coupé) : le torrent s'arrête et
@@ -768,7 +768,7 @@ async fn a_lost_interface_stops_torrents_until_it_returns() {
         data(0, LEN)
     );
     no_part_left(dir.path());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// L'interface change sans disparaître (adresse ou index) : les torrents en cours
@@ -791,7 +791,7 @@ async fn a_changed_interface_restarts_its_torrents() {
         std::fs::read(dir.path().join("bascule.bin")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Le réglage changé en cours de route : les torrents repartent liés à la nouvelle
@@ -823,7 +823,7 @@ async fn changing_the_interface_setting_rebinds_running_torrents() {
         std::fs::read(dir.path().join("reglage.bin")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// La vraie interface de bouclage, trouvée par son nom : le pair local est joint.
@@ -844,7 +844,7 @@ async fn bound_to_the_loopback_the_local_peer_is_reached() {
         std::fs::read(dir.path().join("boucle.iso")).unwrap(),
         data(0, LEN)
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Liée à une autre interface (une carte réseau), la session ne joint pas le pair local,
@@ -889,5 +889,5 @@ async fn bound_elsewhere_the_local_peer_is_never_reached() {
         "interface {}",
         other.device
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }

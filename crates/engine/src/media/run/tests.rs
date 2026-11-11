@@ -302,7 +302,7 @@ async fn real_local_videos_are_downloaded_and_merged() {
     assert_eq!(left.len(), 3, "{left:?}");
     // Les tâches internes ne se voient pas ; l'historique n'a que les vidéos.
     assert_eq!(engine.list(Default::default()).await.unwrap().0.len(), 3);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 // Faux outils (`testing::tools`) : yt-dlp rend une résolution, ffmpeg met ses entrées bout
@@ -584,7 +584,7 @@ async fn two_direct_streams_become_one_video() {
             .await
             .unwrap_err()
     ));
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -614,7 +614,7 @@ async fn a_paused_video_resumes_its_streams_without_loss() {
         std::fs::read(s.dest.join(task.file_name.unwrap())).unwrap(),
         expected
     );
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -638,7 +638,7 @@ async fn an_expired_stream_address_is_resolved_again() {
             .len(),
         (video_bytes().len() + audio_bytes().len()) as u64
     );
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -654,7 +654,7 @@ async fn tools_are_needed_and_drm_is_refused() {
         matches!(err, crate::scheduler::EngineError::ToolsMissing(_)),
         "{err}"
     );
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 
     // Un flux protégé : échec, rien de téléchargé.
     let server = site(None);
@@ -670,7 +670,7 @@ async fn tools_are_needed_and_drm_is_refused() {
     let task = s.engine.get(&id).await.unwrap();
     assert_eq!(task.error_code.as_deref(), Some("EXTRACTOR_FAILED"));
     assert!(server.requests().is_empty());
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -697,7 +697,7 @@ async fn cancelling_a_video_deletes_its_streams() {
     })
     .await
     .unwrap_or_else(|_| panic!("restent : {:?}", files_in(&s.dest)));
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 /// Un flux fragmenté passe par yt-dlp (`-o` vers le fichier du flux), avec la plus petite
@@ -747,7 +747,7 @@ async fn a_fragmented_stream_goes_through_ytdlp_within_the_limit() {
     );
     assert!(downloads.contains("hls-1"), "{downloads}");
     assert_eq!(files_in(&s.dest).len(), 1, "{:?}", files_in(&s.dest));
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 /// Attend l'avertissement `code` du moteur ; rend son message et sa tâche.
@@ -855,7 +855,7 @@ async fn subtitles_are_kept_beside_the_video_and_missing_ones_reported() {
     // Retrait avec les fichiers : ceux de la seconde vidéo partent, sous-titres compris.
     s.engine.remove(&id, true).await.unwrap();
     assert_eq!(files_in(&s.dest), first);
-    s.engine.shutdown().await;
+    crate::testing::stop(&s.engine).await;
 }
 
 /// Essai réel (Internet) : vidéos sous licence libre téléchargées jusqu'au bout par le
@@ -985,5 +985,5 @@ async fn real_free_videos_are_downloaded_to_the_end() {
     let left = files_in(&dest);
     eprintln!("dossier : {left:?}");
     assert_eq!(left.len(), expected_files, "{left:?}");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }

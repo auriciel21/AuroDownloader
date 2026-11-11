@@ -17,6 +17,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+/// Arrête le moteur d'un test et attend qu'il ait fermé sa base et ses fichiers. À appeler
+/// avant la fin d'un test qui a démarré un moteur dans un dossier temporaire : sous
+/// Windows, un fichier encore ouvert ne s'efface pas, et le dossier resterait dans
+/// `%TEMP%`.
+pub async fn stop(engine: &crate::scheduler::Engine) {
+    engine.shutdown().await;
+    engine.stopped().await;
+}
+
 /// Requête reçue par le serveur de test.
 #[derive(Debug, Clone)]
 pub struct Request {

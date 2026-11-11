@@ -215,6 +215,7 @@ async fn up_is_announced_before_the_notifications_it_carries() {
     // Erreur du moteur : son code stable, pas ENGINE_DOWN.
     let refused = bridge.call("task.nothing", json!({})).await.unwrap_err();
     assert_eq!(refused.code, "METHOD_NOT_FOUND");
+    auro_engine::testing::stop(&served.engine).await;
 }
 
 #[tokio::test]
@@ -240,6 +241,7 @@ async fn a_lost_engine_is_reported_then_reached_again() {
         unreachable!()
     };
     assert!(message.contains("refusée par le test"), "{message}");
+    auro_engine::testing::stop(&served.engine).await;
 }
 
 #[tokio::test]
@@ -317,6 +319,7 @@ async fn a_hidden_page_gets_no_progress_and_is_told_to_reload() {
             .then_some(0)
     })
     .await;
+    auro_engine::testing::stop(&served.engine).await;
 }
 
 impl Outgoing {

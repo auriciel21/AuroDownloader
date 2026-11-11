@@ -236,6 +236,7 @@ async fn host_origin_and_token_are_checked_before_anything() {
     // Une notification du client n'a pas de réponse.
     let quiet = json!({"jsonrpc": "2.0", "method": "engine.hello"}).to_string();
     assert_eq!(http(addr, "POST", "/rpc", &ok, &quiet).await.status, 204);
+    crate::testing::stop(&engine).await;
 }
 
 /// Au-delà de [`MAX_FAILURES`] jetons refusés en une minute, l'adresse est refusée, même
@@ -270,6 +271,7 @@ async fn repeated_failures_lock_the_address_out() {
         http(addr, "POST", "/rpc", &headers, &hello()).await.status,
         429
     );
+    crate::testing::stop(&engine).await;
 }
 
 async fn websocket(
@@ -408,6 +410,7 @@ async fn a_browser_session_opens_the_websocket_from_its_own_origin_only() {
     assert!(engine.revoke_token(&row.id).await.unwrap());
     assert!(next_text(&mut socket).await.is_none());
     assert!(next_text(&mut script).await.is_none());
+    crate::testing::stop(&engine).await;
 }
 
 async fn state_until(engine: &Engine, pred: impl Fn(&RemoteState) -> bool) -> RemoteState {
@@ -476,6 +479,7 @@ async fn the_listener_follows_its_settings() {
         engine.remote_listen().await.unwrap().to_string(),
         crate::store::settings::REMOTE_DEFAULT_LISTEN
     );
+    crate::testing::stop(&engine).await;
 }
 
 /// Client TLS qui n'accepte que le certificat de cette empreinte : ce que fait
@@ -737,6 +741,7 @@ async fn the_network_listener_serves_tls_with_its_certificate() {
             .await
             .is_err()
     );
+    crate::testing::stop(&engine).await;
 }
 
 /// Valeurs de `Host` acceptées (SPEC §7.19) : adresses IP en chiffres et noms connus, avec
@@ -833,4 +838,5 @@ async fn the_generated_certificate_is_renewed_when_due() {
         .status,
         401
     );
+    crate::testing::stop(&engine).await;
 }

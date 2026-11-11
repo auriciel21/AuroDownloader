@@ -157,7 +157,7 @@ async fn the_relay_adds_downloads_and_nothing_else() {
 
     drop(browser);
     serving.await.unwrap().unwrap();
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }
 
 /// Étape 5d (SPEC §4.5) : liens magnet et `.torrent` en base64 (sans en-têtes de page :
@@ -294,5 +294,5 @@ async fn the_relay_adds_torrents_and_page_videos() {
 
     drop(browser);
     serving.await.unwrap().unwrap();
-    engine.shutdown().await;
+    auro_engine::testing::stop(&engine).await;
 }

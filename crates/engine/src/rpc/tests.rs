@@ -215,7 +215,7 @@ async fn a_connection_keeps_to_the_scope_it_declares() {
     // L'administrateur, lui, voit la tâche ajoutée par le relais.
     let listed = admin.result("task.list", json!({})).await;
     assert_eq!(listed["items"][0]["taskId"], id.as_str());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Dossier des téléchargements du moteur (`downloads.dir`) : réglé, annoncé, et pris par
@@ -282,7 +282,7 @@ async fn the_download_dir_is_an_engine_setting() {
         .result("settings.set", json!({"values": {"downloads.dir": null}}))
         .await;
     assert_eq!(reset["values"]["downloads.dir"], system);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `idempotencyKey` (SPEC §6.1) : un ajout rejoué rend la même tâche, sans doublon ni
@@ -328,7 +328,7 @@ async fn a_replayed_add_returns_the_same_task() {
             "INVALID_PARAMS"
         );
     }
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `headers` de `task.add` : un objet de textes ; un en-tête réservé, une valeur qui n'est
@@ -378,7 +378,7 @@ async fn task_add_accepts_page_headers() {
     assert_eq!(first.header("cookie"), Some("s=1"));
     assert_eq!(first.header("user-agent"), Some("Essai/1"));
     assert_eq!(first.header("referer"), Some("https://exemple.org/"));
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `task.restart` : une tâche terminée repart de zéro ; `task.updated` efface son nom, sa
@@ -444,7 +444,7 @@ async fn task_restart_downloads_again() {
             .await,
         "UNAUTHORIZED"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 fn hello() -> Value {
@@ -474,7 +474,7 @@ async fn hello_negotiates_the_protocol_version() {
         old.read().await.is_none(),
         "connexion fermée après le refus"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -511,7 +511,7 @@ async fn malformed_messages_get_standard_errors() {
         .await;
     let reply = c.call("sync.snapshot", json!({})).await;
     assert!(reply["result"]["rev"].is_u64());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -535,7 +535,7 @@ async fn batches_are_answered_together() {
 
     c.send_raw("[]").await;
     assert_eq!(c.reply().await["error"]["code"], -32600);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -580,7 +580,7 @@ async fn an_added_task_is_followed_to_completion() {
         std::fs::metadata(dir.path().join("f.bin")).unwrap().len(),
         512 * 1024
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -643,7 +643,7 @@ async fn finished_tasks_are_removed_and_announced() {
         c.error_code("task.remove", json!({"taskIds": []})).await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -688,7 +688,7 @@ async fn the_file_name_chosen_at_preparation_is_announced() {
     }
     names.sort();
     assert_eq!(names, ["meme (1).bin", "meme.bin"]);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -723,7 +723,7 @@ async fn progress_is_batched_with_the_current_revision() {
     assert!(p["rev"].is_u64());
     // Abonné à l'avancement seulement : aucun changement d'état n'arrive.
     assert!(c.pending.iter().all(|m| m["method"] != "task.stateChanged"));
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -767,7 +767,7 @@ async fn tasks_are_listed_page_by_page() {
             .await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -801,7 +801,7 @@ async fn actions_report_refused_tasks_separately() {
         c.error_code("task.pause", json!({"taskIds": []})).await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -844,7 +844,7 @@ async fn unsupported_or_invalid_additions_are_refused() {
         let params = base(extra.clone());
         assert_eq!(c.error_code("task.add", params).await, code, "{extra}");
     }
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -882,7 +882,7 @@ async fn queues_are_managed_and_announced() {
             .await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -987,7 +987,7 @@ async fn speed_limits_are_read_changed_and_announced() {
         )
         .await;
     assert!(lifted["speedLimitBps"].is_null());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -1057,9 +1057,9 @@ async fn the_local_endpoint_serves_one_engine_at_a_time() {
     let other = engine_at(dir.path(), "autre.db");
     let err = local::listen(other.clone(), &endpoint).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse, "{err}");
-    other.shutdown().await;
+    crate::testing::stop(&other).await;
 
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
     timeout(WAIT, listening)
         .await
         .expect("le serveur s'arrête avec le moteur")
@@ -1167,7 +1167,7 @@ async fn task_get_shows_segments_and_sources_on_request() {
     .expect("jamais terminée");
     assert_eq!(done["segments"], json!([]));
     assert_eq!(done["sources"][0]["url"], json!(url));
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -1289,7 +1289,7 @@ async fn schedules_are_set_attached_announced_and_removed() {
         c.result("schedule.list", json!({})).await,
         json!({"items": []})
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// « Déplacer/Renommer » et « Actualiser l'adresse » par `task.update` (SPEC §7.12 et
@@ -1408,7 +1408,7 @@ async fn task_update_moves_renames_and_replaces_the_address() {
         p["taskId"] == started && p["to"] == "completed"
     })
     .await;
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Identifiants de sites (SPEC §7.14) : portée `admin`, mot de passe jamais rendu.
@@ -1470,7 +1470,7 @@ async fn site_logins_are_managed_by_admins_and_never_show_their_password() {
         c.error_code("login.delete", json!({"loginId": id})).await,
         "LOGIN_NOT_FOUND"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Empreinte (F-11) : `checksum` de `task.add` et `task.update`, montrée par `task.get`,
@@ -1567,7 +1567,7 @@ async fn checksums_are_given_checked_and_announced() {
         .await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Historique (F-35) : une tâche terminée y entre, avec son empreinte SHA-256 vérifiée ;
@@ -1704,7 +1704,7 @@ async fn history_is_listed_searched_paged_and_cleared() {
         2
     );
     assert!(dir.path().join("alpha.bin").exists());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Réservation de la place (F-10) : réglage `downloads.preallocate`, vrai par défaut,
@@ -1744,7 +1744,7 @@ async fn preallocation_is_an_engine_setting_on_by_default() {
     );
     let got = c.result("settings.get", json!({})).await;
     assert_eq!(got["values"]["downloads.preallocate"], false);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Empreinte lue dans un fichier voisin (F-11) : réglage `downloads.neighborChecksum`, vrai
@@ -1829,7 +1829,7 @@ async fn neighbor_checksums_follow_the_setting_and_are_announced_with_their_orig
     let asked = site.lock().unwrap().neighbor_requests.clone();
     assert!(asked.iter().all(|p| !p.starts_with("/m.bin")), "{asked:?}");
     assert_eq!(asked.len(), 6, "{asked:?}");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Réseau utilisable ou non (SPEC §7.15) : dit par l'application, annoncé, dans
@@ -1861,7 +1861,7 @@ async fn the_network_state_is_set_announced_and_in_the_snapshot() {
             .await,
         "INVALID_PARAMS"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Torrent (SPEC §7.16) : `sources[0].torrent`, un fichier `.torrent` en base64, fait une
@@ -1910,7 +1910,7 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
             "{bad}"
         );
     }
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Un gros `.torrent` (16 Mio au plus côté clients, SPEC §6.3) passe en un seul message :
@@ -1954,7 +1954,7 @@ async fn a_large_torrent_file_fits_in_one_message() {
     let reply = c.read().await.expect("refus attendu");
     assert_eq!(reply["error"]["code"], -32600, "{reply}");
     assert!(c.read().await.is_none());
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Outils de la vidéo (SPEC §7.17) : état, installation sur demande seulement (portée
@@ -2042,7 +2042,7 @@ async fn media_tools_are_installed_only_on_request() {
     .await;
     let values = c.result("settings.get", json!({})).await["values"].clone();
     assert_eq!(values["media.autoUpdate"], false);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Un moteur dont les outils de la vidéo viennent de `sources`, dans `dir/tools`.
@@ -2073,7 +2073,7 @@ async fn media_probe_describes_a_page_through_ytdlp() {
             .await,
         "TOOLS_MISSING"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 
     let answer = json!({
         "title": "Un film libre", "duration": 12.5, "extractor_key": "Generic",
@@ -2120,7 +2120,7 @@ async fn media_probe_describes_a_page_through_ytdlp() {
             "{bad} : {code}"
         );
     }
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 
     // yt-dlp en échec : son message, sans l'adresse.
     let fake = crate::testing::tools::fake_ytdlp(
@@ -2151,7 +2151,7 @@ async fn media_probe_describes_a_page_through_ytdlp() {
         !message.contains("secret") && !message.contains("jeton"),
         "{message}"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `task.add` avec `media` (SPEC §7.17) : vérifié avant toute création ; la tâche porte
@@ -2179,7 +2179,7 @@ async fn a_video_is_added_through_task_add() {
         .await,
         "TOOLS_MISSING"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 
     let fake = dir.path().join("faux");
     let sources = crate::media::tools::Sources {
@@ -2219,7 +2219,7 @@ async fn a_video_is_added_through_task_add() {
     assert_eq!(task["kind"], "media", "{task}");
     assert_eq!(task["displayName"], "Un film");
     assert_eq!(task["state"], "paused");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// La mise à jour de yt-dlp part d'un `media.probe` quand c'est le moment, et s'annonce
@@ -2290,7 +2290,7 @@ async fn ytdlp_updates_itself_on_a_probe_and_says_so() {
         std::fs::read(tools_dir.join(crate::media::tools::exe("yt-dlp"))).unwrap(),
         b"version 2"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Interface réseau des torrents (SPEC §7.16) : `torrent.interface`, son état dans
@@ -2372,7 +2372,7 @@ async fn the_torrent_interface_goes_through_the_protocol() {
     let snapshot = c.result("sync.snapshot", json!({})).await;
     assert_eq!(snapshot["torrentInterfaceUp"], true);
     assert_eq!(snapshot["settings"]["torrent.interface"], Value::Null);
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Réglages et limites des torrents (SPEC §7.16) : débit d'envoi, ratio de partage, UPnP
@@ -2469,7 +2469,7 @@ async fn torrent_settings_limits_and_files_go_through_the_protocol() {
         )
         .await;
     assert_eq!(task["files"], json!([]), "{task}");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Miroirs (SPEC §7.7, phase 6, étape 1a) : `task.add` avec plusieurs sources, validées à la
@@ -2578,7 +2578,7 @@ async fn mirrors_are_validated_against_the_reference() {
         .await,
         "INVALID_STATE"
     );
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// `task.addSource` (SPEC §7.7) : sur une tâche préparée, le miroir est validé tout de
@@ -2756,6 +2756,7 @@ async fn links_of_a_page_are_found_sized_and_added_together() {
             "{method} {bad}"
         );
     }
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -2943,6 +2944,7 @@ async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
             "{method} {bad}"
         );
     }
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]
@@ -3048,7 +3050,7 @@ async fn a_mirror_added_to_a_prepared_task_is_checked_at_once() {
         .result("task.get", json!({"taskId": fresh, "include": ["sources"]}))
         .await;
     assert_eq!(task["sources"][1]["state"], "unknown", "{task}");
-    engine.shutdown().await;
+    crate::testing::stop(&engine).await;
 }
 
 /// Interface distante (SPEC §7.19) : un jeton n'a jamais `admin` ; ses ajouts et ses
@@ -3248,6 +3250,7 @@ async fn a_token_connection_reaches_only_the_public_network_and_the_download_fol
             .unwrap()
             .is_empty()
     );
+    crate::testing::stop(&engine).await;
 }
 
 /// `remote.allowPrivate` (SPEC §7.19) : réglé par le canal local, il ouvre le réseau
@@ -3312,4 +3315,5 @@ async fn allow_private_opens_the_internal_network_but_not_other_folders() {
             .await;
     }
     assert!(downloads.join("a.bin").exists());
+    crate::testing::stop(&engine).await;
 }
