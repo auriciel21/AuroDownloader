@@ -366,6 +366,7 @@ dependencies = [
  "md-5",
  "network-interface",
  "percent-encoding",
+ "quick-xml 0.41.0",
  "rcgen",
  "reqwest",
  "rusqlite",
