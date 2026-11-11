@@ -1462,19 +1462,6 @@ pub async fn tokens(rpc: &mut Rpc) -> Result<()> {
         println!("Aucun jeton.");
         return Ok(());
     }
-    let clock = rusqlite::Connection::open_in_memory()?;
-    let local = |ms: Option<i64>| -> String {
-        let Some(ms) = ms else {
-            return "jamais".to_owned();
-        };
-        clock
-            .query_row(
-                "SELECT strftime('%Y-%m-%d %H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
-                [ms],
-                |r| r.get(0),
-            )
-            .unwrap_or_default()
-    };
     println!(
         "{:<36}  {:<8}  {:<16}  {:<16}  nom",
         "identifiant", "portée", "créé", "dernier usage"
@@ -1484,8 +1471,8 @@ pub async fn tokens(rpc: &mut Rpc) -> Result<()> {
             "{:<36}  {:<8}  {:<16}  {:<16}  {}",
             t["id"].as_str().unwrap_or_default(),
             t["scope"].as_str().unwrap_or_default(),
-            local(t["createdAt"].as_i64()),
-            local(t["lastUsedAt"].as_i64()),
+            local_time(t["createdAt"].as_i64()),
+            local_time(t["lastUsedAt"].as_i64()),
             t["name"].as_str().unwrap_or_default()
         );
     }
@@ -1517,16 +1504,56 @@ pub async fn remote_status(rpc: &mut Rpc) -> Result<()> {
     let state = rpc.call("remote.status", json!({})).await?;
     let values = rpc.call("settings.get", json!({})).await?["values"].clone();
     let listen = values["remote.listen"].as_str().unwrap_or_default();
+    let texts = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     match (
         state["enabled"].as_bool().unwrap_or(false),
         state["listening"].as_bool().unwrap_or(false),
     ) {
         (false, _) => println!("Interface distante : coupée (écoute prévue sur {listen})."),
-        (true, true) => println!("Interface distante : ouverte sur http://{listen}"),
+        (true, true) => {
+            println!("Interface distante : ouverte sur {listen}. Adresses de la page :");
+            for url in texts(&state["urls"]) {
+                println!("  {url}");
+            }
+        }
         (true, false) => println!(
             "Interface distante : activée mais fermée ({}).",
             state["error"].as_str().unwrap_or("pas encore ouverte")
         ),
+    }
+    let cert = &state["certificate"];
+    if let Some(fingerprint) = cert["fingerprint"].as_str() {
+        let origin = if cert["generated"].as_bool().unwrap_or(false) {
+            "fabriqué par le moteur (auto-signé ; le navigateur demande confirmation)"
+        } else {
+            "fourni"
+        };
+        println!(
+            "Certificat {origin}, valable jusqu'au {}.",
+            local_time(cert["expiresAt"].as_i64())
+        );
+        println!("Empreinte SHA-256, à comparer dans le navigateur :\n  {fingerprint}");
+        println!("Noms : {}", texts(&cert["names"]).join(", "));
+    } else if state["tls"].as_bool().unwrap_or(false) {
+        println!("En TLS (hors de la boucle locale).");
+    }
+    let hosts = texts(&values["remote.hosts"]);
+    if !hosts.is_empty() {
+        println!("Noms ajoutés : {}", hosts.join(", "));
+    }
+    if let (Some(c), Some(k)) = (
+        values["remote.tlsCert"].as_str(),
+        values["remote.tlsKey"].as_str(),
+    ) {
+        println!("Certificat fourni : {c} (clé : {k})");
     }
     let private = values["remote.allowPrivate"].as_bool().unwrap_or(false);
     println!(
@@ -1536,22 +1563,59 @@ pub async fn remote_status(rpc: &mut Rpc) -> Result<()> {
     Ok(())
 }
 
-/// Active ou coupe l'interface distante ; `listen` : nouvelle adresse d'écoute ;
-/// `allow_private` : réseau interne permis aux jetons.
-pub async fn remote_set(
-    rpc: &mut Rpc,
-    enabled: Option<bool>,
-    listen: Option<&str>,
-    allow_private: Option<bool>,
-) -> Result<()> {
+/// Une date du moteur (millisecondes Unix) à l'heure locale, `AAAA-MM-JJ HH:MM`.
+fn local_time(ms: Option<i64>) -> String {
+    let Some(ms) = ms else {
+        return "jamais".to_owned();
+    };
+    rusqlite::Connection::open_in_memory()
+        .and_then(|clock| {
+            clock.query_row(
+                "SELECT strftime('%Y-%m-%d %H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
+                [ms],
+                |r| r.get(0),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Ce que `remote_set` change, en plus de l'activation.
+#[derive(Debug, Default)]
+pub struct RemoteChange<'a> {
+    pub enabled: Option<bool>,
+    pub listen: Option<&'a str>,
+    pub allow_private: Option<bool>,
+    /// Noms ajoutés (`remote.hosts`) ; vide : aucun.
+    pub hosts: Option<Vec<String>>,
+    /// Certificat et clé fournis (chemins), ou `Some(None)` pour celui du moteur.
+    pub tls_files: Option<Option<(String, String)>>,
+}
+
+/// Change les réglages de l'interface distante, puis attend que l'écoute les suive.
+pub async fn remote_set(rpc: &mut Rpc, change: RemoteChange<'_>) -> Result<()> {
     let mut values = serde_json::Map::new();
-    if let Some(listen) = listen {
+    if let Some(listen) = change.listen {
         values.insert("remote.listen".into(), json!(listen));
     }
-    if let Some(on) = allow_private {
+    if let Some(on) = change.allow_private {
         values.insert("remote.allowPrivate".into(), json!(on));
     }
-    if let Some(on) = enabled {
+    if let Some(hosts) = &change.hosts {
+        values.insert("remote.hosts".into(), json!(hosts));
+    }
+    if let Some(files) = change.tls_files {
+        // Chemins absolus : le moteur ne tourne pas forcément dans ce dossier.
+        let (cert, key) = match files {
+            Some((cert, key)) => (
+                json!(std::path::absolute(cert)?.to_string_lossy()),
+                json!(std::path::absolute(key)?.to_string_lossy()),
+            ),
+            None => (Value::Null, Value::Null),
+        };
+        values.insert("remote.tlsCert".into(), cert);
+        values.insert("remote.tlsKey".into(), key);
+    }
+    if let Some(on) = change.enabled {
         values.insert("remote.enabled".into(), json!(on));
     }
     rpc.call("settings.set", json!({"values": values})).await?;
@@ -1563,7 +1627,9 @@ pub async fn remote_set(
         let state = rpc.call("remote.status", json!({})).await?;
         let listening = state["listening"].as_bool().unwrap_or(false);
         let applied = state["enabled"].as_bool() == Some(wanted)
-            && state["listen"] == values["remote.listen"];
+            && state["listen"] == values["remote.listen"]
+            && state["hosts"] == values["remote.hosts"]
+            && state["tlsCert"] == values["remote.tlsCert"];
         let settled = if wanted {
             listening || state["error"].is_string()
         } else {

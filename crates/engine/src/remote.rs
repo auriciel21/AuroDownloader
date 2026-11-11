@@ -7,17 +7,23 @@
 //! `control` (décision de l'utilisateur : `admin` reste au canal local), et passe par la
 //! poignée restreinte du moteur ([`crate::scheduler::Engine::restricted`]).
 
+use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 use crate::rpc::Scope;
 use crate::scheduler::{Engine, Event};
-use crate::store::settings::{Flag, REMOTE_LISTEN};
+use crate::store::settings::{
+    Flag, REMOTE_HOSTS, REMOTE_LISTEN, REMOTE_TLS_CERT, REMOTE_TLS_KEY, RemoteConfig,
+};
 
 pub mod server;
 #[cfg(test)]
 mod server_tests;
+pub mod tls;
 
 /// Préfixe d'un jeton : le reconnaître dans un fichier ou un message (outils de recherche
 /// de secrets), et refuser tôt ce qui n'en est pas un.
@@ -66,67 +72,228 @@ pub struct RemoteState {
     pub listening: bool,
     /// Pourquoi elle ne l'est pas, alors qu'elle devrait.
     pub error: Option<String>,
+    /// En TLS (toute écoute hors de la boucle locale).
+    pub tls: bool,
+    /// Le certificat servi.
+    pub certificate: Option<CertificateInfo>,
+    /// Adresses où ouvrir la page (`https://192.168.1.20:7380`…).
+    pub urls: Vec<String>,
+    /// Réglages `remote.hosts` et `remote.tlsCert` de l'écoute en place : un client sait
+    /// ainsi quand elle a suivi un changement.
+    pub hosts: Vec<String>,
+    pub tls_cert: Option<String>,
 }
 
-/// Tient l'écoute de l'interface distante selon les réglages `remote.enabled` et
-/// `remote.listen`, pour toute la vie du moteur : ouverte, refermée ou déplacée à chaque
-/// changement. Lancée par `aurod` (pas par l'application Android). Hors de la boucle
-/// locale, TLS est exigé : refusé jusqu'à l'étape 3b.
+/// Le certificat servi, tel que `remote.status` le montre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateInfo {
+    /// SHA-256, à comparer avec celle que montre le navigateur.
+    pub fingerprint: String,
+    /// Fin de validité, en millisecondes Unix.
+    pub expires_at: i64,
+    /// Fabriqué par le moteur (sinon fourni).
+    pub generated: bool,
+    /// Noms et adresses qu'il porte.
+    pub names: Vec<String>,
+}
+
+/// Délai maximal entre deux contrôles de l'échéance du certificat fabriqué.
+const RENEW_CHECK: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Tient l'écoute de l'interface distante selon les réglages `remote.enabled`,
+/// `remote.listen`, `remote.hosts`, `remote.tlsCert` et `remote.tlsKey`, pour toute la vie
+/// du moteur : ouverte, refermée ou déplacée quand l'un d'eux change. Lancée par `aurod`
+/// (pas par l'application Android). Hors de la boucle locale, en TLS (module [`tls`]) ; le
+/// certificat fabriqué est refait à son échéance, l'écoute repartant avec lui.
 pub async fn run(engine: Engine) {
+    supervise(engine, false).await;
+}
+
+/// [`run`] ; `tls_everywhere` : TLS même sur la boucle locale (tests).
+pub(crate) async fn supervise(engine: Engine, tls_everywhere: bool) {
     let mut events = engine.subscribe();
+    // Réglages de l'écoute en cours, et la tâche qui la sert.
+    let mut applied: Option<(bool, RemoteConfig)> = None;
+    let mut serving: Option<tokio::task::JoinHandle<std::io::Result<()>>> = None;
+    let mut renew_at: Option<i64> = None;
     loop {
-        let (Ok(enabled), Ok(listen)) = (
+        let (Ok(enabled), Ok(config)) = (
             engine.flag(Flag::RemoteEnabled).await,
-            engine.remote_listen().await,
+            engine.remote_config().await,
         ) else {
-            return;
+            break;
         };
-        let mut state = RemoteState {
-            enabled,
-            listen: Some(listen.to_string()),
-            ..RemoteState::default()
-        };
-        let mut serving = None;
-        if enabled {
-            if !listen.ip().is_loopback() {
-                state.error = Some(format!(
-                    "{listen} : hors de la boucle locale, TLS est exigé (pas encore pris en \
-                     charge) ; écouter sur 127.0.0.1"
-                ));
-            } else {
-                match tokio::net::TcpListener::bind(listen).await {
-                    Ok(listener) => {
-                        state.listening = true;
-                        serving = Some(tokio::spawn(server::serve(engine.clone(), listener)));
-                    }
-                    Err(e) => state.error = Some(format!("écoute impossible sur {listen} : {e}")),
-                }
+        let due = renew_at.is_some_and(|at| crate::store::now_ms() >= at);
+        let current = Some((enabled, config.clone()));
+        if applied != current || due {
+            if let Some(task) = serving.take() {
+                task.abort();
+                let _ = task.await;
             }
+            let (state, task, renew) = open(&engine, enabled, &config, tls_everywhere).await;
+            if let Some(error) = &state.error {
+                eprintln!("aurod : interface distante : {error}");
+            }
+            engine.set_remote_state(state);
+            (serving, renew_at, applied) = (task, renew, current);
         }
-        if let Some(error) = &state.error {
-            eprintln!("aurod : interface distante : {error}");
-        }
-        engine.set_remote_state(state);
+        // Jusqu'au prochain changement d'un réglage de l'écoute, ou à l'échéance du
+        // certificat (contrôlée au moins chaque jour : le sommeil de tokio est borné).
+        let wait = renew_at.map(|at| {
+            let left = u64::try_from(at - crate::store::now_ms()).unwrap_or(0);
+            std::time::Duration::from_millis(left).min(RENEW_CHECK)
+        });
+        // Créé une fois : les autres événements du moteur (avancement…) ne le repoussent pas.
+        let deadline = sleep_or_forever(wait);
+        tokio::pin!(deadline);
         let stopped = loop {
-            match events.recv().await {
+            let event = tokio::select! {
+                event = events.recv() => event,
+                () = &mut deadline => break false,
+            };
+            match event {
                 Ok(Event::FlagChanged {
                     flag: Flag::RemoteEnabled,
                     ..
                 })
                 | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break false,
-                Ok(Event::SettingChanged { key, .. }) if key == REMOTE_LISTEN => break false,
+                Ok(Event::SettingChanged { key, .. })
+                    if [REMOTE_LISTEN, REMOTE_HOSTS, REMOTE_TLS_CERT, REMOTE_TLS_KEY]
+                        .contains(&key) =>
+                {
+                    break false;
+                }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break true,
             }
         };
-        if let Some(task) = serving {
-            task.abort();
-            let _ = task.await;
-        }
         if stopped {
-            return;
+            break;
         }
     }
+    if let Some(task) = serving {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn sleep_or_forever(wait: Option<std::time::Duration>) {
+    match wait {
+        Some(wait) => tokio::time::sleep(wait).await,
+        None => std::future::pending().await,
+    }
+}
+
+type Serving = Option<tokio::task::JoinHandle<std::io::Result<()>>>;
+
+/// Ouvre l'écoute voulue par les réglages ; rend son état, sa tâche et l'échéance de son
+/// certificat fabriqué.
+async fn open(
+    engine: &Engine,
+    enabled: bool,
+    config: &RemoteConfig,
+    tls_everywhere: bool,
+) -> (RemoteState, Serving, Option<i64>) {
+    let listen = config.listen;
+    let mut state = RemoteState {
+        enabled,
+        listen: Some(listen.to_string()),
+        tls: tls_everywhere || !listen.ip().is_loopback(),
+        hosts: config.hosts.clone(),
+        tls_cert: config.tls_files.as_ref().map(|(cert, _)| cert.clone()),
+        ..RemoteState::default()
+    };
+    if !enabled {
+        return (state, None, None);
+    }
+    let listener = match tokio::net::TcpListener::bind(listen).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            state.error = Some(format!("écoute impossible sur {listen} : {e}"));
+            return (state, None, None);
+        }
+    };
+    let port = listener.local_addr().map_or(listen.port(), |a| a.port());
+    let mut renew_at = None;
+    let tls = if state.tls {
+        match load_tls(engine, config).await {
+            Ok(tls) => {
+                if tls.renewed {
+                    eprintln!(
+                        "aurod : interface distante : certificat fabriqué, empreinte SHA-256 {}",
+                        tls.fingerprint
+                    );
+                }
+                renew_at = tls.renew_at_ms();
+                state.certificate = Some(CertificateInfo {
+                    fingerprint: tls.fingerprint.clone(),
+                    expires_at: tls.not_after_ms,
+                    generated: tls.generated,
+                    names: tls.names.clone(),
+                });
+                Some(tls.config)
+            }
+            Err(e) => {
+                state.error = Some(format!("TLS : {e}"));
+                return (state, None, None);
+            }
+        }
+    } else {
+        None
+    };
+    state.urls = urls(listen, port, state.tls, &config.hosts);
+    state.listening = true;
+    let listening = server::Listening {
+        tls,
+        names: tls::known_names(&config.hosts),
+    };
+    let task = tokio::spawn(server::serve(engine.clone(), listener, listening));
+    (state, Some(task), renew_at)
+}
+
+/// Le certificat fourni par les réglages, sinon celui fabriqué à côté de la base (lu, ou
+/// fait, hors de l'exécuteur : génération de clé et disque).
+async fn load_tls(engine: &Engine, config: &RemoteConfig) -> Result<tls::Tls, String> {
+    let config = config.clone();
+    let dir = engine.data_dir().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let now = crate::store::now_ms();
+        match &config.tls_files {
+            Some((cert, key)) => tls::provided(Path::new(cert), Path::new(key), now),
+            None => tls::generated(&dir, &tls::wanted_names(config.listen, &config.hosts), now),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adresses où ouvrir la page : l'adresse d'écoute, ou pour une écoute sur toutes les
+/// adresses celles des interfaces ; puis les noms de `remote.hosts`.
+fn urls(listen: SocketAddr, port: u16, tls: bool, hosts: &[String]) -> Vec<String> {
+    let scheme = if tls { "https" } else { "http" };
+    let ips: Vec<IpAddr> = if listen.ip().is_unspecified() {
+        tls::interface_addresses()
+            .into_iter()
+            .filter(|ip| listen.is_ipv6() || ip.is_ipv4())
+            .collect()
+    } else {
+        vec![listen.ip()]
+    };
+    let mut urls: Vec<String> = ips
+        .into_iter()
+        .map(|ip| format!("{scheme}://{}", SocketAddr::new(ip, port)))
+        .collect();
+    for host in hosts {
+        let host = match host.parse::<IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, port).to_string(),
+            Err(_) => format!("{host}:{port}"),
+        };
+        let url = format!("{scheme}://{host}");
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    urls
 }
 
 /// Opérations sur les jetons et les sessions, faites par la boucle du planificateur,

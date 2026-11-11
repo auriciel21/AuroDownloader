@@ -2,9 +2,12 @@
 //!
 //! Routes : `GET /ws` (WebSocket, un message JSON-RPC par trame texte), `POST /rpc` (un
 //! message, une réponse, sans notifications), `POST /login` (jeton échangé contre un cookie
-//! de session), `POST /logout`. La page elle-même viendra à l'étape 3c.
+//! de session), `POST /logout`. La page elle-même viendra à l'étape 3c. Hors de la boucle
+//! locale, en TLS (`rustls`, certificat de `remote::tls`), négociation comprise dans le
+//! délai des en-têtes.
 //!
-//! Avant toute route : `Host` doit nommer ce serveur (contre le DNS rebinding) ; une
+//! Avant toute route : `Host` doit nommer ce serveur ([`HostRule`], contre le DNS
+//! rebinding) ; une
 //! requête avec `Origin` doit venir de la même origine (contre les pages d'autres sites) ;
 //! aucun en-tête CORS n'est jamais envoyé. Puis l'authentification : `Authorization:
 //! Bearer <jeton>` partout, le cookie de session seulement pour le WebSocket et
@@ -25,7 +28,7 @@ use hyper::header::{self, HeaderMap, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::{Value, json};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_tungstenite::WebSocketStream;
@@ -58,9 +61,9 @@ type Refusal = Box<Reply>;
 /// Ce que toutes les connexions d'une écoute partagent.
 struct Shared {
     engine: Engine,
-    /// Valeurs de `Host` acceptées, en minuscules.
-    hosts: Vec<String>,
-    /// `https` (étape 3b) ou `http`.
+    /// Valeurs de `Host` acceptées.
+    hosts: HostRule,
+    /// `https` ou `http`.
     scheme: &'static str,
     failures: Mutex<HashMap<IpAddr, Failures>>,
     /// Change (se ferme) quand l'écoute s'arrête : les WebSocket en cours se ferment avec
@@ -75,41 +78,81 @@ struct Failures {
     blocked_until: Option<Instant>,
 }
 
-/// Valeurs de `Host` qui désignent ce serveur : son adresse d'écoute, et pour la boucle
-/// locale `localhost`, `127.0.0.1` et `[::1]` ; toujours avec le port (un navigateur
-/// l'envoie dès qu'il n'est pas celui par défaut), et aussi sans lui sur le port par
-/// défaut du protocole.
-pub fn host_names(addr: SocketAddr, tls: bool) -> Vec<String> {
-    let port = addr.port();
-    let mut names: Vec<String> = Vec::new();
-    let ip = match addr.ip() {
-        IpAddr::V6(v6) => format!("[{v6}]"),
-        IpAddr::V4(v4) => v4.to_string(),
-    };
-    names.push(ip);
-    if addr.ip().is_loopback() || addr.ip().is_unspecified() {
-        names.extend(["localhost", "127.0.0.1", "[::1]"].map(str::to_owned));
+/// Une écoute à servir : son certificat (TLS) et les noms qui la désignent.
+pub struct Listening {
+    /// `None` : en clair (boucle locale seulement).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// Noms acceptés dans `Host`, en minuscules (`remote::tls::known_names`).
+    pub names: Vec<String>,
+}
+
+/// Valeurs de `Host` qui désignent ce serveur (SPEC §7.19), toujours avec son port (sans
+/// lui sur le port par défaut du protocole) : toute adresse IP écrite en chiffres, que le
+/// DNS rebinding ne peut pas imiter (il passe par un nom), et les noms connus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRule {
+    port: u16,
+    default_port: u16,
+    names: Vec<String>,
+}
+
+impl HostRule {
+    pub fn new(port: u16, tls: bool, names: Vec<String>) -> Self {
+        HostRule {
+            port,
+            default_port: if tls { 443 } else { 80 },
+            names: names.into_iter().map(|n| n.to_ascii_lowercase()).collect(),
+        }
     }
-    names.sort();
-    names.dedup();
-    let default_port = if tls { 443 } else { 80 };
-    let mut hosts: Vec<String> = names.iter().map(|n| format!("{n}:{port}")).collect();
-    if port == default_port {
-        hosts.extend(names);
+
+    /// `host` (valeur de l'en-tête) désigne-t-il ce serveur ?
+    pub fn accepts(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        let (name, port, ip) = if let Some(rest) = host.strip_prefix('[') {
+            let Some((v6, after)) = rest.split_once(']') else {
+                return false;
+            };
+            let port = match after.strip_prefix(':') {
+                Some(port) => Some(port),
+                None if after.is_empty() => None,
+                None => return false,
+            };
+            (v6, port, v6.parse::<std::net::Ipv6Addr>().is_ok())
+        } else {
+            let (name, port) = match host.split_once(':') {
+                Some((name, port)) => (name, Some(port)),
+                None => (host.as_str(), None),
+            };
+            (name, port, name.parse::<std::net::Ipv4Addr>().is_ok())
+        };
+        let port = match port {
+            // Chiffres seulement : ni signe, ni espace, ni autre `:`.
+            Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p.parse().ok(),
+            Some(_) => None,
+            None => Some(self.default_port),
+        };
+        if port != Some(self.port) {
+            return false;
+        }
+        ip || self.names.iter().any(|n| n == name.trim_end_matches('.'))
     }
-    hosts
 }
 
 /// Sert l'interface distante sur `listener` jusqu'à ce que la tâche soit arrêtée ; les
 /// connexions en cours s'arrêtent avec elle.
-pub async fn serve(engine: Engine, listener: TcpListener) -> std::io::Result<()> {
+pub async fn serve(
+    engine: Engine,
+    listener: TcpListener,
+    listening: Listening,
+) -> std::io::Result<()> {
     let addr = listener.local_addr()?;
+    let tls = listening.tls.map(tokio_rustls::TlsAcceptor::from);
     // Gardé jusqu'à l'arrêt de l'écoute : sa disparition ferme les WebSocket.
     let (_closing, closed) = watch::channel(());
     let shared = Arc::new(Shared {
         engine,
-        hosts: host_names(addr, false),
-        scheme: "http",
+        hosts: HostRule::new(addr.port(), tls.is_some(), listening.names),
+        scheme: if tls.is_some() { "https" } else { "http" },
         failures: Mutex::default(),
         closed,
     });
@@ -130,9 +173,22 @@ pub async fn serve(engine: Engine, listener: TcpListener) -> std::io::Result<()>
                     continue;
                 };
                 let shared = Arc::clone(&shared);
+                let tls = tls.clone();
                 connections.spawn(async move {
                     let _permit = permit;
-                    serve_connection(shared, stream, peer).await;
+                    let _ = stream.set_nodelay(true);
+                    match tls {
+                        // La négociation, comme les en-têtes, dans le délai : un client
+                        // muet ne garde pas sa place.
+                        Some(acceptor) => {
+                            if let Ok(Ok(stream)) =
+                                tokio::time::timeout(HEADER_TIMEOUT, acceptor.accept(stream)).await
+                            {
+                                serve_connection(shared, stream, peer).await;
+                            }
+                        }
+                        None => serve_connection(shared, stream, peer).await,
+                    }
                 });
             }
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
@@ -140,8 +196,10 @@ pub async fn serve(engine: Engine, listener: TcpListener) -> std::io::Result<()>
     }
 }
 
-async fn serve_connection(shared: Arc<Shared>, stream: TcpStream, peer: SocketAddr) {
-    let _ = stream.set_nodelay(true);
+async fn serve_connection<S>(shared: Arc<Shared>, stream: S, peer: SocketAddr)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let service = hyper::service::service_fn(move |request| {
         let shared = Arc::clone(&shared);
         async move { Ok::<_, Infallible>(route(shared, peer.ip(), request).await) }
@@ -185,7 +243,7 @@ fn checked_host(shared: &Shared, headers: &HeaderMap) -> Option<String> {
         .to_str()
         .ok()?
         .to_ascii_lowercase();
-    shared.hosts.contains(&host).then_some(host)
+    shared.hosts.accepts(&host).then_some(host)
 }
 
 /// `Ok(true)` : `Origin` présent et de même origine ; `Ok(false)` : absent ; `Err` : une
@@ -224,6 +282,15 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
 }
 
 impl Shared {
+    /// Attribut `Secure` du cookie en TLS : jamais renvoyé en clair.
+    fn secure_flag(&self) -> &'static str {
+        if self.scheme == "https" {
+            "; Secure"
+        } else {
+            ""
+        }
+    }
+
     fn blocked(&self, ip: IpAddr) -> bool {
         let failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         failures
@@ -519,14 +586,11 @@ async fn login(
         StatusCode::OK,
         json!({"name": row.name, "scope": row.scope}).to_string(),
     );
-    let secure = if shared.scheme == "https" {
-        "; Secure"
-    } else {
-        ""
-    };
     let max_age = super::SESSION_TTL_MS / 1000;
-    let value =
-        format!("{COOKIE}={cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}");
+    let value = format!(
+        "{COOKIE}={cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{}",
+        shared.secure_flag()
+    );
     if let Ok(value) = HeaderValue::from_str(&value) {
         reply.headers_mut().insert(header::SET_COOKIE, value);
     }
@@ -546,7 +610,10 @@ async fn logout(
         let _ = shared.engine.close_session(cookie).await;
     }
     let mut reply = empty(StatusCode::NO_CONTENT);
-    let value = format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    let value = format!(
+        "{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        shared.secure_flag()
+    );
     if let Ok(value) = HeaderValue::from_str(&value) {
         reply.headers_mut().insert(header::SET_COOKIE, value);
     }

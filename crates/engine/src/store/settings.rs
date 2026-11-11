@@ -89,6 +89,119 @@ pub fn set_remote_listen(
     )
 }
 
+/// Interface distante (SPEC §7.19) : noms ajoutés par l'utilisateur, acceptés dans `Host`
+/// et portés par le certificat fabriqué (nom DNS ou adresse IP) ; aucun par défaut.
+pub const REMOTE_HOSTS: &str = "remote.hosts";
+
+/// Noms ajoutés à `remote.hosts`, au plus.
+pub const REMOTE_HOSTS_MAX: usize = 32;
+
+/// Interface distante (SPEC §7.19, étape 3b) : certificat fourni par l'utilisateur (fichier
+/// PEM, chemin absolu) ; `null` : celui fabriqué par le moteur.
+pub const REMOTE_TLS_CERT: &str = "remote.tlsCert";
+
+/// Clé privée du certificat fourni (fichier PEM, chemin absolu), avec
+/// [`REMOTE_TLS_CERT`] ; jamais lue ailleurs que dans ce fichier, jamais copiée en base.
+pub const REMOTE_TLS_KEY: &str = "remote.tlsKey";
+
+/// Réglages de l'écoute de l'interface distante, hors `remote.enabled`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteConfig {
+    pub listen: std::net::SocketAddr,
+    /// `remote.hosts`, en minuscules.
+    pub hosts: Vec<String>,
+    /// Certificat et clé fournis (`remote.tlsCert`, `remote.tlsKey`), ou aucun.
+    pub tls_files: Option<(String, String)>,
+}
+
+/// Un nom de `remote.hosts` : une adresse IP, ou un nom DNS (lettres, chiffres, tirets,
+/// points ; 253 caractères au plus, 63 par partie).
+pub fn valid_host_name(name: &str) -> bool {
+    if name.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let name = name.strip_suffix('.').unwrap_or(name);
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+/// Réglages de l'écoute de l'interface distante.
+pub fn remote_config(conn: &Connection) -> Result<RemoteConfig, StoreError> {
+    let hosts = match get(conn, REMOTE_HOSTS)? {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v.as_str() {
+                Some(name) if valid_host_name(name) => Ok(name.to_ascii_lowercase()),
+                _ => Err(StoreError::BadValue(format!(
+                    "réglage {REMOTE_HOSTS} : {v} n'est pas un nom"
+                ))),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(v) => {
+            return Err(StoreError::BadValue(format!(
+                "réglage {REMOTE_HOSTS} : {v} n'est pas une liste"
+            )));
+        }
+    };
+    let path = |key: &str| match get(conn, key)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) => Ok(Some(path)),
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {key} : {v} n'est pas un chemin"
+        ))),
+    };
+    let tls_files = match (path(REMOTE_TLS_CERT)?, path(REMOTE_TLS_KEY)?) {
+        (Some(cert), Some(key)) => Some((cert, key)),
+        _ => None,
+    };
+    Ok(RemoteConfig {
+        listen: remote_listen(conn)?,
+        hosts,
+        tls_files,
+    })
+}
+
+/// Remplace les noms ajoutés de l'interface distante (vérifiés par l'appelant).
+pub fn set_remote_hosts(conn: &Connection, hosts: &[String]) -> Result<(), StoreError> {
+    let value = if hosts.is_empty() {
+        Value::Null
+    } else {
+        Value::from(
+            hosts
+                .iter()
+                .map(|h| h.to_ascii_lowercase())
+                .collect::<Vec<_>>(),
+        )
+    };
+    set(conn, REMOTE_HOSTS, &value)
+}
+
+/// Certificat et clé fournis, ou `None` pour celui fabriqué par le moteur ; les deux
+/// ensemble, dans une transaction.
+pub fn set_remote_tls(
+    conn: &mut Connection,
+    files: Option<(&str, &str)>,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    let (cert, key) = files.map_or((Value::Null, Value::Null), |(c, k)| {
+        (Value::from(c), Value::from(k))
+    });
+    set(&tx, REMOTE_TLS_CERT, &cert)?;
+    set(&tx, REMOTE_TLS_KEY, &key)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Longueur maximale du nom d'une interface (caractères).
 pub const INTERFACE_NAME_MAX: usize = 256;
 
@@ -338,6 +451,51 @@ mod tests {
         assert_eq!(download_dir(&conn).unwrap(), None);
         set(&conn, DOWNLOAD_DIR, &Value::from(3)).unwrap();
         assert!(download_dir(&conn).is_err());
+    }
+
+    /// Noms ajoutés et certificat fourni de l'interface distante (SPEC §7.19, étape 3b).
+    #[test]
+    fn remote_hosts_and_certificate_files_are_kept_together() {
+        let mut conn = open_in_memory().unwrap();
+        let config = remote_config(&conn).unwrap();
+        assert!(config.hosts.is_empty() && config.tls_files.is_none());
+        assert_eq!(config.listen.to_string(), REMOTE_DEFAULT_LISTEN);
+        set_remote_hosts(&conn, &["NAS.maison".to_owned(), "192.168.1.20".to_owned()]).unwrap();
+        set_remote_tls(&mut conn, Some(("/etc/c.pem", "/etc/k.pem"))).unwrap();
+        let config = remote_config(&conn).unwrap();
+        assert_eq!(config.hosts, ["nas.maison", "192.168.1.20"]);
+        assert_eq!(
+            config.tls_files,
+            Some(("/etc/c.pem".to_owned(), "/etc/k.pem".to_owned()))
+        );
+        set_remote_hosts(&conn, &[]).unwrap();
+        set_remote_tls(&mut conn, None).unwrap();
+        let config = remote_config(&conn).unwrap();
+        assert!(config.hosts.is_empty() && config.tls_files.is_none());
+
+        for good in [
+            "nas",
+            "nas.local",
+            "a-b.example.org.",
+            "10.0.0.1",
+            "fe80::1",
+        ] {
+            assert!(valid_host_name(good), "{good}");
+        }
+        let long_label = "a".repeat(64);
+        for bad in [
+            "",
+            ".",
+            "-nas",
+            "nas-",
+            "a..b",
+            "nas:443",
+            "n as",
+            "*.example",
+            &long_label,
+        ] {
+            assert!(!valid_host_name(bad), "{bad}");
+        }
     }
 
     #[test]

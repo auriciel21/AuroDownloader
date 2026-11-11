@@ -706,6 +706,9 @@ enum Command {
     SetTorrentInterface(Option<String>, Reply<()>),
     RemoteListen(Reply<std::net::SocketAddr>),
     SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
+    RemoteConfig(Reply<settings::RemoteConfig>),
+    SetRemoteHosts(Vec<String>, Reply<()>),
+    SetRemoteTls(Option<(String, String)>, Reply<()>),
     SetFiles(String, Vec<u32>, Reply<TaskRow>),
     ListSchedules(Reply<Vec<ScheduleView>>),
     SetSchedule {
@@ -743,6 +746,8 @@ pub struct Engine {
     tools: Option<Arc<media::tools::Tools>>,
     /// État de l'écoute de l'interface distante (SPEC §7.19), partagé par les copies.
     remote_state: Arc<std::sync::Mutex<crate::remote::RemoteState>>,
+    /// Dossier de la base : certificat fabriqué de l'interface distante (SPEC §7.19).
+    data_dir: PathBuf,
     /// Poignée d'une connexion à jeton (SPEC §7.19) : ajouts et déplacements sous le dossier
     /// des téléchargements ; voir [`Engine::restricted`].
     remote: bool,
@@ -756,6 +761,11 @@ impl Engine {
     /// Demande un environnement d'exécution `tokio`.
     pub fn start(mut config: Config) -> Result<Engine, EngineError> {
         let mut conn = store::open(&config.db_path)?;
+        let data_dir = config
+            .db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
         // Déplacements interrompus par un arrêt : finis ou annulés avant toute exécution
         // (SPEC §7.12).
         crate::moves::recover(&mut conn)?;
@@ -814,6 +824,7 @@ impl Engine {
             public_only: false,
             remote: false,
             remote_state: Arc::default(),
+            data_dir,
         })
     }
 
@@ -1134,6 +1145,29 @@ impl Engine {
     ) -> Result<std::net::SocketAddr, EngineError> {
         self.ask(|reply| Command::SetRemoteListen(addr, reply))
             .await
+    }
+
+    /// Réglages de l'écoute de l'interface distante (SPEC §7.19).
+    pub async fn remote_config(&self) -> Result<settings::RemoteConfig, EngineError> {
+        self.ask(Command::RemoteConfig).await
+    }
+
+    /// Remplace les noms ajoutés de l'interface distante (`remote.hosts`) : noms DNS ou
+    /// adresses IP, [`settings::REMOTE_HOSTS_MAX`] au plus.
+    pub async fn set_remote_hosts(&self, hosts: Vec<String>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetRemoteHosts(hosts, reply))
+            .await
+    }
+
+    /// Certificat et clé fournis (chemins absolus de fichiers PEM), ou `None` pour celui
+    /// que le moteur fabrique (SPEC §7.19, étape 3b). Lus à l'ouverture de l'écoute.
+    pub async fn set_remote_tls(&self, files: Option<(String, String)>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetRemoteTls(files, reply)).await
+    }
+
+    /// Dossier de la base du moteur.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// État de l'écoute de l'interface distante, tenu par `remote::run`.
@@ -2333,6 +2367,15 @@ impl Scheduler {
             }
             Command::SetRemoteListen(addr, reply) => {
                 let _ = reply.send(self.set_remote_listen(addr));
+            }
+            Command::RemoteConfig(reply) => {
+                let _ = reply.send(settings::remote_config(&self.conn).map_err(Into::into));
+            }
+            Command::SetRemoteHosts(hosts, reply) => {
+                let _ = reply.send(self.set_remote_hosts(hosts));
+            }
+            Command::SetRemoteTls(files, reply) => {
+                let _ = reply.send(self.set_remote_tls(files));
             }
             Command::SetFiles(task_id, selected, reply) => {
                 let _ = reply.send(self.set_files(&task_id, &selected));
@@ -3731,6 +3774,71 @@ impl Scheduler {
             value: serde_json::Value::from(effective.to_string()),
         });
         Ok(effective)
+    }
+
+    fn set_remote_hosts(&mut self, hosts: Vec<String>) -> Result<(), EngineError> {
+        if hosts.len() > settings::REMOTE_HOSTS_MAX {
+            return Err(EngineError::BadRequest(format!(
+                "{} : {} noms au plus",
+                settings::REMOTE_HOSTS,
+                settings::REMOTE_HOSTS_MAX
+            )));
+        }
+        if let Some(bad) = hosts.iter().find(|h| !settings::valid_host_name(h)) {
+            return Err(EngineError::BadRequest(format!(
+                "{} : {bad} n'est ni un nom DNS ni une adresse IP",
+                settings::REMOTE_HOSTS
+            )));
+        }
+        let mut kept: Vec<String> = Vec::new();
+        for host in hosts {
+            let host = host.to_ascii_lowercase();
+            if !kept.contains(&host) {
+                kept.push(host);
+            }
+        }
+        settings::set_remote_hosts(&self.conn, &kept)?;
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::REMOTE_HOSTS,
+            value: serde_json::Value::from(kept),
+        });
+        Ok(())
+    }
+
+    fn set_remote_tls(&mut self, files: Option<(String, String)>) -> Result<(), EngineError> {
+        if let Some((cert, key)) = &files {
+            for (setting, path) in [
+                (settings::REMOTE_TLS_CERT, cert),
+                (settings::REMOTE_TLS_KEY, key),
+            ] {
+                if !Path::new(path).is_absolute() {
+                    return Err(EngineError::BadRequest(format!(
+                        "{setting} : un chemin absolu est attendu"
+                    )));
+                }
+            }
+        }
+        settings::set_remote_tls(
+            &mut self.conn,
+            files.as_ref().map(|(c, k)| (c.as_str(), k.as_str())),
+        )?;
+        let (cert, key) = files.map_or(
+            (serde_json::Value::Null, serde_json::Value::Null),
+            |(c, k)| (c.into(), k.into()),
+        );
+        // Deux annonces ; l'écoute ne repart qu'une fois (elle compare ses réglages).
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::REMOTE_TLS_CERT,
+            value: cert,
+        });
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::REMOTE_TLS_KEY,
+            value: key,
+        });
+        Ok(())
     }
 
     fn set_torrent_interface(&mut self, name: Option<String>) -> Result<(), EngineError> {

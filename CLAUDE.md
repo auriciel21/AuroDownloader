@@ -106,7 +106,11 @@ téléchargement.
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
-  `/logout` ; `Host` et `Origin` vérifiés), `store::remote`, `net::reach` (réseau public
+  `/logout` ; `Host` et `Origin` vérifiés ; TLS hors de la boucle locale), `remote::tls` (certificat
+  fabriqué à côté de la base, `remote-cert.pem` et `remote-key.pem` lisible par l'utilisateur
+  seul, 824 jours, refait à 30 jours ou quand un nom manque ; ou fourni par
+  `remote.tlsCert` et `remote.tlsKey`), `winsec` (droits Windows réservés à l'utilisateur :
+  canal nommé, clé), `store::remote`, `net::reach` (réseau public
   seulement : résolveur filtrant, `Client::restricted`), `Engine::restricted` (poignée
   d'une connexion à jeton : dossier des téléchargements, `tasks.public_only`),
   `rpc::serve_messages` (tout transport) ; méthodes `token.*` et `remote.status`.
@@ -272,6 +276,7 @@ cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; li
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
 cargo run -p auro-cli -- remote enable --listen 127.0.0.1:7380 ; remote ; remote disable
+cargo run -p auro-cli -- remote hosts nas.maison ; remote cert --file c.pem --key k.pem ; remote cert --generated
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear
 cargo run -p auro-cli -- history [texte] [--csv] ; history --clear

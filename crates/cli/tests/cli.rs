@@ -569,16 +569,53 @@ async fn the_remote_interface_is_opened_moved_and_closed() {
     let listen = format!("127.0.0.1:{port}");
     let opened = ok(&ep, &["remote", "enable", "--listen", &listen]).await;
     assert!(
-        opened.contains(&format!("ouverte sur http://{listen}")),
+        opened.contains(&format!("ouverte sur {listen}"))
+            && opened.contains(&format!("http://{listen}")),
         "{opened}"
     );
     assert!(tokio::net::TcpStream::connect(&listen).await.is_ok());
 
+    // Noms ajoutés : remplacés, vérifiés, effacés.
+    let named = ok(&ep, &["remote", "hosts", "NAS.maison", "192.168.1.9"]).await;
+    assert!(
+        named.contains("Noms ajoutés : nas.maison, 192.168.1.9")
+            && named.contains(&format!("http://nas.maison:{port}")),
+        "{named}"
+    );
+    assert!(
+        !auro(&ep, &["remote", "hosts", "pas un nom"])
+            .await
+            .status
+            .success()
+    );
+    let cleared = ok(&ep, &["remote", "hosts", "--clear"]).await;
+    assert!(!cleared.contains("Noms ajoutés"), "{cleared}");
+    // Certificat fourni : chemins rendus absolus ; puis retour à celui du moteur.
+    let provided = ok(
+        &ep,
+        &["remote", "cert", "--file", "c.pem", "--key", "k.pem"],
+    )
+    .await;
+    let cert = std::path::absolute("c.pem").unwrap();
+    assert!(
+        provided.contains(&format!("Certificat fourni : {}", cert.display())),
+        "{provided}"
+    );
+    let generated = ok(&ep, &["remote", "cert", "--generated"]).await;
+    assert!(!generated.contains("Certificat fourni"), "{generated}");
+    assert!(
+        !auro(&ep, &["remote", "cert", "--file", "c.pem"])
+            .await
+            .status
+            .success()
+    );
+
     let private = ok(&ep, &["remote", "allow-private", "on"]).await;
     assert!(private.contains("permis"), "{private}");
+    // Hors de la boucle locale : en TLS ; cette adresse n'est pas à la machine.
     let refused = ok(&ep, &["remote", "enable", "--listen", "192.0.2.10:7380"]).await;
     assert!(
-        refused.contains("fermée") && refused.contains("TLS"),
+        refused.contains("fermée") && refused.contains("écoute impossible"),
         "{refused}"
     );
     let closed = ok(&ep, &["remote", "disable"]).await;

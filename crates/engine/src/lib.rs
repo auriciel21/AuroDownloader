@@ -34,3 +34,5 @@ pub mod store;
 pub mod testing;
 pub mod torrent;
 pub mod transfer;
+#[cfg(windows)]
+pub(crate) mod winsec;

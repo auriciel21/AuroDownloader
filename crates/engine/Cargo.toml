@@ -9,7 +9,7 @@ publish.workspace = true
 
 [features]
 # Serveur HTTP et HTTPS de test (module `testing`), pour les tests des autres paquets.
-testing = ["dep:rcgen", "rustls/aws_lc_rs"]
+testing = []
 
 [dependencies]
 # Erreurs des traits de librqbit (stockage du module `torrent`).
@@ -38,11 +38,13 @@ md-5 = "0.10.6"
 percent-encoding = "2.3.2"
 # Fichiers Metalink (F-27) ; déjà présent par librqbit-upnp (MIT).
 quick-xml = "0.41.0"
-# Seulement pour la fonctionnalité `testing` : autorité de certification du serveur HTTPS.
-rcgen = { version = "0.14.7", optional = true, default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+# Certificat auto-signé de l'interface distante (SPEC §7.19, étape 3b), et autorité de
+# certification du serveur HTTPS de test (fonctionnalité `testing`).
+rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
-# Seulement pour reconnaître un certificat refusé dans la chaîne d'erreurs de reqwest.
-rustls = { version = "0.23.46", default-features = false, features = ["std"] }
+# Certificat refusé dans la chaîne d'erreurs de reqwest ; serveur TLS de l'interface
+# distante (aws-lc, comme le reste du moteur).
+rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Protocole JSON-RPC (module `rpc`).
 serde_json = "1.0.154"
@@ -51,7 +53,13 @@ serde_json = "1.0.154"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2.0.21"
+# Dates du certificat fabriqué (type de rcgen) ; déjà tirée par rcgen.
+time = { version = "0.3.45", default-features = false }
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+# TLS de l'interface distante sur une connexion tokio ; déjà tirée par reqwest.
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["tls12"] }
+# Fin de validité et noms d'un certificat (interface distante, SPEC §7.19).
+x509-parser = "0.18.1"
 uuid = { version = "1.26.1", features = ["v4", "v7"] }
 # Signature des publications de yt-dlp (SPEC §7.17, `media::openpgp`) : RSA PKCS #1 ;
 # déjà tirée par librqbit et rustls.
@@ -81,6 +89,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Console",
     # Mise en veille, action de fin d'une planification (`power`).
     "Win32_System_Power",
+    # Nom DNS de la machine, porté par le certificat de l'interface distante.
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
 # Archive de ffmpeg sous Windows (builds BtbN, SPEC §7.17, `media::tools`).

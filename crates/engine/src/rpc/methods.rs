@@ -20,7 +20,8 @@ use crate::scheduler::{
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
 use crate::store::settings::{
-    self, DOWNLOAD_DIR, Flag, REMOTE_LISTEN, TORRENT_INTERFACE, TORRENT_RATIO,
+    self, DOWNLOAD_DIR, Flag, REMOTE_HOSTS, REMOTE_LISTEN, REMOTE_TLS_CERT, REMOTE_TLS_KEY,
+    TORRENT_INTERFACE, TORRENT_RATIO,
 };
 use crate::store::tasks::{TaskFilter, TaskState};
 use crate::transfer::MAX_CONNECTIONS;
@@ -351,11 +352,24 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         // État de l'écoute de l'interface distante (SPEC §7.19).
         "remote.status" => {
             let state = ctx.engine.remote_state();
+            let certificate = state.certificate.as_ref().map(|c| {
+                json!({
+                    "fingerprint": c.fingerprint,
+                    "expiresAt": c.expires_at,
+                    "generated": c.generated,
+                    "names": c.names,
+                })
+            });
             Ok(json!({
                 "enabled": state.enabled,
                 "listen": state.listen,
                 "listening": state.listening,
                 "error": state.error,
+                "tls": state.tls,
+                "certificate": certificate,
+                "urls": state.urls,
+                "hosts": state.hosts,
+                "tlsCert": state.tls_cert,
             }))
         }
         "token.revoke" => {
@@ -390,13 +404,63 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     && *k != TORRENT_RATIO
                     && *k != TORRENT_INTERFACE
                     && *k != REMOTE_LISTEN
+                    && *k != REMOTE_HOSTS
+                    && *k != REMOTE_TLS_CERT
+                    && *k != REMOTE_TLS_KEY
                     && Flag::from_key(k).is_none()
             }) {
                 let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
                     "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, \
-                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {REMOTE_LISTEN}, {})",
+                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {REMOTE_LISTEN}, {REMOTE_HOSTS}, \
+                     {REMOTE_TLS_CERT}, {REMOTE_TLS_KEY}, {})",
                     known.join(", ")
+                )));
+            }
+            // Noms ajoutés de l'interface distante (SPEC §7.19) : liste de noms, ou null.
+            let hosts = match values.get(REMOTE_HOSTS) {
+                None => None,
+                Some(Value::Null) => Some(Vec::new()),
+                Some(Value::Array(items)) => Some(
+                    items
+                        .iter()
+                        .map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or_else(|| Params::wrong(REMOTE_HOSTS, "liste de noms ou null"))?,
+                ),
+                Some(_) => return Err(Params::wrong(REMOTE_HOSTS, "liste de noms ou null")),
+            };
+            // Certificat fourni (SPEC §7.19, étape 3b) : les deux chemins ensemble, ou les
+            // deux à null pour celui que fabrique le moteur.
+            let tls_files = match (values.get(REMOTE_TLS_CERT), values.get(REMOTE_TLS_KEY)) {
+                (None, None) => None,
+                (Some(Value::Null), Some(Value::Null)) => Some(None),
+                (Some(Value::String(cert)), Some(Value::String(key))) => {
+                    Some(Some((cert.clone(), key.clone())))
+                }
+                _ => {
+                    return Err(RpcError::invalid_params(format!(
+                        "{REMOTE_TLS_CERT} et {REMOTE_TLS_KEY} : deux chemins, ou deux null, \
+                         donnés ensemble"
+                    )));
+                }
+            };
+            // Vérifiés ici aussi, avant tout changement (le moteur les revérifie).
+            if let Some(hosts) = &hosts
+                && (hosts.len() > settings::REMOTE_HOSTS_MAX
+                    || !hosts.iter().all(|h| settings::valid_host_name(h)))
+            {
+                return Err(Params::wrong(
+                    REMOTE_HOSTS,
+                    "noms DNS ou adresses IP, 32 au plus",
+                ));
+            }
+            if let Some(Some((cert, key))) = &tls_files
+                && !(std::path::Path::new(cert).is_absolute()
+                    && std::path::Path::new(key).is_absolute())
+            {
+                return Err(RpcError::invalid_params(format!(
+                    "{REMOTE_TLS_CERT}, {REMOTE_TLS_KEY} : chemins absolus attendus"
                 )));
             }
             // Ratio de partage des torrents (SPEC §7.16) : un nombre positif ou nul, ou null
@@ -469,6 +533,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             }
             if let Some(listen) = listen {
                 ctx.engine.set_remote_listen(listen).await?;
+            }
+            if let Some(hosts) = hosts {
+                ctx.engine.set_remote_hosts(hosts).await?;
+            }
+            if let Some(files) = tls_files {
+                ctx.engine.set_remote_tls(files).await?;
             }
             if let Some(value) = values.get(DOWNLOAD_DIR) {
                 let dir = match value {
@@ -633,7 +703,12 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let ratio = ratio.map_or(Value::Null, Value::from);
     let interface = ctx.engine.torrent_interface().await?;
     let mut values = settings_json(dir, &flags, ratio, interface);
-    values[REMOTE_LISTEN] = json!(ctx.engine.remote_listen().await?.to_string());
+    let remote = ctx.engine.remote_config().await?;
+    values[REMOTE_LISTEN] = json!(remote.listen.to_string());
+    values[REMOTE_HOSTS] = json!(remote.hosts);
+    let (cert, key) = remote.tls_files.unzip();
+    values[REMOTE_TLS_CERT] = json!(cert);
+    values[REMOTE_TLS_KEY] = json!(key);
     Ok(json!({"values": values}))
 }
 

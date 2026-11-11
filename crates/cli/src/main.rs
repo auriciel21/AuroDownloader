@@ -524,12 +524,35 @@ enum LoginAction {
 enum RemoteAction {
     /// État : réglages et écoute (par défaut)
     Status,
-    /// Ouvre l'interface distante (127.0.0.1:7380 par défaut ; hors de la boucle locale,
-    /// TLS sera exigé)
+    /// Ouvre l'interface distante (127.0.0.1:7380 par défaut ; hors de la boucle locale, en
+    /// TLS, avec un certificat fabriqué par le moteur ou fourni)
     Enable {
-        /// Adresse et port d'écoute, par exemple 127.0.0.1:7380
+        /// Adresse et port d'écoute : 127.0.0.1:7380 (cette machine seulement),
+        /// 0.0.0.0:7380 (toutes ses adresses, en TLS), 192.168.1.20:7380…
         #[arg(long)]
         listen: Option<String>,
+    },
+    /// Noms ajoutés, acceptés et portés par le certificat fabriqué (nom DNS ou adresse IP)
+    Hosts {
+        /// Les noms (remplacent les précédents)
+        #[arg(required_unless_present = "clear")]
+        names: Vec<String>,
+        /// Aucun nom ajouté
+        #[arg(long, conflicts_with = "names")]
+        clear: bool,
+    },
+    /// Certificat de l'écoute en TLS : fourni (fichiers PEM), ou celui fabriqué par le
+    /// moteur
+    Cert {
+        /// Certificat (chaîne PEM)
+        #[arg(long, requires = "key", conflicts_with = "generated")]
+        file: Option<String>,
+        /// Sa clé privée (PEM), lue par le moteur à chaque ouverture, jamais copiée
+        #[arg(long, requires = "file")]
+        key: Option<String>,
+        /// Revenir au certificat fabriqué par le moteur
+        #[arg(long, required_unless_present = "file")]
+        generated: bool,
     },
     /// Ferme l'interface distante ; ses connexions se ferment
     Disable,
@@ -913,13 +936,40 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Remote { action } => match action.unwrap_or(RemoteAction::Status) {
                     RemoteAction::Status => remote::remote_status(&mut rpc).await,
                     RemoteAction::Enable { listen } => {
-                        remote::remote_set(&mut rpc, Some(true), listen.as_deref(), None).await
+                        let change = remote::RemoteChange {
+                            enabled: Some(true),
+                            listen: listen.as_deref(),
+                            ..Default::default()
+                        };
+                        remote::remote_set(&mut rpc, change).await
                     }
                     RemoteAction::Disable => {
-                        remote::remote_set(&mut rpc, Some(false), None, None).await
+                        let change = remote::RemoteChange {
+                            enabled: Some(false),
+                            ..Default::default()
+                        };
+                        remote::remote_set(&mut rpc, change).await
                     }
                     RemoteAction::AllowPrivate { value } => {
-                        remote::remote_set(&mut rpc, None, None, Some(value == "on")).await
+                        let change = remote::RemoteChange {
+                            allow_private: Some(value == "on"),
+                            ..Default::default()
+                        };
+                        remote::remote_set(&mut rpc, change).await
+                    }
+                    RemoteAction::Hosts { names, clear } => {
+                        let change = remote::RemoteChange {
+                            hosts: Some(if clear { Vec::new() } else { names }),
+                            ..Default::default()
+                        };
+                        remote::remote_set(&mut rpc, change).await
+                    }
+                    RemoteAction::Cert { file, key, .. } => {
+                        let change = remote::RemoteChange {
+                            tls_files: Some(file.zip(key)),
+                            ..Default::default()
+                        };
+                        remote::remote_set(&mut rpc, change).await
                     }
                 },
                 Command::Token { action } => match action {

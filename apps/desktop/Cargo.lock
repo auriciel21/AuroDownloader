@@ -401,10 +401,13 @@ dependencies = [
  "sha2",
  "tar",
  "thiserror 2.0.21",
+ "time",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "uuid",
  "windows-sys 0.61.2",
+ "x509-parser",
  "xz2",
  "zip",
 ]

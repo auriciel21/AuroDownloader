@@ -180,7 +180,7 @@ pub fn system_interfaces() -> Vec<String> {
 
 /// Une adresse où l'interface est joignable : pas une adresse locale au lien (169.254/16,
 /// fe80::/10), que Windows donne à une carte sans configuration.
-fn usable_addr(ip: &IpAddr) -> bool {
+pub(crate) fn usable_addr(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
         IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) != 0xfe80 && !v6.is_unspecified(),

@@ -38,7 +38,9 @@ fn engine(dir: &Path) -> Engine {
 async fn listening(engine: &Engine) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(server::serve(engine.clone(), listener));
+    let names = super::tls::known_names(&[]);
+    let plain = server::Listening { tls: None, names };
+    tokio::spawn(server::serve(engine.clone(), listener, plain));
     addr
 }
 
@@ -65,7 +67,21 @@ async fn http(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Answer {
-    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let stream = TcpStream::connect(addr).await.unwrap();
+    exchange(stream, method, path, headers, body).await
+}
+
+/// Une requête écrite telle quelle sur une connexion déjà ouverte (TLS ou non).
+async fn exchange<S>(
+    mut stream: S,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Answer
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut request = format!("{method} {path} HTTP/1.1\r\n");
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
@@ -75,11 +91,12 @@ async fn http(
         body.len()
     ));
     stream.write_all(request.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
     let mut raw = Vec::new();
-    timeout(WAIT, stream.read_to_end(&mut raw))
+    // Une fin sans `close_notify` (ou une connexion coupée) garde ce qui a été lu.
+    let _ = timeout(WAIT, stream.read_to_end(&mut raw))
         .await
-        .expect("pas de réponse")
-        .unwrap();
+        .expect("pas de réponse");
     let text = String::from_utf8_lossy(&raw).into_owned();
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     let status = head
@@ -439,10 +456,14 @@ async fn the_listener_follows_its_settings() {
         "l'ancienne écoute est fermée"
     );
 
+    // Hors de la boucle locale : en TLS ; une adresse qui n'est pas à la machine ne s'ouvre
+    // pas (le certificat n'est fabriqué qu'une fois le port ouvert).
     let outside: SocketAddr = "192.0.2.10:7380".parse().unwrap();
     engine.set_remote_listen(Some(outside)).await.unwrap();
     let state = state_until(&engine, |s| s.error.is_some()).await;
-    assert!(!state.listening && state.error.unwrap().contains("TLS"));
+    assert!(state.tls && !state.listening, "{state:?}");
+    assert!(state.error.unwrap().contains("écoute impossible"));
+    assert!(!dir.path().join(super::tls::CERT_FILE).exists());
 
     engine.set_remote_listen(Some(second)).await.unwrap();
     state_until(&engine, |s| s.listening).await;
@@ -454,5 +475,362 @@ async fn the_listener_follows_its_settings() {
     assert_eq!(
         engine.remote_listen().await.unwrap().to_string(),
         crate::store::settings::REMOTE_DEFAULT_LISTEN
+    );
+}
+
+/// Client TLS qui n'accepte que le certificat de cette empreinte : ce que fait
+/// l'utilisateur qui la compare dans son navigateur.
+#[derive(Debug)]
+struct Pinned {
+    fingerprint: String,
+    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if super::tls::fingerprint(end_entity) == self.fingerprint {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("empreinte différente".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+type Tls = tokio_rustls::client::TlsStream<TcpStream>;
+
+async fn tls_connect(addr: SocketAddr, fingerprint: &str) -> std::io::Result<Tls> {
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = Pinned {
+        fingerprint: fingerprint.to_owned(),
+        provider: provider.clone(),
+    };
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+    let tcp = TcpStream::connect(addr).await?;
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    connector.connect(name, tcp).await
+}
+
+async fn https(
+    addr: SocketAddr,
+    fingerprint: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Answer {
+    let stream = tls_connect(addr, fingerprint).await.unwrap();
+    exchange(stream, method, path, headers, body).await
+}
+
+fn free_port() -> SocketAddr {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    probe.local_addr().unwrap()
+}
+
+/// L'écoute en TLS (forcée ici sur la boucle locale, comme hors d'elle) : certificat
+/// fabriqué à côté de la base, son empreinte dans l'état ; requêtes, session `Secure` et
+/// WebSocket chiffrés ; refus d'un client en clair ou qui attend un autre certificat ;
+/// certificat refait quand un nom manque, repris sinon ; certificat fourni.
+#[tokio::test]
+async fn the_network_listener_serves_tls_with_its_certificate() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let (_, token) = engine.create_token("téléphone", "control").await.unwrap();
+    tokio::spawn(super::supervise(engine.clone(), true));
+    let addr = free_port();
+    engine.set_remote_listen(Some(addr)).await.unwrap();
+    engine.set_flag(Flag::RemoteEnabled, true).await.unwrap();
+    let state = state_until(&engine, |s| s.listening).await;
+    assert!(state.tls, "{state:?}");
+    assert_eq!(state.urls, [format!("https://{addr}")]);
+    let cert = state.certificate.expect("certificat");
+    assert!(cert.generated);
+    assert!(cert.names.contains(&"127.0.0.1".to_owned()), "{cert:?}");
+    assert!(dir.path().join(super::tls::CERT_FILE).exists());
+    assert!(dir.path().join(super::tls::KEY_FILE).exists());
+    let fp = cert.fingerprint.clone();
+
+    let host = format!("127.0.0.1:{}", addr.port());
+    let bearer = format!("Bearer {token}");
+    let ok = [
+        ("Host", host.as_str()),
+        ("Authorization", bearer.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let answer = https(addr, &fp, "POST", "/rpc", &ok, &hello()).await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    // L'origine de la page est en `https` : celle en `http` est étrangère.
+    let mut from_http = ok.to_vec();
+    let http_origin = format!("http://{host}");
+    from_http.push(("Origin", &http_origin));
+    assert_eq!(
+        https(addr, &fp, "POST", "/rpc", &from_http, &hello())
+            .await
+            .status,
+        403
+    );
+    // En clair sur le port TLS : aucune réponse HTTP.
+    assert_eq!(http(addr, "POST", "/rpc", &ok, &hello()).await.status, 0);
+    // Un client qui attend un autre certificat (attaquant au milieu) : refusé.
+    assert!(tls_connect(addr, "00:11").await.is_err());
+
+    // Session du navigateur : cookie `Secure`.
+    let origin = format!("https://{host}");
+    let login = [
+        ("Host", host.as_str()),
+        ("Origin", origin.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let body = json!({"token": token}).to_string();
+    let answer = https(addr, &fp, "POST", "/login", &login, &body).await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let set_cookie = answer.header("Set-Cookie").unwrap();
+    assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    let session = set_cookie.split(';').next().unwrap().to_owned();
+
+    // WebSocket chiffré, ouvert par le cookie depuis la page.
+    let mut request = format!("wss://127.0.0.1:{}/ws", addr.port())
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", HeaderValue::from_str(&origin).unwrap());
+    request
+        .headers_mut()
+        .insert("Cookie", HeaderValue::from_str(&session).unwrap());
+    let stream = tls_connect(addr, &fp).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap();
+    socket.send(Message::text(hello())).await.unwrap();
+    let reply = next_text(&mut socket).await.unwrap();
+    assert_eq!(reply["result"]["scope"], "control", "{reply}");
+    drop(socket);
+
+    // Un nom ajouté : le certificat est refait, et `Host` l'accepte.
+    engine
+        .set_remote_hosts(vec!["NAS.maison".to_owned()])
+        .await
+        .unwrap();
+    let state = state_until(&engine, |s| {
+        s.listening
+            && s.certificate
+                .as_ref()
+                .is_some_and(|c| c.names.contains(&"nas.maison".to_owned()))
+    })
+    .await;
+    let second = state.certificate.unwrap().fingerprint;
+    assert_ne!(second, fp);
+    assert!(
+        state
+            .urls
+            .contains(&format!("https://nas.maison:{}", addr.port()))
+    );
+    let nas = format!("nas.maison:{}", addr.port());
+    let by_name = [
+        ("Host", nas.as_str()),
+        ("Authorization", bearer.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    assert_eq!(
+        https(addr, &second, "POST", "/rpc", &by_name, &hello())
+            .await
+            .status,
+        200
+    );
+    // Retiré : le certificat, qui le porte encore, est repris tel quel.
+    engine.set_remote_hosts(Vec::new()).await.unwrap();
+    let state = state_until(&engine, |s| s.listening && s.urls.len() == 1).await;
+    assert_eq!(state.certificate.unwrap().fingerprint, second);
+    assert_eq!(
+        https(addr, &second, "POST", "/rpc", &by_name, &hello())
+            .await
+            .status,
+        421
+    );
+
+    // Certificat fourni ; un fichier absent coupe l'écoute, avec la raison.
+    let other = tempfile::tempdir().unwrap();
+    let names = super::tls::wanted_names(addr, &[]);
+    let mine = super::tls::generated(other.path(), &names, crate::store::now_ms()).unwrap();
+    let path = |name: &str| other.path().join(name).to_string_lossy().into_owned();
+    engine
+        .set_remote_tls(Some((
+            path(super::tls::CERT_FILE),
+            path(super::tls::KEY_FILE),
+        )))
+        .await
+        .unwrap();
+    let state = state_until(&engine, |s| {
+        s.listening && s.certificate.as_ref().is_some_and(|c| !c.generated)
+    })
+    .await;
+    assert_eq!(state.certificate.unwrap().fingerprint, mine.fingerprint);
+    assert_eq!(
+        https(addr, &mine.fingerprint, "POST", "/rpc", &ok, &hello())
+            .await
+            .status,
+        200
+    );
+    engine
+        .set_remote_tls(Some((path("absent.pem"), path(super::tls::KEY_FILE))))
+        .await
+        .unwrap();
+    let state = state_until(&engine, |s| s.error.is_some()).await;
+    assert!(!state.listening);
+    assert!(state.error.unwrap().contains("absent.pem"));
+    // Retour au certificat fabriqué, toujours le même.
+    engine.set_remote_tls(None).await.unwrap();
+    let state = state_until(&engine, |s| s.listening).await;
+    assert_eq!(state.certificate.unwrap().fingerprint, second);
+    // Chemin relatif : refusé.
+    assert!(
+        engine
+            .set_remote_tls(Some(("c.pem".to_owned(), "k.pem".to_owned())))
+            .await
+            .is_err()
+    );
+}
+
+/// Valeurs de `Host` acceptées (SPEC §7.19) : adresses IP en chiffres et noms connus, avec
+/// le bon port ; sans port, seulement sur celui par défaut du protocole.
+#[test]
+fn host_values_name_this_server_only() {
+    let rule = server::HostRule::new(7380, true, vec!["localhost".into(), "nas.local".into()]);
+    for good in [
+        "127.0.0.1:7380",
+        "192.168.1.20:7380",
+        "[::1]:7380",
+        "[fe80::1]:7380",
+        "localhost:7380",
+        "NAS.local:7380",
+        "nas.local.:7380",
+    ] {
+        assert!(rule.accepts(good), "{good}");
+    }
+    for bad in [
+        "attaquant.example:7380",
+        "192.168.1.20:7381",
+        "192.168.1.20",
+        "nas.local",
+        "[::1]",
+        "::1:7380",
+        "[::1]x:7380",
+        "192.168.1.20:+7380",
+        "192.168.1.20: 7380",
+        "localhost:7380:7380",
+        "192.168.1.20.example:7380",
+        "",
+    ] {
+        assert!(!rule.accepts(bad), "{bad}");
+    }
+    let https = server::HostRule::new(443, true, vec!["nas.local".into()]);
+    assert!(https.accepts("nas.local") && https.accepts("10.0.0.2") && https.accepts("[::1]"));
+    assert!(https.accepts("nas.local:443") && !https.accepts("nas.local:80"));
+    let http = server::HostRule::new(80, false, vec![]);
+    assert!(http.accepts("127.0.0.1") && !http.accepts("localhost"));
+}
+
+/// Le certificat fabriqué arrive à 30 jours de son expiration pendant que l'écoute tourne :
+/// il est refait à cette échéance, sans changement de réglage, et l'écoute repart avec lui.
+#[tokio::test]
+async fn the_generated_certificate_is_renewed_when_due() {
+    use super::tls::{BACKDATE_S, RENEW_BEFORE_MS, VALIDITY_S};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let addr = free_port();
+    // Un certificat dont l'échéance tombe dans cinq secondes.
+    let due = crate::store::now_ms() + 5000;
+    let made_at = ((due + RENEW_BEFORE_MS) / 1000 + BACKDATE_S - VALIDITY_S) * 1000;
+    let names = super::tls::wanted_names(addr, &[]);
+    let old = super::tls::generated(dir.path(), &names, made_at).unwrap();
+    tokio::spawn(super::supervise(engine.clone(), true));
+    engine.set_remote_listen(Some(addr)).await.unwrap();
+    engine.set_flag(Flag::RemoteEnabled, true).await.unwrap();
+    let state = state_until(&engine, |s| s.listening).await;
+    assert_eq!(
+        state.certificate.unwrap().fingerprint,
+        old.fingerprint,
+        "repris tant que l'échéance n'est pas atteinte"
+    );
+    let mut renewed = None;
+    for i in 0..200 {
+        // D'autres événements du moteur, sans cesse (comme l'avancement des tâches) : ils
+        // ne repoussent pas l'échéance.
+        engine
+            .set_flag(Flag::TorrentUpnp, i % 2 == 0)
+            .await
+            .unwrap();
+        let state = engine.remote_state();
+        if let Some(cert) = state
+            .certificate
+            .filter(|c| c.fingerprint != old.fingerprint)
+        {
+            renewed = Some(cert);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let renewed = renewed.expect("certificat refait à l'échéance");
+    assert!(renewed.expires_at - crate::store::now_ms() > 800 * 24 * 3600 * 1000);
+    assert_eq!(
+        https(
+            addr,
+            &renewed.fingerprint,
+            "POST",
+            "/rpc",
+            &[("Host", &format!("127.0.0.1:{}", addr.port()))],
+            ""
+        )
+        .await
+        .status,
+        401
     );
 }
