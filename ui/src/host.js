@@ -18,6 +18,10 @@
 //   {available, enabled}.
 // - listes de liens (étape 2b), facultatives : pickList() rend le chemin d'un fichier texte
 //   ou CSV choisi, ou null ; readList(path) rend {name, text}. Sans elles, pas d'import.
+// - watchesClipboard (étape 2c) : l'hôte surveille le presse-papiers ; un lien choisi dans sa
+//   notification arrive par onOpened, {kind: "link", link} ou {kind: "magnet", link}.
+//   notificationsBlocked(), facultative : vrai quand le système n'affichera pas ces
+//   notifications (Windows : coupées en général ou pour l'application).
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -40,6 +44,10 @@ export function tauriHost() {
     pickTorrents: () => invoke("pick_torrents"),
     pickList: () => invoke("pick_list"),
     readList: (path) => invoke("read_list", { path }),
+    // Surveillance du presse-papiers par l'application (F-30), réglée par la préférence
+    // `watchClipboard`.
+    watchesClipboard: true,
+    notificationsBlocked: () => invoke("notifications_blocked"),
     linksStatus: () => invoke("links_status"),
     setLinks: (enabled) => invoke("set_links", { enabled }),
   };

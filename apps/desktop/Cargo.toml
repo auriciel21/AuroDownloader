@@ -24,6 +24,8 @@ auro-engine = { path = "../../crates/engine" }
 base64 = "0.22.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Presse-papiers (F-30, étape 2c) : texte seul, sans images.
+arboard = { version = "3", default-features = false }
 # Langue du système, pour le menu de l'icône avant que la page ne soit chargée.
 sys-locale = "0.3"
 tauri = { version = "2.12.5", features = ["tray-icon"] }
@@ -36,10 +38,14 @@ tokio = { version = "1.54.1", features = ["io-util", "macros", "rt", "sync", "ti
 # Association aux liens magnet et aux .torrent (clés de l'utilisateur), étape 5b.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# Notification d'un lien copié, avec le clic (F-30) : le greffon de Tauri ne le transmet pas.
+tauri-winrt-notification = "0.8"
 
 # Présence d'une zone de notification (`org.kde.StatusNotifierWatcher` sur le bus de session).
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+# Notification d'un lien copié, avec son action (F-30).
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 
 [dev-dependencies]
 auro-engine = { path = "../../crates/engine", features = ["testing"] }

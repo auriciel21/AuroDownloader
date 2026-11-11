@@ -658,6 +658,7 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 .metalink-list legend { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
 .metalink-list label.check { display: flex; padding: 2px 0; }
 #pref-interface-state.warn { color: var(--fail); }
+#pref-clipboard-off { color: var(--fail); }
 
 /* Historique (F-35). */
 .history-box {

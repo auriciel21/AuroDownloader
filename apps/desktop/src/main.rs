@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod clipboard;
 mod files;
 mod links;
 mod opened;
@@ -327,6 +328,12 @@ fn links_status() -> links::Status {
     links::status()
 }
 
+/// Windows n'affichera pas les notifications du presse-papiers (avertissement des Options).
+#[tauri::command]
+fn notifications_blocked(app: tauri::AppHandle) -> bool {
+    clipboard::notifications_blocked(&app)
+}
+
 #[tauri::command]
 fn set_links(enabled: bool) -> Result<links::Status, String> {
     links::set(enabled)
@@ -494,6 +501,7 @@ fn main() {
             read_list,
             links_status,
             set_links,
+            notifications_blocked,
             quit
         ])
         .setup(move |app| {
@@ -516,6 +524,29 @@ fn main() {
                 menu.translate(lang);
             }
             app.manage(state);
+
+            // Liens copiés (F-30) : une notification, puis la boîte « Ajouter » sur clic.
+            clipboard::spawn(
+                app.handle().clone(),
+                |app| {
+                    let state = app.try_state::<App>()?;
+                    let on = state.prefs.lock().unwrap().watch_clipboard;
+                    on.then(|| info(app, &state).lang)
+                },
+                |app| {
+                    app.get_webview_window("main")
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false)
+                },
+                |app, link| {
+                    let opened = if opened::is_magnet(&link) {
+                        Opened::Magnet { link }
+                    } else {
+                        Opened::Link { link }
+                    };
+                    receive(app, vec![opened]);
+                },
+            );
 
             let sink: Arc<dyn Sink> = Arc::new(WindowSink(app.handle().clone()));
             let connect = bridge::local_connect(endpoint.clone(), db.clone(), true);

@@ -25,6 +25,8 @@ pub enum Opened {
     Torrent { path: String },
     /// Fichier Metalink, par son chemin absolu.
     Metalink { path: String },
+    /// Adresse HTTP(S) d'un fichier, copiée puis choisie dans une notification (F-30).
+    Link { link: String },
 }
 
 /// Un lien magnet : `magnet:?…`, sans caractère de contrôle, de taille raisonnable.

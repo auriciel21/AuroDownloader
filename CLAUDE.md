@@ -134,7 +134,10 @@ téléchargement.
   `.torrent` reçus (arguments, relance, glisser-déposer), lus pour le moteur ; `links` :
   association aux liens magnet et aux `.torrent` (option, désactivée par défaut ; ses tests
   n'écrivent que sous `HKCU\Software\AuroDownloaderEssai` ou dans un dossier temporaire ;
-  ne jamais l'activer pour de vrai sans l'accord de l'utilisateur). Paquets : `bundle.ps1`,
+  ne jamais l'activer pour de vrai sans l'accord de l'utilisateur) ; `clipboard` : liens
+  copiés (F-30, option désactivée par défaut ; notification du système, clic vers
+  « Ajouter » ; sous Windows, une variante lancée depuis `target` notifie sous le nom de
+  PowerShell). Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).
@@ -511,7 +514,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   tailles lues d'office (500, 4 à la fois), pages masquées sauf si le serveur les décrit
   comme des fichiers, toute adresse d'une liste importée, ajout groupé sans tout-ou-rien,
   bureau et CLI ; 2a moteur et CLI, 2b boîte « Analyser des liens », faites le 2026-11-11,
-  essai de l'interface validé ; 2c presse-papiers : notification, ajout sur clic) ; 3. interface web
+  essai de l'interface validé ; 2c presse-papiers, faite le 2026-11-11 : notification du
+  système, ajout sur clic, désactivée par défaut, avertissement si Windows coupe les
+  notifications ; `apps/desktop/src/clipboard.rs` ; essai de l'interface validé ; étape 2
+  terminée) ; 3. interface web
   distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF) ; 4. plugins (F-41 :
   prototype du bac à sable WebAssembly d'abord) ; 5. porte : revue de sécurité de l'API
   distante et des plugins.

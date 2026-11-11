@@ -19,6 +19,9 @@ pub struct Prefs {
     /// Un téléchargement ajouté (extension, ligne de commande) fait apparaître la fenêtre
     /// au premier plan (SPEC §4.6).
     pub show_on_add: bool,
+    /// Une adresse de fichier ou un lien magnet copié fait apparaître une notification qui
+    /// propose de l'ajouter (F-30, SPEC §7.18) ; désactivé par défaut.
+    pub watch_clipboard: bool,
 }
 
 impl Default for Prefs {
@@ -27,6 +30,7 @@ impl Default for Prefs {
             lang: String::new(),
             close_to_tray: true,
             show_on_add: true,
+            watch_clipboard: false,
         }
     }
 }
@@ -88,6 +92,7 @@ mod tests {
             lang: "en".into(),
             close_to_tray: false,
             show_on_add: false,
+            watch_clipboard: true,
         };
         prefs.save(&path).unwrap();
         assert_eq!(Prefs::load(&path), prefs);

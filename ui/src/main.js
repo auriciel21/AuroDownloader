@@ -1796,7 +1796,7 @@ async function takeOpened() {
   const field = $("urls");
   const lines = field.value.split(/\s+/).filter(Boolean);
   for (const item of opened) {
-    if (item.kind === "magnet" && !lines.includes(item.link)) lines.push(item.link);
+    if ((item.kind === "magnet" || item.kind === "link") && !lines.includes(item.link)) lines.push(item.link);
   }
   field.value = lines.join("\n");
   await takeTorrentFiles(opened.filter((item) => item.kind === "torrent" || item.kind === "metalink").map((item) => item.path));
@@ -2892,6 +2892,11 @@ function applyInfo(next) {
   $("pref-no-tray").hidden = info.tray;
   // Absente d'un ancien fichier de préférences : activée, comme le défaut de l'application.
   $("pref-show-on-add").checked = info.prefs.showOnAdd !== false;
+  // Presse-papiers (F-30) : seulement avec un hôte qui sait le lire (pas l'interface distante).
+  $("pref-clipboard").checked = info.prefs.watchClipboard === true;
+  $("pref-clipboard-row").hidden = !host.watchesClipboard;
+  $("pref-clipboard-note").hidden = !host.watchesClipboard;
+  renderClipboardWarning();
   $("pref-autostart").checked = info.autostart;
   $("grid").setAttribute("aria-label", t("Téléchargements : {0}", viewLabel(view)));
   renderAbout();
@@ -2901,6 +2906,20 @@ function applyInfo(next) {
   renderTools();
   renderPlanning();
   renderAll();
+}
+
+// Option du presse-papiers cochée alors que le système n'en affichera pas les notifications
+// (Windows) : averti sous la case, relu à chaque ouverture des Options.
+async function renderClipboardWarning() {
+  let blocked = false;
+  if (host.notificationsBlocked && $("pref-clipboard").checked) {
+    try {
+      blocked = await host.notificationsBlocked();
+    } catch {
+      blocked = false;
+    }
+  }
+  $("pref-clipboard-off").hidden = !blocked;
 }
 
 function renderAbout() {
@@ -3070,6 +3089,7 @@ function wire() {
     if (connected) loadInterfaces();
     renderLinks();
     loadTools();
+    renderClipboardWarning();
   });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {
@@ -3235,6 +3255,10 @@ function wire() {
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));
   $("pref-tray").addEventListener("change", (e) => savePrefs({ closeToTray: e.target.checked }));
   $("pref-show-on-add").addEventListener("change", (e) => savePrefs({ showOnAdd: e.target.checked }));
+  $("pref-clipboard").addEventListener("change", (e) => {
+    savePrefs({ watchClipboard: e.target.checked });
+    renderClipboardWarning();
+  });
   $("pref-autostart").addEventListener("change", async (e) => {
     try {
       e.target.checked = await host.setAutostart(e.target.checked);

@@ -315,6 +315,12 @@ export const EN = {
   "Fermer la fenêtre la replie dans la zone de notification": "Closing the window keeps the app in the notification area",
   "Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)":
     "Bring the window to the front when a download is added (browser, command line)",
+  // Presse-papiers (F-30, étape 2c).
+  "Proposer d'ajouter les liens copiés": "Offer to add copied links",
+  "L'adresse d'un fichier ou un lien magnet copié fait apparaître une notification ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé.":
+    "A copied file address or magnet link shows a notification; a click opens “Add”. The clipboard is read only for this, and nothing from it is kept.",
+  "Windows n'affiche pas les notifications d'AuroDownloader (Paramètres, Système, Notifications) : cette option n'aura aucun effet tant qu'elles restent désactivées.":
+    "Windows does not show AuroDownloader’s notifications (Settings, System, Notifications): this option has no effect while they stay off.",
   "Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent.":
     "No notification area on this desktop: closing the window quits the app, downloads continue.",
   "Démarrer avec la session, dans la zone de notification": "Start with the session, in the notification area",
