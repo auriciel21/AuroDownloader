@@ -26,6 +26,8 @@ auro-engine = { path = "../engine" }
 # Fichier .torrent envoyé au moteur (`auro add fichier.torrent`, SPEC §6.5).
 base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
+# Expression régulière des filtres de `auro links` (F-29).
+regex = "1.13.1"
 # Mot de passe des identifiants de sites, saisi sans écho (`auro login set`).
 rpassword = "7.4.0"
 rusqlite = "0.40.2"

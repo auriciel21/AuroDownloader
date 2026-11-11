@@ -317,6 +317,113 @@ async fn metalink_files_are_shown_added_and_followed() {
 }
 
 #[tokio::test]
+async fn links_of_a_page_or_a_list_are_filtered_and_added() {
+    use std::sync::{Arc, Mutex};
+
+    use auro_engine::testing::{FileSite, reply, serve as serve_http, serve_file};
+    let small = serve_file(Arc::new(Mutex::new(FileSite::new(1000))));
+    let big = serve_file(Arc::new(Mutex::new(FileSite::new(300_000))));
+    let html = format!(
+        r#"<a href="{}">a</a> <a href="{}">b</a> <a href="{}">c</a> <a href="suite.html">page</a>"#,
+        small.url("/a.iso"),
+        big.url("/b.iso"),
+        big.url("/c.zip"),
+    );
+    let page =
+        serve_http(move |_| reply("200 OK", &[("Content-Type", "text/html")], html.as_bytes()));
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "liens", Options::default()).await;
+    let dest = dir.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    let dest = dest.to_str().unwrap();
+
+    // Toute la page, pages masquées : trois fichiers, avec leur taille.
+    let shown = ok(&ep, &["links", &page.url("/liste.html")]).await;
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines.len(), 4, "{shown}");
+    assert!(
+        lines[0].contains("1000 o") && lines[0].contains("a.iso"),
+        "{shown}"
+    );
+    assert!(
+        lines[3].contains("3 lien(s) gardé(s), 1 écarté(s)"),
+        "{shown}"
+    );
+    // Extension, taille, expression.
+    let iso = ok(
+        &ep,
+        &["links", &page.url("/"), "-e", ".ISO", "--min-size", "100K"],
+    )
+    .await;
+    assert!(
+        iso.lines().next().unwrap().contains("b.iso") && iso.lines().count() == 2,
+        "{iso}"
+    );
+    let regex = ok(
+        &ep,
+        &["links", &page.url("/"), "--regex", r"/c\.", "--no-sizes"],
+    )
+    .await;
+    assert!(regex.starts_with("   0           ?  c.zip"), "{regex}");
+    let all = ok(&ep, &["links", &page.url("/"), "--all", "--no-sizes"]).await;
+    assert!(all.contains("suite.html"), "{all}");
+
+    // Une liste CSV importée, ajoutée.
+    let list = dir.path().join("liste.csv");
+    std::fs::write(
+        &list,
+        format!(
+            "url;nom\n{};a\n\"{}\";c\n",
+            small.url("/a.iso"),
+            big.url("/c.zip")
+        ),
+    )
+    .unwrap();
+    let added = ok(
+        &ep,
+        &[
+            "links",
+            list.to_str().unwrap(),
+            "--add",
+            "-o",
+            dest,
+            "--paused",
+        ],
+    )
+    .await;
+    // Les lignes d'ajout (« tâche  adresse ») suivent la liste, qui commence par des espaces.
+    let ids: Vec<&str> = added
+        .lines()
+        .filter(|l| !l.starts_with(' ') && l.contains("://"))
+        .collect();
+    assert_eq!(ids.len(), 2, "{added}");
+    let listed = ok(&ep, &["list"]).await;
+    assert_eq!(
+        listed
+            .lines()
+            .filter(|l| l.contains("En pause") || l.contains("paused"))
+            .count(),
+        2,
+        "{listed}"
+    );
+    // Ni adresse ni fichier ; expression illisible ; filtre de taille sans tailles.
+    for args in [
+        vec!["links", "absent.txt"],
+        vec!["links", list.to_str().unwrap(), "--regex", "("],
+        vec![
+            "links",
+            list.to_str().unwrap(),
+            "--no-sizes",
+            "--min-size",
+            "1K",
+        ],
+    ] {
+        assert!(!auro(&ep, &args).await.status.success(), "{args:?}");
+    }
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn mirrors_are_given_checked_and_shown() {
     use std::sync::{Arc, Mutex};
 

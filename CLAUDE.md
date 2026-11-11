@@ -98,6 +98,11 @@ téléchargement.
   fuzzing par proptest), `Engine::read_metalink` (contenu ou adresse lue par le moteur),
   `AddTask::sub_dir` (dossiers créés sous la destination) ; méthodes `metalink.read` et
   `metalink.add` (une tâche par fichier choisi).
+  Analyse de liens (F-29, F-31, SPEC 7.18, étape 2) : `linkscan` (liens d'une page HTML par
+  un petit lecteur de balises, adresses écrites en clair, nom, extension et sorte ; fuzzing
+  par proptest), `Engine::scan_page`, `Engine::probe_links` (tailles, 4 à la fois),
+  `net::Client::fetch_page` ; méthodes `linkscan.run`, `linkscan.probe`, `task.addBatch`.
+  Les filtres sont dans les clients (`crates/cli/src/links.rs`, page).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -253,6 +258,7 @@ cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
 cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # miroirs
 cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> --select 0,2   # Metalink
+cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear

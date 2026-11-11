@@ -11,7 +11,7 @@ use auro_cli::client::{EngineRefused, Rpc, Target};
 use auro_engine::io::checksum::Checksum;
 
 /// Dossier de destination en chemin absolu, qui doit exister.
-fn dest_dir(dir: &Path) -> Result<String> {
+pub(crate) fn dest_dir(dir: &Path) -> Result<String> {
     let dir = std::path::absolute(dir)?;
     if !dir.is_dir() {
         bail!("le dossier {} n'existe pas", dir.display());

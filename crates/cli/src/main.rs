@@ -19,6 +19,7 @@ use serde_json::json;
 
 mod direct;
 mod display;
+mod links;
 mod remote;
 mod video;
 
@@ -205,6 +206,44 @@ enum Command {
     },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
+    /// Liens d'une page, d'un fichier texte ou CSV, ou de l'entrée standard (« - ») : nom,
+    /// taille et adresse des fichiers trouvés ; avec --add, les ajoute
+    Links {
+        /// Adresse d'une page, fichier texte ou CSV, ou « - »
+        source: String,
+        /// Extensions à garder : « iso,zip »
+        #[arg(
+            short = 'e',
+            long = "ext",
+            value_name = "EXTENSIONS",
+            value_delimiter = ','
+        )]
+        extensions: Vec<String>,
+        /// Expression régulière que l'adresse doit contenir
+        #[arg(long, value_name = "EXPRESSION")]
+        regex: Option<String>,
+        /// Taille minimale (500K, 2M, 1G) ; une taille inconnue écarte le lien
+        #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+        min_size: Option<u64>,
+        /// Taille maximale ; une taille inconnue écarte le lien
+        #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+        max_size: Option<u64>,
+        /// Montrer aussi les pages et les liens sans extension
+        #[arg(long)]
+        all: bool,
+        /// Ne pas demander la taille des fichiers (aucune requête vers eux)
+        #[arg(long, conflicts_with_all = ["min_size", "max_size"])]
+        no_sizes: bool,
+        /// Ajouter les liens gardés
+        #[arg(long)]
+        add: bool,
+        /// Dossier de destination (avec --add)
+        #[arg(short = 'o', long, default_value = ".", requires = "add")]
+        dir: PathBuf,
+        /// Ajouter en pause (avec --add)
+        #[arg(long, requires = "add")]
+        paused: bool,
+    },
     /// Contenu d'un fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers,
     /// rangs, empreintes et sources, sans rien ajouter
     Metalink {
@@ -385,6 +424,16 @@ enum VideoAction {
 struct Selection(Vec<u32>);
 
 /// « 0,2-4 » : rangs et intervalles, sans doublon.
+/// Une taille : « 800000 », « 500K », « 2M », « 1.5G » (unités binaires).
+fn parse_size(text: &str) -> Result<u64, String> {
+    match display::parse_limit(text) {
+        Ok(display::Limit(Some(bytes))) => Ok(bytes),
+        _ => Err(format!(
+            "taille illisible : {text} (exemples : 500K, 2M, 1G)"
+        )),
+    }
+}
+
 fn parse_selection(text: &str) -> Result<Selection, String> {
     let rank = |t: &str| {
         t.trim()
@@ -719,6 +768,42 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 } => remote::set_checksum(&mut rpc, &task_id, checksum.as_ref()).await,
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
                 Command::Metalink { source } => remote::metalink(&mut rpc, &source).await,
+                Command::Links {
+                    source,
+                    extensions,
+                    regex,
+                    min_size,
+                    max_size,
+                    all,
+                    no_sizes,
+                    add,
+                    dir,
+                    paused,
+                } => {
+                    let regex = regex
+                        .map(|r| regex::Regex::new(&r))
+                        .transpose()
+                        .context("--regex : expression illisible")?;
+                    let filters = links::Filters {
+                        extensions: extensions
+                            .iter()
+                            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+                            .filter(|e| !e.is_empty())
+                            .collect(),
+                        regex,
+                        min_size,
+                        max_size,
+                        all,
+                    };
+                    let opts = links::LinksOptions {
+                        source: &source,
+                        filters,
+                        no_sizes,
+                        add: add.then_some(dir.as_path()),
+                        paused,
+                    };
+                    links::links(&mut rpc, opts).await
+                }
                 Command::Files { task_id, select } => {
                     let select = select.as_ref().map(|s| s.0.as_slice());
                     remote::files(&mut rpc, &task_id, select).await

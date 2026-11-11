@@ -607,12 +607,35 @@ impl Client {
     /// au plus `limit` octets, `None` pour toute autre réponse. Sans en-têtes ni identifiants
     /// de tâche ([`sums`]).
     pub async fn fetch_small(&self, url: &Url, limit: usize) -> Result<Option<Vec<u8>>, NetError> {
+        Ok(self
+            .fetch_limited(url, limit)
+            .await?
+            .map(|(_, bytes)| bytes))
+    }
+
+    /// Une page lue pour ses liens (analyse de liens, F-29) : son adresse après les
+    /// redirections, qui sert de base aux liens relatifs, et son contenu ; comme
+    /// [`fetch_small`](Self::fetch_small).
+    pub async fn fetch_page(
+        &self,
+        url: &str,
+        limit: usize,
+    ) -> Result<Option<(Url, Vec<u8>)>, NetError> {
+        self.fetch_limited(&parse_url(url)?, limit).await
+    }
+
+    async fn fetch_limited(
+        &self,
+        url: &Url,
+        limit: usize,
+    ) -> Result<Option<(Url, Vec<u8>)>, NetError> {
         let response = self
             .send(Method::GET, url, &HeaderMap::new(), None, None)
             .await?;
         if response.status() != StatusCode::OK {
             return Ok(None);
         }
+        let final_url = response.url().clone();
         let mut body = Body {
             response,
             read: self.read,
@@ -624,7 +647,7 @@ impl Client {
             }
             bytes.extend_from_slice(&chunk);
         }
-        Ok(Some(bytes))
+        Ok(Some((final_url, bytes)))
     }
 
     /// [`fetch_small`](Self::fetch_small) d'une adresse HTTP(S) écrite (fichier Metalink

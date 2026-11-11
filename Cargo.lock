@@ -363,6 +363,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "libc",
+ "regex",
  "rpassword",
  "rusqlite",
  "serde_json",

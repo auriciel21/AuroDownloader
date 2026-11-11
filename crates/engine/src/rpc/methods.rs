@@ -211,6 +211,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         // Fichiers Metalink (F-27, SPEC §7.7, depuis le 2026-11-11).
         "metalink.read" => metalink_read(ctx, &p).await,
         "metalink.add" => metalink_add(ctx, &p).await,
+        // Analyse de liens (F-29, F-31, SPEC §7.18, depuis le 2026-11-11).
+        "task.addBatch" => task_add_batch(ctx, &p).await,
+        "linkscan.run" => linkscan_run(ctx, &p).await,
+        "linkscan.probe" => linkscan_probe(ctx, &p).await,
         "task.get" => task_get(ctx, &p).await,
         "task.list" => task_list(ctx, &p).await,
         "task.update" => task_update(ctx, &p).await,
@@ -555,11 +559,12 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     Ok(json!({
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
-        // Vidéo (SPEC §7.17) : Windows et Linux seulement.
+        // Vidéo (SPEC §7.17) : Windows et Linux seulement. Analyse de liens (SPEC §7.18) et
+        // Metalink : depuis le 2026-11-11.
         "capabilities": if crate::media::SUPPORTED {
-            json!(["torrent", "media"])
+            json!(["torrent", "media", "linkscan", "metalink"])
         } else {
-            json!(["torrent"])
+            json!(["torrent", "linkscan", "metalink"])
         },
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
@@ -812,6 +817,109 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         })
         .await?;
     Ok(json!({"taskId": task_id}))
+}
+
+/// Éléments d'un `task.addBatch`, au plus.
+const MAX_BATCH: usize = 1000;
+/// Adresses d'un `linkscan.probe`, au plus.
+const MAX_PROBES: usize = 50;
+
+/// `task.addBatch` (SPEC §6.5, analyse de liens) : chaque élément est un `task.add`, ajouté
+/// ou refusé pour lui-même (décision de l'utilisateur du 2026-11-11) ; la réponse donne les
+/// tâches créées et les refus, avec le code qu'aurait eu `task.add`.
+async fn task_add_batch(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let items = p
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Params::wrong("items", "liste de paramètres de task.add"))?;
+    if items.is_empty() || items.len() > MAX_BATCH {
+        return Err(RpcError::invalid_params(format!(
+            "items : de 1 à {MAX_BATCH} éléments"
+        )));
+    }
+    let (mut added, mut errors) = (Vec::new(), Vec::new());
+    for (index, item) in items.iter().enumerate() {
+        let result = match Params::new(item.clone()) {
+            Ok(params) => task_add(ctx, &params).await,
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(task) => added.push(json!({"index": index, "taskId": task["taskId"]})),
+            Err(e) => {
+                errors.push(json!({"index": index, "code": e.data_code, "message": e.message}))
+            }
+        }
+    }
+    Ok(json!({"tasks": added, "errors": errors}))
+}
+
+/// `linkscan.run` (F-29, F-31, SPEC §7.18) : les liens d'un texte (`text`) ou d'une page
+/// (`pageUrl`, lue par le moteur).
+async fn linkscan_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let (links, page) = match (p.str("text")?, p.str("pageUrl")?) {
+        (Some(text), None) => {
+            if text.len() > crate::linkscan::MAX_INPUT {
+                return Err(RpcError::invalid_params(format!(
+                    "text : {} Mio au plus",
+                    crate::linkscan::MAX_INPUT >> 20
+                )));
+            }
+            (crate::linkscan::from_text(&text), None)
+        }
+        (None, Some(url)) => {
+            let (page, links) = ctx.engine.scan_page(&url).await?;
+            (links, Some(page))
+        }
+        _ => return Err(RpcError::invalid_params("text ou pageUrl, l'un des deux")),
+    };
+    let links: Vec<Value> = links
+        .iter()
+        .map(|l| json!({"url": l.url, "name": l.name, "ext": l.ext, "kind": l.kind.as_str()}))
+        .collect();
+    let mut result = json!({"links": links});
+    if let Some(page) = page {
+        result["pageUrl"] = json!(page);
+    }
+    Ok(result)
+}
+
+/// `linkscan.probe` (SPEC §7.18) : taille et nom de chaque fichier (50 adresses au plus par
+/// appel), ou la raison de l'échec.
+async fn linkscan_probe(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let urls: Vec<String> = p
+        .get("urls")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Params::wrong("urls", "liste d'adresses"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Params::wrong("urls", "liste d'adresses"))
+        })
+        .collect::<Result<_, _>>()?;
+    if urls.is_empty() || urls.len() > MAX_PROBES {
+        return Err(RpcError::invalid_params(format!(
+            "urls : de 1 à {MAX_PROBES} adresses"
+        )));
+    }
+    let results = ctx.engine.probe_links(urls.clone()).await;
+    let items: Vec<Value> = urls
+        .iter()
+        .zip(results)
+        .map(|(url, result)| match result {
+            Ok(probe) => json!({"url": url, "size": probe.total_bytes, "name": probe.file_name}),
+            Err(e) => {
+                let e = RpcError::from(match e {
+                    e @ (crate::net::NetError::InvalidUrl(_)
+                    | crate::net::NetError::UnsupportedScheme(_)) => EngineError::Url(e),
+                    e => EngineError::SourceUnreachable(e),
+                });
+                json!({"url": url, "size": null, "name": null,
+                       "error": {"code": e.data_code, "message": e.message}})
+            }
+        })
+        .collect();
+    Ok(json!({"items": items}))
 }
 
 /// Fichier Metalink d'un appel (`metalink.read`, `metalink.add`, SPEC §7.7) : `data`

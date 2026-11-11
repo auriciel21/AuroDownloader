@@ -66,7 +66,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "media.tools" => Scope::Read,
         "task.add" | "task.addBatch" | "media.probe" | "linkscan.run"
         // Fichiers Metalink (SPEC §7.7) : lus, au besoin à une adresse, puis ajoutés.
-        | "metalink.read" | "metalink.add" => Scope::Add,
+        | "metalink.read" | "metalink.add"
+        // Tailles des liens analysés : une requête vers chaque adresse (SPEC §7.18).
+        | "linkscan.probe" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
         "task.pause"

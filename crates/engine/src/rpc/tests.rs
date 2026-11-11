@@ -2581,6 +2581,156 @@ async fn mirrors_are_validated_against_the_reference() {
 /// suite ; un autre fichier est refusé à l'appel ; sur une tâche pas encore préparée, il
 /// attend la première exécution.
 #[tokio::test]
+async fn links_of_a_page_are_found_sized_and_added_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let hello = c.result("engine.hello", hello()).await;
+    assert!(
+        hello["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("linkscan"))
+    );
+    const LEN: u64 = 100_000;
+    let files = site(LEN);
+    let html = format!(
+        r#"<html><body><a href="{}">a</a> <a href="{}">b</a> <a href="autre.html">page</a>
+<p>En clair : {}</p></body></html>"#,
+        files.url("/pub/a.iso"),
+        files.url("/pub/b.zip"),
+        files.url("/pub/c.7z"),
+    );
+    let pages = crate::testing::serve(move |r| match r.path.as_str() {
+        "/liste" => crate::testing::reply(
+            "302 Found",
+            &[("Location", "/vrai/liste.html"), ("Content-Length", "0")],
+            b"",
+        ),
+        "/vrai/liste.html" => {
+            crate::testing::reply("200 OK", &[("Content-Type", "text/html")], html.as_bytes())
+        }
+        _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+    });
+
+    // Une page : ses liens, résolus par rapport à son adresse après redirection.
+    let scan = c
+        .result("linkscan.run", json!({"pageUrl": pages.url("/liste")}))
+        .await;
+    assert_eq!(
+        scan["pageUrl"],
+        json!(pages.url("/vrai/liste.html")),
+        "{scan}"
+    );
+    let links = scan["links"].as_array().unwrap();
+    let found: Vec<(&str, &str)> = links
+        .iter()
+        .map(|l| (l["name"].as_str().unwrap(), l["kind"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("a.iso", "file"),
+            ("b.zip", "file"),
+            ("autre.html", "page"),
+            ("c.7z", "file")
+        ],
+        "{scan}"
+    );
+    assert_eq!(links[2]["url"], json!(pages.url("/vrai/autre.html")));
+    assert_eq!(links[0]["ext"], "iso");
+    // Un texte : ses adresses.
+    let text = c
+        .result(
+            "linkscan.run",
+            json!({"text": format!("x {} y", files.url("/d.bin"))}),
+        )
+        .await;
+    assert_eq!(text["links"][0]["name"], "d.bin");
+    assert!(text.get("pageUrl").is_none());
+
+    // Tailles : chacune pour elle-même.
+    let probed = c
+        .result(
+            "linkscan.probe",
+            json!({"urls": [files.url("/pub/a.iso"), pages.url("/absent.iso"), "ftp://x/y"]}),
+        )
+        .await;
+    let items = probed["items"].as_array().unwrap();
+    assert_eq!(items[0]["size"], LEN, "{probed}");
+    assert_eq!(items[0]["name"], "a.iso");
+    assert_eq!(items[1]["error"]["code"], "SOURCE_UNREACHABLE", "{probed}");
+    assert_eq!(items[2]["error"]["code"], "URL_INVALID", "{probed}");
+
+    // Ajout groupé : le refus d'un élément n'empêche pas les autres.
+    let dest = dir_text(dir.path());
+    let batch = c
+        .result(
+            "task.addBatch",
+            json!({"items": [
+                {"sources": [{"url": files.url("/pub/a.iso")}], "destDir": dest},
+                {"sources": [{"url": "ftp://x/y.iso"}], "destDir": dest},
+                {"sources": [{"url": files.url("/pub/b.zip")}], "destDir": dest},
+                "pas un objet",
+            ]}),
+        )
+        .await;
+    let ids: Vec<String> = batch["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["taskId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2, "{batch}");
+    assert_eq!(batch["tasks"][1]["index"], 2);
+    assert_eq!(batch["errors"][0]["index"], 1);
+    assert_eq!(batch["errors"][0]["code"], "URL_INVALID", "{batch}");
+    assert_eq!(batch["errors"][1]["index"], 3);
+    assert_eq!(batch["errors"][1]["code"], "INVALID_PARAMS", "{batch}");
+    timeout(WAIT, async {
+        loop {
+            let mut done = 0;
+            for id in &ids {
+                let task = c.result("task.get", json!({"taskId": id})).await;
+                done += usize::from(task["state"] == "completed");
+            }
+            if done == ids.len() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("les deux tâches finissent");
+    assert_eq!(
+        std::fs::read(dir.path().join("b.zip")).unwrap().len() as u64,
+        LEN
+    );
+
+    for (method, bad) in [
+        ("linkscan.run", json!({})),
+        (
+            "linkscan.run",
+            json!({"text": "a", "pageUrl": pages.url("/liste")}),
+        ),
+        (
+            "linkscan.run",
+            json!({"pageUrl": pages.url("/absent.html")}),
+        ),
+        ("linkscan.probe", json!({"urls": []})),
+        ("linkscan.probe", json!({"urls": vec![files.url("/f"); 51]})),
+        ("task.addBatch", json!({"items": []})),
+        ("task.addBatch", json!({})),
+    ] {
+        assert_eq!(
+            c.error_code(method, bad.clone()).await,
+            "INVALID_PARAMS",
+            "{method} {bad}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
     use base64::Engine as _;
     let dir = tempfile::tempdir().unwrap();

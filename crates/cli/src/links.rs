@@ -1,0 +1,251 @@
+//! `auro links` (F-29, F-31, SPEC §7.18) : les liens d'une page, d'un texte ou d'une liste
+//! importée, filtrés par la CLI (sorte, extension, expression régulière, taille), avec leur
+//! taille lue par le moteur ; `--add` les ajoute ensemble (`task.addBatch`).
+
+use std::collections::HashMap;
+use std::io::Read as _;
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
+use regex::Regex;
+use serde_json::{Value, json};
+
+use crate::display::size;
+use auro_cli::client::Rpc;
+
+/// Taille maximale d'un texte ou d'une liste envoyés au moteur (la sienne, SPEC §7.18).
+const MAX_TEXT: u64 = 4 << 20;
+/// Liens dont la taille est demandée, au plus (décision de l'utilisateur du 2026-11-11).
+const MAX_SIZED: usize = 500;
+/// Adresses par appel à `linkscan.probe`.
+const PROBE_CHUNK: usize = 50;
+/// Éléments par appel à `task.addBatch`.
+const BATCH_CHUNK: usize = 1000;
+
+/// Ce qui est gardé des liens trouvés.
+#[derive(Default)]
+pub struct Filters {
+    /// Extensions gardées, en minuscules ; toutes si vide.
+    pub extensions: Vec<String>,
+    /// Expression que l'adresse doit contenir.
+    pub regex: Option<Regex>,
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    /// Pages et liens sans extension aussi (masqués par défaut).
+    pub all: bool,
+}
+
+impl Filters {
+    /// Un lien gardé, avant les tailles : sorte, extension, expression.
+    fn keeps(&self, link: &Value) -> bool {
+        let kind = link["kind"].as_str().unwrap_or_default();
+        if !self.all && kind == "page" {
+            return false;
+        }
+        if !self.extensions.is_empty() {
+            let ext = link["ext"].as_str().unwrap_or_default();
+            if !self.extensions.iter().any(|e| e == ext) {
+                return false;
+            }
+        }
+        let url = link["url"].as_str().unwrap_or_default();
+        self.regex.as_ref().is_none_or(|r| r.is_match(url))
+    }
+
+    /// La taille, si un filtre la demande : inconnue, le lien n'est pas gardé.
+    fn keeps_size(&self, size: Option<u64>) -> bool {
+        if self.min_size.is_none() && self.max_size.is_none() {
+            return true;
+        }
+        size.is_some_and(|s| {
+            self.min_size.is_none_or(|m| s >= m) && self.max_size.is_none_or(|m| s <= m)
+        })
+    }
+}
+
+/// Ce que fait `auro links`.
+pub struct LinksOptions<'a> {
+    /// Adresse d'une page, chemin d'un fichier texte ou CSV, ou « - » (entrée standard).
+    pub source: &'a str,
+    pub filters: Filters,
+    /// Ne pas demander les tailles (aucune requête vers les fichiers).
+    pub no_sizes: bool,
+    /// Ajouter les liens gardés, dans ce dossier.
+    pub add: Option<&'a Path>,
+    pub paused: bool,
+}
+
+/// Paramètres de `linkscan.run` pour une source.
+fn scan_params(source: &str) -> Result<Value> {
+    if source.contains("://") {
+        return Ok(json!({"pageUrl": source}));
+    }
+    let bytes = if source == "-" {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(MAX_TEXT + 1)
+            .read_to_end(&mut bytes)
+            .context("lecture de l'entrée standard")?;
+        bytes
+    } else {
+        let len = std::fs::metadata(source)
+            .with_context(|| format!("{source} : ni adresse, ni fichier lisible"))?
+            .len();
+        if len > MAX_TEXT {
+            bail!("{source} : liste trop grosse ({})", size(len));
+        }
+        std::fs::read(source).with_context(|| format!("lecture de {source}"))?
+    };
+    if bytes.len() as u64 > MAX_TEXT {
+        bail!("entrée trop grosse (plus de {})", size(MAX_TEXT));
+    }
+    Ok(json!({"text": String::from_utf8_lossy(&bytes)}))
+}
+
+pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
+    let scan = rpc.call("linkscan.run", scan_params(opts.source)?).await?;
+    let found = scan["links"].as_array().cloned().unwrap_or_default();
+    let mut kept: Vec<Value> = found
+        .iter()
+        .filter(|l| opts.filters.keeps(l))
+        .cloned()
+        .collect();
+    // Tailles des liens gardés (500 au plus), sauf les liens magnet.
+    let mut sizes: HashMap<String, u64> = HashMap::new();
+    if !opts.no_sizes {
+        let urls: Vec<String> = kept
+            .iter()
+            .filter(|l| l["kind"] != "magnet")
+            .filter_map(|l| l["url"].as_str().map(str::to_owned))
+            .take(MAX_SIZED)
+            .collect();
+        for chunk in urls.chunks(PROBE_CHUNK) {
+            let probed = rpc.call("linkscan.probe", json!({"urls": chunk})).await?;
+            for item in probed["items"].as_array().into_iter().flatten() {
+                if let (Some(url), Some(s)) = (item["url"].as_str(), item["size"].as_u64()) {
+                    sizes.insert(url.to_owned(), s);
+                }
+            }
+        }
+    }
+    let size_of = |l: &Value| l["url"].as_str().and_then(|u| sizes.get(u)).copied();
+    kept.retain(|l| opts.filters.keeps_size(size_of(l)));
+    for (i, l) in kept.iter().enumerate() {
+        let shown = size_of(l).map_or_else(|| "?".to_owned(), size);
+        println!(
+            "{i:>4}  {shown:>10}  {}  {}",
+            l["name"].as_str().unwrap_or_default(),
+            l["url"].as_str().unwrap_or_default()
+        );
+    }
+    let hidden = found.len() - kept.len();
+    match hidden {
+        0 => println!("{} lien(s)", kept.len()),
+        n => println!(
+            "{} lien(s) gardé(s), {n} écarté(s) par les filtres",
+            kept.len()
+        ),
+    }
+    let Some(dir) = opts.add else {
+        return Ok(());
+    };
+    if kept.is_empty() {
+        bail!("aucun lien à ajouter");
+    }
+    let dest = crate::remote::dest_dir(dir)?;
+    let (mut added, mut refused) = (0, 0);
+    for chunk in kept.chunks(BATCH_CHUNK) {
+        let items: Vec<Value> = chunk
+            .iter()
+            .map(|l| json!({"sources": [{"url": l["url"]}], "destDir": dest, "startPaused": opts.paused}))
+            .collect();
+        let result = rpc.call("task.addBatch", json!({"items": items})).await?;
+        for t in result["tasks"].as_array().into_iter().flatten() {
+            let index = t["index"].as_u64().unwrap_or(0) as usize;
+            println!(
+                "{}  {}",
+                t["taskId"].as_str().unwrap_or_default(),
+                chunk[index]["url"].as_str().unwrap_or_default()
+            );
+            added += 1;
+        }
+        for e in result["errors"].as_array().into_iter().flatten() {
+            let index = e["index"].as_u64().unwrap_or(0) as usize;
+            eprintln!(
+                "refusé : {}  {} [{}]",
+                chunk[index]["url"].as_str().unwrap_or_default(),
+                e["message"].as_str().unwrap_or_default(),
+                e["code"].as_str().unwrap_or_default()
+            );
+            refused += 1;
+        }
+    }
+    if refused > 0 {
+        bail!("{added} ajouté(s), {refused} refusé(s)");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn link(url: &str, ext: Option<&str>, kind: &str) -> Value {
+        json!({"url": url, "name": "x", "ext": ext, "kind": kind})
+    }
+
+    #[test]
+    fn filters_by_kind_extension_expression_and_size() {
+        let iso = link("https://a.example/debian-13.iso", Some("iso"), "file");
+        let page = link("https://a.example/index.html", Some("html"), "page");
+        let magnet = link("magnet:?xt=urn:btih:abc", None, "magnet");
+        let zip = link("https://b.example/src.zip", Some("zip"), "file");
+        let plain = Filters::default();
+        assert!(plain.keeps(&iso) && plain.keeps(&magnet) && !plain.keeps(&page));
+        let all = Filters {
+            all: true,
+            ..Filters::default()
+        };
+        assert!(all.keeps(&page));
+        let ext = Filters {
+            extensions: vec!["iso".into(), "7z".into()],
+            ..Filters::default()
+        };
+        assert!(ext.keeps(&iso) && !ext.keeps(&zip) && !ext.keeps(&magnet));
+        let regex = Filters {
+            regex: Some(Regex::new(r"debian-\d+").unwrap()),
+            ..Filters::default()
+        };
+        assert!(regex.keeps(&iso) && !regex.keeps(&zip));
+        // Taille : sans filtre, tout passe ; avec, une taille inconnue n'est pas gardée.
+        assert!(plain.keeps_size(None));
+        let sized = Filters {
+            min_size: Some(10),
+            max_size: Some(20),
+            ..Filters::default()
+        };
+        assert!(sized.keeps_size(Some(10)) && sized.keeps_size(Some(20)));
+        assert!(
+            !sized.keeps_size(Some(9)) && !sized.keeps_size(Some(21)) && !sized.keeps_size(None)
+        );
+    }
+
+    #[test]
+    fn a_source_is_a_page_a_file_or_the_standard_input() {
+        assert_eq!(
+            scan_params("https://a.example/liste.html").unwrap(),
+            json!({"pageUrl": "https://a.example/liste.html"})
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("liste.csv");
+        std::fs::write(&list, "url;nom\nhttps://a.example/f.iso;f\n").unwrap();
+        let params = scan_params(list.to_str().unwrap()).unwrap();
+        assert!(
+            params["text"]
+                .as_str()
+                .unwrap()
+                .contains("https://a.example/f.iso")
+        );
+        assert!(scan_params(dir.path().join("absent.txt").to_str().unwrap()).is_err());
+    }
+}

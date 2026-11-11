@@ -34,6 +34,7 @@ use tokio::time::Instant;
 use crate::io::checksum::Checksum;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
+use crate::linkscan;
 use crate::media;
 use crate::metalink::{self, Metalink};
 use crate::mirrors;
@@ -60,6 +61,8 @@ mod tests;
 /// Nom de la file créée au premier démarrage.
 pub const DEFAULT_QUEUE: &str = "default";
 
+/// Tailles lues en même temps par `linkscan.probe` (SPEC §7.18).
+pub const LINK_PROBES: usize = 4;
 /// Intervalle de vérification de la place libre pour les tâches en pause `disk_full`
 /// (SPEC §7.10).
 pub const DISK_RECHECK: Duration = Duration::from_secs(30);
@@ -1224,6 +1227,56 @@ impl Engine {
         };
         let doc = metalink::parse(&bytes).map_err(|e| EngineError::BadRequest(e.to_string()))?;
         Ok((doc, bytes))
+    }
+
+    /// Les liens d'une page (analyse de liens, F-29, SPEC §7.18) : la page est lue par le
+    /// moteur (4 Mio au plus, sans en-têtes ni identifiants), HTML seul. Rend son adresse
+    /// après les redirections et ses liens.
+    pub async fn scan_page(&self, url: &str) -> Result<(String, Vec<linkscan::Link>), EngineError> {
+        match self.client.fetch_page(url, linkscan::MAX_INPUT).await {
+            Ok(Some((final_url, bytes))) => {
+                let html = String::from_utf8_lossy(&bytes);
+                let links = linkscan::from_html(&html, &final_url);
+                Ok((final_url.to_string(), links))
+            }
+            Ok(None) => Err(EngineError::BadRequest(format!(
+                "pas de page lisible à cette adresse (réponse autre que 200, ou plus de {} Mio)",
+                linkscan::MAX_INPUT >> 20
+            ))),
+            Err(e @ (NetError::InvalidUrl(_) | NetError::UnsupportedScheme(_))) => {
+                Err(EngineError::Url(e))
+            }
+            Err(e) => Err(EngineError::SourceUnreachable(e)),
+        }
+    }
+
+    /// Taille et nom de chaque fichier (analyse de liens, SPEC §7.18) : une requête `HEAD`,
+    /// au besoin une requête d'un octet, [`LINK_PROBES`] à la fois ; les résultats dans
+    /// l'ordre des adresses.
+    pub async fn probe_links(&self, urls: Vec<String>) -> Vec<Result<net::Probe, NetError>> {
+        let mut results: Vec<Option<Result<net::Probe, NetError>>> =
+            urls.iter().map(|_| None).collect();
+        let mut pending = urls.into_iter().enumerate();
+        let mut running = tokio::task::JoinSet::new();
+        loop {
+            while running.len() < LINK_PROBES {
+                let Some((i, url)) = pending.next() else {
+                    break;
+                };
+                let client = self.client.clone();
+                running.spawn(async move { (i, client.probe(&url, &[]).await) });
+            }
+            let Some(done) = running.join_next().await else {
+                break;
+            };
+            if let Ok((i, result)) = done {
+                results[i] = Some(result);
+            }
+        }
+        results
+            .into_iter()
+            .map(|r| r.unwrap_or(Err(NetError::BadResponse("lecture interrompue"))))
+            .collect()
     }
 
     pub async fn add_source(&self, task_id: &str, url: &str) -> Result<String, EngineError> {
