@@ -495,7 +495,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   1a protocole et CLI, 1b répartition et bascule, faites le 2026-11-10 ; 1c bureau, faite
   le 2026-11-11 : champ « Miroirs », sources et source de chaque segment dans les
   Propriétés, pas de retrait, essai de l'interface validé par l'utilisateur sur la
-  variante d'essai avec des miroirs Debian réels) ;
+  variante d'essai avec des miroirs Debian réels ; 1d Metalink, faite le 2026-11-11 :
+  formats 4 et 3, une tâche par fichier, fichier local ou adresse, empreinte du fichier
+  seule, ordre par priorité, torrents et signatures ignorés, décisions de l'utilisateur ;
+  essai réel de la CLI sur openSUSE et essai de l'interface validé par l'utilisateur ;
+  étape 1 terminée) ;
   2. analyse de liens (F-29, F-31 ; F-30 presse-papiers au bureau) ; 3. interface web
   distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF) ; 4. plugins (F-41 :
   prototype du bac à sable WebAssembly d'abord) ; 5. porte : revue de sécurité de l'API
