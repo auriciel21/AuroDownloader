@@ -239,6 +239,84 @@ async fn a_video_is_described_then_followed_through_its_merge() {
 /// Miroirs (SPEC §7.7, phase 6) : `auro get --mirror` les donne au moteur, qui les vérifie ;
 /// `auro mirror` montre les sources et en ajoute une.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metalink_files_are_shown_added_and_followed() {
+    use std::sync::{Arc, Mutex};
+
+    use auro_engine::testing::{FileSite, content, content_sha256, serve_file};
+    const LEN: u64 = 200_000;
+    let site = || serve_file(Arc::new(Mutex::new(FileSite::new(LEN))));
+    let (reference, mirror) = (site(), site());
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "metalink", Options::default()).await;
+    let dest = dir.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    let dest = dest.to_str().unwrap();
+    let doc = format!(
+        r#"<?xml version="1.0"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="a.bin"><size>{LEN}</size><hash type="sha-256">{}</hash>
+    <url>{}</url><url>{}</url></file>
+  <file name="lot/b.bin"><url>{}</url></file>
+  <file name="../c.bin"><url>{}</url></file>
+</metalink>"#,
+        content_sha256(LEN),
+        reference.url("/a.bin"),
+        mirror.url("/a.bin"),
+        reference.url("/b.bin"),
+        reference.url("/c.bin"),
+    );
+    let file = dir.path().join("lot.meta4");
+    std::fs::write(&file, doc).unwrap();
+    let file = file.to_str().unwrap();
+
+    let shown = ok(&ep, &["metalink", file]).await;
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines[0], "Metalink 4", "{shown}");
+    assert!(
+        lines[1].contains("0  a.bin") && lines[1].contains("sha256, 2 sources"),
+        "{shown}"
+    );
+    assert!(
+        lines[2].contains("1  lot/b.bin") && lines[2].contains("taille inconnue"),
+        "{shown}"
+    );
+    assert!(
+        lines[3].starts_with("écarté : ../c.bin  nom refusé"),
+        "{shown}"
+    );
+    // Les deux fichiers, suivis ensemble jusqu'au bout.
+    let got = ok(&ep, &["get", file, "-o", dest]).await;
+    assert!(got.contains("a.bin") && got.contains("lot/b.bin"), "{got}");
+    for path in ["a.bin", "lot/b.bin"] {
+        assert_eq!(
+            std::fs::read(Path::new(dest).join(path)).unwrap(),
+            content(LEN as usize),
+            "{path}"
+        );
+    }
+    // Un seul fichier choisi, en pause ; une empreinte ou un rang hors Metalink : refusés.
+    let added = ok(&ep, &["add", file, "-o", dest, "--select", "1", "--paused"]).await;
+    assert_eq!(added.lines().count(), 1, "{added}");
+    assert!(added.trim_end().ends_with("lot/b.bin"), "{added}");
+    for args in [
+        vec![
+            "add",
+            file,
+            "-o",
+            dest,
+            "--checksum",
+            "md5:098f6bcd4621d373cade4e832627b4f6",
+        ],
+        vec!["add", &reference.url("/x.bin"), "-o", dest, "--select", "0"],
+        vec!["add", file, "-o", dest, "--select", "7"],
+    ] {
+        let refused = auro(&ep, &args).await;
+        assert!(!refused.status.success(), "{args:?}");
+    }
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn mirrors_are_given_checked_and_shown() {
     use std::sync::{Arc, Mutex};
 

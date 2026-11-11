@@ -7,7 +7,7 @@ import {
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
-  SOURCE_STATES, MAX_SOURCES,
+  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -1171,6 +1171,7 @@ function mirrorsError({ error, url }) {
   switch (error) {
     case "many": return t("Des miroirs ne valent que pour une seule adresse.");
     case "torrent": return t("Un torrent trouve ses pairs lui-même : pas de miroir à donner.");
+    case "metalink": return t("Un Metalink donne lui-même les miroirs de chaque fichier.");
     case "scheme": return t("Un miroir est une adresse http:// ou https:// : {0}", url);
     case "twice": return t("Adresse donnée deux fois : {0}", url);
     default: return t("{0} sources au plus, la principale comprise.", MAX_SOURCES);
@@ -1668,8 +1669,13 @@ function renderAddTorrents() {
     return item;
   }));
   list.hidden = !addTorrents.length;
-  // Sans hôte capable de lire un fichier (interface distante), pas de choix de fichier.
-  $("add-torrents-field").hidden = !host.readTorrent;
+  renderAddMetalinks();
+  // Sans hôte capable de lire un fichier (interface distante), pas de choix de fichier ;
+  // un Metalink lu à son adresse s'y montre quand même.
+  const local = Boolean(host.readTorrent);
+  $("add-torrent-pick").closest(".row").hidden = !local;
+  $("add-torrents-note").hidden = !local;
+  $("add-torrents-field").hidden = !local && !addMetalinks.length;
 }
 
 /// Lit des fichiers `.torrent` (chemins) et les ajoute à la boîte ; un refus est montré.
@@ -1677,12 +1683,94 @@ async function takeTorrentFiles(paths) {
   for (const path of paths) {
     try {
       const file = await host.readTorrent(path);
-      if (!addTorrents.some((f) => f.data === file.data)) addTorrents.push(file);
+      if (isMetalinkName(file.name)) {
+        await takeMetalink(file);
+      } else if (!addTorrents.some((f) => f.data === file.data)) {
+        addTorrents.push(file);
+      }
     } catch (e) {
       showError(refused(e));
     }
   }
   renderAddTorrents();
+}
+
+/// Fichiers Metalink de la boîte « Ajouter » (F-27, SPEC §7.7) : `{name, data, doc, chosen}`,
+/// `doc` lu par le moteur (`metalink.read`), `chosen` les rangs des fichiers cochés.
+let addMetalinks = [];
+
+const metalinkEntry = (name, data, doc) => ({ name, data, doc, chosen: new Set(doc.files.map((f) => f.index)) });
+
+/// Lit un fichier Metalink choisi ou reçu (`{name, data}`), tous ses fichiers cochés.
+async function takeMetalink(file) {
+  if (addMetalinks.some((m) => m.data === file.data)) return;
+  // Moteur pas encore joint (fichier ouvert au lancement) : lu à l'ouverture de la boîte.
+  if (!connected) {
+    addMetalinks.push({ name: file.name, data: file.data, doc: null, chosen: new Set() });
+    return;
+  }
+  const doc = await host.call("metalink.read", { data: file.data });
+  addMetalinks.push(metalinkEntry(file.name, file.data, doc));
+}
+
+/// Lit les Metalink reçus avant que le moteur soit joint ; un refus est montré.
+async function readWaitingMetalinks() {
+  for (const m of addMetalinks.filter((x) => !x.doc)) {
+    try {
+      Object.assign(m, metalinkEntry(m.name, m.data, await host.call("metalink.read", { data: m.data })));
+    } catch (e) {
+      addMetalinks.splice(addMetalinks.indexOf(m), 1);
+      showError(refused(e));
+    }
+  }
+  renderAddMetalinks();
+}
+
+/// Fichiers de chaque Metalink, à cocher, et ceux que le moteur a écartés, avec la raison.
+function renderAddMetalinks() {
+  const box = $("add-metalinks");
+  box.replaceChildren(...addMetalinks.filter((m) => m.doc).map((m) => {
+    const group = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    const title = document.createElement("span");
+    title.className = "path";
+    title.textContent = m.name;
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = t("Retirer");
+    drop.setAttribute("aria-label", t("Retirer {0}", m.name));
+    drop.addEventListener("click", () => {
+      addMetalinks.splice(addMetalinks.indexOf(m), 1);
+      renderAddMetalinks();
+      $("add-torrent-pick").focus();
+    });
+    legend.append(title, drop);
+    group.append(legend);
+    for (const f of m.doc.files) {
+      const label = document.createElement("label");
+      label.className = "check";
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = m.chosen.has(f.index);
+      tick.addEventListener("change", () => {
+        if (tick.checked) m.chosen.add(f.index);
+        else m.chosen.delete(f.index);
+      });
+      const text = document.createElement("span");
+      text.className = "path";
+      text.textContent = f.size != null ? t("{0} ({1})", f.path, bytes(f.size, lang, t)) : f.path;
+      label.append(tick, text);
+      group.append(label);
+    }
+    for (const ignored of m.doc.ignored) {
+      const note = document.createElement("p");
+      note.className = "note flush";
+      note.textContent = t("Écarté : {0} ({1})", ignored.name, ignored.reason);
+      group.append(note);
+    }
+    return group;
+  }));
+  box.hidden = !addMetalinks.length;
 }
 
 async function pickTorrentFiles() {
@@ -1707,11 +1795,11 @@ async function takeOpened() {
     if (item.kind === "magnet" && !lines.includes(item.link)) lines.push(item.link);
   }
   field.value = lines.join("\n");
-  await takeTorrentFiles(opened.filter((item) => item.kind === "torrent").map((item) => item.path));
+  await takeTorrentFiles(opened.filter((item) => item.kind === "torrent" || item.kind === "metalink").map((item) => item.path));
   if ($("add-dialog").open) return;
   if (!connected || document.querySelector("dialog[open]")) {
     openedWaiting = true;
-    showError(t("Un lien ou un fichier .torrent vous attend dans « Ajouter »."));
+    showError(t("Un lien ou un fichier vous attend dans « Ajouter »."));
     return;
   }
   openAdd();
@@ -1722,6 +1810,7 @@ function openAdd() {
   openedWaiting = false;
   renderDest();
   renderAddTorrents();
+  readWaitingMetalinks();
   const dialog = $("add-dialog");
   dialog.returnValue = "";
   dialog.showModal();
@@ -1735,23 +1824,26 @@ async function closeAdd() {
     return;
   }
   const field = $("urls");
-  const urls = field.value.split(/\s+/).filter(Boolean);
-  if ((!urls.length && !addTorrents.length) || !connected) return;
+  let urls = field.value.split(/\s+/).filter(Boolean);
+  if ((!urls.length && !addTorrents.length && !addMetalinks.length) || !connected) return;
   // F-11 : l'empreinte est celle d'un seul fichier, téléchargé en HTTP.
   const { checksum, error } = parseChecksum($("add-checksum").value);
   const torrents = addTorrents.length > 0 || urls.some(isMagnet);
-  if (error || (checksum && (urls.length + addTorrents.length > 1 || torrents))) {
+  const metalinks = addMetalinks.length > 0 || urls.some(isMetalinkUrl);
+  if (error || (checksum && (urls.length + addTorrents.length + addMetalinks.length > 1 || torrents || metalinks))) {
     showError(error
       ? checksumError()
       : torrents
         ? t("Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.")
-        : t("Une empreinte ne vaut que pour une seule adresse."));
+        : metalinks
+          ? t("Un Metalink donne lui-même l'empreinte de chaque fichier.")
+          : t("Une empreinte ne vaut que pour une seule adresse."));
     openAdd();
     $("add-checksum").focus();
     return;
   }
   // Miroirs (SPEC §7.7) : d'autres adresses du même fichier, pour une seule adresse HTTP.
-  const parsed = parseMirrors($("add-mirrors").value, urls, addTorrents.length);
+  const parsed = parseMirrors($("add-mirrors").value, urls, addTorrents.length, addMetalinks.length);
   if (parsed.error) {
     showError(mirrorsError(parsed));
     openAdd();
@@ -1759,8 +1851,37 @@ async function closeAdd() {
     return;
   }
   const mirrors = parsed.mirrors.map((url) => ({ url }));
+  // Adresses de Metalink : lues d'abord par le moteur. Un Metalink de plusieurs fichiers, ou
+  // qui en écarte, revient dans la boîte pour le choix ; rien n'est ajouté avant.
+  const metalinkUrls = urls.filter(isMetalinkUrl);
+  if (metalinkUrls.length) {
+    const unread = [];
+    let readError = null;
+    let toChoose = false;
+    for (const url of metalinkUrls) {
+      try {
+        const doc = await host.call("metalink.read", { url });
+        const name = url.split(/[?#]/)[0].split("/").pop() || url;
+        addMetalinks.push(metalinkEntry(name, doc.data, doc));
+        toChoose ||= doc.files.length > 1 || doc.ignored.length > 0;
+      } catch (e) {
+        unread.push(url);
+        readError ??= e;
+      }
+    }
+    urls = urls.filter((u) => !isMetalinkUrl(u) || unread.includes(u));
+    field.value = urls.join("\n");
+    if (readError || toChoose) {
+      showError(readError
+        ? refused(readError)
+        : t("Choisissez les fichiers du Metalink, puis « Démarrer » ou « Télécharger plus tard »."));
+      openAdd();
+      return;
+    }
+  }
   const failed = [];
   const failedTorrents = [];
+  const failedMetalinks = [];
   let firstError = null;
   // Sans destDir : le dossier des téléchargements du moteur.
   const add = async (source) => {
@@ -1784,9 +1905,31 @@ async function closeAdd() {
       firstError ??= e;
     }
   }
+  // Une tâche par fichier coché ; un Metalink dont un fichier est refusé reste dans la boîte,
+  // ce fichier seul coché.
+  for (const m of addMetalinks.filter((x) => x.doc)) {
+    const select = [...m.chosen].sort((a, b) => a - b);
+    if (!select.length) {
+      failedMetalinks.push(m);
+      firstError ??= { message: t("aucun fichier choisi dans {0}", m.name) };
+      continue;
+    }
+    try {
+      const result = await host.call("metalink.add", { data: m.data, select, startPaused: choice === "later" });
+      if (result.errors.length) {
+        m.chosen = new Set(result.errors.map((e) => e.index));
+        failedMetalinks.push(m);
+        firstError ??= { message: t("{0} : {1}", result.errors[0].path, result.errors[0].message) };
+      }
+    } catch (e) {
+      failedMetalinks.push(m);
+      firstError ??= e;
+    }
+  }
   field.value = failed.join("\n");
   addTorrents = failedTorrents;
-  const refusedCount = failed.length + failedTorrents.length;
+  addMetalinks = failedMetalinks;
+  const refusedCount = failed.length + failedTorrents.length + failedMetalinks.length;
   if (!refusedCount) {
     $("add-checksum").value = "";
     $("add-mirrors").value = "";

@@ -332,8 +332,8 @@ export const EN = {
   "Choisissez au moins un fichier.": "Choose at least one file.",
   "{0} fichier(s) choisi(s), {1} à télécharger": "{0} file(s) chosen, {1} to download",
   "Retirer {0}": "Remove {0}",
-  "Un lien ou un fichier .torrent vous attend dans « Ajouter ».":
-    "A link or .torrent file is waiting for you in “Add”.",
+  "Un lien ou un fichier vous attend dans « Ajouter ».":
+    "A link or file is waiting for you in “Add”.",
   "Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.":
     "A torrent checks its own pieces: no checksum to give.",
   "Sans limite, jusqu'à ce que je l'arrête": "No limit, until I stop it",
@@ -351,9 +351,17 @@ export const EN = {
   "UPnP activé": "UPnP on",
   "UPnP désactivé": "UPnP off",
   "Interface des torrents réglée": "Torrent interface set",
-  "Fichiers .torrent": ".torrent files",
-  "Choisir des fichiers .torrent…": "Choose .torrent files…",
-  "Ou glissez-les sur la fenêtre.": "Or drop them on the window.",
+  "Fichiers .torrent ou Metalink": ".torrent or Metalink files",
+  "Choisir des fichiers .torrent ou Metalink…": "Choose .torrent or Metalink files…",
+  "Ou glissez-les sur la fenêtre. Un Metalink (.meta4, .metalink) donne pour chaque fichier ses adresses et son empreinte ; son adresse peut aussi se coller ci-dessus.":
+    "Or drop them on the window. A Metalink (.meta4, .metalink) gives the addresses and checksum of each file; its address can also be pasted above.",
+  // Metalink (F-27, SPEC §7.7).
+  "Écarté : {0} ({1})": "Set aside: {0} ({1})",
+  "Un Metalink donne lui-même l'empreinte de chaque fichier.": "A Metalink gives the checksum of each file itself.",
+  "Un Metalink donne lui-même les miroirs de chaque fichier.": "A Metalink gives the mirrors of each file itself.",
+  "Choisissez les fichiers du Metalink, puis « Démarrer » ou « Télécharger plus tard ».":
+    "Choose the files of the Metalink, then “Start” or “Download later”.",
+  "aucun fichier choisi dans {0}": "no file chosen in {0}",
   "Envoyé aux autres pairs": "Sent to other peers",
   "Fichiers du torrent": "Torrent files",
   "La liste des fichiers arrive avec les métadonnées du torrent, une fois qu'il a démarré.":

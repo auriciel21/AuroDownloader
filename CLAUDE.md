@@ -93,6 +93,11 @@ téléchargement.
   validés pendant le téléchargement (`check_mirror`) ; le nombre de connexions vaut par
   source ; tests dans `transfer/mirror_tests.rs`. Le serveur de test `FileSite` a `shift` pour servir un
   autre fichier de même taille.
+  Metalink (F-27, SPEC 7.7, étape 1d) : `metalink` (lecture des formats 4 et 3 par `quick-xml`,
+  sans DTD ; noms nettoyés, sources triées par priorité, 16 au plus, empreinte la plus forte ;
+  fuzzing par proptest), `Engine::read_metalink` (contenu ou adresse lue par le moteur),
+  `AddTask::sub_dir` (dossiers créés sous la destination) ; méthodes `metalink.read` et
+  `metalink.add` (une tâche par fichier choisi).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -247,6 +252,7 @@ cargo run -p auro-cli -- restart <id>… --delete-files   # retélécharger depu
 cargo run -p auro-cli -- move <id> -o <dossier> -n <nom>   # déplacer, renommer
 cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # miroirs
+cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> --select 0,2   # Metalink
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
 cargo run -p auro-cli -- checksum <id> <empreinte> ; checksum <id> --clear

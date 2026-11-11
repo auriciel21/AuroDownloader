@@ -5,7 +5,7 @@ import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
   canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
   isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
-  SOURCE_STATES, MAX_SOURCES,
+  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -490,4 +490,24 @@ test("miroirs : ajout dans les Propriétés pour un fichier HTTP pas fini, nom d
   assert.deepEqual(sourceName({ rank: 0 }), ["Principale"]);
   assert.deepEqual(sourceName({ rank: 3 }), ["Miroir {0}", 3]);
   assert.deepEqual(Object.keys(SOURCE_STATES).sort(), ["failed", "ok", "slow", "unknown"]);
+});
+
+test("Metalink (F-27) : reconnu par son nom ou son adresse ; ni miroir ni empreinte à côté", () => {
+  for (const name of ["lot.meta4", "LOT.METALINK", " a.b.meta4 "]) assert.ok(isMetalinkName(name), name);
+  for (const name of ["lot.meta4.txt", "meta4", "lot.torrent", "", null]) assert.ok(!isMetalinkName(name), String(name));
+  for (const url of [
+    "https://download.example/f.iso.meta4",
+    "http://a.example/x/f.metalink?mirrorlist=1",
+    "https://a.example/f.META4#top",
+  ]) assert.ok(isMetalinkUrl(url), url);
+  for (const url of [
+    "https://a.example/f.iso",
+    "https://a.example/get?file=f.meta4",
+    "ftp://a.example/f.meta4",
+    "/home/f.meta4",
+  ]) assert.ok(!isMetalinkUrl(url), url);
+  assert.deepEqual(parseMirrors("https://b/f", [], 0, 1), { error: "metalink" });
+  assert.deepEqual(parseMirrors("https://b/f", ["https://a/f.meta4"]), { error: "metalink" });
+  assert.deepEqual(parseMirrors("https://b/f", ["https://a/f"], 0, 1), { error: "many" });
+  assert.deepEqual(parseMirrors("", [], 0, 2), { mirrors: [] });
 });

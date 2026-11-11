@@ -12,10 +12,11 @@ use super::{
     PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
 };
 use crate::io::checksum::Checksum;
+use crate::metalink::Metalink;
 use crate::schedule::Rules;
 use crate::scheduler::{
-    AddTask, EngineError, Include, LoginChange, LoginView, MediaRequest, QueueChange, TaskDetails,
-    TaskUpdate,
+    AddTask, EngineError, Include, LoginChange, LoginView, MediaRequest, MetalinkSource,
+    QueueChange, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
 use crate::store::settings::{self, DOWNLOAD_DIR, Flag, TORRENT_INTERFACE, TORRENT_RATIO};
@@ -207,6 +208,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(json!({}))
         }
         "task.add" => task_add(ctx, &p).await,
+        // Fichiers Metalink (F-27, SPEC §7.7, depuis le 2026-11-11).
+        "metalink.read" => metalink_read(ctx, &p).await,
+        "metalink.add" => metalink_add(ctx, &p).await,
         "task.get" => task_get(ctx, &p).await,
         "task.list" => task_list(ctx, &p).await,
         "task.update" => task_update(ctx, &p).await,
@@ -804,9 +808,127 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             torrent,
             media,
             mirrors,
+            sub_dir: Vec::new(),
         })
         .await?;
     Ok(json!({"taskId": task_id}))
+}
+
+/// Fichier Metalink d'un appel (`metalink.read`, `metalink.add`, SPEC §7.7) : `data`
+/// (contenu en base64) ou `url` (lue par le moteur).
+fn metalink_source(p: &Params) -> Result<MetalinkSource, RpcError> {
+    match (p.str("data")?, p.str("url")?) {
+        (Some(data), None) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| RpcError::invalid_params("data : base64 invalide"))?;
+            Ok(MetalinkSource::Data(bytes))
+        }
+        (None, Some(url)) => Ok(MetalinkSource::Url(url)),
+        _ => Err(RpcError::invalid_params("data ou url, l'un des deux")),
+    }
+}
+
+/// `metalink.read` : les fichiers décrits, ceux écartés, et le contenu lu à une adresse.
+async fn metalink_read(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let source = metalink_source(p)?;
+    let from_url = matches!(source, MetalinkSource::Url(_));
+    let (doc, bytes) = ctx.engine.read_metalink(source).await?;
+    let mut result = metalink_json(&doc);
+    // Le même document pour l'ajout qui suit, sans le relire à l'adresse.
+    if from_url {
+        result["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+    }
+    Ok(result)
+}
+
+fn metalink_json(doc: &Metalink) -> Value {
+    json!({
+        "format": doc.format.as_str(),
+        "files": doc.files.iter().enumerate().map(|(index, f)| json!({
+            "index": index,
+            "name": f.name,
+            "path": f.path(),
+            "size": f.size,
+            "checksum": f.checksum.as_ref().map(|c| json!({"algo": c.algo().as_sql(), "value": c.value()})),
+            "urls": f.urls,
+            "droppedUrls": f.dropped_urls,
+        })).collect::<Vec<_>>(),
+        "ignored": doc.ignored.iter().map(|i| json!({"name": i.name, "reason": i.reason})).collect::<Vec<_>>(),
+    })
+}
+
+/// `metalink.add` : une tâche HTTP par fichier choisi (`select`, tous sinon), avec ses
+/// miroirs et son empreinte (SPEC §7.7). Un refus n'arrête pas les autres fichiers : il est
+/// rendu dans `errors`, avec le code d'erreur qu'aurait eu `task.add`.
+async fn metalink_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let (doc, _) = ctx.engine.read_metalink(metalink_source(p)?).await?;
+    let select: Vec<usize> = match p.get("select") {
+        None | Some(Value::Null) => (0..doc.files.len()).collect(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|i| usize::try_from(i).ok())
+                    .filter(|&i| i < doc.files.len())
+                    .ok_or_else(|| Params::wrong("select", "liste de rangs de fichiers"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(Params::wrong("select", "liste de rangs de fichiers")),
+    };
+    let mut select = select;
+    select.sort_unstable();
+    select.dedup();
+    if select.is_empty() {
+        return Err(RpcError::invalid_params("select : au moins un fichier"));
+    }
+    let idempotency_key = p.str("idempotencyKey")?;
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|k| k.is_empty() || k.len() > MAX_IDEMPOTENCY_KEY)
+    {
+        return Err(RpcError::invalid_params(format!(
+            "idempotencyKey : de 1 à {MAX_IDEMPOTENCY_KEY} octets"
+        )));
+    }
+    let max_connections = p.u32("maxConnections")?;
+    if max_connections.is_some_and(|c| c == 0 || c > MAX_CONNECTIONS) {
+        return Err(RpcError::invalid_params(format!(
+            "maxConnections : de 1 à {MAX_CONNECTIONS}"
+        )));
+    }
+    let base = AddTask {
+        dest_dir: p.str("destDir")?,
+        queue_id: p.str("queueId")?,
+        max_connections,
+        speed_limit_bps: p.limit("speedLimitBps")?.flatten(),
+        start_paused: p.bool("startPaused")?,
+        ..AddTask::default()
+    };
+    let (mut added, mut errors) = (Vec::new(), Vec::new());
+    for index in select {
+        let file = &doc.files[index];
+        let task = AddTask {
+            url: file.urls[0].clone(),
+            mirrors: file.urls[1..].to_vec(),
+            file_name: Some(file.name.clone()),
+            sub_dir: file.dir.clone(),
+            checksum: file.checksum.clone(),
+            // Une clé par fichier : un ajout répété rend les mêmes tâches.
+            idempotency_key: idempotency_key.as_ref().map(|k| format!("{k}#{index}")),
+            ..base.clone()
+        };
+        match ctx.engine.add(task).await {
+            Ok(task_id) => {
+                added.push(json!({"index": index, "path": file.path(), "taskId": task_id}))
+            }
+            Err(e) => {
+                let e = RpcError::from(e);
+                errors.push(json!({"index": index, "path": file.path(), "code": e.data_code, "message": e.message}));
+            }
+        }
+    }
+    Ok(json!({"tasks": added, "errors": errors}))
 }
 
 /// `media` de `task.add` (SPEC §7.17) : `pageUrl`, et `format`, `container`, `subtitles`,

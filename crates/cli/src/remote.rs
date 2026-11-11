@@ -59,6 +59,129 @@ pub struct AddOptions<'a> {
     pub checksum: Option<&'a Checksum>,
     /// Miroirs du même fichier (SPEC §7.7).
     pub mirrors: &'a [String],
+    /// Fichiers d'un Metalink à ajouter (rangs de `auro metalink`) ; tous sinon.
+    pub select: Option<&'a [u32]>,
+}
+
+/// Taille maximale d'un fichier Metalink lu par la CLI (celle du moteur, SPEC §7.7).
+const MAX_METALINK_FILE: u64 = 4 << 20;
+
+/// Fichier Metalink désigné par un argument (F-27, SPEC §7.7) : un fichier local `.meta4` ou
+/// `.metalink` (envoyé en base64), ou une adresse HTTP(S) dont le chemin finit ainsi (lue
+/// par le moteur). `None` pour tout autre argument.
+fn metalink_of(arg: &str) -> Result<Option<Value>> {
+    let named = |text: &str| {
+        let lower = text.to_ascii_lowercase();
+        lower.ends_with(".meta4") || lower.ends_with(".metalink")
+    };
+    if let Some((scheme, _)) = arg.split_once("://") {
+        let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        let path = arg.split(['?', '#']).next().unwrap_or(arg);
+        return Ok((web && named(path)).then(|| json!({"url": arg})));
+    }
+    let path = Path::new(arg);
+    if !named(arg) || !path.is_file() {
+        return Ok(None);
+    }
+    use base64::Engine as _;
+    let len = std::fs::metadata(path)?.len();
+    if len > MAX_METALINK_FILE {
+        bail!("{arg} : fichier Metalink trop gros ({})", size(len));
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("lecture de {arg}"))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(json!({"data": encoded})))
+}
+
+/// Ajoute les fichiers d'un Metalink (`metalink.add`) : une tâche par fichier ; rend
+/// l'identifiant et le chemin de chacune. Un fichier refusé est signalé, les autres restent.
+async fn add_metalink(
+    rpc: &mut Rpc,
+    mut params: Value,
+    opts: &AddOptions<'_>,
+) -> Result<Vec<(String, String)>> {
+    if opts.checksum.is_some() || !opts.mirrors.is_empty() || !opts.headers.is_empty() {
+        bail!(
+            "--checksum, --mirror et --header ne valent pas pour un Metalink : il donne lui-même \
+             les adresses et l'empreinte de chaque fichier"
+        );
+    }
+    params["destDir"] = json!(dest_dir(opts.dir)?);
+    params["startPaused"] = json!(opts.paused);
+    if let Some(select) = opts.select {
+        params["select"] = json!(select);
+    }
+    if let Some(c) = opts.connections {
+        params["maxConnections"] = json!(c);
+    }
+    if let Some(l) = opts.limit {
+        params["speedLimitBps"] = json!(l);
+    }
+    if let Some(queue) = opts.queue {
+        params["queueId"] = json!(queue_id(rpc, queue).await?);
+    }
+    let added = rpc.call("metalink.add", params).await?;
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+    let errors = added["errors"].as_array().cloned().unwrap_or_default();
+    for e in &errors {
+        eprintln!(
+            "refusé : {}  {} [{}]",
+            text(&e["path"]),
+            text(&e["message"]),
+            text(&e["code"])
+        );
+    }
+    let tasks: Vec<(String, String)> = added["tasks"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|t| (text(&t["taskId"]), text(&t["path"])))
+                .collect()
+        })
+        .unwrap_or_default();
+    if tasks.is_empty() {
+        bail!("aucun fichier du Metalink n'a été ajouté");
+    }
+    Ok(tasks)
+}
+
+/// Contenu d'un Metalink (`auro metalink`) : rang, chemin, taille, empreinte et sources de
+/// chaque fichier, puis ceux écartés et pourquoi.
+pub async fn metalink(rpc: &mut Rpc, arg: &str) -> Result<()> {
+    let params = match metalink_of(arg)? {
+        Some(params) => params,
+        // Une adresse sans extension connue : le moteur dira si c'est un Metalink.
+        None if arg.contains("://") => json!({"url": arg}),
+        None => bail!("{arg} : ni fichier .meta4 ou .metalink, ni adresse"),
+    };
+    let doc = rpc.call("metalink.read", params).await?;
+    println!("Metalink {}", doc["format"].as_str().unwrap_or("?"));
+    for f in doc["files"].as_array().into_iter().flatten() {
+        let length = f["size"]
+            .as_u64()
+            .map_or_else(|| "taille inconnue".to_owned(), size);
+        let sum = f["checksum"]["algo"].as_str().unwrap_or("aucune empreinte");
+        let urls = f["urls"].as_array().map_or(0, Vec::len);
+        let dropped = f["droppedUrls"].as_u64().unwrap_or(0);
+        let sources = match (urls, dropped) {
+            (1, 0) => "1 source".to_owned(),
+            (n, 0) => format!("{n} sources"),
+            (n, d) => format!("{n} sources ({d} laissées de côté)"),
+        };
+        println!(
+            "{:>3}  {}  {length}, {sum}, {sources}",
+            f["index"],
+            f["path"].as_str().unwrap_or_default()
+        );
+    }
+    for i in doc["ignored"].as_array().into_iter().flatten() {
+        println!(
+            "écarté : {}  {}",
+            i["name"].as_str().unwrap_or_default(),
+            i["reason"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 /// Taille maximale d'un fichier `.torrent` lu par la CLI : un garde-fou (le moteur a le
@@ -139,6 +262,16 @@ fn tools_hint(e: anyhow::Error) -> anyhow::Error {
 
 pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Result<()> {
     for url in urls {
+        // Un Metalink : une tâche par fichier (SPEC §7.7).
+        if let Some(source) = metalink_of(url)? {
+            for (id, path) in add_metalink(rpc, source, opts).await? {
+                println!("{id}  {path}");
+            }
+            continue;
+        }
+        if opts.select.is_some() {
+            bail!("--select : seulement pour un fichier Metalink ({url})");
+        }
         let id = add_one(rpc, url, opts).await?;
         println!("{id}  {url}");
     }
@@ -203,16 +336,47 @@ pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
     // Abonné avant l'ajout : aucun événement de la tâche ne peut manquer. Seule la tâche
     // ajoutée est suivie.
     let mut follow = Follow::start(&mut rpc, Some(HashSet::new())).await?;
-    let id = match new {
-        NewTask::File(url, opts) => add_one(&mut rpc, url, opts).await?,
-        NewTask::Video(page, opts) => add_video(&mut rpc, page, opts).await?,
+    let ids = match new {
+        // Un Metalink : ses fichiers, suivis ensemble (SPEC §7.7).
+        NewTask::File(url, opts) => match metalink_of(url)? {
+            Some(source) => add_metalink(&mut rpc, source, opts)
+                .await?
+                .into_iter()
+                .map(|(id, path)| {
+                    println!("Tâche {id}  {path}");
+                    id
+                })
+                .collect(),
+            None if opts.select.is_some() => {
+                bail!("--select : seulement pour un fichier Metalink ({url})")
+            }
+            None => {
+                let id = add_one(&mut rpc, url, opts).await?;
+                println!("Tâche {id}");
+                vec![id]
+            }
+        },
+        NewTask::Video(page, opts) => {
+            let id = add_video(&mut rpc, page, opts).await?;
+            println!("Tâche {id}");
+            vec![id]
+        }
     };
-    println!("Tâche {id}");
-    follow.targets.insert(id.clone());
+    follow.targets.extend(ids.iter().cloned());
     follow.refresh(&mut rpc).await?;
     follow.run(&mut rpc, true).await?;
-    let task = rpc.call("task.get", json!({"taskId": id})).await?;
-    report(&task)
+    // Le bilan de chaque tâche ; la première erreur après tous les bilans.
+    let mut first_error = None;
+    for id in &ids {
+        let task = rpc.call("task.get", json!({"taskId": id})).await?;
+        if let Err(e) = report(&task) {
+            if ids.len() > 1 {
+                eprintln!("{id} : {e:#}");
+            }
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Bilan d'une tâche suivie jusqu'à son arrêt.

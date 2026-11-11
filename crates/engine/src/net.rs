@@ -627,6 +627,16 @@ impl Client {
         Ok(Some(bytes))
     }
 
+    /// [`fetch_small`](Self::fetch_small) d'une adresse HTTP(S) écrite (fichier Metalink
+    /// distant, SPEC §7.7).
+    pub async fn fetch_small_at(
+        &self,
+        url: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, NetError> {
+        self.fetch_small(&parse_url(url)?, limit).await
+    }
+
     /// Plafond de connexions retenu pour `host` pendant la session, s'il y en a un.
     pub fn host_cap(&self, host: &str) -> Option<u32> {
         let caps = self

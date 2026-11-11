@@ -170,18 +170,27 @@ export const ALGO_LABELS = { sha256: "SHA-256", sha1: "SHA-1", md5: "MD5" };
 /// Sources d'une tâche HTTP, la référence comprise (SPEC §7.7).
 export const MAX_SOURCES = 16;
 
+/// Nom de fichier Metalink (F-27, SPEC §7.7) : `.meta4` ou `.metalink`.
+export const isMetalinkName = (name) => /\.(meta4|metalink)$/i.test((name ?? "").trim());
+
+/// Adresse HTTP(S) d'un fichier Metalink : son chemin finit par `.meta4` ou `.metalink`
+/// (paramètres et ancre exclus). Le moteur la lit lui-même (`metalink.read`).
+export const isMetalinkUrl = (text) =>
+  /^https?:\/\/[^?#\s]*\.(meta4|metalink)([?#]\S*)?$/i.test((text ?? "").trim());
+
 /// Adresse HTTP ou HTTPS : la seule que prend un miroir.
 const isWebUrl = (text) => /^https?:\/\/\S+$/i.test(text);
 
 /// Miroirs écrits dans la boîte « Ajouter » (SPEC §7.7), un par ligne, pour les adresses de
 /// la première zone : ils ne valent que pour une seule adresse HTTP. Rend `{ mirrors }`
 /// (liste vide sans miroir) ou `{ error }` : `many` (plusieurs adresses ou fichiers),
-/// `torrent`, `scheme` (pas une adresse HTTP), `twice` (adresse donnée deux fois), `count`
+/// `torrent`, `metalink` (il donne ses miroirs lui-même), `scheme` (pas une adresse HTTP), `twice` (adresse donnée deux fois), `count`
 /// (plus de 16 sources) ; `url` est alors l'adresse en cause.
-export function parseMirrors(text, urls, torrents = 0) {
+export function parseMirrors(text, urls, torrents = 0, metalinks = 0) {
   const mirrors = (text ?? "").split(/\s+/).filter(Boolean);
   if (!mirrors.length) return { mirrors };
-  if (urls.length + torrents > 1) return { error: "many" };
+  if (urls.length + torrents + metalinks > 1) return { error: "many" };
+  if (metalinks > 0 || urls.some(isMetalinkUrl)) return { error: "metalink" };
   if (torrents > 0 || urls.some(isMagnet)) return { error: "torrent" };
   const bad = mirrors.find((m) => !isWebUrl(m));
   if (bad) return { error: "scheme", url: bad };

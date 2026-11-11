@@ -401,6 +401,7 @@ dependencies = [
  "network-interface",
  "percent-encoding",
  "proptest",
+ "quick-xml",
  "rcgen",
  "reqwest",
  "rusqlite",

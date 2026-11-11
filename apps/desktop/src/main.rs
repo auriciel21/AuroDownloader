@@ -272,19 +272,20 @@ fn receive(app: &AppHandle, found: Vec<Opened>) {
     let _ = app.emit_to("main", "opened", ());
 }
 
-/// Lit un fichier `.torrent` choisi ou reçu, pour `task.add` (base64).
+/// Lit un fichier `.torrent` ou Metalink choisi ou reçu, pour `task.add` ou `metalink.read`
+/// (base64).
 #[tauri::command]
 fn read_torrent(path: String) -> Result<opened::TorrentFile, String> {
     opened::read_torrent(&path)
 }
 
-/// Choix de fichiers `.torrent` ; aucun si l'utilisateur renonce.
+/// Choix de fichiers `.torrent` ou Metalink ; aucun si l'utilisateur renonce.
 #[tauri::command]
 async fn pick_torrents(app: AppHandle) -> Vec<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Torrent", &["torrent"])
+        .add_filter("Torrent, Metalink", &["torrent", "meta4", "metalink"])
         .pick_files(move |files| {
             let _ = tx.send(files.unwrap_or_default());
         });
@@ -511,7 +512,7 @@ fn main() {
                 }
             }
             WindowEvent::Focused(true) => resync_if_missed(window.app_handle()),
-            // Fichiers .torrent glissés sur la fenêtre (étape 5b).
+            // Fichiers .torrent (étape 5b) et Metalink (phase 6) glissés sur la fenêtre.
             WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 receive(window.app_handle(), opened::from_paths(paths));
             }

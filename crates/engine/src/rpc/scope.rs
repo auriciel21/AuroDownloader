@@ -64,7 +64,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "history.list"
         // État des outils de la vidéo (SPEC §7.17).
         | "media.tools" => Scope::Read,
-        "task.add" | "task.addBatch" | "media.probe" | "linkscan.run" => Scope::Add,
+        "task.add" | "task.addBatch" | "media.probe" | "linkscan.run"
+        // Fichiers Metalink (SPEC §7.7) : lus, au besoin à une adresse, puis ajoutés.
+        | "metalink.read" | "metalink.add" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
         "task.pause"

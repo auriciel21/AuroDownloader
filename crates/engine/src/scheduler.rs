@@ -35,6 +35,7 @@ use crate::io::checksum::Checksum;
 use crate::io::part_path;
 use crate::limit::{Bucket, Throttle};
 use crate::media;
+use crate::metalink::{self, Metalink};
 use crate::mirrors;
 use crate::net::{self, Client, NetError};
 use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
@@ -487,6 +488,18 @@ pub struct AddTask {
     /// Miroirs du même fichier (SPEC §7.7, phase 6) : adresses HTTP(S) après la référence
     /// `url`, validées à la première exécution.
     pub mirrors: Vec<String>,
+    /// Dossiers sous `dest_dir`, créés s'ils manquent (fichiers d'un Metalink, SPEC §7.7) ;
+    /// chacun doit être un nom sûr tel quel. Tâche HTTP seulement.
+    pub sub_dir: Vec<String>,
+}
+
+/// Fichier Metalink à lire (`metalink.read`, `metalink.add`, SPEC §7.7).
+#[derive(Debug, Clone)]
+pub enum MetalinkSource {
+    /// Contenu du fichier.
+    Data(Vec<u8>),
+    /// Adresse HTTP(S) du fichier, lue par le moteur.
+    Url(String),
 }
 
 /// Vidéo demandée par `task.add` (SPEC §7.17).
@@ -1183,6 +1196,36 @@ impl Engine {
     /// renvoie l'identifiant de la source. Une tâche préparée (taille connue, plages) voit
     /// son miroir validé tout de suite (taille et échantillons) : un autre fichier est
     /// refusé ici ; sinon il l'est à la première exécution.
+    /// Lit un fichier Metalink (F-27, SPEC §7.7) : ses octets, ou une adresse que le moteur
+    /// lit lui-même (4 Mio au plus, sans en-têtes ni identifiants). Rend le document et les
+    /// octets lus, pour un ajout qui porte sur ce même document.
+    pub async fn read_metalink(
+        &self,
+        source: MetalinkSource,
+    ) -> Result<(Metalink, Vec<u8>), EngineError> {
+        let bytes = match source {
+            MetalinkSource::Data(bytes) => bytes,
+            MetalinkSource::Url(url) => {
+                match self.client.fetch_small_at(&url, metalink::MAX_LEN).await {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        return Err(EngineError::BadRequest(format!(
+                            "pas de fichier Metalink à cette adresse (réponse autre que 200, \
+                             ou plus de {} Mio)",
+                            metalink::MAX_LEN >> 20
+                        )));
+                    }
+                    Err(e @ (NetError::InvalidUrl(_) | NetError::UnsupportedScheme(_))) => {
+                        return Err(EngineError::Url(e));
+                    }
+                    Err(e) => return Err(EngineError::SourceUnreachable(e)),
+                }
+            }
+        };
+        let doc = metalink::parse(&bytes).map_err(|e| EngineError::BadRequest(e.to_string()))?;
+        Ok((doc, bytes))
+    }
+
     pub async fn add_source(&self, task_id: &str, url: &str) -> Result<String, EngineError> {
         net::check_url(url)?;
         let (id, address) = (task_id.to_owned(), url.to_owned());
@@ -2302,6 +2345,11 @@ impl Scheduler {
         {
             return Ok(existing);
         }
+        if !task.sub_dir.is_empty() && (task.torrent.is_some() || task.media.is_some()) {
+            return Err(EngineError::BadRequest(
+                "sous-dossier : seulement pour un téléchargement HTTP".into(),
+            ));
+        }
         if task.torrent.is_some() || is_magnet(&task.url) {
             if !task.mirrors.is_empty() {
                 return Err(EngineError::BadRequest(
@@ -2344,7 +2392,15 @@ impl Scheduler {
         if let Some(name) = &task.file_name {
             check_file_name(name)?;
         }
+        for part in &task.sub_dir {
+            check_file_name(part)?;
+        }
         let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id)?;
+        let dest_dir = if task.sub_dir.is_empty() {
+            dest_dir
+        } else {
+            sub_dir(&dest_dir, &task.sub_dir)?
+        };
         let display_name = task
             .file_name
             .clone()
@@ -3556,6 +3612,18 @@ fn is_magnet(url: &str) -> bool {
 }
 
 /// Un dossier de destination : chemin absolu d'un dossier existant.
+/// Crée les dossiers `parts` sous `base` (noms déjà vérifiés) et rend le chemin obtenu.
+fn sub_dir(base: &str, parts: &[String]) -> Result<String, EngineError> {
+    let path: PathBuf = std::iter::once(base)
+        .chain(parts.iter().map(String::as_str))
+        .collect();
+    std::fs::create_dir_all(&path)
+        .map_err(|e| EngineError::DestDir(format!("{} : {e}", path.display())))?;
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| EngineError::DestDir("chemin de destination illisible".into()))
+}
+
 fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
     let path = Path::new(dir);
     if !path.is_absolute() || !path.is_dir() {

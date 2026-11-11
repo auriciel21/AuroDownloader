@@ -2581,6 +2581,193 @@ async fn mirrors_are_validated_against_the_reference() {
 /// suite ; un autre fichier est refusé à l'appel ; sur une tâche pas encore préparée, il
 /// attend la première exécution.
 #[tokio::test]
+async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    const LEN: u64 = 300_000;
+    let reference = site(LEN);
+    let mirror = site(LEN);
+    let sum = crate::testing::content_sha256(LEN);
+    // Deux fichiers (le second dans un sous-dossier), un troisième écarté (il remonte).
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="a.bin">
+    <size>{LEN}</size>
+    <hash type="sha-256">{sum}</hash>
+    <url priority="2">{}</url>
+    <url priority="1">{}</url>
+  </file>
+  <file name="sous/b.bin"><url>{}</url></file>
+  <file name="../c.bin"><url>{}</url></file>
+</metalink>"#,
+        mirror.url("/miroir/a.bin"),
+        reference.url("/a.bin"),
+        reference.url("/b.bin"),
+        reference.url("/c.bin"),
+    );
+    let served = doc.clone();
+    let host = crate::testing::serve(move |r| match r.path.as_str() {
+        "/f.meta4" => crate::testing::reply(
+            "200 OK",
+            &[("Content-Type", "application/metalink4+xml")],
+            served.as_bytes(),
+        ),
+        "/page.html" => crate::testing::reply("200 OK", &[], b"<html></html>"),
+        _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+    });
+
+    // Lu à une adresse : les fichiers, ceux écartés, et le contenu lu.
+    let read = c
+        .result("metalink.read", json!({"url": host.url("/f.meta4")}))
+        .await;
+    assert_eq!(read["format"], "4", "{read}");
+    let files = read["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2, "{read}");
+    assert_eq!(files[0]["path"], "a.bin");
+    assert_eq!(files[0]["size"], LEN);
+    assert_eq!(
+        files[0]["checksum"],
+        json!({"algo": "sha256", "value": sum})
+    );
+    assert_eq!(
+        files[0]["urls"],
+        json!([reference.url("/a.bin"), mirror.url("/miroir/a.bin")])
+    );
+    assert_eq!(files[1]["path"], "sous/b.bin");
+    assert_eq!(files[1]["name"], "b.bin");
+    assert_eq!(read["ignored"][0]["name"], "../c.bin", "{read}");
+    let data = read["data"].as_str().unwrap().to_owned();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .unwrap(),
+        doc.as_bytes()
+    );
+    // Lu depuis son contenu : rien à rendre.
+    let local = c.result("metalink.read", json!({"data": data})).await;
+    assert!(local.get("data").is_none() && local["files"] == read["files"]);
+
+    // Ajouté : une tâche par fichier, la première avec son miroir et son empreinte.
+    let dest = dir_text(dir.path());
+    let add = json!({"data": data, "destDir": dest, "idempotencyKey": "meta-1"});
+    let added = c.result("metalink.add", add.clone()).await;
+    assert_eq!(added["errors"], json!([]), "{added}");
+    let ids: Vec<String> = added["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["taskId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2, "{added}");
+    // Les deux finissent dans un ordre quelconque : leur état est relu.
+    timeout(WAIT, async {
+        loop {
+            let mut done = 0;
+            for id in &ids {
+                let task = c.result("task.get", json!({"taskId": id})).await;
+                assert_ne!(task["state"], "failed", "{task}");
+                done += usize::from(task["state"] == "completed");
+            }
+            if done == ids.len() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("les deux tâches finissent");
+    let content = crate::testing::content(LEN as usize);
+    assert_eq!(std::fs::read(dir.path().join("a.bin")).unwrap(), content);
+    assert_eq!(
+        std::fs::read(dir.path().join("sous").join("b.bin")).unwrap(),
+        content
+    );
+    let first = c
+        .result(
+            "task.get",
+            json!({"taskId": ids[0], "include": ["sources"]}),
+        )
+        .await;
+    assert_eq!(first["checksum"]["value"], json!(sum), "{first}");
+    let urls: Vec<&Value> = first["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["url"])
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            &json!(reference.url("/a.bin")),
+            &json!(mirror.url("/miroir/a.bin"))
+        ]
+    );
+    // Même clé : les mêmes tâches, rien de nouveau.
+    let again = c.result("metalink.add", add).await;
+    assert_eq!(again["tasks"], added["tasks"]);
+
+    // Un seul fichier choisi ; un rang inconnu, les deux sources ou aucune, une adresse
+    // sans Metalink : refusés avant tout ajout.
+    let one = c
+        .result(
+            "metalink.add",
+            json!({"data": data, "select": [1], "destDir": dest, "startPaused": true}),
+        )
+        .await;
+    assert_eq!(one["tasks"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["tasks"][0]["index"], 1);
+    for (method, bad, code) in [
+        (
+            "metalink.add",
+            json!({"data": data, "select": [2]}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "metalink.add",
+            json!({"data": data, "select": []}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "metalink.read",
+            json!({"data": data, "url": host.url("/f.meta4")}),
+            "INVALID_PARAMS",
+        ),
+        ("metalink.read", json!({}), "INVALID_PARAMS"),
+        (
+            "metalink.read",
+            json!({"data": "pas du base64 !"}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "metalink.read",
+            json!({"url": host.url("/absent.meta4")}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "metalink.read",
+            json!({"url": host.url("/page.html")}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "metalink.read",
+            json!({"url": "ftp://exemple/f.meta4"}),
+            "URL_INVALID",
+        ),
+    ] {
+        assert_eq!(
+            c.error_code(method, bad.clone()).await,
+            code,
+            "{method} {bad}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_mirror_added_to_a_prepared_task_is_checked_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path());

@@ -134,10 +134,11 @@
         <textarea id="urls" rows="4" spellcheck="false" autocomplete="off"></textarea>
       </label>
       <div class="field" id="add-torrents-field">
-        <span id="add-torrents-title" data-i18n="Fichiers .torrent">Fichiers .torrent</span>
+        <span id="add-torrents-title" data-i18n="Fichiers .torrent ou Metalink">Fichiers .torrent ou Metalink</span>
         <ul id="add-torrents" class="torrent-list" aria-labelledby="add-torrents-title"></ul>
-        <span class="row"><button type="button" id="add-torrent-pick" data-i18n="Choisir des fichiers .torrent…">Choisir des fichiers .torrent…</button></span>
-        <span class="note" data-i18n="Ou glissez-les sur la fenêtre.">Ou glissez-les sur la fenêtre.</span>
+        <div id="add-metalinks" class="metalink-list"></div>
+        <span class="row"><button type="button" id="add-torrent-pick" data-i18n="Choisir des fichiers .torrent ou Metalink…">Choisir des fichiers .torrent ou Metalink…</button></span>
+        <span class="note" id="add-torrents-note" data-i18n="Ou glissez-les sur la fenêtre. Un Metalink (.meta4, .metalink) donne pour chaque fichier ses adresses et son empreinte ; son adresse peut aussi se coller ci-dessus.">Ou glissez-les sur la fenêtre. Un Metalink (.meta4, .metalink) donne pour chaque fichier ses adresses et son empreinte ; son adresse peut aussi se coller ci-dessus.</span>
       </div>
       <label class="field">
         <span data-i18n="Miroirs (facultatif), un par ligne">Miroirs (facultatif), un par ligne</span>

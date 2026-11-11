@@ -1,4 +1,5 @@
-//! Liens magnet et fichiers `.torrent` reçus de l'extérieur (SPEC §4.3, étape 5b) : arguments
+//! Liens magnet, fichiers `.torrent` et fichiers Metalink (`.meta4`, `.metalink`, phase 6)
+//! reçus de l'extérieur (SPEC §4.3, étape 5b) : arguments
 //! de la ligne de commande (« Ouvrir avec… », association), relance de l'application,
 //! glisser-déposer sur la fenêtre. Rien n'est ajouté d'office : la page préremplit la boîte
 //! « Ajouter », que l'utilisateur confirme.
@@ -11,6 +12,8 @@ use serde::Serialize;
 /// Taille maximale d'un fichier `.torrent` lu pour le moteur : un garde-fou (le moteur a le
 /// sien).
 pub const MAX_TORRENT_FILE: u64 = 16 << 20;
+/// Taille maximale d'un fichier Metalink (celle du moteur, SPEC §7.7).
+pub const MAX_METALINK_FILE: u64 = 4 << 20;
 
 /// Ce qui a été ouvert avec l'application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -20,6 +23,8 @@ pub enum Opened {
     Magnet { link: String },
     /// Fichier `.torrent`, par son chemin absolu.
     Torrent { path: String },
+    /// Fichier Metalink, par son chemin absolu.
+    Metalink { path: String },
 }
 
 /// Un lien magnet : `magnet:?…`, sans caractère de contrôle, de taille raisonnable.
@@ -37,7 +42,28 @@ pub fn is_torrent_path(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("torrent"))
 }
 
-/// Liens magnet et fichiers `.torrent` existants parmi des arguments ; un chemin relatif se
+/// Un nom de fichier Metalink : `.meta4` ou `.metalink`.
+pub fn is_metalink_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("meta4") || e.eq_ignore_ascii_case("metalink"))
+}
+
+/// Un fichier `.torrent` ou Metalink existant, par son chemin absolu.
+fn opened_file(path: &Path) -> Option<Opened> {
+    if !path.is_absolute() || !path.is_file() {
+        return None;
+    }
+    let text = path.to_string_lossy().into_owned();
+    if is_torrent_path(path) {
+        Some(Opened::Torrent { path: text })
+    } else if is_metalink_path(path) {
+        Some(Opened::Metalink { path: text })
+    } else {
+        None
+    }
+}
+
+/// Liens magnet, fichiers `.torrent` et Metalink existants parmi des arguments ; un chemin relatif se
 /// lit depuis `cwd`. Les options (`--endpoint`…) et le reste sont ignorés.
 pub fn from_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&Path>) -> Vec<Opened> {
     let mut found = Vec::new();
@@ -56,7 +82,7 @@ pub fn from_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&Path>) ->
             continue;
         }
         let path = PathBuf::from(&arg);
-        if arg.starts_with('-') || !is_torrent_path(&path) {
+        if arg.starts_with('-') || !(is_torrent_path(&path) || is_metalink_path(&path)) {
             continue;
         }
         let path = match (path.is_absolute(), cwd) {
@@ -64,46 +90,42 @@ pub fn from_args<I: IntoIterator<Item = String>>(args: I, cwd: Option<&Path>) ->
             (false, Some(cwd)) => cwd.join(path),
             (false, None) => continue,
         };
-        if path.is_file() {
-            found.push(Opened::Torrent {
-                path: path.to_string_lossy().into_owned(),
-            });
-        }
+        found.extend(opened_file(&path));
     }
     found
 }
 
-/// Fichiers `.torrent` d'un glisser-déposer.
+/// Fichiers `.torrent` et Metalink d'un glisser-déposer.
 pub fn from_paths(paths: &[PathBuf]) -> Vec<Opened> {
-    paths
-        .iter()
-        .filter(|p| p.is_absolute() && is_torrent_path(p) && p.is_file())
-        .map(|p| Opened::Torrent {
-            path: p.to_string_lossy().into_owned(),
-        })
-        .collect()
+    paths.iter().filter_map(|p| opened_file(p)).collect()
 }
 
-/// Un fichier `.torrent` lu pour le moteur.
+/// Un fichier `.torrent` ou Metalink lu pour le moteur.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentFile {
     /// Nom du fichier, pour l'affichage.
     pub name: String,
-    /// Contenu en base64, tel que `task.add` l'attend (SPEC §6.5).
+    /// Contenu en base64, tel que `task.add` ou `metalink.read` l'attend (SPEC §6.5).
     pub data: String,
 }
 
-/// Lit un fichier `.torrent` : chemin absolu, extension `.torrent`, 16 Mio au plus.
+/// Lit un fichier `.torrent` (16 Mio au plus) ou Metalink (4 Mio au plus), par son chemin
+/// absolu.
 pub fn read_torrent(path: &str) -> Result<TorrentFile, String> {
     let path = Path::new(path);
-    if !path.is_absolute() || !is_torrent_path(path) {
-        return Err("fichier .torrent attendu".into());
+    let limit = match (is_torrent_path(path), is_metalink_path(path)) {
+        (true, _) => MAX_TORRENT_FILE,
+        (_, true) => MAX_METALINK_FILE,
+        _ => return Err("fichier .torrent ou Metalink attendu".into()),
+    };
+    if !path.is_absolute() {
+        return Err("chemin absolu attendu".into());
     }
     let len = std::fs::metadata(path)
         .map_err(|e| format!("{} : {e}", path.display()))?
         .len();
-    if len > MAX_TORRENT_FILE {
+    if len > limit {
         return Err(format!("{} : fichier trop gros", path.display()));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
@@ -124,6 +146,7 @@ mod tests {
     fn magnets_and_existing_torrent_files_are_taken_from_the_arguments() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.torrent"), b"d4:infod4:name1:aee").unwrap();
+        std::fs::write(dir.path().join("lot.meta4"), b"<metalink/>").unwrap();
         std::fs::write(dir.path().join("b.TORRENT"), b"x").unwrap();
         let abs = dir.path().join("b.TORRENT").to_string_lossy().into_owned();
         let args = [
@@ -137,6 +160,7 @@ mod tests {
             "image.iso",
             "MAGNET:?xt=urn:btih:def",
             "magnet:",
+            "lot.meta4",
         ]
         .map(String::from);
         let found = from_args(args, Some(dir.path()));
@@ -152,6 +176,9 @@ mod tests {
                 Opened::Torrent { path: abs },
                 Opened::Magnet {
                     link: "MAGNET:?xt=urn:btih:def".into()
+                },
+                Opened::Metalink {
+                    path: dir.path().join("lot.meta4").to_string_lossy().into_owned()
                 },
             ]
         );
@@ -173,8 +200,28 @@ mod tests {
         assert!(read_torrent(dir.path().join("notes.txt").to_str().unwrap()).is_err());
         assert!(read_torrent("Debian.torrent").is_err());
         assert!(read_torrent(dir.path().join("x.torrent").to_str().unwrap()).is_err());
-        // Glisser-déposer : seulement les .torrent existants.
-        let dropped = from_paths(&[path.clone(), dir.path().join("notes.txt")]);
-        assert_eq!(dropped.len(), 1);
+        // Un Metalink : 4 Mio au plus.
+        let meta = dir.path().join("lot.METALINK");
+        std::fs::write(&meta, b"<metalink/>").unwrap();
+        assert_eq!(
+            read_torrent(meta.to_str().unwrap()).unwrap().name,
+            "lot.METALINK"
+        );
+        let big = dir.path().join("gros.meta4");
+        std::fs::write(&big, vec![b' '; MAX_METALINK_FILE as usize + 1]).unwrap();
+        assert!(read_torrent(big.to_str().unwrap()).is_err());
+        // Glisser-déposer : seulement les .torrent et Metalink existants.
+        let dropped = from_paths(&[path.clone(), dir.path().join("notes.txt"), meta.clone()]);
+        assert_eq!(
+            dropped,
+            [
+                Opened::Torrent {
+                    path: path.to_string_lossy().into_owned()
+                },
+                Opened::Metalink {
+                    path: meta.to_string_lossy().into_owned()
+                },
+            ]
+        );
     }
 }

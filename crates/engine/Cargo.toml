@@ -28,6 +28,8 @@ network-interface = "2"
 # Authentification Digest (RFC 7616, module `net::auth`) : MD5 et SHA-256.
 md-5 = "0.10.6"
 percent-encoding = "2.3.2"
+# Fichiers Metalink (F-27) ; déjà présent par librqbit-upnp (MIT).
+quick-xml = "0.41.0"
 # Seulement pour la fonctionnalité `testing` : autorité de certification du serveur HTTPS.
 rcgen = { version = "0.14.7", optional = true, default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }

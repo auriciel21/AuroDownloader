@@ -652,6 +652,11 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 /* Fichiers .torrent de la boîte « Ajouter ». */
 .torrent-list { list-style: none; margin: 0 0 6px; padding: 0; }
 .torrent-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
+/* Fichiers d'un Metalink (phase 6, étape 1d) : un groupe par Metalink, une case par fichier. */
+.metalink-list { max-height: 220px; overflow: auto; margin: 0 0 6px; }
+.metalink-list fieldset { border: 1px solid var(--row-line); border-radius: 4px; margin: 0 0 6px; padding: 4px 8px; }
+.metalink-list legend { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+.metalink-list label.check { display: flex; padding: 2px 0; }
 #pref-interface-state.warn { color: var(--fail); }
 
 /* Historique (F-35). */

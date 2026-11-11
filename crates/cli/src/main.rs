@@ -58,7 +58,8 @@ fn connections() -> clap::builder::RangedI64ValueParser<u32> {
 enum Command {
     /// Ajoute des téléchargements au moteur, sans attendre
     Add {
-        /// Adresses HTTP ou HTTPS, liens magnet, ou fichiers .torrent
+        /// Adresses HTTP ou HTTPS, liens magnet, fichiers .torrent, ou fichiers Metalink
+        /// (.meta4, .metalink : une tâche par fichier décrit)
         #[arg(required = true)]
         urls: Vec<String>,
         /// Dossier de destination
@@ -89,10 +90,14 @@ enum Command {
         /// sert bien les mêmes octets, puis répartit le téléchargement
         #[arg(short = 'm', long = "mirror", value_name = "ADRESSE")]
         mirrors: Vec<String>,
+        /// Fichiers d'un Metalink à ajouter : « 0,2-4 » (rangs montrés par auro metalink) ;
+        /// tous sinon
+        #[arg(long, value_name = "RANGS", value_parser = parse_selection)]
+        select: Option<Selection>,
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
-        /// Adresse HTTP ou HTTPS, lien magnet, ou fichier .torrent
+        /// Adresse HTTP ou HTTPS, lien magnet, fichier .torrent, ou fichier Metalink
         url: String,
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
@@ -115,6 +120,10 @@ enum Command {
         /// Miroir du même fichier, à répéter (voir `add`)
         #[arg(short = 'm', long = "mirror", value_name = "ADRESSE")]
         mirrors: Vec<String>,
+        /// Fichiers d'un Metalink à ajouter : « 0,2-4 » (rangs montrés par auro metalink) ;
+        /// tous sinon
+        #[arg(long, value_name = "RANGS", value_parser = parse_selection)]
+        select: Option<Selection>,
     },
     /// Liste les tâches
     List {
@@ -196,6 +205,12 @@ enum Command {
     },
     /// Suit l'avancement des tâches (toutes celles en cours par défaut)
     Watch { task_ids: Vec<String> },
+    /// Contenu d'un fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers,
+    /// rangs, empreintes et sources, sans rien ajouter
+    Metalink {
+        /// Fichier local ou adresse
+        source: String,
+    },
     /// Fichiers d'un torrent ; avec --select, ceux à télécharger (les autres sont laissés)
     Files {
         task_id: String,
@@ -365,7 +380,7 @@ enum VideoAction {
     },
 }
 
-/// Rangs de fichiers d'un torrent.
+/// Rangs de fichiers d'un torrent ou d'un Metalink.
 #[derive(Clone)]
 struct Selection(Vec<u32>);
 
@@ -602,6 +617,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             headers,
             checksum,
             mirrors,
+            select,
         } => {
             let opts = AddOptions {
                 dir: &dir,
@@ -612,6 +628,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 headers: &headers,
                 checksum: checksum.as_ref(),
                 mirrors: &mirrors,
+                select: select.as_ref().map(|s| s.0.as_slice()),
             };
             remote::get(target, remote::NewTask::File(&url, &opts)).await
         }
@@ -635,6 +652,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     headers,
                     checksum,
                     mirrors,
+                    select,
                 } => {
                     if checksum.is_some() && urls.len() > 1 {
                         bail!("--checksum : une seule adresse, l'empreinte est celle d'un fichier");
@@ -651,6 +669,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         headers: &headers,
                         checksum: checksum.as_ref(),
                         mirrors: &mirrors,
+                        select: select.as_ref().map(|s| s.0.as_slice()),
                     };
                     remote::add(&mut rpc, &urls, &opts).await
                 }
@@ -699,6 +718,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     task_id, checksum, ..
                 } => remote::set_checksum(&mut rpc, &task_id, checksum.as_ref()).await,
                 Command::Watch { task_ids } => remote::watch(&mut rpc, &task_ids).await,
+                Command::Metalink { source } => remote::metalink(&mut rpc, &source).await,
                 Command::Files { task_id, select } => {
                     let select = select.as_ref().map(|s| s.0.as_slice());
                     remote::files(&mut rpc, &task_id, select).await
