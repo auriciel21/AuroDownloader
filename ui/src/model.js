@@ -167,6 +167,50 @@ export function parseChecksum(text) {
 /// Nom affiché d'un algorithme d'empreinte.
 export const ALGO_LABELS = { sha256: "SHA-256", sha1: "SHA-1", md5: "MD5" };
 
+/// Sources d'une tâche HTTP, la référence comprise (SPEC §7.7).
+export const MAX_SOURCES = 16;
+
+/// Adresse HTTP ou HTTPS : la seule que prend un miroir.
+const isWebUrl = (text) => /^https?:\/\/\S+$/i.test(text);
+
+/// Miroirs écrits dans la boîte « Ajouter » (SPEC §7.7), un par ligne, pour les adresses de
+/// la première zone : ils ne valent que pour une seule adresse HTTP. Rend `{ mirrors }`
+/// (liste vide sans miroir) ou `{ error }` : `many` (plusieurs adresses ou fichiers),
+/// `torrent`, `scheme` (pas une adresse HTTP), `twice` (adresse donnée deux fois), `count`
+/// (plus de 16 sources) ; `url` est alors l'adresse en cause.
+export function parseMirrors(text, urls, torrents = 0) {
+  const mirrors = (text ?? "").split(/\s+/).filter(Boolean);
+  if (!mirrors.length) return { mirrors };
+  if (urls.length + torrents > 1) return { error: "many" };
+  if (torrents > 0 || urls.some(isMagnet)) return { error: "torrent" };
+  const bad = mirrors.find((m) => !isWebUrl(m));
+  if (bad) return { error: "scheme", url: bad };
+  const seen = new Set(urls);
+  for (const m of mirrors) {
+    if (seen.has(m)) return { error: "twice", url: m };
+    seen.add(m);
+  }
+  if (urls.length + mirrors.length > MAX_SOURCES) return { error: "count" };
+  return { mirrors };
+}
+
+/// Miroir à ajouter dans les Propriétés (`task.addSource`) : un fichier HTTP pas encore fini
+/// ni annulé ; une vidéo ou un torrent n'a qu'une source.
+export const canAddMirror = (task) =>
+  (task.kind ?? "http") === "http" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+
+/// Nom court d'une source : « principale » pour la référence, sinon « miroir N » (son rang).
+/// Rend la clé du texte et son numéro, à traduire par l'appelant.
+export const sourceName = (source) => (source.rank === 0 ? ["Principale"] : ["Miroir {0}", source.rank]);
+
+/// Textes des états d'une source (SPEC §6.5), comme ceux de la CLI.
+export const SOURCE_STATES = {
+  unknown: "À vérifier",
+  ok: "Bonne",
+  slow: "Lente",
+  failed: "Écartée",
+};
+
 /// Ce qu'un changement demande à l'affichage.
 function outcome() {
   return {

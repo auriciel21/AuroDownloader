@@ -74,17 +74,26 @@ impl Case {
     }
 
     async fn run(&mut self) -> Outcome {
+        self.run_seen().await.0
+    }
+
+    /// Exécute la tâche ; rend aussi les sources vues dans l'avancement, segment par segment.
+    async fn run_seen(&mut self) -> (Outcome, std::collections::HashSet<String>) {
         let (_, stop) = watch::channel(false);
-        run(
+        let mut seen = std::collections::HashSet::new();
+        let outcome = run(
             &mut self.conn,
             &client(),
             &self.task_id,
             &opts(),
             stop,
-            &mut |_| {},
+            &mut |p| {
+                seen.extend(p.segments.iter().map(|s| s.source_id.to_string()));
+            },
         )
         .await
-        .unwrap()
+        .unwrap();
+        (outcome, seen)
     }
 
     fn sources(&self) -> Vec<SourceRow> {
@@ -116,7 +125,7 @@ async fn two_sources_share_the_download() {
     let (_m, mirror) = server(LEN, pace);
     let mut case = Case::new(&reference.url("/f.bin"));
     let mirror_id = case.mirror(&mirror.url("/miroir/f.bin"), LEN, "\"v1\"");
-    let outcome = case.run().await;
+    let (outcome, seen) = case.run_seen().await;
     assert_eq!(outcome, Outcome::Completed(case.dir.path().join("f.bin")));
     assert_eq!(case.file("f.bin"), content(LEN as usize));
     assert!(
@@ -124,6 +133,13 @@ async fn two_sources_share_the_download() {
         "les deux servent"
     );
     let sources = case.sources();
+    // L'avancement dit quelle source envoie chaque segment (affichage, SPEC §7.7).
+    let expected: std::collections::HashSet<String> =
+        sources.iter().map(|s| s.id.clone()).collect();
+    assert_eq!(
+        seen, expected,
+        "segments de chaque source dans l'avancement"
+    );
     assert!(
         sources.iter().all(|s| s.state == SourceState::Ok),
         "{sources:?}"

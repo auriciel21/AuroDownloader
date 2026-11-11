@@ -6,7 +6,8 @@ import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
-  shareRatio, qualityChoices, exactFormat, formatContent,
+  shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
+  SOURCE_STATES, MAX_SOURCES,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -877,6 +878,7 @@ function openDetails(taskId, { focusLimit = false } = {}) {
   fillLimits($("d-limit"), task.speedLimitBps ?? null);
   // Rempli à l'ouverture seulement : l'affichage se refait chaque seconde.
   $("d-checksum-input").value = task.checksum ? `${task.checksum.algo}:${task.checksum.value}` : "";
+  $("d-mirror-input").value = "";
   // Une autre tâche : sa carte se dessine à neuf.
   $("d-map").replaceChildren();
   renderDetails();
@@ -966,7 +968,77 @@ function renderDetails() {
   $("d-limit-apply").disabled = !connected;
   $("d-limit-torrent-note").hidden = !torrent;
   renderSegments(task);
+  renderSources(task);
   renderTorrentFiles(task);
+}
+
+/// Nom court d'une source, traduit : « Principale » ou « Miroir 2 ».
+function sourceText(source) {
+  const [key, n] = sourceName(source);
+  return t(key, n);
+}
+
+/// Sources d'un téléchargement HTTP (miroirs, SPEC §7.7) : rôle, adresse, état avec la raison
+/// d'un refus, débit moyen ; et le champ « Ajouter un miroir » tant qu'il en accepte.
+function renderSources(task) {
+  const sources = detailsFull?.sources ?? [];
+  const addable = canAddMirror(task);
+  const section = $("d-sources-section");
+  section.hidden = (task.kind ?? "http") !== "http" || !detailsFull || (sources.length < 2 && !addable);
+  if (section.hidden) return;
+  // Une seule source : son adresse est déjà plus haut.
+  $("d-sources-box").hidden = sources.length < 2;
+  $("d-mirror-field").hidden = !addable;
+  $("d-mirror-add").disabled = !connected || addingMirror;
+  $("d-sources").tBodies[0].replaceChildren(...sources.map((s) => {
+    const row = document.createElement("tr");
+    row.className = s.state;
+    const state = t(SOURCE_STATES[s.state] ?? s.state);
+    // Raison d'un refus ou du dernier échec ; une bonne source n'en a plus besoin.
+    const status = s.lastError && s.state !== "ok" ? t("{0} : {1}", state, s.lastError) : state;
+    const speed = s.avgBps > 0 ? rate(s.avgBps) : "";
+    for (const [text, path] of [[sourceText(s), false], [s.url, true], [status, false], [speed, false]]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      if (path) cell.className = "path";
+      row.append(cell);
+    }
+    return row;
+  }));
+}
+
+/// Un ajout de miroir attend la réponse du moteur (vérification du miroir comprise).
+let addingMirror = false;
+
+/// Ajoute un miroir à la tâche affichée (`task.addSource`) ; le moteur le vérifie aussitôt
+/// si la tâche est préparée, et refuse un autre fichier (`SOURCE_MISMATCH`).
+async function addMirror() {
+  const input = $("d-mirror-input");
+  const url = input.value.trim();
+  const taskId = detailsTask;
+  if (!url || !taskId || addingMirror) return;
+  if (!/^https?:\/\/\S+$/i.test(url)) {
+    showError(mirrorsError({ error: "scheme", url }));
+    input.focus();
+    return;
+  }
+  addingMirror = true;
+  $("d-mirror-add").disabled = true;
+  announce(t("Vérification du miroir…"));
+  try {
+    await host.call("task.addSource", { taskId, url });
+    input.value = "";
+    showError("");
+    announce(t("Miroir ajouté"));
+  } catch (e) {
+    showError(refused(e));
+  } finally {
+    addingMirror = false;
+    if (detailsTask === taskId) {
+      refreshDetails();
+      input.focus();
+    }
+  }
 }
 
 /// Choix des fichiers d'un torrent pas encore appliqué : rang → coché. Il passe avant ce que
@@ -1064,16 +1136,24 @@ function renderSegments(task) {
   });
   const receiving = segments.filter((s) => s.receiving).length;
   map.setAttribute("aria-label", t("{0} segments, {1} en cours de réception", segments.length, receiving));
+  // Miroirs (SPEC §7.7) : la source de chaque segment reçu, quand il y en a plusieurs.
+  const sources = detailsFull?.sources ?? [];
+  $("d-segments").classList.toggle("mirrored", sources.length > 1);
+  const from = (s) => {
+    const source = s.sourceId && sources.find((x) => x.sourceId === s.sourceId);
+    return source ? sourceText(source) : "";
+  };
   $("d-segments").tBodies[0].replaceChildren(...segments.map((s, i) => {
     const row = document.createElement("tr");
     const finished = s.doneBytes >= size(s);
     const status = s.receiving ? t("Réception des données") : finished ? t("Terminé") : t("En attente");
     row.className = s.receiving ? "receiving" : finished ? "finished" : "";
-    for (const text of [String(i + 1), t("{0} sur {1}", bytes(s.doneBytes, lang, t), bytes(size(s), lang, t)), status]) {
+    for (const text of [String(i + 1), t("{0} sur {1}", bytes(s.doneBytes, lang, t), bytes(size(s), lang, t)), status, from(s)]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
     }
+    row.lastElementChild.className = "source-column";
     return row;
   }));
 }
@@ -1084,6 +1164,17 @@ function closeDetails() {
   detailsFull = null;
   clearInterval(detailsTimer);
   (id && rows.get(id)?.isConnected ? rows.get(id) : null)?.focus();
+}
+
+/// Message d'un champ « Miroirs » refusé par `parseMirrors`.
+function mirrorsError({ error, url }) {
+  switch (error) {
+    case "many": return t("Des miroirs ne valent que pour une seule adresse.");
+    case "torrent": return t("Un torrent trouve ses pairs lui-même : pas de miroir à donner.");
+    case "scheme": return t("Un miroir est une adresse http:// ou https:// : {0}", url);
+    case "twice": return t("Adresse donnée deux fois : {0}", url);
+    default: return t("{0} sources au plus, la principale comprise.", MAX_SOURCES);
+  }
 }
 
 /// Message d'une empreinte mal écrite.
@@ -1659,12 +1750,21 @@ async function closeAdd() {
     $("add-checksum").focus();
     return;
   }
+  // Miroirs (SPEC §7.7) : d'autres adresses du même fichier, pour une seule adresse HTTP.
+  const parsed = parseMirrors($("add-mirrors").value, urls, addTorrents.length);
+  if (parsed.error) {
+    showError(mirrorsError(parsed));
+    openAdd();
+    $("add-mirrors").focus();
+    return;
+  }
+  const mirrors = parsed.mirrors.map((url) => ({ url }));
   const failed = [];
   const failedTorrents = [];
   let firstError = null;
   // Sans destDir : le dossier des téléchargements du moteur.
   const add = async (source) => {
-    const params = { sources: [source], startPaused: choice === "later" };
+    const params = { sources: [source, ...(source.url ? mirrors : [])], startPaused: choice === "later" };
     if (checksum) params.checksum = checksum;
     await host.call("task.add", params);
   };
@@ -1687,7 +1787,10 @@ async function closeAdd() {
   field.value = failed.join("\n");
   addTorrents = failedTorrents;
   const refusedCount = failed.length + failedTorrents.length;
-  if (!refusedCount) $("add-checksum").value = "";
+  if (!refusedCount) {
+    $("add-checksum").value = "";
+    $("add-mirrors").value = "";
+  }
   if (refusedCount) {
     showError(t("{0} ajout(s) refusé(s) : {1}", refusedCount, firstError?.message ?? ""));
     openAdd();
@@ -2637,6 +2740,13 @@ function wire() {
   $("d-reveal").addEventListener("click", () => detailsTask && withFile(detailsTask, host.revealFile));
   $("d-limit-apply").addEventListener("click", applyTaskLimit);
   $("d-checksum-apply").addEventListener("click", applyChecksum);
+  $("d-mirror-add").addEventListener("click", addMirror);
+  $("d-mirror-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addMirror();
+    }
+  });
   $("d-files-apply").addEventListener("click", applyFileChoice);
   $("d-files").addEventListener("change", (event) => {
     const box = event.target.closest("input[type=checkbox]");

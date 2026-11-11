@@ -280,6 +280,9 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
   - **Outils** : sans yt-dlp ni ffmpeg, la boîte dit pourquoi et propose de les installer (sources, vérification, près de 400 Mo installés) ; l'installation ne part que sur ce clic, qui vaut accord (section 7.17), puis la page est analysée. Les Options ont une rubrique « Vidéo » : versions et origine des outils, installation ou réinstallation, et la mise à jour automatique de yt-dlp (`media.autoUpdate`).
   - **Suivi** : l'état « Finition » pendant l'assemblage ; un avertissement `SUBTITLES_MISSING` ou `YTDLP_UPDATE_FAILED` s'affiche dans la barre d'erreur, `YTDLP_UPDATED` est seulement annoncé aux lecteurs d'écran. Codes `TOOLS_MISSING` et `MERGE_FAILED` nommés.
   - **Propriétés** : l'adresse est celle de la page ; ni « Déplacer/Renommer », ni « Actualiser l'adresse », ni empreinte pour une vidéo, ce que le moteur refuse aussi désormais (section 6.5).
+- **Application de bureau, miroirs** (phase 6, étape 1c, 2026-11-11 ; décisions de l'utilisateur : pas de retrait d'un miroir pour l'instant, source de chaque segment montrée) :
+  - **Ajout** : la boîte « Ajouter » a un champ « Miroirs (facultatif) », un par ligne, pour une seule adresse HTTP (refusé avec plusieurs adresses, un lien magnet ou un `.torrent`, une adresse qui n'est pas `http(s)://`, une adresse donnée deux fois, plus de 16 sources). Les miroirs partent avec la référence dans `sources[]` de `task.add`.
+  - **Propriétés** : section « Sources » quand la tâche en a plusieurs : « Principale » ou « Miroir N » (rang), adresse, état (« À vérifier », « Bonne », « Lente », « Écartée », avec la raison d'un refus ou du dernier échec, texte du moteur) et débit moyen. Champ « Ajouter un miroir » (`task.addSource`) pour un fichier HTTP pas encore fini ni annulé ; un refus du moteur s'affiche dans la barre d'erreur. Le tableau « Segments et connexions » gagne une colonne « Source » (`sourceId` des segments reçus), montrée seulement s'il y a plusieurs sources. Aucun retrait de miroir : le moteur écarte d'office les mauvais et ne donne plus de segments aux lents.
 - **Ligne de commande, torrents et vidéo** (phase 5, étape 5a, 2026-11-09 ; décisions de l'utilisateur : groupe `auro video`, commande générique `auro config`) :
   - `auro add` et `auro get` prennent aussi un lien magnet ou un fichier `.torrent` local (envoyé en base64, 16 Mio au plus) ; `auro files <tâche> [--select 0,2-4]` montre les fichiers d'un torrent et choisit ceux à télécharger ; `auro limit --upload` règle la limite d'envoi.
   - `auro video tools [--install [--force]]` montre ou installe yt-dlp et ffmpeg (la commande vaut accord de l'utilisateur) ; `auro video info <page>` décrit la page (formats, sous-titres) ; `auro video add` et `auro video get <page> [-f format] [--container] [--subs fr,en]` ajoutent une vidéo, `get` la suivant jusqu'au bout.
@@ -769,7 +772,9 @@ Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`
   - `segments` ajoute `segments[]` : `idx`, `start` et `end` (octets, bornes incluses),
     `doneBytes` et `receiving`. Pour un segment qu'une connexion reçoit en ce moment
     (`receiving` vrai), `doneBytes` compte les octets reçus, sinon ceux vidés sur disque
-    au dernier point de contrôle. Un client qui veut suivre la carte des connexions
+    au dernier point de contrôle. Un segment en cours de réception porte aussi
+    `sourceId`, la source qui l'envoie (miroirs, section 7.7 ; depuis le 2026-11-11) ;
+    les autres ne l'ont pas. Un client qui veut suivre la carte des connexions
     rappelle `task.get` (une fois par seconde suffit) ;
   - `sources` ajoute `sources[]` : `url` et `acceptsRanges` (`null` avant la
     préparation). `acceptsRanges` faux signale un téléchargement sans reprise possible
@@ -1080,7 +1085,7 @@ Conception (phase 6, étape 1, décisions de l'utilisateur du 2026-11-10) ; elle
   - Débit lissé de chaque source, mesuré toutes les demi-secondes (au moins 0,2 s d'écart). Après 4 mesures, une source sous le quart de la médiane des autres passe à `slow` jusqu'à la fin de l'exécution. Le débit est enregistré (`avg_bps`) pendant l'exécution et à la fin.
   - Échec d'une connexion qui tient à sa source (réseau, serveur), alors qu'une autre source travaille (ni au repos, ni écartée) : définitif (fichier changé, refus du serveur, plages ignorées), la source est écartée pour l'exécution ; passager (coupure, délai), au bout de 3 d'affilée, elle se repose 30 s, deux fois plus à chaque repos, 10 min au plus. Le segment reprend sur les autres depuis ses octets enregistrés. La source passe à `failed` en base, avec la raison ; revenue de son repos, à `ok`. Sans autre source qui travaille, la règle d'une source unique s'applique (nouvel essai par le planificateur, pause, échec) : jamais d'attente sans fin.
   - Tests : partage entre deux sources, miroir changé écarté seul, référence changée (le miroir finit), toutes changées (pause `file_changed`), miroir qui coupe tout (repos), miroir lent (`slow`) ; banc `crash_daemon` : deux tâches sur trois avec un miroir, qui doit servir des segments.
-- Mise en œuvre par sous-étapes : 1a. protocole, stockage, validation, CLI (faite le 2026-11-10 : module `mirrors`, `store::sources`) ; 1b. répartition des segments et bascule, bancs (faite le 2026-11-10) ; 1c. bureau ; 1d. Metalink.
+- Mise en œuvre par sous-étapes : 1a. protocole, stockage, validation, CLI (faite le 2026-11-10 : module `mirrors`, `store::sources`) ; 1b. répartition des segments et bascule, bancs (faite le 2026-11-10) ; 1c. bureau (écrite le 2026-11-11, section 4.6 ; `sourceId` des segments de `task.get`) ; 1d. Metalink.
 
 ### 7.8 Nouvelles tentatives
 

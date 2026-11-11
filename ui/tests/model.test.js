@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
   canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
-  isMagnet, shareRatio, qualityChoices, exactFormat, formatContent,
+  isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
+  SOURCE_STATES, MAX_SOURCES,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -456,4 +457,37 @@ test("vidéo : qualités proposées, tailles estimées, DRM écarté, format pr�
   assert.equal(exactFormat(probe.formats[0], probe), "a1");
   assert.deepEqual(probe.formats.map(formatContent), ["a", "a", "v", "v", "av", "v"]);
   assert.equal(formatContent({ height: 400 }), "?");
+});
+
+test("miroirs (SPEC §7.7) : une seule adresse HTTP, adresses lues ligne par ligne, 16 sources au plus", () => {
+  const ref = ["https://a.example/f.iso"];
+  assert.deepEqual(parseMirrors("", ref), { mirrors: [] });
+  assert.deepEqual(parseMirrors("  \n ", ["https://a/x", "https://b/y"], 1), { mirrors: [] }, "sans miroir, rien à vérifier");
+  assert.deepEqual(
+    parseMirrors(" https://b.example/f.iso\n\nhttp://c.example/pub/f.iso ", ref),
+    { mirrors: ["https://b.example/f.iso", "http://c.example/pub/f.iso"] },
+  );
+  assert.deepEqual(parseMirrors("https://b/f", ["https://a/f", "https://c/f"]), { error: "many" });
+  assert.deepEqual(parseMirrors("https://b/f", ref, 1), { error: "many" });
+  assert.deepEqual(parseMirrors("https://b/f", [], 1), { error: "torrent" });
+  assert.deepEqual(parseMirrors("https://b/f", ["magnet:?xt=urn:btih:00"]), { error: "torrent" });
+  assert.deepEqual(parseMirrors("ftp://b/f", ref), { error: "scheme", url: "ftp://b/f" });
+  assert.deepEqual(parseMirrors("magnet:?xt=urn:btih:00", ref), { error: "scheme", url: "magnet:?xt=urn:btih:00" });
+  assert.deepEqual(parseMirrors(ref[0], ref), { error: "twice", url: ref[0] });
+  assert.deepEqual(parseMirrors("https://b/f https://b/f", ref), { error: "twice", url: "https://b/f" });
+  const many = (n) => Array.from({ length: n }, (_, i) => `https://m${i}.example/f.iso`).join("\n");
+  assert.equal(parseMirrors(many(MAX_SOURCES - 1), ref).mirrors.length, MAX_SOURCES - 1);
+  assert.deepEqual(parseMirrors(many(MAX_SOURCES), ref), { error: "count" });
+});
+
+test("miroirs : ajout dans les Propriétés pour un fichier HTTP pas fini, nom de chaque source", () => {
+  assert.ok(canAddMirror(task("a", "active")));
+  assert.ok(canAddMirror(task("a", "failed", { kind: "http" })));
+  for (const state of ["queued", "paused", "retry_wait"]) assert.ok(canAddMirror(task("a", state)), state);
+  for (const state of ["completed", "cancelled", "verifying"]) assert.ok(!canAddMirror(task("a", state)), state);
+  assert.ok(!canAddMirror(task("a", "paused", { kind: "torrent" })));
+  assert.ok(!canAddMirror(task("a", "paused", { kind: "media" })));
+  assert.deepEqual(sourceName({ rank: 0 }), ["Principale"]);
+  assert.deepEqual(sourceName({ rank: 3 }), ["Miroir {0}", 3]);
+  assert.deepEqual(Object.keys(SOURCE_STATES).sort(), ["failed", "ok", "slow", "unknown"]);
 });

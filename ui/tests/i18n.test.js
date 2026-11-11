@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { EN, STATES, PAUSE_REASONS, ERRORS, translator, stateText, bytes, duration } from "../src/i18n.js";
+import { SOURCE_STATES, sourceName } from "../src/model.js";
 
 const fr = translator("fr");
 const en = translator("en");
@@ -19,6 +20,8 @@ test("chaque texte de la page a sa traduction anglaise", () => {
     for (const m of block[1].matchAll(/: "([^"]*)"/g)) used.add(m[1]);
   }
   for (const text of [...Object.values(STATES), ...Object.values(PAUSE_REASONS), ...Object.values(ERRORS)]) used.add(text);
+  // Sources d'une tâche (miroirs) : textes tenus par model.js, traduits par main.js.
+  for (const text of [...Object.values(SOURCE_STATES), sourceName({ rank: 0 })[0], sourceName({ rank: 2 })[0]]) used.add(text);
   const missing = [...used].filter((text) => !(text in EN));
   assert.deepEqual(missing, []);
   assert.ok(used.size > 40, `${used.size} textes trouvés`);

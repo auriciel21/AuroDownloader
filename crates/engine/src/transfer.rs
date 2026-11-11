@@ -189,11 +189,13 @@ pub struct Progress {
 }
 
 /// Un segment qu'une connexion reçoit en ce moment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveSegment {
     pub idx: u32,
     /// Octets reçus depuis le début du segment, pas forcément vidés sur disque.
     pub received: u64,
+    /// Source qui l'envoie (SPEC §7.7) : la référence ou un miroir.
+    pub source_id: Arc<str>,
 }
 
 /// Issue d'une exécution, déjà enregistrée dans la base.
@@ -1148,7 +1150,7 @@ fn first_width(client: &Client, url: &str, task: &TaskRow, opts: &Options) -> u3
 /// connexions dont le serveur a accepté la requête (SPEC §7.3).
 struct Target {
     /// Source de la tâche (SPEC §7.7) : la référence ou un miroir.
-    source_id: String,
+    source_id: Arc<str>,
     url: String,
     headers: Vec<(String, String)>,
     /// Identifiants du site, s'il en a (SPEC §7.14).
@@ -1174,7 +1176,7 @@ impl Target {
         if_range: Option<String>,
     ) -> Self {
         Target {
-            source_id,
+            source_id: source_id.into(),
             url,
             headers,
             auth,
@@ -1497,6 +1499,8 @@ async fn pool(
     let (halt_tx, halt_rx) = watch::channel(false);
     let mut running: JoinSet<ConnEnd> = JoinSet::new();
     let mut handles: HashMap<u32, ProgressHandle> = HashMap::new();
+    // Source de chaque segment en cours, pour l'affichage (SPEC §7.7).
+    let mut owners: HashMap<u32, Arc<str>> = HashMap::new();
     let mut failure: Option<Failure> = None;
     let (mut user_stop, mut stop_gone) = (false, false);
 
@@ -1514,7 +1518,10 @@ async fn pool(
     };
     let mut measure = interval_at(start + ctx.opts.measure_every, ctx.opts.measure_every);
     measure.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut measured = (start, progress(&saved, &handles, total, 0).received);
+    let mut measured = (
+        start,
+        progress(&saved, &handles, &owners, total, 0).received,
+    );
     // Refus du serveur (SPEC §7.3) : épisodes d'affilée sans connexion finie entre eux,
     // connexion finie depuis le dernier, et pause avant de rouvrir une connexion.
     let (mut strikes, mut ended_ok, mut hold): (u32, bool, Option<Instant>) = (0, false, None);
@@ -1553,6 +1560,7 @@ async fn pool(
             };
             let writer = ctx.part.writer(&segment, ctx.opts.buffer);
             handles.insert(segment.idx, writer.progress());
+            owners.insert(segment.idx, Arc::clone(&slots[pick].target.source_id));
             slots[pick].connections += 1;
             running.spawn(connection(
                 ctx.client.clone(),
@@ -1625,6 +1633,7 @@ async fn pool(
             joined = running.join_next() => {
                 let end = joined.expect("au moins une connexion")?;
                 let handle = handles.remove(&end.idx);
+                owners.remove(&end.idx);
                 slots[end.slot].connections -= 1;
                 let mut written = None;
                 match end.progress {
@@ -1773,7 +1782,7 @@ async fn pool(
                 if auto.as_ref().is_some_and(|a| !a.is_frozen()) && failure.is_none() && !user_stop =>
             {
                 let now = Instant::now();
-                let received = progress(&saved, &handles, total, 0).received;
+                let received = progress(&saved, &handles, &owners, total, 0).received;
                 let elapsed = now.duration_since(measured.0).as_secs_f64();
                 if let (Some(a), true) = (auto.as_mut(), elapsed > 0.0) {
                     let rate = received.saturating_sub(measured.1) as f64 / elapsed;
@@ -1782,7 +1791,7 @@ async fn pool(
                 measured = (now, received);
             }
             _ = display.tick() => {
-                on_progress(progress(&saved, &handles, total, running.len()));
+                on_progress(progress(&saved, &handles, &owners, total, running.len()));
                 let now = Instant::now();
                 if let Some(slowed) = measure_slots(&mut slots, now.duration_since(rated).as_secs_f64()) {
                     for i in slowed {
@@ -1801,7 +1810,7 @@ async fn pool(
             }
         }
     }
-    on_progress(progress(&saved, &handles, total, 0));
+    on_progress(progress(&saved, &handles, &owners, total, 0));
     // Débits de cette exécution, gardés pour la suivante et pour l'affichage.
     if slots.len() > 1 {
         for slot in slots.iter().filter(|s| s.measures > 0) {
@@ -1868,6 +1877,7 @@ fn split_running(
 fn progress(
     saved: &HashMap<u32, u64>,
     handles: &HashMap<u32, ProgressHandle>,
+    owners: &HashMap<u32, Arc<str>>,
     total: Option<u64>,
     connections: usize,
 ) -> Progress {
@@ -1883,9 +1893,13 @@ fn progress(
         .sum();
     let mut segments: Vec<LiveSegment> = handles
         .iter()
-        .map(|(&idx, h)| LiveSegment {
-            idx,
-            received: h.handed_over().max(saved.get(&idx).copied().unwrap_or(0)),
+        // Chaque segment en cours a sa source : les deux tables changent ensemble.
+        .filter_map(|(&idx, h)| {
+            Some(LiveSegment {
+                idx,
+                received: h.handed_over().max(saved.get(&idx).copied().unwrap_or(0)),
+                source_id: Arc::clone(owners.get(&idx)?),
+            })
         })
         .collect();
     segments.sort_by_key(|s| s.idx);

@@ -1117,11 +1117,17 @@ async fn task_get_shows_segments_and_sources_on_request() {
         .map(|s| s["end"].as_u64().unwrap() - s["start"].as_u64().unwrap() + 1)
         .sum();
     assert_eq!(covered, len, "{running}");
+    let sources = running["sources"].as_array().unwrap();
     for s in segments {
         let size = s["end"].as_u64().unwrap() - s["start"].as_u64().unwrap() + 1;
         assert!(s["doneBytes"].as_u64().unwrap() <= size, "{s}");
+        // Un segment en cours de réception dit d'où il vient (depuis le 2026-11-11).
+        if s["receiving"] == true {
+            assert_eq!(s["sourceId"], sources[0]["sourceId"], "{s}");
+        } else {
+            assert!(s.get("sourceId").is_none(), "{s}");
+        }
     }
-    let sources = running["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 1, "{running}");
     assert_eq!(sources[0]["url"], json!(url));
     assert_eq!(sources[0]["acceptsRanges"], true);

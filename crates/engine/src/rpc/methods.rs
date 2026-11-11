@@ -877,14 +877,20 @@ fn details_json(d: &TaskDetails) -> Value {
         task["segments"] = segments
             .iter()
             .map(|(s, receiving)| {
-                json!({
+                let mut segment = json!({
                     "idx": s.idx,
                     "start": s.start,
                     "end": s.end,
                     // Vidés sur disque, ou reçus par la connexion en cours, le plus grand.
-                    "doneBytes": receiving.map_or(s.written, |r| r.max(s.written)),
+                    "doneBytes": receiving.as_ref().map_or(s.written, |r| r.received.max(s.written)),
                     "receiving": receiving.is_some(),
-                })
+                });
+                // Source qui l'envoie, s'il est en cours de réception (SPEC §7.7, depuis
+                // le 2026-11-11).
+                if let Some(r) = receiving {
+                    segment["sourceId"] = json!(r.source_id.as_ref());
+                }
+                segment
             })
             .collect();
     }

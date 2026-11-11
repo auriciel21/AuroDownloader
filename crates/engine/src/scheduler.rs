@@ -330,8 +330,9 @@ pub struct Include {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDetails {
     pub task: TaskRow,
-    /// Segments enregistrés, chacun avec ses octets reçus s'il est en cours de réception.
-    pub segments: Option<Vec<(Segment, Option<u64>)>>,
+    /// Segments enregistrés, chacun avec ses octets reçus et sa source (SPEC §7.7) s'il est
+    /// en cours de réception.
+    pub segments: Option<Vec<(Segment, Option<LiveSegment>)>>,
     pub sources: Option<Vec<SourceRow>>,
     /// Fichiers d'un torrent ; vide pour une tâche HTTP, ou avant la préparation.
     pub files: Option<Vec<store::torrents::TorrentFile>>,
@@ -2777,7 +2778,7 @@ impl Scheduler {
                 .get(task_id)
                 .map(|r| Arc::clone(&r.live.borrow()))
                 .unwrap_or_else(|| Arc::from([]));
-            let received = |idx: u32| live.iter().find(|l| l.idx == idx).map(|l| l.received);
+            let received = |idx: u32| live.iter().find(|l| l.idx == idx).cloned();
             Some(
                 load_segments(&self.conn, task_id)?
                     .into_iter()

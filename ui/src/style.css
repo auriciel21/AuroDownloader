@@ -578,8 +578,30 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 }
 #d-segments td { padding: 2px 8px; border-top: 1px solid var(--row-line); font-variant-numeric: tabular-nums; }
 #d-segments th:first-child, #d-segments td:first-child { width: 48px; }
-#d-segments tr.receiving td:last-child { color: var(--accent); font-weight: 600; }
-#d-segments tr.finished td:last-child { color: var(--done); }
+#d-segments tr.receiving td:nth-child(3) { color: var(--accent); font-weight: 600; }
+#d-segments tr.finished td:nth-child(3) { color: var(--done); }
+/* Source d'un segment (miroirs, étape 1c) : seulement quand la tâche en a plusieurs. */
+#d-segments:not(.mirrored) .source-column { display: none; }
+
+/* Sources d'une tâche (miroirs, SPEC §7.7) : comme les segments ; une source écartée en rouge. */
+.sources-section { margin-bottom: 12px; }
+.sources-section h3 { margin: 0 0 6px; font-size: 14px; }
+.sources-section .field { margin-top: 8px; }
+#d-sources { width: 100%; border-collapse: collapse; font-size: 13px; }
+#d-sources th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+#d-sources td { padding: 2px 8px; border-top: 1px solid var(--row-line); font-variant-numeric: tabular-nums; vertical-align: top; }
+#d-sources td:first-child, #d-sources td:nth-child(4) { white-space: nowrap; }
+#d-sources td:nth-child(4) { text-align: right; }
+#d-sources tr.failed td:nth-child(3) { color: var(--fail); }
+#d-sources tr.slow td:nth-child(3) { color: var(--muted); }
+#d-mirror-input { flex: 1; min-width: 0; }
 
 /* Fichiers d'un torrent (étape 5b) : comme les segments ; un fichier écarté est grisé. */
 .files-section { margin-bottom: 12px; }

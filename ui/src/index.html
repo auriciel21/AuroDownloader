@@ -140,6 +140,11 @@
         <span class="note" data-i18n="Ou glissez-les sur la fenêtre.">Ou glissez-les sur la fenêtre.</span>
       </div>
       <label class="field">
+        <span data-i18n="Miroirs (facultatif), un par ligne">Miroirs (facultatif), un par ligne</span>
+        <textarea id="add-mirrors" rows="2" spellcheck="false" autocomplete="off" aria-describedby="add-mirrors-note"></textarea>
+      </label>
+      <p class="note flush" id="add-mirrors-note" data-i18n="D'autres adresses du même fichier, pour une seule adresse HTTP : chacune est vérifiée (même taille, mêmes octets) avant de servir, et le téléchargement se répartit entre elles selon leur débit.">D'autres adresses du même fichier, pour une seule adresse HTTP : chacune est vérifiée (même taille, mêmes octets) avant de servir, et le téléchargement se répartit entre elles selon leur débit.</p>
+      <label class="field">
         <span data-i18n="Empreinte attendue (facultatif)">Empreinte attendue (facultatif)</span>
         <input id="add-checksum" type="text" spellcheck="false" autocomplete="off" aria-describedby="add-checksum-note">
       </label>
@@ -405,9 +410,30 @@
               <th scope="col" data-i18n="N°">N°</th>
               <th scope="col" data-i18n="Téléchargé">Téléchargé</th>
               <th scope="col" data-i18n="État">État</th>
+              <th scope="col" class="source-column" data-i18n="Source">Source</th>
             </tr></thead>
             <tbody></tbody>
           </table>
+        </div>
+      </section>
+      <section id="d-sources-section" class="sources-section" aria-labelledby="d-sources-title" hidden>
+        <h3 id="d-sources-title" data-i18n="Sources">Sources</h3>
+        <div class="segments-box" id="d-sources-box">
+          <table id="d-sources">
+            <thead><tr>
+              <th scope="col" data-i18n="Source">Source</th>
+              <th scope="col" data-i18n="Adresse">Adresse</th>
+              <th scope="col" data-i18n="État">État</th>
+              <th scope="col" data-i18n="Débit moyen">Débit moyen</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="field" id="d-mirror-field">
+          <label for="d-mirror-input" data-i18n="Ajouter un miroir">Ajouter un miroir</label>
+          <span class="row"><input id="d-mirror-input" type="url" spellcheck="false" autocomplete="off" aria-describedby="d-mirror-note">
+            <button type="button" id="d-mirror-add" data-i18n="Ajouter">Ajouter</button></span>
+          <span class="note" id="d-mirror-note" data-i18n="Une autre adresse du même fichier. Elle est vérifiée avant de servir ; un téléchargement en cours repart aussitôt avec elle.">Une autre adresse du même fichier. Elle est vérifiée avant de servir ; un téléchargement en cours repart aussitôt avec elle.</span>
         </div>
       </section>
       <section id="d-files-section" class="files-section" aria-labelledby="d-files-title" hidden>
