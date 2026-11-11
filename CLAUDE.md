@@ -396,6 +396,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
   `testing::swarm`). Toute modification du module `media` ou de `store::media` passe aussi celui des
   vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`).
+- Tests qui démarrent un moteur dans un dossier temporaire : finir par
+  `testing::stop(&engine).await` (arrêt, puis fermeture de la base attendue) ; sous Windows,
+  un fichier encore ouvert ne s'efface pas et le dossier resterait dans `%TEMP%`.
 - Vidages du `.part` : toujours par le `SyncGate` du fichier (`PartFile::checkpoint`,
   `SegmentWriter::finish`), jamais par un `sync_data` direct pendant que des écrivains
   tournent : des vidages simultanés du même fichier coûtent très cher sous Linux.
