@@ -355,6 +355,36 @@ export const EN = {
   "Choisir des fichiers .torrent ou Metalink…": "Choose .torrent or Metalink files…",
   "Ou glissez-les sur la fenêtre. Un Metalink (.meta4, .metalink) donne pour chaque fichier ses adresses et son empreinte ; son adresse peut aussi se coller ci-dessus.":
     "Or drop them on the window. A Metalink (.meta4, .metalink) gives the addresses and checksum of each file; its address can also be pasted above.",
+  // Analyse de liens (F-29, F-31, SPEC §7.18).
+  "Liens": "Links",
+  "Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois":
+    "Find the files of a web page, a text or a list, and download several at once",
+  "Analyser des liens": "Analyse links",
+  "Adresse d'une page web, ou texte contenant des adresses": "Address of a web page, or text containing addresses",
+  "Importer une liste (texte, CSV)…": "Import a list (text, CSV)…",
+  "La page est lue telle quelle, sans JavaScript ; ses pages liées ne sont pas parcourues.":
+    "The page is read as is, without JavaScript; its linked pages are not followed.",
+  "Filtres": "Filters",
+  "Extensions": "Extensions",
+  "Taille minimale": "Minimum size",
+  "Taille maximale": "Maximum size",
+  "Expression régulière sur l'adresse": "Regular expression on the address",
+  "Montrer aussi les pages et les liens sans extension": "Also show pages and links without an extension",
+  "Tout cocher": "Check all",
+  "Tout décocher": "Uncheck all",
+  "Analyse en cours…": "Analysing…",
+  "{0} lien(s) trouvé(s) dans {1}": "{0} link(s) found in {1}",
+  "le texte collé": "the pasted text",
+  "Collez l'adresse d'une page web, ou un texte qui contient des adresses.":
+    "Paste the address of a web page, or a text that contains addresses.",
+  "Taille minimale illisible (exemples : 500K, 10M, 1G).": "Unreadable minimum size (examples: 500K, 10M, 1G).",
+  "Taille maximale illisible (exemples : 500K, 10M, 1G).": "Unreadable maximum size (examples: 500K, 10M, 1G).",
+  "Expression régulière illisible : {0}": "Unreadable regular expression: {0}",
+  "{0} coché(s) sur {1} montré(s), {2} trouvé(s)": "{0} checked of {1} shown, {2} found",
+  "Seuls les {0} premiers liens sont affichés ; tous ceux qui sont cochés seront ajoutés.":
+    "Only the first {0} links are displayed; all checked ones will be added.",
+  "{0} téléchargement(s) ajouté(s)": "{0} download(s) added",
+  "{0} ajouté(s), {1} refusé(s) : {2}": "{0} added, {1} refused: {2}",
   // Metalink (F-27, SPEC §7.7).
   "Écarté : {0} ({1})": "Set aside: {0} ({1})",
   "Un Metalink donne lui-même l'empreinte de chaque fichier.": "A Metalink gives the checksum of each file itself.",

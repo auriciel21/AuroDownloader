@@ -138,8 +138,63 @@ pub fn read_torrent(path: &str) -> Result<TorrentFile, String> {
     })
 }
 
+/// Taille maximale d'une liste de liens importée (celle du moteur, SPEC §7.18).
+pub const MAX_LIST_FILE: u64 = 4 << 20;
+
+/// Une liste de liens importée (F-31), lue comme un texte.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFile {
+    /// Nom du fichier, pour l'affichage.
+    pub name: String,
+    /// Contenu, en UTF-8 (un octet illisible devient « � »).
+    pub text: String,
+}
+
+/// Lit une liste de liens choisie par l'utilisateur : chemin absolu, 4 Mio au plus, quelle
+/// que soit son extension (texte, CSV, export d'un autre gestionnaire).
+pub fn read_list(path: &str) -> Result<ListFile, String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err("chemin absolu attendu".into());
+    }
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("{} : {e}", path.display()))?
+        .len();
+    if len > MAX_LIST_FILE {
+        return Err(format!("{} : liste trop grosse", path.display()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
+    Ok(ListFile {
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_list_is_read_as_text_within_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("liens.csv");
+        std::fs::write(&path, b"url;nom\nhttps://a.example/f.iso;f\n\xff").unwrap();
+        let list = read_list(path.to_str().unwrap()).unwrap();
+        assert_eq!(list.name, "liens.csv");
+        assert!(
+            list.text
+                .starts_with("url;nom\nhttps://a.example/f.iso;f\n")
+        );
+        assert!(list.text.ends_with('\u{FFFD}'));
+        let big = dir.path().join("gros.txt");
+        std::fs::write(&big, vec![b'a'; MAX_LIST_FILE as usize + 1]).unwrap();
+        assert!(read_list(big.to_str().unwrap()).is_err());
+        assert!(read_list("liens.csv").is_err());
+        assert!(read_list(dir.path().join("absent.txt").to_str().unwrap()).is_err());
+    }
+
     use super::*;
 
     #[test]

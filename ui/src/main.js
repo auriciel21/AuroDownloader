@@ -7,7 +7,7 @@ import {
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
-  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl,
+  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 
@@ -500,6 +500,7 @@ function renderToolbar() {
   const off = !connected;
   $("tb-add").disabled = off;
   $("tb-video").disabled = off;
+  $("tb-links").disabled = off;
   $("tb-resume").disabled = off || !chosen.some((task) => canResume(task.state));
   $("tb-pause").disabled = off || !chosen.some((task) => canPause(task.state));
   $("tb-resume-all").disabled = off || !all.some((task) => canResume(task.state));
@@ -1518,6 +1519,9 @@ function onStatus(status) {
     // Vidéo : seulement si le moteur la sait (Windows et Linux, SPEC §7.17).
     mediaCapable = status.engine?.capabilities?.includes("media") === true;
     $("tb-video").hidden = !mediaCapable;
+    // Analyse de liens (SPEC §7.18) : un moteur plus ancien ne la sait pas.
+    linkscanCapable = status.engine?.capabilities?.includes("linkscan") === true;
+    $("tb-links").hidden = !linkscanCapable;
     $("tab-media").hidden = !mediaCapable;
     resync();
     loadTools();
@@ -2215,6 +2219,281 @@ function showWarnings(warnings) {
   }
 }
 
+// ---------- Analyse de liens (F-29, F-31, SPEC §7.18, étape 2b) ----------
+
+/// Le moteur sait analyser des liens (capacité `linkscan`).
+let linkscanCapable = false;
+/// Liens de la dernière analyse, tels que le moteur les rend.
+let scanLinks = [];
+/// Tailles lues : adresse → octets, `null` si inconnue, `undefined` pendant la lecture.
+const linkSizes = new Map();
+/// Adresses décochées ; les autres liens montrés sont cochés.
+const linkUnchecked = new Set();
+/// Numéro de la dernière analyse : une réponse plus ancienne est écartée.
+let scanSeq = 0;
+/// Tailles demandées pour l'analyse en cours (500 au plus, décision de l'utilisateur).
+let sizedCount = 0;
+let probing = false;
+const MAX_SIZED = 500;
+const PROBE_CHUNK = 50;
+const BATCH_CHUNK = 1000;
+/// Lignes affichées au plus : la liste reste rapide, l'ajout prend tous les liens cochés.
+const MAX_ROWS = 1000;
+
+function openLinks() {
+  if (!connected || !linkscanCapable || document.querySelector("dialog[open]")) return;
+  $("l-dest").textContent = store.settings["downloads.dir"] ?? t("(aucun)");
+  $("l-import").hidden = !host.readList;
+  showLinksError("");
+  renderLinkList();
+  const dialog = $("links-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("l-source").focus();
+}
+
+function showLinksError(text) {
+  delete $("l-error").dataset.kind;
+  $("l-error").textContent = text;
+  $("l-error").hidden = !text;
+}
+
+/// Analyse d'une page ou d'un texte (`linkscan.run`) ; `label` dit d'où viennent les liens.
+async function scanLinksOf(request, label) {
+  const seq = ++scanSeq;
+  showLinksError("");
+  $("l-status").textContent = t("Analyse en cours…");
+  $("l-scan").disabled = true;
+  try {
+    const result = await host.call("linkscan.run", request);
+    if (seq !== scanSeq) return;
+    scanLinks = result.links;
+    linkSizes.clear();
+    linkUnchecked.clear();
+    sizedCount = 0;
+    $("l-status").textContent = t("{0} lien(s) trouvé(s) dans {1}", scanLinks.length, result.pageUrl ?? label);
+    renderLinkList();
+    probeSizes();
+  } catch (e) {
+    if (seq !== scanSeq) return;
+    $("l-status").textContent = "";
+    showLinksError(refused(e));
+  } finally {
+    if (seq === scanSeq) $("l-scan").disabled = !connected;
+  }
+}
+
+function scanSource() {
+  const request = scanRequest($("l-source").value);
+  if (!request) {
+    showLinksError(t("Collez l'adresse d'une page web, ou un texte qui contient des adresses."));
+    $("l-source").focus();
+    return;
+  }
+  scanLinksOf(request, request.pageUrl ?? t("le texte collé"));
+}
+
+/// Liste importée (F-31) : un fichier texte ou CSV lu par l'hôte, analysé comme un texte.
+async function importLinks() {
+  const path = await host.pickList().catch(() => null);
+  if (path) {
+    try {
+      const file = await host.readList(path);
+      await scanLinksOf({ text: file.text }, file.name);
+    } catch (e) {
+      showLinksError(refused(e));
+    }
+  }
+  $("l-import").focus();
+}
+
+/// Filtres des champs de la boîte ; `sizes` faux : sans ceux de taille.
+function linkFields(sizes = true, all = $("l-all").checked) {
+  return linkFilter({
+    extensions: $("l-ext").value,
+    min: sizes ? $("l-min").value : "",
+    max: sizes ? $("l-max").value : "",
+    regex: $("l-regex").value,
+    all,
+  });
+}
+
+function filterError(filter) {
+  switch (filter.error) {
+    case "min": return t("Taille minimale illisible (exemples : 500K, 10M, 1G).");
+    case "max": return t("Taille maximale illisible (exemples : 500K, 10M, 1G).");
+    default: return t("Expression régulière illisible : {0}", filter.message ?? "");
+  }
+}
+
+/// Tailles des liens montrés (hors filtre de taille), par lots de 50, 500 au plus par analyse ;
+/// les liens magnet n'en ont pas.
+async function probeSizes() {
+  if (probing) return;
+  probing = true;
+  const seq = scanSeq;
+  try {
+    while (seq === scanSeq && sizedCount < MAX_SIZED && connected && $("links-dialog").open) {
+      const filter = linkFields(false);
+      if (filter.error) break;
+      // Les liens montrés d'abord ; puis les « pages » masquées, que le serveur dira peut-être
+      // des fichiers (sans extension : SHA256SUMS, /download?id=…).
+      const wide = linkFields(false, true);
+      const waiting = scanLinks.filter((l) => l.kind !== "magnet" && !linkSizes.has(l.url));
+      const batch = [
+        ...waiting.filter((l) => filter.keep(l)),
+        ...waiting.filter((l) => !filter.keep(l) && l.kind === "page" && wide.keep(l)),
+      ].slice(0, Math.min(PROBE_CHUNK, MAX_SIZED - sizedCount));
+      if (!batch.length) break;
+      sizedCount += batch.length;
+      for (const l of batch) linkSizes.set(l.url, undefined);
+      renderLinkList();
+      let result;
+      try {
+        result = await host.call("linkscan.probe", { urls: batch.map((l) => l.url) });
+      } catch {
+        for (const l of batch) linkSizes.set(l.url, null);
+        break;
+      }
+      if (seq !== scanSeq) return;
+      const kinds = new Map();
+      for (const item of result.items) {
+        linkSizes.set(item.url, item.size ?? null);
+        if (item.kind) kinds.set(item.url, item.kind);
+      }
+      scanLinks = scanLinks.map((l) => reclassifyLink(l, kinds.get(l.url)));
+      renderLinkList();
+    }
+  } finally {
+    probing = false;
+    // Une nouvelle analyse est arrivée pendant la lecture : ses tailles à leur tour.
+    if (seq !== scanSeq && $("links-dialog").open) probeSizes();
+  }
+}
+
+function linkSizeText(url) {
+  if (!linkSizes.has(url)) return "";
+  const size = linkSizes.get(url);
+  return size === undefined ? "…" : size === null ? "?" : bytes(size, lang, t);
+}
+
+/// Liens montrés et cochés, d'après les filtres ; `null` si un filtre est illisible.
+function chosenLinks() {
+  const filter = linkFields();
+  if (filter.error) return null;
+  const shown = scanLinks.filter((l) => filter.keep(l, linkSizes.get(l.url)));
+  return { shown, chosen: shown.filter((l) => !linkUnchecked.has(l.url)) };
+}
+
+function renderLinkCount() {
+  const lists = chosenLinks();
+  const chosen = lists?.chosen.length ?? 0;
+  $("l-count").textContent = lists
+    ? t("{0} coché(s) sur {1} montré(s), {2} trouvé(s)", chosen, lists.shown.length, scanLinks.length)
+    : "";
+  $("l-start").disabled = !chosen || !connected;
+  $("l-later").disabled = !chosen || !connected;
+}
+
+function renderLinkList() {
+  $("l-result").hidden = !scanLinks.length;
+  const lists = chosenLinks();
+  if (!lists) {
+    showLinksError(filterError(linkFields()));
+    renderLinkCount();
+    return;
+  }
+  if ($("l-error").dataset.kind !== "add") showLinksError("");
+  const rows = lists.shown.slice(0, MAX_ROWS).map((l) => {
+    const row = document.createElement("tr");
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.dataset.url = l.url;
+    tick.checked = !linkUnchecked.has(l.url);
+    tick.setAttribute("aria-label", t("Télécharger {0}", l.name));
+    const check = document.createElement("td");
+    check.append(tick);
+    row.append(check);
+    for (const [text, path] of [[l.name, true], [linkSizeText(l.url), false], [l.url, true]]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      if (path) cell.className = "path";
+      row.append(cell);
+    }
+    return row;
+  });
+  $("l-links").tBodies[0].replaceChildren(...rows);
+  $("l-more").hidden = lists.shown.length <= MAX_ROWS;
+  $("l-more").textContent = t("Seuls les {0} premiers liens sont affichés ; tous ceux qui sont cochés seront ajoutés.", MAX_ROWS);
+  renderLinkCount();
+}
+
+function checkShownLinks(on) {
+  const lists = chosenLinks();
+  if (!lists) return;
+  for (const l of lists.shown) {
+    if (on) linkUnchecked.delete(l.url);
+    else linkUnchecked.add(l.url);
+  }
+  renderLinkList();
+}
+
+/// Ajoute les liens cochés (`task.addBatch`, 1 000 par appel). Les refusés restent dans la
+/// boîte, seuls cochés ; la boîte se ferme si tout est ajouté.
+async function addLinks(choice) {
+  const lists = chosenLinks();
+  if (!lists?.chosen.length) return;
+  $("l-start").disabled = true;
+  $("l-later").disabled = true;
+  const chosen = lists.chosen;
+  const refusedLinks = [];
+  let firstError = null;
+  let added = 0;
+  for (let i = 0; i < chosen.length; i += BATCH_CHUNK) {
+    const part = chosen.slice(i, i + BATCH_CHUNK);
+    try {
+      const items = part.map((l) => ({ sources: [{ url: l.url }], startPaused: choice === "later" }));
+      const result = await host.call("task.addBatch", { items });
+      added += result.tasks.length;
+      for (const e of result.errors) {
+        refusedLinks.push(part[e.index]);
+        firstError ??= e;
+      }
+    } catch (e) {
+      refusedLinks.push(...part);
+      firstError ??= e;
+    }
+  }
+  if (view.startsWith("completed") && added) chooseView("all");
+  if (!refusedLinks.length) {
+    $("links-dialog").close("added");
+    announce(t("{0} téléchargement(s) ajouté(s)", added));
+    return;
+  }
+  const done = new Set(chosen.map((l) => l.url));
+  for (const l of refusedLinks) done.delete(l.url);
+  scanLinks = scanLinks.filter((l) => !done.has(l.url));
+  const refusedUrls = new Set(refusedLinks.map((l) => l.url));
+  linkUnchecked.clear();
+  for (const l of scanLinks) if (!refusedUrls.has(l.url)) linkUnchecked.add(l.url);
+  showLinksError(t("{0} ajouté(s), {1} refusé(s) : {2}", added, refusedLinks.length, firstError?.message ?? ""));
+  $("l-error").dataset.kind = "add";
+  renderLinkList();
+}
+
+function closeLinks() {
+  scanSeq++;
+  if ($("links-dialog").returnValue === "added") {
+    scanLinks = [];
+    linkSizes.clear();
+    linkUnchecked.clear();
+    $("l-source").value = "";
+    $("l-status").textContent = "";
+  }
+  delete $("l-error").dataset.kind;
+  $("tb-links").focus();
+}
+
 // ---------- Historique (F-35) ----------
 
 const HISTORY_PAGE = 200;
@@ -2666,6 +2945,40 @@ async function chooseFolder(save) {
 function wire() {
   $("tb-add").addEventListener("click", openAdd);
   $("tb-video").addEventListener("click", openVideo);
+  // Analyse de liens (étape 2b).
+  $("tb-links").addEventListener("click", openLinks);
+  $("l-scan").addEventListener("click", scanSource);
+  $("l-source").addEventListener("keydown", (event) => {
+    // Ctrl+Entrée analyse ; Entrée seule passe à la ligne (texte de plusieurs adresses).
+    if (event.key === "Enter" && event.ctrlKey) {
+      event.preventDefault();
+      scanSource();
+    }
+  });
+  $("l-import").addEventListener("click", importLinks);
+  for (const id of ["l-ext", "l-min", "l-max", "l-regex", "l-all"]) {
+    $(id).addEventListener(id === "l-all" ? "change" : "input", () => {
+      renderLinkList();
+      probeSizes();
+    });
+  }
+  $("l-check-all").addEventListener("click", () => checkShownLinks(true));
+  $("l-check-none").addEventListener("click", () => checkShownLinks(false));
+  $("l-links").addEventListener("change", (event) => {
+    const url = event.target.dataset?.url;
+    if (!url) return;
+    if (event.target.checked) linkUnchecked.delete(url);
+    else linkUnchecked.add(url);
+    renderLinkCount();
+  });
+  $("links-form").addEventListener("submit", (event) => {
+    const value = event.submitter?.value;
+    if (value !== "start" && value !== "later") return;
+    // Ajoutés d'abord ; la boîte ne se ferme que si tout est ajouté.
+    event.preventDefault();
+    addLinks(value);
+  });
+  $("links-dialog").addEventListener("close", closeLinks);
   $("v-probe").addEventListener("click", probeVideo);
   $("v-page").addEventListener("keydown", (event) => {
     // Entrée analyse la page, au lieu d'actionner le premier bouton du formulaire.

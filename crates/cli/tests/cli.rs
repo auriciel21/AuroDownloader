@@ -324,29 +324,41 @@ async fn links_of_a_page_or_a_list_are_filtered_and_added() {
     let small = serve_file(Arc::new(Mutex::new(FileSite::new(1000))));
     let big = serve_file(Arc::new(Mutex::new(FileSite::new(300_000))));
     let html = format!(
-        r#"<a href="{}">a</a> <a href="{}">b</a> <a href="{}">c</a> <a href="suite.html">page</a>"#,
+        r#"<a href="{}">a</a> <a href="{}">b</a> <a href="{}">c</a> <a href="suite.html">page</a> <a href="SHA256SUMS">sommes</a>"#,
         small.url("/a.iso"),
         big.url("/b.iso"),
         big.url("/c.zip"),
     );
-    let page =
-        serve_http(move |_| reply("200 OK", &[("Content-Type", "text/html")], html.as_bytes()));
+    // SHA256SUMS : sans extension, mais servi en texte : un fichier.
+    let page = serve_http(move |r| match r.path.as_str() {
+        "/SHA256SUMS" => reply(
+            "200 OK",
+            &[("Content-Type", "text/plain"), ("Content-Length", "4")],
+            b"abcd",
+        ),
+        _ => reply("200 OK", &[("Content-Type", "text/html")], html.as_bytes()),
+    });
     let dir = tempfile::tempdir().unwrap();
     let (engine, ep) = serve(dir.path(), "liens", Options::default()).await;
     let dest = dir.path().join("dl");
     std::fs::create_dir_all(&dest).unwrap();
     let dest = dest.to_str().unwrap();
 
-    // Toute la page, pages masquées : trois fichiers, avec leur taille.
+    // Toute la page, pages masquées : quatre fichiers avec leur taille, dont SHA256SUMS,
+    // reconnu comme un fichier par son type.
     let shown = ok(&ep, &["links", &page.url("/liste.html")]).await;
     let lines: Vec<&str> = shown.lines().collect();
-    assert_eq!(lines.len(), 4, "{shown}");
+    assert_eq!(lines.len(), 5, "{shown}");
+    assert!(
+        lines[3].contains("4 o") && lines[3].contains("SHA256SUMS"),
+        "{shown}"
+    );
     assert!(
         lines[0].contains("1000 o") && lines[0].contains("a.iso"),
         "{shown}"
     );
     assert!(
-        lines[3].contains("3 lien(s) gardé(s), 1 écarté(s)"),
+        lines[4].contains("4 lien(s) gardé(s), 1 écarté(s)"),
         "{shown}"
     );
     // Extension, taille, expression.

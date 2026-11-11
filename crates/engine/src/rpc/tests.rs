@@ -2607,6 +2607,15 @@ async fn links_of_a_page_are_found_sized_and_added_together() {
             &[("Location", "/vrai/liste.html"), ("Content-Length", "0")],
             b"",
         ),
+        // Un fichier sans extension, décrit comme du texte : un fichier, pas une page.
+        "/SHA256SUMS" => crate::testing::reply(
+            "200 OK",
+            &[
+                ("Content-Type", "text/plain; charset=utf-8"),
+                ("Content-Length", "5"),
+            ],
+            b"abcde",
+        ),
         "/vrai/liste.html" => {
             crate::testing::reply("200 OK", &[("Content-Type", "text/html")], html.as_bytes())
         }
@@ -2661,6 +2670,21 @@ async fn links_of_a_page_are_found_sized_and_added_together() {
     assert_eq!(items[0]["name"], "a.iso");
     assert_eq!(items[1]["error"]["code"], "SOURCE_UNREACHABLE", "{probed}");
     assert_eq!(items[2]["error"]["code"], "URL_INVALID", "{probed}");
+    // Ce que dit le serveur : un fichier (sans extension, en text/plain), une page (HTML), ou
+    // rien (pas de Content-Type).
+    let kinds = c
+        .result(
+            "linkscan.probe",
+            json!({"urls": [pages.url("/SHA256SUMS"), pages.url("/vrai/liste.html"), files.url("/x")]}),
+        )
+        .await;
+    let kinds: Vec<&Value> = kinds["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| &i["kind"])
+        .collect();
+    assert_eq!(kinds, [&json!("file"), &json!("page"), &Value::Null]);
 
     // Ajout groupé : le refus d'un élément n'empêche pas les autres.
     let dest = dir_text(dir.path());

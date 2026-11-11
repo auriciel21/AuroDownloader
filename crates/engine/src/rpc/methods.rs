@@ -907,7 +907,9 @@ async fn linkscan_probe(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         .iter()
         .zip(results)
         .map(|(url, result)| match result {
-            Ok(probe) => json!({"url": url, "size": probe.total_bytes, "name": probe.file_name}),
+            // `kind` : ce que dit le serveur (page web ou fichier), `null` s'il ne dit rien.
+            Ok(probe) => json!({"url": url, "size": probe.total_bytes, "name": probe.file_name,
+                "kind": probe.is_page().map(|page| if page { "page" } else { "file" })}),
             Err(e) => {
                 let e = RpcError::from(match e {
                     e @ (crate::net::NetError::InvalidUrl(_)

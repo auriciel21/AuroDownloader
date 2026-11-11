@@ -23,8 +23,8 @@ use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_ENCODING,
-    CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_RANGE,
-    LAST_MODIFIED, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, HeaderValue,
+    IF_RANGE, LAST_MODIFIED, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
 };
 use reqwest::{Method, Response, StatusCode, Url, redirect};
 
@@ -269,6 +269,23 @@ pub struct Probe {
     pub file_name: String,
     /// Une redirection est passée de HTTPS à HTTP : à signaler (SPEC §8.1).
     pub downgraded: bool,
+    /// Type annoncé par le serveur, sans ses paramètres (analyse de liens, SPEC §7.18).
+    pub content_type: Option<String>,
+    /// Le serveur donne un nom de fichier (`Content-Disposition`).
+    pub attachment: bool,
+}
+
+impl Probe {
+    /// Ce que le serveur dit de la ressource (analyse de liens, SPEC §7.18) : une page web
+    /// (`text/html`, XHTML) sans nom de fichier donné, ou un fichier ; `None` sans type ni
+    /// nom.
+    pub fn is_page(&self) -> Option<bool> {
+        if self.attachment {
+            return Some(false);
+        }
+        let kind = self.content_type.as_deref()?;
+        Some(matches!(kind, "text/html" | "application/xhtml+xml"))
+    }
 }
 
 impl Probe {
@@ -290,6 +307,8 @@ struct Observed {
     etag: Option<String>,
     last_modified: Option<String>,
     disposition_name: Option<String>,
+    /// Type annoncé (`Content-Type`), sans ses paramètres, en minuscules.
+    content_type: Option<String>,
 }
 
 impl Observed {
@@ -307,6 +326,10 @@ impl Observed {
             disposition_name: h
                 .get(CONTENT_DISPOSITION)
                 .and_then(|v| headers::content_disposition_filename(v.as_bytes())),
+            content_type: text(CONTENT_TYPE)
+                .and_then(|t| t.split(';').next())
+                .map(|t| t.trim().to_ascii_lowercase())
+                .filter(|t| !t.is_empty()),
         }
     }
 
@@ -826,6 +849,8 @@ fn conclude(
         etag: pick(|o| &o.etag),
         last_modified: pick(|o| &o.last_modified),
         file_name: filename::sanitize(raw_name.as_deref().unwrap_or(""), NameRules::native()),
+        content_type: pick(|o| &o.content_type),
+        attachment: pick(|o| &o.disposition_name).is_some(),
         final_url,
     }
 }

@@ -34,6 +34,7 @@
     <symbol id="i-schedule" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v3.5l2.5 1.5"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8M12 8v4.5l3 1.8"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-links" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3.6-3.6a4 4 0 0 0-5.7-5.7l-1.4 1.4M14 10a4 4 0 0 0-5.7 0l-3.6 3.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/></symbol>
   </svg>
 
   <div class="toolbar" role="toolbar" data-i18n-label="Actions" aria-label="Actions">
@@ -43,6 +44,10 @@
       data-i18n-title="Télécharger la vidéo d'une page web (sites sans DRM), par yt-dlp et ffmpeg"
       title="Télécharger la vidéo d'une page web (sites sans DRM), par yt-dlp et ffmpeg">
       <svg aria-hidden="true"><use href="#i-video"/></svg><span data-i18n="Vidéo">Vidéo</span></button>
+    <button type="button" id="tb-links" class="tool" hidden
+      data-i18n-title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois"
+      title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois">
+      <svg aria-hidden="true"><use href="#i-links"/></svg><span data-i18n="Liens">Liens</span></button>
     <button type="button" id="tb-resume" class="tool resume">
       <svg aria-hidden="true"><use href="#i-resume"/></svg><span data-i18n="Reprendre">Reprendre</span></button>
     <button type="button" id="tb-pause" class="tool pause">
@@ -235,6 +240,64 @@
     </form>
   </dialog>
 
+  <dialog id="links-dialog" class="wide" aria-labelledby="links-title">
+    <form method="dialog" id="links-form">
+      <h2 id="links-title" data-i18n="Analyser des liens">Analyser des liens</h2>
+      <div class="field">
+        <label for="l-source" data-i18n="Adresse d'une page web, ou texte contenant des adresses">Adresse d'une page web, ou texte contenant des adresses</label>
+        <textarea id="l-source" rows="3" spellcheck="false" autocomplete="off" aria-describedby="l-source-note"></textarea>
+        <span class="row">
+          <button type="button" id="l-scan" data-i18n="Analyser">Analyser</button>
+          <button type="button" id="l-import" data-i18n="Importer une liste (texte, CSV)…">Importer une liste (texte, CSV)…</button>
+        </span>
+        <span class="note" id="l-source-note" data-i18n="La page est lue telle quelle, sans JavaScript ; ses pages liées ne sont pas parcourues.">La page est lue telle quelle, sans JavaScript ; ses pages liées ne sont pas parcourues.</span>
+      </div>
+      <p id="l-status" class="note flush" role="status"></p>
+      <div id="l-result" hidden>
+        <fieldset class="link-filters">
+          <legend data-i18n="Filtres">Filtres</legend>
+          <label><span data-i18n="Extensions">Extensions</span>
+            <input id="l-ext" type="text" spellcheck="false" autocomplete="off" placeholder="iso, zip, mp4"></label>
+          <label><span data-i18n="Taille minimale">Taille minimale</span>
+            <input id="l-min" type="text" spellcheck="false" autocomplete="off" placeholder="10M"></label>
+          <label><span data-i18n="Taille maximale">Taille maximale</span>
+            <input id="l-max" type="text" spellcheck="false" autocomplete="off" placeholder="4G"></label>
+          <label class="wide-field"><span data-i18n="Expression régulière sur l'adresse">Expression régulière sur l'adresse</span>
+            <input id="l-regex" type="text" spellcheck="false" autocomplete="off"></label>
+          <label class="check"><input id="l-all" type="checkbox"><span data-i18n="Montrer aussi les pages et les liens sans extension">Montrer aussi les pages et les liens sans extension</span></label>
+        </fieldset>
+        <span class="row">
+          <button type="button" id="l-check-all" data-i18n="Tout cocher">Tout cocher</button>
+          <button type="button" id="l-check-none" data-i18n="Tout décocher">Tout décocher</button>
+          <span id="l-count" class="note"></span>
+        </span>
+        <div class="segments-box links-box">
+          <table id="l-links">
+            <thead><tr>
+              <th scope="col" data-i18n="Télécharger">Télécharger</th>
+              <th scope="col" data-i18n="Nom">Nom</th>
+              <th scope="col" data-i18n="Taille">Taille</th>
+              <th scope="col" data-i18n="Adresse">Adresse</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="l-more" class="note flush" hidden></p>
+      </div>
+      <div class="field">
+        <span data-i18n="Enregistrer dans">Enregistrer dans</span>
+        <span id="l-dest" class="path"></span>
+      </div>
+      <p id="l-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <span class="row">
+          <button value="later" id="l-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
+          <button value="start" id="l-start" class="primary" data-i18n="Démarrer">Démarrer</button>
+        </span>
+      </div>
+    </form>
+  </dialog>
   <dialog id="history-dialog" class="wide" aria-labelledby="history-title">
     <form method="dialog">
       <h2 id="history-title" data-i18n="Historique">Historique</h2>

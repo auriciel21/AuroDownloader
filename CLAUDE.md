@@ -506,7 +506,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   seule, ordre par priorité, torrents et signatures ignorés, décisions de l'utilisateur ;
   essai réel de la CLI sur openSUSE et essai de l'interface validé par l'utilisateur ;
   étape 1 terminée) ;
-  2. analyse de liens (F-29, F-31 ; F-30 presse-papiers au bureau) ; 3. interface web
+  2. analyse de liens (F-29, F-31 ; F-30 presse-papiers au bureau ; SPEC 7.18, décisions de
+  l'utilisateur du 2026-11-11 : page HTML lue par le moteur sans JavaScript ni exploration,
+  tailles lues d'office (500, 4 à la fois), pages masquées sauf si le serveur les décrit
+  comme des fichiers, toute adresse d'une liste importée, ajout groupé sans tout-ou-rien,
+  bureau et CLI ; 2a moteur et CLI, 2b boîte « Analyser des liens », faites le 2026-11-11,
+  essai de l'interface validé ; 2c presse-papiers : notification, ajout sur clic) ; 3. interface web
   distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF) ; 4. plugins (F-41 :
   prototype du bac à sable WebAssembly d'abord) ; 5. porte : revue de sécurité de l'API
   distante et des plugins.

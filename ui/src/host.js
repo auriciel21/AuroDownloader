@@ -16,6 +16,8 @@
 //   {kind: "torrent", path}) ; readTorrent(path) rend {name, data} (base64) ;
 //   pickTorrents() rend des chemins ; linksStatus() et setLinks(on) rendent
 //   {available, enabled}.
+// - listes de liens (étape 2b), facultatives : pickList() rend le chemin d'un fichier texte
+//   ou CSV choisi, ou null ; readList(path) rend {name, text}. Sans elles, pas d'import.
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -36,6 +38,8 @@ export function tauriHost() {
     takeOpened: () => invoke("take_opened"),
     readTorrent: (path) => invoke("read_torrent", { path }),
     pickTorrents: () => invoke("pick_torrents"),
+    pickList: () => invoke("pick_list"),
+    readList: (path) => invoke("read_list", { path }),
     linksStatus: () => invoke("links_status"),
     setLinks: (enabled) => invoke("set_links", { enabled }),
   };

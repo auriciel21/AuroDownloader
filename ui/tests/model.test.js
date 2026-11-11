@@ -5,7 +5,8 @@ import {
   TaskStore, inView, category, sortTasks, canCancel, canPause, canRemove, canResume, canRestart,
   canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
   isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
-  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl,
+  SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, parseSizeText, linkFilter,
+  reclassifyLink,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -510,4 +511,50 @@ test("Metalink (F-27) : reconnu par son nom ou son adresse ; ni miroir ni emprei
   assert.deepEqual(parseMirrors("https://b/f", ["https://a/f.meta4"]), { error: "metalink" });
   assert.deepEqual(parseMirrors("https://b/f", ["https://a/f"], 0, 1), { error: "many" });
   assert.deepEqual(parseMirrors("", [], 0, 2), { mirrors: [] });
+});
+
+test("analyse de liens (F-29) : page ou texte, tailles écrites, filtres comme auro links", () => {
+  assert.equal(scanRequest("  "), null);
+  for (const page of ["https://a.example/", "https://a.example/liste", "http://a.example/dl/index.php?p=2", "https://a.example/x.html#haut"]) {
+    assert.deepEqual(scanRequest(` ${page} `), { pageUrl: page }, page);
+  }
+  // Une adresse de fichier seule, ou plusieurs adresses : un texte dont on relève les liens.
+  assert.deepEqual(scanRequest("https://a.example/f.iso"), { text: "https://a.example/f.iso" });
+  assert.deepEqual(scanRequest("https://a.example/ https://b.example/"), { text: "https://a.example/ https://b.example/" });
+  assert.deepEqual(scanRequest("voir https://a.example/"), { text: "voir https://a.example/" });
+
+  assert.equal(parseSizeText(""), null);
+  assert.equal(parseSizeText("800000"), 800000);
+  assert.equal(parseSizeText("500K"), 512000);
+  assert.equal(parseSizeText("2 Mio"), 2 * 1024 ** 2);
+  assert.equal(parseSizeText("1,5G"), 1.5 * 1024 ** 3);
+  assert.ok(Number.isNaN(parseSizeText("beaucoup")));
+
+  const iso = { url: "https://a.example/debian-13.iso", ext: "iso", kind: "file" };
+  const page = { url: "https://a.example/index.html", ext: "html", kind: "page" };
+  const magnet = { url: "magnet:?xt=urn:btih:abc", ext: null, kind: "magnet" };
+  const zip = { url: "https://b.example/src.zip", ext: "zip", kind: "file" };
+  const plain = linkFilter();
+  assert.ok(plain.keep(iso) && plain.keep(magnet) && !plain.keep(page) && !plain.sized);
+  assert.ok(linkFilter({ all: true }).keep(page));
+  const ext = linkFilter({ extensions: ".ISO, 7z" });
+  assert.ok(ext.keep(iso) && !ext.keep(zip) && !ext.keep(magnet));
+  const regex = linkFilter({ regex: String.raw`debian-\d+` });
+  assert.ok(regex.keep(iso) && !regex.keep(zip));
+  assert.ok(!linkFilter({ regex: "DEBIAN" }).keep(iso), "casse comprise, comme la CLI");
+  const sized = linkFilter({ min: "10", max: "20" });
+  assert.ok(sized.sized && sized.keep(iso, 10) && sized.keep(iso, 20));
+  assert.ok(!sized.keep(iso, 9) && !sized.keep(iso, 21) && !sized.keep(iso, null));
+  assert.deepEqual(linkFilter({ min: "dix" }), { error: "min" });
+  assert.deepEqual(linkFilter({ max: "?" }), { error: "max" });
+  assert.equal(linkFilter({ regex: "(" }).error, "regex");
+});
+
+test("un lien sans extension que le serveur décrit comme un fichier en devient un", () => {
+  const sums = { url: "https://a.example/SHA256SUMS", ext: null, kind: "page" };
+  assert.equal(reclassifyLink(sums, "file").kind, "file");
+  assert.equal(reclassifyLink(sums, "page").kind, "page");
+  assert.equal(reclassifyLink(sums, null).kind, "page");
+  const zip = { url: "https://a.example/a.zip", ext: "zip", kind: "file" };
+  assert.equal(reclassifyLink(zip, "page"), zip, "un fichier le reste");
 });

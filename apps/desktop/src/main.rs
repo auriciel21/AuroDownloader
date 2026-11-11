@@ -297,6 +297,30 @@ async fn pick_torrents(app: AppHandle) -> Vec<String> {
         .collect()
 }
 
+/// Choix d'une liste de liens à importer (F-31) ; `None` si l'utilisateur renonce.
+#[tauri::command]
+async fn pick_list(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Liste", &["txt", "csv", "tsv", "lst", "list"])
+        .add_filter("*", &["*"])
+        .pick_file(move |file| {
+            let _ = tx.send(file);
+        });
+    rx.await
+        .ok()
+        .flatten()
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Lit une liste de liens choisie, comme un texte, pour `linkscan.run`.
+#[tauri::command]
+fn read_list(path: String) -> Result<opened::ListFile, String> {
+    opened::read_list(&path)
+}
+
 /// Association aux liens magnet et aux fichiers `.torrent` (option, désactivée par défaut).
 #[tauri::command]
 fn links_status() -> links::Status {
@@ -466,6 +490,8 @@ fn main() {
             take_opened,
             read_torrent,
             pick_torrents,
+            pick_list,
+            read_list,
             links_status,
             set_links,
             quit

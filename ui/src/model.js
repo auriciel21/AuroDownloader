@@ -625,3 +625,74 @@ export function formatContent(f) {
   if (f.acodec) return "a";
   return "?";
 }
+
+// ---------- Analyse de liens (F-29, F-31, SPEC §7.18) ----------
+
+/// Extensions des pages web, comme celles du moteur : un lien vers elles n'est pas un fichier.
+const PAGE_EXTENSIONS = new Set(["htm", "html", "xhtml", "shtml", "php", "php3", "php5", "asp", "aspx", "jsp", "jspx", "cgi", "pl", "cfm", "do", "action", "py"]);
+
+/// Ce que demande la zone « Analyser des liens » : une seule adresse HTTP(S) qui n'a pas
+/// l'air d'un fichier est une page à lire (`{pageUrl}`) ; tout le reste est un texte dont
+/// on relève les adresses (`{text}`) ; `null` si la zone est vide.
+export function scanRequest(value) {
+  const text = (value ?? "").trim();
+  if (!text) return null;
+  if (/^https?:\/\/\S+$/i.test(text)) {
+    const path = text.split(/[?#]/)[0].replace(/^https?:\/\/[^/]*/i, "");
+    const last = path.split("/").pop() ?? "";
+    const dot = last.lastIndexOf(".");
+    const ext = dot > 0 ? last.slice(dot + 1).toLowerCase() : "";
+    if (!ext || PAGE_EXTENSIONS.has(ext) || !/^[a-z0-9]{1,10}$/.test(ext)) return { pageUrl: text };
+  }
+  return { text };
+}
+
+/// Une taille écrite : « 800000 », « 500K », « 2M », « 1,5G » (unités binaires, comme la
+/// CLI) ; `null` pour un champ vide, `NaN` si elle est illisible.
+export function parseSizeText(text) {
+  const value = (text ?? "").trim();
+  if (!value) return null;
+  const match = /^(\d+(?:[.,]\d+)?)\s*([kmgt]?)(?:i?o|i?b)?$/i.exec(value);
+  if (!match) return NaN;
+  const factor = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 }[match[2].toLowerCase()];
+  return Math.round(Number(match[1].replace(",", ".")) * factor);
+}
+
+/// Filtres de l'analyse de liens, lus des champs de la boîte : rend `{ keep(link, size) }`, ou
+/// `{ error }` (`min`, `max` : taille illisible ; `regex` : expression illisible, avec
+/// `message`). Mêmes règles que `auro links` : pages masquées sauf `all`, extensions sans
+/// point ni casse, expression cherchée dans l'adresse (casse comprise), et un filtre de
+/// taille écarte un lien de taille inconnue.
+export function linkFilter({ extensions = "", min = "", max = "", regex = "", all = false } = {}) {
+  const exts = extensions.split(/[\s,;]+/).map((e) => e.trim().replace(/^\./, "").toLowerCase()).filter(Boolean);
+  const minSize = parseSizeText(min);
+  const maxSize = parseSizeText(max);
+  if (Number.isNaN(minSize)) return { error: "min" };
+  if (Number.isNaN(maxSize)) return { error: "max" };
+  let pattern = null;
+  if (regex.trim()) {
+    try {
+      pattern = new RegExp(regex.trim());
+    } catch (e) {
+      return { error: "regex", message: e.message };
+    }
+  }
+  const sized = minSize !== null || maxSize !== null;
+  return {
+    sized,
+    keep(link, size) {
+      if (!all && link.kind === "page") return false;
+      if (exts.length && !exts.includes(link.ext ?? "")) return false;
+      if (pattern && !pattern.test(link.url)) return false;
+      if (!sized) return true;
+      if (size == null) return false;
+      return (minSize === null || size >= minSize) && (maxSize === null || size <= maxSize);
+    },
+  };
+}
+
+/// Un lien classé « page » (sans extension, ou extension de page web) que le serveur décrit
+/// comme un fichier (`linkscan.probe`, `kind`) devient un fichier (décision du 2026-11-11) ;
+/// jamais l'inverse : un fichier qui rend une page d'erreur reste un fichier.
+export const reclassifyLink = (link, probedKind) =>
+  link.kind === "page" && probedKind === "file" ? { ...link, kind: "file" } : link;

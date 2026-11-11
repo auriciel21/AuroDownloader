@@ -806,3 +806,16 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 
 /* Identifiants de sites (Options) : liste native, accessible au clavier et aux lecteurs d’écran. */
 select.logins { display: block; width: 100%; margin: 0.5em 0; }
+
+/* Analyse de liens (étape 2b) : filtres sur une grille, liste des liens comme les segments. */
+.link-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 12px; margin: 0 0 8px; }
+.link-filters label { display: flex; flex-direction: column; gap: 2px; }
+.link-filters label.check { flex-direction: row; align-items: center; grid-column: 1 / -1; }
+.link-filters .wide-field { grid-column: 1 / -1; }
+.links-box { max-height: 280px; margin-top: 6px; }
+#l-links { width: 100%; border-collapse: collapse; font-size: 13px; }
+#l-links th { position: sticky; top: 0; background: var(--bg); text-align: left; font-weight: 600; padding: 2px 8px; }
+#l-links td { padding: 2px 8px; border-top: 1px solid var(--row-line); vertical-align: top; }
+#l-links td:first-child { width: 72px; text-align: center; }
+#l-links td:nth-child(3) { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+#l-links td:nth-child(4) { color: var(--muted); }

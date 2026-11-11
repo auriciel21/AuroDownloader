@@ -2,7 +2,7 @@
 //! importée, filtrés par la CLI (sorte, extension, expression régulière, taille), avec leur
 //! taille lue par le moteur ; `--add` les ajoute ensemble (`task.addBatch`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
 use std::path::Path;
 
@@ -23,7 +23,7 @@ const PROBE_CHUNK: usize = 50;
 const BATCH_CHUNK: usize = 1000;
 
 /// Ce qui est gardé des liens trouvés.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Filters {
     /// Extensions gardées, en minuscules ; toutes si vide.
     pub extensions: Vec<String>,
@@ -104,30 +104,56 @@ fn scan_params(source: &str) -> Result<Value> {
 
 pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
     let scan = rpc.call("linkscan.run", scan_params(opts.source)?).await?;
-    let found = scan["links"].as_array().cloned().unwrap_or_default();
+    let mut found = scan["links"].as_array().cloned().unwrap_or_default();
+    // Tailles (500 au plus, liens magnet exclus) : celles des liens gardés, puis celles des
+    // « pages » masquées, que le serveur dira peut-être des fichiers (SHA256SUMS…).
+    let mut sizes: HashMap<String, u64> = HashMap::new();
+    if !opts.no_sizes {
+        let wide = Filters {
+            all: true,
+            ..opts.filters.clone()
+        };
+        let probed = |l: &&Value| l["kind"] != "magnet";
+        let first = found
+            .iter()
+            .filter(probed)
+            .filter(|l| opts.filters.keeps(l));
+        let then = found
+            .iter()
+            .filter(probed)
+            .filter(|l| !opts.filters.keeps(l) && l["kind"] == "page" && wide.keeps(l));
+        let urls: Vec<String> = first
+            .chain(then)
+            .filter_map(|l| l["url"].as_str().map(str::to_owned))
+            .take(MAX_SIZED)
+            .collect();
+        let mut files: HashSet<String> = HashSet::new();
+        for chunk in urls.chunks(PROBE_CHUNK) {
+            let probed = rpc.call("linkscan.probe", json!({"urls": chunk})).await?;
+            for item in probed["items"].as_array().into_iter().flatten() {
+                let Some(url) = item["url"].as_str() else {
+                    continue;
+                };
+                if let Some(s) = item["size"].as_u64() {
+                    sizes.insert(url.to_owned(), s);
+                }
+                if item["kind"] == "file" {
+                    files.insert(url.to_owned());
+                }
+            }
+        }
+        // Une « page » que le serveur décrit comme un fichier en devient un ; jamais l'inverse.
+        for l in &mut found {
+            if l["kind"] == "page" && l["url"].as_str().is_some_and(|u| files.contains(u)) {
+                l["kind"] = json!("file");
+            }
+        }
+    }
     let mut kept: Vec<Value> = found
         .iter()
         .filter(|l| opts.filters.keeps(l))
         .cloned()
         .collect();
-    // Tailles des liens gardés (500 au plus), sauf les liens magnet.
-    let mut sizes: HashMap<String, u64> = HashMap::new();
-    if !opts.no_sizes {
-        let urls: Vec<String> = kept
-            .iter()
-            .filter(|l| l["kind"] != "magnet")
-            .filter_map(|l| l["url"].as_str().map(str::to_owned))
-            .take(MAX_SIZED)
-            .collect();
-        for chunk in urls.chunks(PROBE_CHUNK) {
-            let probed = rpc.call("linkscan.probe", json!({"urls": chunk})).await?;
-            for item in probed["items"].as_array().into_iter().flatten() {
-                if let (Some(url), Some(s)) = (item["url"].as_str(), item["size"].as_u64()) {
-                    sizes.insert(url.to_owned(), s);
-                }
-            }
-        }
-    }
     let size_of = |l: &Value| l["url"].as_str().and_then(|u| sizes.get(u)).copied();
     kept.retain(|l| opts.filters.keeps_size(size_of(l)));
     for (i, l) in kept.iter().enumerate() {
