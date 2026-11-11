@@ -41,6 +41,7 @@ use crate::secrets::{Vault, VaultError};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
 };
+use crate::store::claims::ClaimKind;
 use crate::store::headers::{self as stored_headers, Stored, StoredHeader};
 use crate::store::logins::{self, LoginRow};
 use crate::store::segments::{
@@ -609,9 +610,18 @@ async fn execute(
         let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
         // Le nom choisi par l'utilisateur passe avant celui du serveur (SPEC §7.12).
         let wanted = task.requested_name.as_deref().unwrap_or(&probe.file_name);
-        let name = match io::claim_name(Path::new(&task.dest_dir), wanted, &reserved) {
+        // Réservation notée d'abord, effacée par `save_preparation` (SPEC §5.6, règle 7).
+        let dir = Path::new(&task.dest_dir);
+        let claimed = crate::claims::claim(conn, dir, wanted, &reserved, ClaimKind::Part, task_id);
+        let name = match claimed {
             Ok(name) => name,
-            Err(e) => return fail(Failure::Io(e)),
+            Err(crate::claims::ClaimError::Store(e)) => return Err(e.into()),
+            Err(crate::claims::ClaimError::Disk(source)) => {
+                return fail(Failure::Io(io::IoError::File {
+                    path: dir.to_path_buf(),
+                    source,
+                }));
+            }
         };
         let connections = if probe.accepts_ranges {
             first_width(client, &source.url, &task, opts)

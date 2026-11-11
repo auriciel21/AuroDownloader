@@ -682,6 +682,8 @@ pub fn save_preparation(
         params![task_id, prep.file_name],
     )?;
     set_size_and_segments(&tx, task_id, prep.total_bytes, segments)?;
+    // Le nom est enregistré : sa réservation part avec lui (SPEC §5.6, règle 7).
+    super::claims::release(&tx, task_id)?;
     tx.commit()?;
     Ok(())
 }

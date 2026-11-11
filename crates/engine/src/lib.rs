@@ -10,6 +10,7 @@
 //! Phase 3 : `secrets` (coffre du système, pour les cookies et jetons des tâches).
 //! Torrent, média, post-traitement et plugins arriveront avec leurs phases.
 
+pub mod claims;
 pub mod io;
 pub mod launch;
 pub mod limit;

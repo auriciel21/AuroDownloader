@@ -37,8 +37,9 @@ use rusqlite::Connection;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::io::{available_name, part_path, sync_parent_dir};
+use crate::io::{part_path, sync_parent_dir};
 use crate::net::filename::{NameRules, sanitize};
+use crate::store::claims::ClaimKind;
 use crate::store::now_ms;
 use crate::store::settings;
 use crate::store::tasks::{
@@ -1221,35 +1222,17 @@ fn prepare(conn: &mut Connection, task: &TaskRow, layout: &Layout) -> Result<(),
         .clone()
         .unwrap_or_else(|| layout.top.clone());
     let reserved = reserved_names(conn, &task.dest_dir, &task.id)?;
-    let mut last = None;
-    let mut name = None;
-    for _ in 0..1000 {
-        let candidate = available_name(dir, &wanted, &reserved);
-        let path = dir.join(&candidate);
-        let claimed = if layout.multi {
-            std::fs::create_dir(&path)
-        } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(part_path(&path))
-                .map(|_| ())
-        };
-        match claimed {
-            Ok(()) => {
-                name = Some(candidate);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
-            Err(e) => return Err(PrepareError::Disk(e)),
-        }
-    }
-    let Some(name) = name else {
-        return Err(PrepareError::Disk(
-            last.unwrap_or_else(|| std::io::Error::other("aucun nom libre")),
-        ));
+    // Réservation notée d'abord, effacée par `save_preparation` (SPEC §5.6, règle 7).
+    let kind = if layout.multi {
+        ClaimKind::Dir
+    } else {
+        ClaimKind::Part
     };
-    let _ = sync_parent_dir(&dir.join(&name));
+    let name = match crate::claims::claim(conn, dir, &wanted, &reserved, kind, &task.id) {
+        Ok(name) => name,
+        Err(crate::claims::ClaimError::Store(e)) => return Err(PrepareError::Store(e)),
+        Err(crate::claims::ClaimError::Disk(e)) => return Err(PrepareError::Disk(e)),
+    };
     save_preparation(
         conn,
         &task.id,

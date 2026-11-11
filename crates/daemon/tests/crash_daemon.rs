@@ -312,6 +312,7 @@ fn killed_engine_resumes_all_its_tasks_without_corruption() {
         bench.dir().display()
     );
     assert_eq!(bench.checker.verified.len() as u64, bench.added);
+    bench.checker.assert_no_strays();
     // Le miroir a servi des segments, pas seulement les échantillons de sa validation.
     let ranged = mirror
         .requests()

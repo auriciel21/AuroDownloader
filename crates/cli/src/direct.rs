@@ -15,8 +15,11 @@ use tokio::sync::watch;
 use crate::display::{Line, Speed, Status, size};
 
 pub fn open_db(path: &Path) -> Result<Connection> {
-    auro_engine::store::open(path)
-        .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))
+    let conn = auro_engine::store::open(path)
+        .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))?;
+    // Sans moteur, comme à son démarrage : noms réservés avant un arrêt (SPEC §5.6, règle 7).
+    auro_engine::claims::recover(&conn)?;
+    Ok(conn)
 }
 
 pub fn get(

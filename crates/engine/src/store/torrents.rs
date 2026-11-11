@@ -198,6 +198,8 @@ pub fn save_preparation(
             ],
         )?;
     }
+    // Le nom est enregistré : sa réservation part avec lui (SPEC §5.6, règle 7).
+    super::claims::release(&tx, task_id)?;
     tx.commit()?;
     Ok(())
 }

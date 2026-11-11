@@ -13,6 +13,7 @@ use rusqlite::{Connection, params};
 
 use crate::segmenter::CoverageError;
 
+pub mod claims;
 pub mod headers;
 pub mod history;
 pub mod logins;
@@ -81,6 +82,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "remote",
         sql: include_str!("../migrations/0008_remote.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "name_claims",
+        sql: include_str!("../migrations/0009_name_claims.sql"),
     },
 ];
 
@@ -290,12 +296,13 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 19] = [
+    const EXPECTED_TABLES: [&str; 20] = [
         "event_log",
         "file_moves",
         "history",
         "media_jobs",
         "media_streams",
+        "name_claims",
         "queues",
         "remote_sessions",
         "remote_tokens",
@@ -354,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_19_tables_of_the_spec() {
+    fn migrations_create_the_20_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());

@@ -230,4 +230,5 @@ fn killed_downloads_resume_without_corruption() {
         bench.checker.verified.len()
     );
     assert!(!bench.checker.verified.is_empty());
+    bench.checker.assert_no_strays();
 }

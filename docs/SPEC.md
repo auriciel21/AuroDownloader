@@ -303,7 +303,7 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
 
 ## 5. Modèle de données
 
-Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 18 tables (14 à l'origine, plus `file_moves` et `site_logins` depuis le 2026-11-08, `remote_tokens` et `remote_sessions` depuis le 2026-11-11) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
+Tout l'état durable tient dans une base SQLite unique, dont le moteur est le seul écrivain. Elle contient 19 tables (14 à l'origine, plus `file_moves` et `site_logins` depuis le 2026-11-08, `remote_tokens`, `remote_sessions` et `name_claims` depuis le 2026-11-11) ; c'est elle qui rend possible la reprise après un arrêt brutal (N-04, N-05).
 
 ### 5.1 Conventions
 
@@ -584,6 +584,18 @@ CREATE TABLE remote_sessions (
 );
 CREATE INDEX remote_sessions_by_token ON remote_sessions (token_id);
 
+-- Migration 0009 (2026-11-11, section 5.6, règle 7) : noms réservés sur le disque, pas
+-- encore enregistrés dans leur tâche ; effacés avec l'enregistrement, repris au démarrage.
+CREATE TABLE name_claims (
+  dir        TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('part','dir','file')),
+  task_id    TEXT NOT NULL,          -- sans clé étrangère : survit au retrait de la tâche
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (dir, name)
+);
+CREATE INDEX name_claims_by_task ON name_claims (task_id);
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -619,7 +631,7 @@ Retéléchargement (`task.restart`, depuis le 2026-11-07) : hors de cette table,
 3. **Compteur dérivé.** `tasks.done_bytes` est la somme des `written_bytes` ; il est recalculé au chargement, la somme faisant foi.
 4. **Fin de vie.** À la fin d'une tâche, la ligne `history` est écrite avant la purge des segments, dans une seule transaction. Les sources (l'adresse) restent jusqu'au retrait de la tâche, pour la retélécharger (depuis le 2026-11-07 ; elles étaient purgées avec les segments auparavant, et une tâche terminée avant cette date ne peut pas être retéléchargée).
 5. **Migrations.** Numérotées, appliquées dans l'ordre et dans une transaction, après copie du fichier de base ; une base plus récente que le moteur empêche le démarrage au lieu d'être modifiée.
-6. **Rétention.** `event_log` est purgé au-delà de 30 jours ou de 10 000 lignes ; la durée de l'historique est un réglage.
+. **Noms réservés** (depuis le 2026-11-11). Un nom de fichier se prend en créant sur le disque ce qu'il désignera (`.part` vide, dossier vide d'un torrent à plusieurs fichiers, `.part` d'un sous-titre écrit par le moteur), avant de l'enregistrer dans la tâche, pour que deux tâches ne finissent jamais au même endroit. La réservation est d'abord notée dans `name_claims`, puis créée sur le disque, et effacée dans la transaction qui enregistre le nom (préparation d'une tâche HTTP ou d'un torrent, résolution d'une vidéo, sous-titre). Au démarrage (moteur, ou mode `direct` de la CLI), avant toute exécution, chaque réservation restante désigne ce qu'un arrêt brutal a laissé sans l'enregistrer : effacé (un `.part` seulement s'il est vide, un dossier seulement s'il est vide), puis la réservation. Après la création, le nom est vérifié de nouveau (fichier final apparu, nom enregistré par une autre tâche entre-temps) : pris, il est défait et le nom suivant essayé. Trouvé par le banc des vidéos le 2026-11-11 (un `.part` orphelin, la vidéo sous le nom suivant) ; la fenêtre existait aussi pour les tâches HTTP et les torrents. Module `claims`, `store::claims` ; les bancs `crash_resume` et `crash_daemon` vérifient aussi qu'aucun fichier sans tâche ne reste (`Checker::assert_no_strays`).
 
 ## 6. Protocole du moteur
 

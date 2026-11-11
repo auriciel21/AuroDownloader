@@ -20,9 +20,11 @@ use tokio::sync::watch;
 
 use super::extract::{self, ExtractError, Resolution, Resolved, Subtitle, SubtitleSource};
 use super::tools::{Status, Tools};
-use crate::io::{claim_name, part_path, sync_parent_dir};
+use crate::claims;
+use crate::io::{part_path, sync_parent_dir};
 use crate::net::Client;
 use crate::net::filename::{NameRules, sanitize};
+use crate::store::claims::ClaimKind;
 use crate::store::headers::{Stored, StoredHeader};
 use crate::store::media::{self, StreamRow};
 use crate::store::now_ms;
@@ -283,11 +285,15 @@ async fn download(
         let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
         let stem = sanitize(&resolution.title, NameRules::native());
         let wanted = format!("{stem}.{container}");
-        // Le nom final est pris sur le disque (`.part`), comme pour une tâche HTTP.
-        let final_name = match claim_name(Path::new(&task.dest_dir), &wanted, &reserved) {
-            Ok(name) => name,
-            Err(e) => return Ok(failed("DISK_IO", e.to_string())),
-        };
+        // Le nom final est pris sur le disque (`.part`), comme pour une tâche HTTP ; la
+        // réservation, notée d'abord, part avec `save_resolution` (SPEC §5.6, règle 7).
+        let dir = Path::new(&task.dest_dir);
+        let final_name =
+            match claims::claim(conn, dir, &wanted, &reserved, ClaimKind::Part, task_id) {
+                Ok(name) => name,
+                Err(claims::ClaimError::Store(e)) => return Err(e.into()),
+                Err(claims::ClaimError::Disk(e)) => return Ok(failed("DISK_IO", e.to_string())),
+            };
         let final_stem = final_name
             .strip_suffix(&format!(".{container}"))
             .unwrap_or(&final_name)
@@ -575,17 +581,28 @@ fn write_subtitle(
 ) -> Result<Step, TransferError> {
     let dir = Path::new(&task.dest_dir);
     let reserved = reserved_names(conn, &task.dest_dir, &task.id)?;
-    let written = claim_name(dir, &row.file_name, &reserved)
-        .map_err(std::io::Error::other)
-        .and_then(|name| {
-            let path = dir.join(&name);
-            let part = part_path(&path);
-            std::fs::write(&part, text.as_bytes())?;
-            let size = sync_file(&part)?;
-            std::fs::rename(&part, &path)?;
-            sync_parent_dir(&path).map_err(std::io::Error::other)?;
-            Ok((name, size))
-        });
+    // Réservation notée d'abord, effacée par `stream_done` (SPEC §5.6, règle 7).
+    let claimed = match claims::claim(
+        conn,
+        dir,
+        &row.file_name,
+        &reserved,
+        ClaimKind::File,
+        &task.id,
+    ) {
+        Ok(name) => Ok(name),
+        Err(claims::ClaimError::Store(e)) => return Err(e.into()),
+        Err(claims::ClaimError::Disk(e)) => Err(e),
+    };
+    let written = claimed.and_then(|name| {
+        let path = dir.join(&name);
+        let part = part_path(&path);
+        std::fs::write(&part, text.as_bytes())?;
+        let size = sync_file(&part)?;
+        std::fs::rename(&part, &path)?;
+        sync_parent_dir(&path).map_err(std::io::Error::other)?;
+        Ok((name, size))
+    });
     match written {
         Ok((name, size)) => {
             media::stream_done(conn, &task.id, row.position, &name, size)?;

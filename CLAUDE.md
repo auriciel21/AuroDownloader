@@ -361,6 +361,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   base dans `store::segments` (vérifié dans la transaction de chaque écriture, contrôle au
   démarrage par `find_coverage_errors`). Ne jamais écrire dans `segments` sans passer par
   ce module.
+- Noms de fichier pris sur le disque (SPEC 5.6, règle 7) : toujours par `claims::claim`
+  (réservation notée dans `name_claims` avant la création du `.part` ou du dossier), puis
+  enregistrés dans une transaction qui appelle `store::claims::release` ; `claims::recover`
+  au démarrage (moteur et mode `direct`) efface ce qu'un arrêt a laissé. Ne jamais créer
+  un `.part` de nouveau nom autrement.
 - Ordre d'écriture, application : `written_bytes` ne s'enregistre que par
   `store::segments::save_progress`, qui n'accepte que des `io::SyncedProgress`, fabriqués
   par `io` après `sync_data`. Ne pas ajouter d'autre chemin d'écriture de ce compteur.

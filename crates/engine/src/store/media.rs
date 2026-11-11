@@ -206,6 +206,8 @@ pub fn save_resolution(
             ],
         )?;
     }
+    // Le nom final est enregistré : sa réservation part avec lui (SPEC §5.6, règle 7).
+    super::claims::release(&tx, task_id)?;
     tx.commit()?;
     Ok(())
 }
@@ -249,11 +251,16 @@ pub fn stream_done(
     file_name: &str,
     size: u64,
 ) -> Result<(), StoreError> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE media_streams SET done = 1, file_name = ?3, size = ?4
          WHERE task_id = ?1 AND position = ?2",
         params![task_id, position, file_name, size as i64],
     )?;
+    // Sous-titre écrit par le moteur : sa réservation part avec son enregistrement
+    // (SPEC §5.6, règle 7).
+    super::claims::release(&tx, task_id)?;
+    tx.commit()?;
     Ok(())
 }
 

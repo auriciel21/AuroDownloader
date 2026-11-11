@@ -649,6 +649,31 @@ pub struct Checker {
 const INITIAL_WIDTHS: [u32; 4] = [1, 2, 4, 8];
 
 impl Checker {
+    /// Fin d'un banc : chaque fichier du dossier appartient à une tâche de la base (son nom
+    /// ou son `.part`) ; aucun `.part` orphelin d'un nom réservé avant un arrêt (SPEC §5.6,
+    /// règle 7).
+    pub fn assert_no_strays(&self) {
+        let conn = crate::store::open(&self.db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT file_name FROM tasks WHERE file_name IS NOT NULL")
+            .unwrap();
+        let known: std::collections::HashSet<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .flat_map(|n| {
+                let n = n.unwrap();
+                [format!("{n}.part"), n]
+            })
+            .collect();
+        let mut strays: Vec<String> = std::fs::read_dir(&self.downloads)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !known.contains(n))
+            .collect();
+        strays.sort();
+        assert!(strays.is_empty(), "fichiers sans tâche : {strays:?}");
+    }
+
     pub fn new(db: std::path::PathBuf, downloads: std::path::PathBuf, size: u64) -> Self {
         Checker {
             db,

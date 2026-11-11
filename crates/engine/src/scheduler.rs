@@ -759,6 +759,8 @@ impl Engine {
         // Déplacements interrompus par un arrêt : finis ou annulés avant toute exécution
         // (SPEC §7.12).
         crate::moves::recover(&mut conn)?;
+        // Noms réservés sans être enregistrés, avant un arrêt (SPEC §5.6, règle 7).
+        crate::claims::recover(&conn)?;
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
         let download_limit = settings::download_limit(&conn)?;
         // Les secrets de cette base seulement (voir `secrets`).
