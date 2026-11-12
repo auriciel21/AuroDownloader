@@ -168,4 +168,5 @@ machine à plusieurs comptes.
 
 ## 6. Porte
 
-La porte de la phase 6 est déclarée par l'utilisateur, sur ce rapport et sur la campagne.
+Porte de la phase 6 franchie le 2026-11-12, déclarée par l'utilisateur sur ce rapport et sur
+la campagne du même jour.

@@ -590,7 +590,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   la variante d'essai ; étape 4 terminée) ;
   5. porte : revue de sécurité de l'API distante et des plugins (faite le 2026-11-12,
   décisions de l'utilisateur : revue écrite et essais, failles corrigées au fil ; rapport
-  `docs/SECURITE.md`, six constats corrigés ; porte à déclarer par l'utilisateur).
+  `docs/SECURITE.md`, six constats corrigés). Porte franchie le 2026-11-12, déclarée par
+  l'utilisateur. Phase 7 (version 1) à planifier.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
