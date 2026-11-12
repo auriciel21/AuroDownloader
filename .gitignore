@@ -26,3 +26,6 @@
 
 # Prototype des plugins : compilation
 /experiments/plugins/target/
+
+# Plugins d'exemple : compilation
+/plugins/target/

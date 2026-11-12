@@ -267,6 +267,12 @@ téléchargement.
   d'essai, `wasm32-unknown-unknown`, exports hostiles), `host` (wasmtime ou wasmi selon
   `--features`, sans eux binaire de référence), espace de travail Cargo à part ; mesures et
   décision (wasmi) dans `README.md`. Ne fait pas partie du produit.
+- `plugins` : plugins d'hébergeurs d'exemple (étape 4d), espace de travail Cargo à part
+  (`wasm32-unknown-unknown`) : `archive-org` (éléments d'Internet Archive par l'interface
+  `archive.org/metadata`), module `auro.rs` recopiable (interface version 1), manifeste rangé
+  par `#[link_section = "auro-plugin"]` ; guide de l'auteur dans `README.md`. Tests sur la
+  machine (`cargo test`), licences par `cargo deny --manifest-path plugins/Cargo.toml
+  --config deny.toml check licenses`.
 
 ## Commandes
 
@@ -294,6 +300,8 @@ cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
 cargo run -p auro-cli -- plugin install <fichier.wasm> [--yes] ; plugin list ; plugin resolve <page>
 cargo run -p auro-cli -- plugin add <page> --select 0,2 -o . ; add <page> --no-plugin
+# Plugin d'exemple (dans plugins ; cible : rustup target add wasm32-unknown-unknown) :
+cargo test ; cargo build --release --target wasm32-unknown-unknown
 cargo run -p auro-cli -- remote enable --listen 127.0.0.1:7380 ; remote ; remote disable
 cargo run -p auro-cli -- remote hosts nas.maison ; remote cert --file c.pem --key k.pem ; remote cert --generated
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
@@ -574,7 +582,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   4b moteur et CLI, faite le 2026-11-12, SPEC 7.20 ; 4c bureau et page : rubrique
   « Plugins », plugin lancé à la validation d'« Ajouter », liens à cocher comme un
   Metalink, case « sans plugin », page d'origine dans les Propriétés, décisions de
-  l'utilisateur du 2026-11-12) ;
+  l'utilisateur du 2026-11-12 ; 4d plugin d'exemple Internet Archive en Rust, `plugins/`,
+  essai réel par la CLI ; essai de l'interface à faire) ;
   5. porte : revue de sécurité de l'API distante et des plugins.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

@@ -1,0 +1,25 @@
+# Plugins d'hébergeurs d'exemple (SPEC §7.20, F-41, phase 6, étape 4d). Espace de travail à
+# part, hors de celui du projet : un plugin se compile pour wasm32-unknown-unknown (ni WASI
+# ni accès au système) ; ses tests, eux, tournent sur la machine.
+#
+#   cargo test
+#   cargo build --release --target wasm32-unknown-unknown
+#   → target/wasm32-unknown-unknown/release/archive_org.wasm, manifeste compris
+[workspace]
+resolver = "3"
+members = ["archive-org"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+# Petit et sans symboles de débogage : le fichier est lu par le moteur à chaque résolution.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = "debuginfo"

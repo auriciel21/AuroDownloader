@@ -1,0 +1,10 @@
+{
+  "abi": 1,
+  "id": "org.aurodownloader.archive-org",
+  "name": "Internet Archive",
+  "version": "1.0.0",
+  "author": "AuroDownloader",
+  "description": "Fichiers d'un élément d'archive.org (pages /details/…), lus par son interface publique de métadonnées.",
+  "sites": ["archive.org"],
+  "fetch": ["archive.org"]
+}
