@@ -30,6 +30,10 @@ const MAX_MESSAGE: usize = 1 << 20;
 const MAX_OUTPUT: usize = 8 << 20;
 /// Lignes de journal gardées par résolution.
 const MAX_LOGS: usize = 50;
+/// Entrées d'une table de fonctions, au plus, déclarées ou agrandies (revue de sécurité,
+/// étape 5) : sans elle, une table démesurée ferait allouer au moteur des Gio. Un plugin
+/// compilé par Rust en a quelques centaines.
+const MAX_TABLE_ELEMENTS: usize = 100_000;
 
 /// Ce que l'hôte offre à une instance.
 pub type Fetch = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
@@ -128,6 +132,7 @@ fn store(engine: &Engine, fetch: Fetch, limits: &Limits) -> Store<State> {
         logs: Vec::new(),
         limits: StoreLimitsBuilder::new()
             .memory_size(limits.memory)
+            .table_elements(MAX_TABLE_ELEMENTS)
             .instances(1)
             .memories(1)
             .tables(4)
@@ -144,6 +149,8 @@ fn instantiate(
     fetch: Fetch,
     limits: &Limits,
 ) -> Result<(Store<State>, Instance), String> {
+    // Avant toute instanciation : rien ne s'exécute hors de `auro_resolve`.
+    super::manifest::refuse_start(bytes)?;
     let engine = engine(limits);
     let module = Module::new(&engine, bytes).map_err(|e| format!("WebAssembly invalide : {e}"))?;
     for import in module.imports() {

@@ -1985,6 +1985,7 @@ impl Engine {
                 EngineError::PluginFailed("aucun lien de même nom sur la page".into())
             })?;
         let fresh = self.plugin_task(&resolution, link, AddTask::default());
+        // Les en-têtes du lien neuf d'abord : sa vérification peut demander ses cookies.
         let (id, headers) = (task_id.to_owned(), fresh.headers.clone());
         self.ask(|reply| Command::ReplaceHeaders(id, headers, reply))
             .await?;
@@ -1993,7 +1994,20 @@ impl Engine {
             true => self.restricted(false)?,
             false => self.clone(),
         };
-        checker.set_url(task_id, &fresh.url).await?;
+        if let Err(e) = checker.set_url(task_id, &fresh.url).await {
+            // Lien neuf refusé : la tâche garde son ancienne adresse, qui ne doit pas
+            // recevoir les cookies du lien neuf (revue de sécurité, étape 5). Seuls les
+            // en-têtes en clair restent.
+            let plain: Vec<(String, String)> = fresh
+                .headers
+                .into_iter()
+                .filter(|(name, _)| !net::is_secret_header(name))
+                .collect();
+            let id = task_id.to_owned();
+            self.ask(|reply| Command::ReplaceHeaders(id, plain, reply))
+                .await?;
+            return Err(e);
+        }
         self.resume(task_id).await?;
         Ok(true)
     }

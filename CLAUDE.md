@@ -13,6 +13,9 @@ téléchargement.
 - `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, faite
   par l'utilisateur le 2026-11-08 (porte de la phase 3, franchie) ; essais 10 à 17 de
   l'étape 5d (torrents et vidéo) validés sous Edge le 2026-11-10.
+- `docs/SECURITE.md` : revue de sécurité de l'interface distante, des plugins et du canal
+  local (porte de la phase 6, 2026-11-12) : modèle de menace, points vérifiés, constats
+  corrigés, risques résiduels. À tenir à jour quand ces parties changent.
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
@@ -585,7 +588,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   l'utilisateur du 2026-11-12 ; 4d plugin d'exemple Internet Archive en Rust, `plugins/`,
   essai réel par la CLI ; essai de l'interface validé par l'utilisateur le 2026-11-12 sur
   la variante d'essai ; étape 4 terminée) ;
-  5. porte : revue de sécurité de l'API distante et des plugins.
+  5. porte : revue de sécurité de l'API distante et des plugins (faite le 2026-11-12,
+  décisions de l'utilisateur : revue écrite et essais, failles corrigées au fil ; rapport
+  `docs/SECURITE.md`, six constats corrigés ; porte à déclarer par l'utilisateur).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
@@ -610,7 +615,16 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   public, en-têtes de la liste) ; seuls `auro.fetch` et `auro.log` sont importables ; ses
   liens font des tâches au réseau public seulement, et un lien neuf se vérifie par une
   poignée restreinte. Un fichier de plugin ne s'installe que sur l'empreinte acceptée par
-  l'utilisateur, et se revérifie à chaque chargement.
+  l'utilisateur, et se revérifie à chaque chargement. Rien ne s'exécute hors de
+  `auro_resolve` (module à fonction de démarrage refusé) ; toute ressource d'une instance
+  a sa limite dans `runtime` (calcul, mémoire, pile, taille des tables) : un nouveau
+  réglage de wasmi qui alloue se borne aussi. Un lien neuf refusé ne laisse pas ses cookies.
+- Canal local (SPEC 6.2) : le client vérifie le propriétaire du canal nommé
+  (`winsec::owned_by_current_user`) ou du dossier du socket avant d'écrire ; le moteur fait
+  de l'utilisateur le propriétaire de son canal. Ne pas retirer ces contrôles.
+- Portées (SPEC 6.9) : toute méthode ajoutée à `rpc/methods.rs` reçoit la sienne dans
+  `rpc::scope::required` (sinon permise à toute portée) ; le test
+  `every_served_method_has_a_scope` le vérifie.
 - Copies corrigées (`third_party`) : ne jamais modifier une dépendance ailleurs. Toute
   modification y est marquée « AuroDownloader » et notée dans `third_party/README.md` ;
   monter la version d'une de ces crates demande d'y reporter les modifications.

@@ -39,10 +39,18 @@ pub fn is_public(ip: IpAddr) -> bool {
                 return is_public_v4(v4);
             }
             let s = v6.segments();
-            // NAT64 (RFC 6052) : l'adresse IPv4 est dans les 32 derniers bits.
-            if s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4] {
-                let o = v6.octets();
+            let o = v6.octets();
+            // NAT64 (RFC 6052, et le préfixe d'usage local 64:ff9b:1::/48 de RFC 8215), forme
+            // traduite `::ffff:0:a.b.c.d` (RFC 2765) : l'adresse IPv4 est dans les 32 derniers
+            // bits. Revue de sécurité (étape 5) : préfixe local et forme traduite ajoutés.
+            if (s[0] == 0x64 && s[1] == 0xff9b && (s[2..6] == [0; 4] || s[2] == 1))
+                || (s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0)
+            {
                 return is_public_v4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+            }
+            // 6to4 (RFC 3056) 2002::/16 : l'adresse IPv4 suit le préfixe.
+            if s[0] == 0x2002 {
+                return is_public_v4(Ipv4Addr::new(o[2], o[3], o[4], o[5]));
             }
             !(v6.is_unspecified()
                 || v6.is_loopback()
@@ -171,6 +179,10 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:192.168.0.1",
             "64:ff9b::a00:1",
+            "64:ff9b:1::c0a8:101",
+            "::ffff:0:127.0.0.1",
+            "2002:c0a8:0101::1",
+            "2002:7f00:1::",
             "fc00::1",
             "fd12:3456::1",
             "fe80::1",
@@ -190,6 +202,7 @@ mod tests {
             "2a00:1450:4007::1",
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
+            "2002:0808:0808::1",
         ] {
             assert!(is_public(ip.parse().unwrap()), "{ip}");
         }

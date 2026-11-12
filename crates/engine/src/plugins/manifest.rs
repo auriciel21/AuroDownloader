@@ -47,8 +47,11 @@ fn leb_u32(bytes: &[u8], at: &mut usize) -> Option<u32> {
     None
 }
 
-/// Le contenu de la section personnalisée `name`, si le fichier en a une seule.
-fn custom_section<'a>(bytes: &'a [u8], name: &str) -> Result<&'a [u8], String> {
+/// Identifiant de la section de la fonction de démarrage.
+const START_SECTION: u8 = 8;
+
+/// Les sections d'un module : identifiant et contenu.
+fn sections(bytes: &[u8]) -> Result<Vec<(u8, &[u8])>, String> {
     if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
         return Err("ce n'est pas un fichier WebAssembly".into());
     }
@@ -56,31 +59,54 @@ fn custom_section<'a>(bytes: &'a [u8], name: &str) -> Result<&'a [u8], String> {
         return Err("version de WebAssembly non prise en charge (module de base 1 attendu)".into());
     }
     let mut at = 8;
-    let mut found = None;
+    let mut found = Vec::new();
     while at < bytes.len() {
         let id = bytes[at];
         at += 1;
         let size = leb_u32(bytes, &mut at).ok_or("section illisible")? as usize;
         let end = at.checked_add(size).filter(|end| *end <= bytes.len());
         let end = end.ok_or("section qui dépasse la fin du fichier")?;
-        if id == 0 {
-            let mut inner = at;
-            let len =
-                leb_u32(&bytes[..end], &mut inner).ok_or("nom de section illisible")? as usize;
-            let name_end = inner
-                .checked_add(len)
-                .filter(|e| *e <= end)
-                .ok_or("nom de section qui dépasse sa section")?;
-            if &bytes[inner..name_end] == name.as_bytes() {
-                if found.is_some() {
-                    return Err(format!("plusieurs sections {name}"));
-                }
-                found = Some(&bytes[name_end..end]);
-            }
-        }
+        found.push((id, &bytes[at..end]));
         at = end;
     }
+    Ok(found)
+}
+
+/// Le contenu de la section personnalisée `name`, si le fichier en a une seule.
+fn custom_section<'a>(bytes: &'a [u8], name: &str) -> Result<&'a [u8], String> {
+    let mut found = None;
+    for (id, body) in sections(bytes)? {
+        if id != 0 {
+            continue;
+        }
+        let mut inner = 0;
+        let len = leb_u32(body, &mut inner).ok_or("nom de section illisible")? as usize;
+        let name_end = inner
+            .checked_add(len)
+            .filter(|e| *e <= body.len())
+            .ok_or("nom de section qui dépasse sa section")?;
+        if &body[inner..name_end] == name.as_bytes() {
+            if found.is_some() {
+                return Err(format!("plusieurs sections {name}"));
+            }
+            found = Some(&body[name_end..]);
+        }
+    }
     found.ok_or_else(|| format!("pas de manifeste (section {name})"))
+}
+
+/// Refuse un module qui a une fonction de démarrage : elle s'exécuterait dès
+/// l'instanciation, donc à la vérification d'un fichier pas encore accepté (revue de
+/// sécurité, étape 5). Le code d'un plugin ne tourne que par `auro_resolve`.
+pub fn refuse_start(bytes: &[u8]) -> Result<(), String> {
+    if sections(bytes)?.iter().any(|(id, _)| *id == START_SECTION) {
+        return Err(
+            "fonction de démarrage non permise : le plugin ne s'exécute que par \
+                    auro_resolve"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Un nom de domaine du manifeste : minuscules, au moins deux étiquettes, pas une adresse

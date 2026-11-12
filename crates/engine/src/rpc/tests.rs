@@ -3802,3 +3802,117 @@ async fn a_hoster_page_keeps_its_single_link_and_an_expired_link_is_renewed() {
     crate::testing::same_as_served(&dir.path().join("f.bin"), 0, LEN).unwrap();
     crate::testing::stop(&engine).await;
 }
+
+/// Revue de sécurité (étape 5) : un lien neuf refusé (ici injoignable) ne laisse pas ses
+/// cookies à la tâche, qui garde son ancienne adresse : une reprise à la main ne les
+/// envoie pas à l'ancien hôte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_fresh_link_leaves_no_cookie_on_the_old_address() {
+    use crate::testing::plugin_files::{fetch_call, packed, plugin};
+
+    const LEN: u64 = 100_000;
+    let dir = tempfile::tempdir().unwrap();
+    let site = Arc::new(Mutex::new(FileSite::new(LEN)));
+    let file = crate::testing::file_handler(site);
+    let server = crate::testing::serve(move |request| match request.path.as_str() {
+        "/page" => crate::testing::reply(
+            "200 OK",
+            &[("Set-Cookie", "session=secret-du-site; Path=/")],
+            b"page",
+        ),
+        // Préparation possible, téléchargement refusé : un lien expiré.
+        "/dl/f.bin" if request.method == "HEAD" => file(request),
+        "/dl/f.bin" => crate::testing::reply("403 Forbidden", &[("Content-Length", "0")], b""),
+        _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+    });
+    let engine = engine(dir.path());
+    let addr: std::net::SocketAddr = server.base.trim_start_matches("http://").parse().unwrap();
+    engine.plugins_resolve_to("fichiers.exemple", addr);
+    engine.plugins_resolve_to("autre.exemple", addr);
+    engine.plugins_allow_private();
+    let manifest = r#"{"abi": 1, "id": "org.essai.renouvele", "name": "Renouvelé", "version": "1",
+        "sites": ["fichiers.exemple"], "fetch": ["fichiers.exemple", "autre.exemple"]}"#;
+    let version = |page: &str, link: &str| {
+        let out = format!(r#"{{"links": [{{"url": "{link}", "name": "f.bin"}}]}}"#);
+        let page = format!(r#"{{"url": "{page}"}}"#);
+        plugin(
+            manifest,
+            &[&out, &page],
+            &format!("(drop {}) {}", fetch_call(1, &page), packed(0, &out)),
+            "",
+        )
+    };
+    let install = |bytes: Vec<u8>| {
+        let engine = engine.clone();
+        async move {
+            let digest = crate::plugins::digest_of(&bytes);
+            engine.install_plugin(bytes, &digest).await.unwrap();
+        }
+    };
+    // Version 1 : le lien de la tâche, sur ce serveur, sans cookie pour lui.
+    install(version(
+        "http://fichiers.exemple/page",
+        &server.url("/dl/f.bin"),
+    ))
+    .await;
+
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let id = local
+        .result(
+            "task.add",
+            json!({"sources": [{"url": "http://fichiers.exemple/page"}],
+                   "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Refusé (403), renouvelé une fois par le moteur (même lien), refusé de nouveau ; le
+    // moteur ne renouvelle plus avant 10 minutes.
+    for _ in 0..2 {
+        local
+            .notification("task.stateChanged", |p| {
+                p["taskId"] == id.as_str() && p["to"] == "failed"
+            })
+            .await;
+    }
+
+    // Version 2 : un lien sur un autre hôte, avec ses cookies, que le moteur ne joint pas.
+    install(version(
+        "http://autre.exemple/page",
+        &format!("http://autre.exemple:{}/dl/f.bin", addr.port()),
+    ))
+    .await;
+    assert!(engine.refresh_plugin_link(&id).await.is_err());
+    assert!(
+        server.requests().iter().any(|r| r.path == "/page"
+            && r.header("host")
+                .is_some_and(|h| h.starts_with("autre.exemple"))),
+        "la version 2 a lu sa page (et reçu son cookie)"
+    );
+
+    // Reprise à la main : l'ancienne adresse ne reçoit aucun cookie.
+    let before = server.requests().len();
+    local.result("task.resume", json!({"taskIds": [id]})).await;
+    local
+        .notification("task.stateChanged", |p| {
+            p["taskId"] == id.as_str() && p["to"] == "failed"
+        })
+        .await;
+    let after: Vec<_> = server.requests()[before..]
+        .iter()
+        .filter(|r| r.path == "/dl/f.bin")
+        .cloned()
+        .collect();
+    assert!(!after.is_empty());
+    assert!(
+        after.iter().all(|r| r.header("cookie").is_none()),
+        "{:?}",
+        after.iter().map(|r| r.header("cookie")).collect::<Vec<_>>()
+    );
+    crate::testing::stop(&engine).await;
+}

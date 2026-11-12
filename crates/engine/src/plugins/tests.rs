@@ -299,6 +299,53 @@ fn limits_stop_a_hostile_plugin() {
     assert!(e.contains("limite de pile"), "{e}");
 }
 
+/// Revue de sécurité (étape 5) : une table de fonctions démesurée, déclarée ou agrandie,
+/// ne fait pas allouer au moteur plus que sa limite.
+#[test]
+fn a_huge_table_is_refused() {
+    let run = |resolve: &str, extra: &str| {
+        let bytes = plugin(MANIFEST, &[], resolve, extra);
+        let refuse: runtime::Fetch = Box::new(|_| b"{}".to_vec());
+        runtime::resolve(&bytes, b"{}", refuse, &runtime::LIMITS).output
+    };
+    // Déclarée trop grande : refusée à l'instanciation.
+    let e = run("(i64.const 0)", "(table 1000000 funcref)").unwrap_err();
+    assert!(e.contains("s'est arrêté"), "{e}");
+    let e = run("(i64.const 0)", "(table 4294967295 funcref)").unwrap_err();
+    assert!(e.contains("s'est arrêté"), "{e}");
+    // Agrandie sans fin : refusée au-delà de la limite, le plugin s'arrête.
+    let e = run(
+        "(loop $l (br_if $l (i32.ne (table.grow $t (ref.null func) (i32.const 50000)) \
+         (i32.const -1)))) (unreachable)",
+        "(table $t 1 funcref)",
+    )
+    .unwrap_err();
+    assert!(e.contains("s'est arrêté"), "{e}");
+    // Une table de taille ordinaire reste permise.
+    assert!(run("(i64.const 0)", "(table 1000 funcref)").is_ok());
+}
+
+/// Revue de sécurité (étape 5) : une fonction de démarrage s'exécuterait dès
+/// l'instanciation, avant l'accord de l'utilisateur ; un tel module est refusé, à la
+/// vérification comme à l'exécution.
+#[test]
+fn a_start_function_is_refused() {
+    let bytes = plugin(
+        MANIFEST,
+        &[],
+        "(i64.const 0)",
+        "(func $boucle (loop $l (br $l))) (start $boucle)",
+    );
+    let e = runtime::check(&bytes).unwrap_err();
+    assert!(e.contains("démarrage"), "{e}");
+    assert!(crate::plugins::inspect(&bytes).is_err());
+    let refuse: runtime::Fetch = Box::new(|_| b"{}".to_vec());
+    let e = runtime::resolve(&bytes, b"{}", refuse, &runtime::LIMITS)
+        .output
+        .unwrap_err();
+    assert!(e.contains("démarrage"), "{e}");
+}
+
 #[test]
 fn matching_finds_the_enabled_plugin_of_a_site() {
     let mut row = row_for(&fixed("{}"));

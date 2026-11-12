@@ -87,9 +87,35 @@ mod imp {
     }
 
     pub async fn connect(endpoint: &str) -> io::Result<Halves> {
+        refuse_foreign_dir(Path::new(endpoint))?;
         let stream = UnixStream::connect(endpoint).await?;
         let (read, write) = stream.into_split();
         Ok((Box::new(read), Box::new(write)))
+    }
+
+    /// Le dossier du socket doit appartenir à l'utilisateur et lui être réservé (le moteur
+    /// le met en `0700`) : sans `XDG_RUNTIME_DIR`, il est sous `/tmp`, où un autre
+    /// utilisateur de la machine pourrait l'avoir créé le premier pour recevoir les messages
+    /// des clients (revue de sécurité, étape 5).
+    pub(super) fn refuse_foreign_dir(endpoint: &Path) -> io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let Some(dir) = endpoint.parent().filter(|d| !d.as_os_str().is_empty()) else {
+            return Ok(());
+        };
+        let meta = std::fs::metadata(dir)?;
+        // SAFETY : getuid ne peut pas échouer.
+        let me = unsafe { libc::getuid() };
+        if meta.uid() != me || meta.mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} : dossier du point d'accès à un autre utilisateur ou ouvert à d'autres : \
+                     refusé",
+                    dir.display()
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -162,7 +188,49 @@ mod imp {
                 Err(e) => return Err(e),
             }
         };
+        // Un canal créé par un autre utilisateur de la machine (le premier à prendre le nom)
+        // ne reçoit rien : le moteur fait du sien la propriété de l'utilisateur (revue de
+        // sécurité, étape 5).
+        {
+            use std::os::windows::io::AsRawHandle;
+            if !security::owned_by_current_user(client.as_raw_handle(), security::SE_KERNEL_OBJECT)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{endpoint} : canal nommé d'un autre utilisateur : refusé"),
+                ));
+            }
+        }
         let (read, write) = tokio::io::split(client);
         Ok((Box::new(read), Box::new(write)))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Revue de sécurité (étape 5) : un dossier de point d'accès ouvert à d'autres (ou à un
+    /// autre utilisateur) est refusé avant toute connexion.
+    #[tokio::test]
+    async fn a_client_refuses_an_endpoint_folder_open_to_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("aurod.sock");
+        let endpoint = endpoint.to_str().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let refused = super::connect(endpoint).await.err().expect("refusé");
+        assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{refused}"
+        );
+        // Réservé à l'utilisateur : la connexion est tentée (aucun moteur ici).
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let missing = super::connect(endpoint).await.err().expect("pas de moteur");
+        assert_ne!(
+            missing.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{missing}"
+        );
     }
 }
