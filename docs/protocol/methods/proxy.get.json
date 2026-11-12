@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/proxy.get.json",
+  "title": "proxy.get",
+  "description": "Proxy du moteur (F-07) ; jamais le mot de passe, seulement s'il y en a un. Portée admin. Depuis le 2026-11-12.",
+  "$defs": {
+    "params": {"type": "object"},
+    "result": {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/proxy"}
+  }
+}

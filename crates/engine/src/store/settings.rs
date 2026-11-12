@@ -393,6 +393,74 @@ pub fn set_torrent_ratio(conn: &Connection, ratio: Option<f64>) -> Result<(), St
     set(conn, TORRENT_RATIO, &ratio.map_or(Value::Null, Value::from))
 }
 
+/// Proxy (F-07, phase 7) : mode, adresse, exceptions, identifiant ; le mot de passe est
+/// au coffre du système, la base n'en garde que la référence (`proxy.secret`).
+pub const PROXY_MODE: &str = "proxy.mode";
+pub const PROXY_URL: &str = "proxy.url";
+pub const PROXY_EXCEPTIONS: &str = "proxy.exceptions";
+pub const PROXY_USERNAME: &str = "proxy.username";
+pub const PROXY_SECRET: &str = "proxy.secret";
+
+/// Réglages du proxy, et la référence de son mot de passe au coffre.
+pub fn proxy(
+    conn: &Connection,
+) -> Result<(crate::net::proxy::Settings, Option<String>), StoreError> {
+    use crate::net::proxy::{Mode, Settings};
+    let text = |key: &str| -> Result<Option<String>, StoreError> {
+        Ok(match get(conn, key)? {
+            Some(Value::String(s)) => Some(s),
+            _ => None,
+        })
+    };
+    let mode = match text(PROXY_MODE)? {
+        None => Mode::System,
+        Some(m) => Mode::parse(&m)
+            .ok_or_else(|| StoreError::BadValue(format!("réglage {PROXY_MODE} : {m}")))?,
+    };
+    let exceptions = match get(conn, PROXY_EXCEPTIONS)? {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let settings = Settings {
+        mode,
+        url: text(PROXY_URL)?,
+        exceptions,
+        username: text(PROXY_USERNAME)?,
+    };
+    Ok((settings, text(PROXY_SECRET)?))
+}
+
+/// Enregistre les réglages du proxy et la référence de son mot de passe (`None` : aucun).
+pub fn set_proxy(
+    conn: &Connection,
+    settings: &crate::net::proxy::Settings,
+    secret: Option<&str>,
+) -> Result<(), StoreError> {
+    let tx = conn.unchecked_transaction()?;
+    set(&tx, PROXY_MODE, &Value::from(settings.mode.as_str()))?;
+    set(
+        &tx,
+        PROXY_URL,
+        &settings.url.clone().map_or(Value::Null, Value::from),
+    )?;
+    set(
+        &tx,
+        PROXY_EXCEPTIONS,
+        &Value::from(settings.exceptions.clone()),
+    )?;
+    set(
+        &tx,
+        PROXY_USERNAME,
+        &settings.username.clone().map_or(Value::Null, Value::from),
+    )?;
+    set(&tx, PROXY_SECRET, &secret.map_or(Value::Null, Value::from))?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Niveau des journaux (N-12, phase 7) : `error`, `warn`, `info` (par défaut) ou `debug`.
 pub const LOGS_LEVEL: &str = "logs.level";
 

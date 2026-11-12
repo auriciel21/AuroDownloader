@@ -184,13 +184,14 @@ async fn wait_stop(stop: &mut watch::Receiver<bool>) {
 /// Résolution, interrompue par un arrêt (`Ok(None)`).
 async fn resolve(
     status: &Status,
+    client: &Client,
     page_url: &str,
     format: &str,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<Option<Resolution>, ExtractError> {
     let ytdlp = &status.ytdlp.as_ref().expect("outils prêts").path;
     tokio::select! {
-        r = extract::resolve(ytdlp, page_url, format, extract::PROBE_TIMEOUT) => r.map(Some),
+        r = extract::resolve(ytdlp, client, page_url, format, extract::PROBE_TIMEOUT) => r.map(Some),
         _ = wait_stop(stop) => Ok(None),
     }
 }
@@ -268,7 +269,7 @@ async fn download(
             ));
         }
     }
-    let mut resolution = match resolve(status, &job.page_url, &selector, stop).await {
+    let mut resolution = match resolve(status, ctx.client, &job.page_url, &selector, stop).await {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(End::Stopped),
         Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
@@ -394,6 +395,7 @@ async fn download(
                 fragmented(
                     conn,
                     status,
+                    ctx.client,
                     &task,
                     stream,
                     &job.page_url,
@@ -412,18 +414,25 @@ async fn download(
                 }
                 Step::Refresh if refreshes < MAX_REFRESH => {
                     refreshes += 1;
-                    resolution =
-                        match resolve(status, &job.page_url, &selector_of(&streams), stop).await {
-                            Ok(Some(r)) if same_streams(&streams, &r) => r,
-                            Ok(Some(_)) => {
-                                return Ok(failed(
-                                    "EXTRACTOR_FAILED",
-                                    "la page ne propose plus les mêmes flux",
-                                ));
-                            }
-                            Ok(None) => return Ok(End::Stopped),
-                            Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
-                        };
+                    resolution = match resolve(
+                        status,
+                        ctx.client,
+                        &job.page_url,
+                        &selector_of(&streams),
+                        stop,
+                    )
+                    .await
+                    {
+                        Ok(Some(r)) if same_streams(&streams, &r) => r,
+                        Ok(Some(_)) => {
+                            return Ok(failed(
+                                "EXTRACTOR_FAILED",
+                                "la page ne propose plus les mêmes flux",
+                            ));
+                        }
+                        Ok(None) => return Ok(End::Stopped),
+                        Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
+                    };
                 }
                 Step::Refresh => {
                     return Ok(failed(
@@ -554,7 +563,7 @@ async fn subtitles(
                 Step::Done(_) => break,
                 Step::Refresh if *refreshes < MAX_REFRESH => {
                     *refreshes += 1;
-                    match resolve(status, page_url, &selector, stop).await {
+                    match resolve(status, ctx.client, page_url, &selector, stop).await {
                         Ok(Some(r)) => *resolution = r,
                         Ok(None) => return Ok(Some(End::Stopped)),
                         // La page ne se lit plus : la vidéo est complète, elle se termine.
@@ -807,6 +816,7 @@ async fn direct(
 async fn fragmented(
     conn: &mut Connection,
     status: &Status,
+    client: &Client,
     task: &TaskRow,
     stream: &StreamRow,
     page_url: &str,
@@ -819,7 +829,7 @@ async fn fragmented(
     if !path.exists() {
         let ytdlp = &status.ytdlp.as_ref().expect("outils prêts").path;
         let ffmpeg = &status.ffmpeg.as_ref().expect("outils prêts").path;
-        let mut command = extract::ytdlp_command(ytdlp);
+        let mut command = extract::ytdlp_command(ytdlp, client);
         // `-o` est un modèle de yt-dlp : `%` s'y double.
         let template = path.to_string_lossy().replace('%', "%%");
         command.args([

@@ -29,7 +29,7 @@ fn row_for(bytes: &[u8]) -> PluginRow {
 /// Des plugins rangés dans un dossier temporaire, et la ligne de `bytes`.
 fn installed(bytes: &[u8]) -> (tempfile::TempDir, Plugins, PluginRow) {
     let dir = tempfile::tempdir().unwrap();
-    let plugins = Plugins::new(dir.path());
+    let plugins = Plugins::new(dir.path(), Default::default());
     let row = row_for(bytes);
     plugins.save(&row.digest, bytes).unwrap();
     (dir, plugins, row)
@@ -360,7 +360,7 @@ fn matching_finds_the_enabled_plugin_of_a_site() {
 #[test]
 fn resolutions_are_kept_for_a_while() {
     let dir = tempfile::tempdir().unwrap();
-    let plugins = Plugins::new(dir.path());
+    let plugins = Plugins::new(dir.path(), Default::default());
     let r = super::Resolution {
         id: "r1".into(),
         plugin_id: "p".into(),

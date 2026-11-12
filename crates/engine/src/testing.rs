@@ -8,6 +8,7 @@
 //! autres paquets (banc de reprise de la CLI). Ne fait pas partie de l'API du moteur.
 
 pub mod plugin_files;
+pub mod proxies;
 pub mod swarm;
 pub mod tools;
 

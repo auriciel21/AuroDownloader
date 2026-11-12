@@ -172,7 +172,10 @@ pub fn links_of(output: &[u8]) -> Result<Vec<Link>, String> {
 pub struct Plugins {
     dir: PathBuf,
     slots: tokio::sync::Semaphore,
-    http: Mutex<Option<reqwest::Client>>,
+    /// Client des requêtes, et la génération du proxy pour laquelle il a été fait.
+    http: Mutex<Option<(u64, reqwest::Client)>>,
+    /// Proxy du moteur (F-07), suivi en SOCKS5 seulement (réseau public).
+    proxy: std::sync::Arc<crate::net::proxy::Shared>,
     /// Noms imposés au client des requêtes (tests : serveur local).
     resolve_to: Mutex<Vec<(String, SocketAddr)>>,
     /// Liens rendus permis vers le réseau interne (tests : serveur local).
@@ -192,11 +195,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Plugins {
     /// Plugins gardés sous `plugins/` dans `data_dir`.
-    pub fn new(data_dir: &Path) -> Self {
+    pub fn new(data_dir: &Path, proxy: std::sync::Arc<crate::net::proxy::Shared>) -> Self {
         Plugins {
             dir: data_dir.join("plugins"),
             slots: tokio::sync::Semaphore::new(SLOTS),
             http: Mutex::default(),
+            proxy,
             resolve_to: Mutex::default(),
             private_ok: std::sync::atomic::AtomicBool::new(false),
             kept: Mutex::default(),
@@ -263,12 +267,16 @@ impl Plugins {
     }
 
     fn http(&self) -> Result<reqwest::Client, String> {
+        let generation = self.proxy.generation();
         let mut slot = lock(&self.http);
-        if let Some(http) = slot.as_ref() {
+        if let Some((made_for, http)) = slot.as_ref()
+            && *made_for == generation
+        {
             return Ok(http.clone());
         }
-        let http = crate::net::plugin_http(&lock(&self.resolve_to)).map_err(|e| e.to_string())?;
-        *slot = Some(http.clone());
+        let http = crate::net::plugin_http(&lock(&self.resolve_to), &self.proxy.get())
+            .map_err(|e| e.to_string())?;
+        *slot = Some((generation, http.clone()));
         Ok(http)
     }
 

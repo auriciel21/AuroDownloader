@@ -1720,6 +1720,71 @@ async function saveLogsLevel() {
   }
 }
 
+/// Proxy du moteur (F-07), lu à l'ouverture des Options (`proxy.get`) ; jamais son mot de
+/// passe, seulement s'il y en a un.
+let proxyView = null;
+
+async function loadProxy() {
+  $("proxy-error").hidden = true;
+  try {
+    proxyView = await host.call("proxy.get", {});
+  } catch (e) {
+    proxyView = null;
+    $("proxy-error").textContent = refused(e);
+    $("proxy-error").hidden = false;
+  }
+  renderProxy();
+}
+
+function renderProxy() {
+  const view = proxyView ?? { mode: "system", url: null, exceptions: [], username: null, hasPassword: false };
+  for (const mode of ["system", "none", "manual"]) $(`proxy-${mode}`).checked = view.mode === mode;
+  $("proxy-url").value = view.url ?? "";
+  $("proxy-except").value = (view.exceptions ?? []).join(", ");
+  $("proxy-user").value = view.username ?? "";
+  $("proxy-password").value = "";
+  $("proxy-password-note").hidden = !view.hasPassword;
+  syncProxyFields();
+}
+
+/// Les champs du proxy manuel ne servent qu'en mode manuel.
+function syncProxyFields() {
+  const manual = $("proxy-manual").checked;
+  for (const id of ["proxy-url", "proxy-except", "proxy-user", "proxy-password"]) $(id).disabled = !manual || !connected;
+  $("proxy-apply").disabled = !connected;
+}
+
+async function saveProxy() {
+  const mode = ["system", "none", "manual"].find((m) => $(`proxy-${m}`).checked) ?? "system";
+  const params = { mode };
+  if (mode === "manual") {
+    params.url = $("proxy-url").value.trim();
+    params.exceptions = $("proxy-except").value.split(/[\s,]+/).filter(Boolean);
+    const user = $("proxy-user").value.trim();
+    if (user) {
+      params.username = user;
+      // Vide : le mot de passe enregistré reste.
+      const password = $("proxy-password").value;
+      if (password) params.password = password;
+      else if (!proxyView?.hasPassword) params.password = null;
+    }
+  }
+  $("proxy-apply").disabled = true;
+  try {
+    proxyView = await host.call("proxy.set", params);
+    $("proxy-error").hidden = true;
+    announce(t("Proxy appliqué"));
+    renderProxy();
+  } catch (e) {
+    $("proxy-error").textContent = e?.message ?? String(e);
+    $("proxy-error").hidden = false;
+  } finally {
+    // Le mot de passe ne reste pas dans la page.
+    $("proxy-password").value = "";
+    $("proxy-apply").disabled = !connected;
+  }
+}
+
 /// Lignes de journal montrées avant l'enregistrement (les dernières).
 const DIAGNOSTIC_SHOWN = 20;
 /// Diagnostic lu (`engine.diagnostic`), montré puis enregistré tel quel.
@@ -3808,6 +3873,9 @@ function wire() {
   $("tb-schedule").addEventListener("click", openSchedule);
   $("tb-history").addEventListener("click", openHistory);
   $("pref-preallocate").addEventListener("change", savePreallocate);
+  // Proxy (F-07).
+  for (const mode of ["system", "none", "manual"]) $(`proxy-${mode}`).addEventListener("change", syncProxyFields);
+  $("proxy-apply").addEventListener("click", saveProxy);
   // Journaux et diagnostic (N-12).
   $("pref-logs-level").addEventListener("change", saveLogsLevel);
   $("diagnostic-export").addEventListener("click", openDiagnostic);
@@ -3866,6 +3934,7 @@ function wire() {
     if (connected) loadInterfaces();
     if (connected && caps.qr && caps.admin) loadRemote();
     if (connected && caps.plugins && caps.admin) loadPlugins();
+    if (connected && caps.admin) loadProxy();
     renderLinks();
     loadTools();
     renderClipboardWarning();

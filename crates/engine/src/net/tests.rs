@@ -836,3 +836,119 @@ fn status_detail_round_trip() {
     }
     assert_eq!(super::status_in_detail("délai dépassé"), None);
 }
+
+/// Proxy (F-07) : les requêtes passent par un proxy HTTP manuel, avec son identifiant ;
+/// une exception et le mode « aucun » vont en direct ; toutes les copies d'un client
+/// suivent un changement ; des réglages refusés ne changent rien.
+#[tokio::test]
+async fn requests_follow_the_proxy_settings() {
+    use crate::testing::proxies::http_proxy;
+    use proxy::{Effective, Mode, Settings};
+
+    let site = crate::testing::serve_file(Arc::new(std::sync::Mutex::new(
+        crate::testing::FileSite::new(1000),
+    )));
+    let relay = http_proxy();
+    let client = client();
+    let copy = client.clone();
+    let manual = |exceptions: Vec<String>| Effective {
+        settings: Settings {
+            mode: Mode::Manual,
+            url: Some(relay.url("http")),
+            exceptions,
+            username: Some("moi".into()),
+        },
+        password: Some("secret".into()),
+    };
+    client.set_proxy(manual(Vec::new())).unwrap();
+    let url = site.url("/f.bin");
+    assert_eq!(copy.probe(&url, &[]).await.unwrap().total_bytes, Some(1000));
+    let seen = relay.seen();
+    assert!(
+        !seen.is_empty() && seen.iter().all(|s| s.target == url),
+        "{seen:?}"
+    );
+    assert_eq!(
+        seen[0].credentials.as_deref(),
+        Some("Basic bW9pOnNlY3JldA==")
+    );
+
+    let before = relay.seen().len();
+    client.set_proxy(manual(vec!["127.0.0.1".into()])).unwrap();
+    copy.probe(&url, &[]).await.unwrap();
+    assert_eq!(relay.seen().len(), before, "exception : en direct");
+    let none = Effective {
+        settings: Settings {
+            mode: Mode::None,
+            ..Settings::default()
+        },
+        password: None,
+    };
+    client.set_proxy(none).unwrap();
+    copy.probe(&url, &[]).await.unwrap();
+    assert_eq!(relay.seen().len(), before, "aucun : en direct");
+
+    let refused = Effective {
+        settings: Settings {
+            mode: Mode::Manual,
+            url: Some("ftp://p.lan:21".into()),
+            ..Settings::default()
+        },
+        password: None,
+    };
+    assert!(client.set_proxy(refused).is_err());
+    assert_eq!(client.proxy().settings.mode, Mode::None);
+}
+
+/// SOCKS5 (F-07) : `socks5h` laisse le proxy résoudre le nom, `socks5` le résout ici ;
+/// l'identifiant est donné. Une connexion limitée au réseau public refuse une adresse
+/// interne avant même de joindre le proxy.
+#[tokio::test]
+async fn socks5_proxies_resolve_where_asked_and_public_connections_stay_checked() {
+    use crate::testing::proxies::socks5_proxy;
+    use proxy::{Effective, Mode, Settings};
+
+    let site = crate::testing::serve_file(Arc::new(std::sync::Mutex::new(
+        crate::testing::FileSite::new(1000),
+    )));
+    let socks = socks5_proxy(Some(("moi", "secret")));
+    let client = client();
+    let via = |scheme: &str| Effective {
+        settings: Settings {
+            mode: Mode::Manual,
+            url: Some(socks.url(scheme)),
+            exceptions: Vec::new(),
+            username: Some("moi".into()),
+        },
+        password: Some("secret".into()),
+    };
+    let url = site.url("/f.bin");
+    let named = url.replace("127.0.0.1", "localhost");
+
+    client.set_proxy(via("socks5h")).unwrap();
+    client.probe(&named, &[]).await.unwrap();
+    let seen = socks.seen();
+    assert!(
+        seen.iter().all(|s| s.by_name
+            && s.target.starts_with("localhost:")
+            && s.credentials.as_deref() == Some("moi")),
+        "{seen:?}"
+    );
+
+    client.set_proxy(via("socks5")).unwrap();
+    let before = socks.seen().len();
+    client.probe(&url, &[]).await.unwrap();
+    let last = socks.seen().pop().unwrap();
+    assert!(socks.seen().len() > before && !last.by_name, "{last:?}");
+
+    // Réseau public seulement : `localhost` est refusé par le résolveur filtrant, avant le
+    // proxy ; une adresse interne écrite telle quelle aussi.
+    let restricted = client.restricted().unwrap();
+    let before = socks.seen().len();
+    assert!(restricted.probe(&named, &[]).await.is_err());
+    assert!(matches!(
+        restricted.probe(&url, &[]).await,
+        Err(NetError::AddressForbidden)
+    ));
+    assert_eq!(socks.seen().len(), before, "rien n'a joint le proxy");
+}

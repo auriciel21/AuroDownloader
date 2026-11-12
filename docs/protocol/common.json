@@ -539,6 +539,18 @@
         }
       }
     },
+    "proxy": {
+      "description": "Proxy du moteur (F-07), sans son mot de passe.",
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["system", "none", "manual"]},
+        "url": {"type": ["string", "null"]},
+        "exceptions": {"type": "array", "items": {"type": "string"}},
+        "username": {"type": ["string", "null"]},
+        "hasPassword": {"type": "boolean"}
+      },
+      "required": ["mode", "url", "exceptions", "username", "hasPassword"]
+    },
     "limits": {
       "type": "object",
       "properties": {

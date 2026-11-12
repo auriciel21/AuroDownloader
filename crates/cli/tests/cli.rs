@@ -626,6 +626,63 @@ async fn the_remote_interface_is_opened_moved_and_closed() {
     auro_engine::testing::stop(&engine).await;
 }
 
+/// `auro proxy` (F-07) : montré, choisi (mot de passe lu sur l'entrée standard), retiré ;
+/// une adresse refusée ne change rien.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_proxy_is_shown_set_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "proxy", Options::default()).await;
+    assert!(ok(&ep, &["proxy"]).await.contains("celui du système"));
+    let set = ok(
+        &ep,
+        &[
+            "proxy",
+            "manual",
+            "socks5://127.0.0.1:1080",
+            "--except",
+            "localhost,.lan",
+        ],
+    )
+    .await;
+    assert!(
+        set.contains("socks5://127.0.0.1:1080") && set.contains("localhost, .lan"),
+        "{set}"
+    );
+    // Avec un identifiant : le mot de passe par l'entrée standard, jamais affiché.
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_auro"));
+    command
+        .args([
+            "--endpoint",
+            &ep,
+            "--no-start",
+            "proxy",
+            "manual",
+            "http://127.0.0.1:3128",
+        ])
+        .args(["--user", "moi", "--password-stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"secret-du-proxy\n")
+        .unwrap();
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap();
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && shown.contains("coffre"), "{shown}");
+    assert!(!shown.contains("secret-du-proxy"));
+    let refused = auro(&ep, &["proxy", "manual", "ftp://p.lan:21"]).await;
+    assert!(!refused.status.success());
+    assert!(ok(&ep, &["proxy"]).await.contains("http://127.0.0.1:3128"));
+    assert!(ok(&ep, &["proxy", "none"]).await.contains("aucun"));
+    auro_engine::testing::stop(&engine).await;
+}
+
 /// `auro diagnostic` (N-12) : le rapport et les journaux nettoyés, montrés ; enregistrés
 /// en archive avec --save, jamais par-dessus un fichier. `auro config logs.level`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

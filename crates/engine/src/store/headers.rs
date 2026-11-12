@@ -120,9 +120,13 @@ pub fn all_secret_refs(conn: &Connection) -> Result<HashSet<String>, StoreError>
         "SELECT secret_ref FROM task_headers WHERE secret_ref IS NOT NULL
          UNION SELECT secret_ref FROM site_logins",
     )?;
-    let refs = statement
+    let mut refs: HashSet<String> = statement
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
+    // Mot de passe du proxy (F-07, phase 7).
+    if let (_, Some(secret)) = super::settings::proxy(conn)? {
+        refs.insert(secret);
+    }
     Ok(refs)
 }
 
@@ -182,5 +186,23 @@ mod tests {
         change_state(&mut conn, &task, &Change::to(TaskState::Cancelled)).unwrap();
         remove_task(&mut conn, &task).unwrap();
         assert!(load(&conn, &task).unwrap().is_empty());
+    }
+
+    /// Le mot de passe du proxy (F-07) est compté parmi les secrets gardés : le ramassage du
+    /// démarrage ne l'efface pas.
+    #[test]
+    fn the_proxy_password_is_a_kept_secret() {
+        let conn = open_in_memory().unwrap();
+        assert!(all_secret_refs(&conn).unwrap().is_empty());
+        let settings = crate::net::proxy::Settings {
+            mode: crate::net::proxy::Mode::Manual,
+            url: Some("socks5://p.lan:1080".into()),
+            exceptions: Vec::new(),
+            username: Some("moi".into()),
+        };
+        crate::store::settings::set_proxy(&conn, &settings, Some("ref-du-proxy")).unwrap();
+        assert!(all_secret_refs(&conn).unwrap().contains("ref-du-proxy"));
+        let (read, secret) = crate::store::settings::proxy(&conn).unwrap();
+        assert_eq!((read, secret.as_deref()), (settings, Some("ref-du-proxy")));
     }
 }

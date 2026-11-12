@@ -632,6 +632,21 @@ impl From<store::logins::LoginRow> for LoginView {
     }
 }
 
+/// Proxy à enregistrer (`proxy.set`, F-07) : ses réglages, et le mot de passe (`None` :
+/// gardé ; `Some(None)` : retiré ; `Some(Some(…))` : nouveau).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyChange {
+    pub settings: net::proxy::Settings,
+    pub password: Option<Option<String>>,
+}
+
+/// Proxy tel que le protocole le montre : jamais le mot de passe, seulement s'il y en a un.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyView {
+    pub settings: net::proxy::Settings,
+    pub has_password: bool,
+}
+
 /// Identifiants à enregistrer (`login.set`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoginChange {
@@ -776,6 +791,8 @@ enum Command {
     Warn(&'static str, String),
     SetTorrentInterface(Option<String>, Reply<()>),
     LogsLevel(Reply<crate::logs::Level>),
+    Proxy(Reply<ProxyView>),
+    SetProxy(ProxyChange, Reply<ProxyView>),
     SetLogsLevel(crate::logs::Level, Reply<()>),
     RemoteListen(Reply<std::net::SocketAddr>),
     SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
@@ -861,6 +878,23 @@ impl Engine {
             .scoped(&settings::vault_namespace(&conn)?);
         config.transfer.vault = vault.clone();
         let vault_for_handle = vault.clone();
+        // Proxy (F-07) : appliqué avant tout téléchargement, le mot de passe lu au coffre.
+        // Des réglages refusés, ou un coffre fermé, laissent le proxy du système.
+        let (proxy_settings, proxy_secret) = settings::proxy(&conn)?;
+        let password = proxy_secret.as_deref().and_then(|id| {
+            vault.get(id).unwrap_or_else(|e| {
+                tracing::warn!(erreur = %e, "mot de passe du proxy illisible au coffre");
+                None
+            })
+        });
+        let proxy = net::proxy::Effective {
+            settings: proxy_settings,
+            password,
+        };
+        if let Err(e) = config.client.set_proxy(proxy) {
+            tracing::warn!(erreur = %e, "réglages du proxy refusés : proxy du système");
+        }
+        let config_proxy = config.client.proxy_shared();
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let (stopped_tx, stopped) = watch::channel(false);
@@ -905,7 +939,7 @@ impl Engine {
             public_only: false,
             remote: false,
             remote_state: Arc::default(),
-            plugins: Arc::new(crate::plugins::Plugins::new(&data_dir)),
+            plugins: Arc::new(crate::plugins::Plugins::new(&data_dir, config_proxy)),
             data_dir,
         };
         // Liens expirés des tâches venues d'un plugin (SPEC §7.20) : poignée faible, qui
@@ -1179,9 +1213,14 @@ impl Engine {
                 "yt-dlp n'est pas installé (media.installTools)".into(),
             ));
         };
-        media::extract::probe(&ytdlp, page_url, media::extract::PROBE_TIMEOUT)
-            .await
-            .map_err(|e| EngineError::Extractor(e.to_string()))
+        media::extract::probe(
+            &ytdlp,
+            &self.client,
+            page_url,
+            media::extract::PROBE_TIMEOUT,
+        )
+        .await
+        .map_err(|e| EngineError::Extractor(e.to_string()))
     }
 
     /// Lance la mise à jour de yt-dlp en arrière-plan si le réglage le permet ; elle-même
@@ -1219,6 +1258,17 @@ impl Engine {
     pub async fn set_torrent_interface(&self, name: Option<String>) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetTorrentInterface(name, reply))
             .await
+    }
+
+    /// Proxy du moteur (F-07), sans son mot de passe.
+    pub async fn proxy(&self) -> Result<ProxyView, EngineError> {
+        self.ask(Command::Proxy).await
+    }
+
+    /// Change le proxy : vérifié, mot de passe au coffre, appliqué aux prochaines
+    /// connexions ; les téléchargements en cours finissent par l'ancien chemin.
+    pub async fn set_proxy(&self, change: ProxyChange) -> Result<ProxyView, EngineError> {
+        self.ask(|reply| Command::SetProxy(change, reply)).await
     }
 
     /// Niveau des journaux (réglage `logs.level`, N-12).
@@ -2809,6 +2859,12 @@ impl Scheduler {
             }
             Command::SetTorrentInterface(name, reply) => {
                 let _ = reply.send(self.set_torrent_interface(name));
+            }
+            Command::Proxy(reply) => {
+                let _ = reply.send(self.proxy_view());
+            }
+            Command::SetProxy(change, reply) => {
+                let _ = reply.send(self.set_proxy(change));
             }
             Command::LogsLevel(reply) => {
                 let _ = reply.send(settings::logs_level(&self.conn).map_err(Into::into));
@@ -4402,6 +4458,61 @@ impl Scheduler {
             value: name.map_or(serde_json::Value::Null, serde_json::Value::from),
         });
         Ok(())
+    }
+
+    fn proxy_view(&self) -> Result<ProxyView, EngineError> {
+        let (settings, secret) = settings::proxy(&self.conn)?;
+        Ok(ProxyView {
+            settings,
+            has_password: secret.is_some(),
+        })
+    }
+
+    /// Proxy changé (F-07). Ordre des secrets : le nouveau mot de passe au coffre avant sa
+    /// référence en base, l'ancien effacé après ; rien ne change si le client ne se fait
+    /// pas avec ces réglages.
+    fn set_proxy(&mut self, change: ProxyChange) -> Result<ProxyView, EngineError> {
+        net::proxy::validate(&change.settings).map_err(EngineError::BadRequest)?;
+        let (_, old) = settings::proxy(&self.conn)?;
+        let keep_user = change.settings.username.is_some();
+        let (secret, password, fresh) = match (keep_user, change.password) {
+            (false, _) | (true, Some(None)) => (None, None, None),
+            (true, None) => {
+                let password = match &old {
+                    Some(id) => self.vault().get(id)?,
+                    None => None,
+                };
+                (old.clone(), password, None)
+            }
+            (true, Some(Some(password))) => {
+                let id = self.vault().put(&password)?;
+                (Some(id.clone()), Some(password), Some(id))
+            }
+        };
+        let effective = net::proxy::Effective {
+            settings: change.settings.clone(),
+            password,
+        };
+        let applied = self
+            .config
+            .client
+            .set_proxy(effective)
+            .map_err(|e| EngineError::BadRequest(e.to_string()))
+            .and_then(|()| {
+                settings::set_proxy(&self.conn, &change.settings, secret.as_deref())
+                    .map_err(EngineError::from)
+            });
+        if let Err(e) = applied {
+            if let Some(id) = fresh {
+                self.vault().forget(vec![id]);
+            }
+            return Err(e);
+        }
+        if let Some(old) = old.filter(|o| secret.as_ref() != Some(o)) {
+            self.vault().forget(vec![old]);
+        }
+        tracing::info!(mode = change.settings.mode.as_str(), "proxy changé");
+        self.proxy_view()
     }
 
     fn set_logs_level(&mut self, level: crate::logs::Level) -> Result<(), EngineError> {

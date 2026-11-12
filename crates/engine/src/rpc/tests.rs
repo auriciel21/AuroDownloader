@@ -2003,6 +2003,108 @@ async fn the_rest_of_the_protocol_follows_its_contract() {
     crate::testing::stop(&engine).await;
 }
 
+/// Proxy (F-07) : `proxy.set` le change pour les téléchargements suivants ; le mot de
+/// passe va au coffre, jamais en base ni dans une réponse ; des réglages refusés ne
+/// changent rien ; réservé au canal local.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn downloads_follow_the_proxy_and_its_password_stays_in_the_vault() {
+    use crate::testing::proxies::http_proxy;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let server = site(8 * 1024);
+    let relay = http_proxy();
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    assert_eq!(
+        c.result("proxy.get", json!({})).await,
+        json!({"mode": "system", "url": null, "exceptions": [], "username": null, "hasPassword": false})
+    );
+    let set = c
+        .result(
+            "proxy.set",
+            json!({"mode": "manual", "url": relay.url("http"), "username": "moi", "password": "mot-de-passe-du-proxy"}),
+        )
+        .await;
+    assert_eq!(set["hasPassword"], true);
+    assert!(!set.to_string().contains("mot-de-passe-du-proxy"));
+
+    // Un téléchargement passe par le proxy, avec l'identifiant.
+    let add = |name: &str| json!({"sources": [{"url": server.url(name)}], "destDir": dir_text(dir.path())});
+    let id = c.result("task.add", add("/par-proxy.bin")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "completed"
+    })
+    .await;
+    let seen = relay.seen();
+    assert!(
+        seen.iter().any(|s| s.target.ends_with("/par-proxy.bin")),
+        "{seen:?}"
+    );
+    assert!(seen.iter().all(|s| s.credentials.is_some()));
+
+    // Ni en base, ni ailleurs que dans le coffre.
+    let db = std::fs::read(dir.path().join("auro.db")).unwrap();
+    assert!(!db.windows(21).any(|w| w == b"mot-de-passe-du-proxy"));
+    let wal = std::fs::read(dir.path().join("auro.db-wal")).unwrap_or_default();
+    assert!(!wal.windows(21).any(|w| w == b"mot-de-passe-du-proxy"));
+
+    // Mot de passe gardé quand il n'est pas redonné ; refus sans rien changer.
+    let kept = c
+        .result(
+            "proxy.set",
+            json!({"mode": "manual", "url": relay.url("http"), "username": "moi", "exceptions": ["exemple.lan"]}),
+        )
+        .await;
+    assert_eq!(kept["hasPassword"], true);
+    for bad in [
+        json!({"mode": "manual"}),
+        json!({"mode": "manual", "url": "ftp://p.lan:21"}),
+        json!({"mode": "partout"}),
+        json!({"mode": "manual", "url": relay.url("http"), "password": 3}),
+    ] {
+        assert_eq!(
+            c.error_code("proxy.set", bad.clone()).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    assert_eq!(c.result("proxy.get", json!({})).await, kept);
+
+    // Aucun : le téléchargement suivant va en direct.
+    c.result("proxy.set", json!({"mode": "none"})).await;
+    let none = c.result("proxy.get", json!({})).await;
+    assert_eq!(
+        none["hasPassword"], false,
+        "sans identifiant, plus de mot de passe"
+    );
+    let before = relay.seen().len();
+    let id = c.result("task.add", add("/en-direct.bin")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "completed"
+    })
+    .await;
+    assert_eq!(relay.seen().len(), before);
+
+    // Réservé au canal local.
+    let mut remote = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("control");
+    remote.result("engine.hello", params).await;
+    assert_eq!(
+        remote.error_code("proxy.get", json!({})).await,
+        "UNAUTHORIZED"
+    );
+    crate::testing::stop(&engine).await;
+}
+
 /// Journaux et diagnostic (N-12) : le niveau se lit et se change ; le diagnostic ne porte ni
 /// adresse, ni hôte, ni nom de fichier, ni chemin, même quand le journal en contient.
 #[tokio::test]

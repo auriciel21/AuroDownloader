@@ -134,6 +134,11 @@ téléchargement.
   `AURO_LOG` qui l'impose ; seuls nos modules y écrivent ; `scrub`, `collect` et
   `write_archive` pour le diagnostic) ; méthode `engine.diagnostic` ; installés par `aurod`
   et par l'hôte Android (`logs::init`).
+  Proxy (F-07, phase 7) : `net::proxy` (modes, validation, chemin d'une connexion
+  `route`, `apply` au client, variables d'environnement de yt-dlp), `net::Client` qui se
+  refait quand le proxy change (génération partagée par ses copies), réglages `proxy.*`
+  (`store::settings::proxy`, mot de passe au coffre, compté par `all_secret_refs`) ;
+  méthodes `proxy.get`, `proxy.set` ; proxys de test HTTP et SOCKS5 : `testing::proxies`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -325,6 +330,7 @@ cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie
 cargo run -p auro-cli -- add fichier.torrent ; files <id> --select 0,2-4 ; limit --upload 500K
 cargo run -p auro-cli -- config ; config torrent.ratioLimit 1.5 ; config media.autoUpdate false
 cargo run -p auro-cli -- config logs.level debug ; diagnostic ; diagnostic --save diag.zip
+cargo run -p auro-cli -- proxy ; proxy manual socks5://hôte:1080 --except localhost -u moi ; proxy none ; proxy system
 cargo run -p auro-cli -- video tools --install ; video info <page> ; video get <page> --subs fr,en
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
@@ -396,6 +402,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   fichier dans un événement : l'identifiant de la tâche, un hôte au plus (champ `host`,
   que le diagnostic retire), un chemin dans un champ (que le diagnostic coupe). Tout ce
   que rend `engine.diagnostic` passe par `logs::scrub`.
+- Proxy (F-07) : toute connexion HTTP du moteur passe par `net::Client` (ou `plugin_http`),
+  qui applique `net::proxy::apply` ; ne jamais construire un client reqwest à côté. Une
+  connexion limitée au réseau public ne suit qu'un SOCKS5 en résolution locale
+  (`proxy::route`), jamais un proxy HTTP. Les torrents ne passent jamais par le proxy.
+  Programmes externes : le proxy par leur environnement, jamais en argument.
 - Licence GPL-3.0 ou ultérieure (N-11). Toute dépendance ajoutée ou mise à jour passe
   `cargo deny check licenses` (et sa variante du bureau) ; une licence nouvelle ne s'ajoute
   à `deny.toml` qu'après vérification de sa compatibilité, notée dans la SPEC 8.3. Les
@@ -617,7 +628,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   le protocole, version 1 figée et corpus des clients ; fait le même jour) ; 2. journaux et
   diagnostic (N-12) (décisions du 2026-11-12 : lignes JSON et rotation, `info` réglable,
   archive nettoyée montrée avant l'enregistrement, jamais d'adresse ; fait le même jour) ; 3. proxy
-  (F-07) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
+  (F-07) (décisions du 2026-11-12 : HTTP, HTTPS et SOCKS5, système par défaut ou
+  manuel, tout le HTTP sauf les torrents, réseau public par SOCKS5 seulement, sinon en
+  direct ; fait le même jour) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
   (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

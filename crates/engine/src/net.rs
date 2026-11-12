@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod filename;
 pub mod headers;
+pub mod proxy;
 pub mod reach;
 pub mod sums;
 
@@ -64,6 +65,10 @@ pub enum NetError {
 
     #[error("fichier d'autorités de certification invalide : {0}")]
     BadRootCertificates(&'static str),
+
+    /// Réglages du proxy refusés (F-07).
+    #[error("proxy : {0}")]
+    Proxy(String),
 
     #[error("le serveur a répondu {status}")]
     Status {
@@ -160,7 +165,7 @@ impl NetError {
             NetError::Timeout(_) | NetError::ReadTimeout(_) => Some("NET_TIMEOUT"),
             NetError::InvalidCertificate(_) => Some("TLS_INVALID_CERT"),
             NetError::TlsUnavailable => Some("TLS_UNAVAILABLE"),
-            NetError::Unreachable(_) => Some("NET_UNREACHABLE"),
+            NetError::Unreachable(_) | NetError::Proxy(_) => Some("NET_UNREACHABLE"),
             NetError::FileChanged => Some("FILE_CHANGED"),
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
             NetError::AuthRequired => Some("AUTH_REQUIRED"),
@@ -355,18 +360,20 @@ impl Observed {
 /// `resolve_to` : noms imposés (tests seulement, serveur local).
 pub(crate) fn plugin_http(
     resolve_to: &[(String, std::net::SocketAddr)],
+    proxy: &proxy::Effective,
 ) -> Result<reqwest::Client, NetError> {
     if !tls_available() {
         return Err(NetError::TlsUnavailable);
     }
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .redirect(redirect::Policy::none())
         .referer(false)
-        .dns_resolver(Arc::new(reach::PublicResolver))
-        .no_proxy();
+        .dns_resolver(Arc::new(reach::PublicResolver));
+    // Réseau public seulement : un SOCKS5 avec l'adresse résolue ici, sinon en direct.
+    let mut builder = proxy::apply(builder, proxy, true).map_err(NetError::Proxy)?;
     for (name, addr) in resolve_to {
         builder = builder.resolve(name, *addr);
     }
@@ -376,7 +383,11 @@ pub(crate) fn plugin_http(
 /// Client HTTP(S) du moteur, partagé par ses tâches pendant toute la session.
 #[derive(Debug, Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    /// Clients reqwest fabriqués (ordinaire, restreint), partagés par les copies et refaits
+    /// quand le proxy change.
+    built: Arc<Mutex<Built>>,
+    /// Proxy (F-07), partagé par les copies.
+    proxy: Arc<proxy::Shared>,
     /// Délai de lecture, appliqué ici et non par reqwest : le sien court aussi entre deux
     /// lectures, pendant l'attente d'un seau de débit.
     read: Duration,
@@ -387,7 +398,14 @@ pub struct Client {
     /// De quoi fabriquer le client restreint au premier besoin, partagé par les copies.
     connect: Duration,
     roots: Arc<Vec<reqwest::Certificate>>,
-    restricted: Arc<Mutex<Option<reqwest::Client>>>,
+}
+
+/// Clients reqwest d'une génération du proxy.
+#[derive(Debug, Default)]
+struct Built {
+    generation: u64,
+    normal: Option<reqwest::Client>,
+    restricted: Option<reqwest::Client>,
 }
 
 impl Client {
@@ -423,42 +441,77 @@ impl Client {
         read: Duration,
         roots: Vec<reqwest::Certificate>,
     ) -> Result<Self, NetError> {
-        let http = Self::build_http(connect, &roots, false)?;
-        Ok(Client {
-            http,
+        let client = Client {
+            built: Arc::default(),
+            proxy: Arc::default(),
             read,
             host_caps: Arc::default(),
             public_only: false,
             connect,
             roots: Arc::new(roots),
-            restricted: Arc::default(),
-        })
+        };
+        // Fabriqué tout de suite : une erreur se voit au démarrage.
+        client.http()?;
+        Ok(client)
+    }
+
+    /// Le client reqwest de ce client (ordinaire ou restreint), refait si le proxy a
+    /// changé depuis sa fabrication.
+    fn http(&self) -> Result<reqwest::Client, NetError> {
+        let generation = self.proxy.generation();
+        let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
+        if built.generation != generation {
+            *built = Built {
+                generation,
+                ..Built::default()
+            };
+        }
+        let slot = match self.public_only {
+            true => &mut built.restricted,
+            false => &mut built.normal,
+        };
+        if let Some(http) = slot {
+            return Ok(http.clone());
+        }
+        let http = Self::build_http(
+            self.connect,
+            &self.roots,
+            self.public_only,
+            &self.proxy.get(),
+        )?;
+        *slot = Some(http.clone());
+        Ok(http)
+    }
+
+    /// Change le proxy (F-07) de ce client et de toutes ses copies : leurs prochaines
+    /// connexions le suivent ; celles en cours finissent par l'ancien chemin.
+    pub fn set_proxy(&self, effective: proxy::Effective) -> Result<(), NetError> {
+        proxy::validate(&effective.settings).map_err(NetError::Proxy)?;
+        // Le nouveau client se fabrique d'abord : un proxy refusé ne change rien.
+        Self::build_http(self.connect, &self.roots, false, &effective)?;
+        self.proxy.set(effective);
+        Ok(())
+    }
+
+    /// Le proxy de ce client.
+    pub fn proxy(&self) -> proxy::Effective {
+        self.proxy.get()
+    }
+
+    /// Les réglages du proxy, partagés (plugins).
+    pub fn proxy_shared(&self) -> Arc<proxy::Shared> {
+        Arc::clone(&self.proxy)
     }
 
     /// Le même client, limité au réseau public (SPEC §7.19) : pour les tâches et les
     /// lectures demandées par une connexion à jeton. Fabriqué une fois, puis partagé.
     pub fn restricted(&self) -> Result<Client, NetError> {
-        if self.public_only {
-            return Ok(self.clone());
-        }
-        let mut slot = self
-            .restricted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let http = match slot.as_ref() {
-            Some(http) => http.clone(),
-            None => {
-                let http = Self::build_http(self.connect, &self.roots, true)?;
-                *slot = Some(http.clone());
-                http
-            }
-        };
-        drop(slot);
-        Ok(Client {
-            http,
+        let restricted = Client {
             public_only: true,
             ..self.clone()
-        })
+        };
+        restricted.http()?;
+        Ok(restricted)
     }
 
     /// Ce client, ou sa version restreinte quand `public_only`.
@@ -479,6 +532,7 @@ impl Client {
         connect: Duration,
         roots: &[reqwest::Certificate],
         public_only: bool,
+        proxy: &proxy::Effective,
     ) -> Result<reqwest::Client, NetError> {
         let policy = redirect::Policy::custom(move |attempt| {
             // `previous()` contient aussi l'adresse de départ.
@@ -509,12 +563,12 @@ impl Client {
             .referer(false)
             .tls_certs_merge(roots.to_vec());
         if public_only {
-            // Résolution filtrée, et sans mandataire, qui résoudrait les noms à sa place
-            // (SPEC §7.19).
-            builder = builder
-                .dns_resolver(Arc::new(reach::PublicResolver))
-                .no_proxy();
+            // Résolution filtrée (SPEC §7.19) ; un proxy HTTP, qui résoudrait les noms à sa
+            // place, n'est pas suivi : seul un SOCKS5 l'est, avec l'adresse résolue ici
+            // (`proxy::route`).
+            builder = builder.dns_resolver(Arc::new(reach::PublicResolver));
         }
+        let builder = proxy::apply(builder, proxy, public_only).map_err(NetError::Proxy)?;
         builder.build().map_err(NetError::from_reqwest)
     }
 
@@ -862,7 +916,7 @@ impl Client {
             return Err(NetError::TlsUnavailable);
         }
         let mut request = self
-            .http
+            .http()?
             .request(method, url.clone())
             .headers(extra.clone());
         // Une compression ferait dériver les décalages d'octets (SPEC §7.1, étape 4).

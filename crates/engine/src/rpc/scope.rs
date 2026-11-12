@@ -104,6 +104,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "token.create" | "token.list" | "token.revoke" | "remote.status" => Scope::Admin,
         // Diagnostic (N-12) : nettoyé, mais tout l'état du moteur.
         "engine.diagnostic" => Scope::Admin,
+        // Proxy (F-07) : réglage du moteur, mot de passe au coffre.
+        "proxy.get" | "proxy.set" => Scope::Admin,
         // Installer, voir les permissions, activer, retirer (SPEC §7.20).
         "plugin.inspect" | "plugin.install" | "plugin.list" | "plugin.remove"
         | "plugin.enable" => Scope::Admin,

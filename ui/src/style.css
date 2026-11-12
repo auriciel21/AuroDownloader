@@ -894,6 +894,10 @@ select.logins { display: block; width: 100%; margin: 0.5em 0; }
    blanc quel que soit le thème : les appareils photo lisent mal l'inverse. */
 input.port { width: 6.5em; }
 .fingerprint { overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+/* Proxy (F-07) : ses champs ne servent qu'en mode manuel. */
+.proxy { border: 1px solid var(--row-line); border-radius: 4px; margin: 8px 0 0; padding: 4px 10px 8px; }
+.proxy legend { padding: 0 4px; }
+.proxy-fields { margin: 2px 0 0 1.6em; }
 /* Diagnostic (N-12) : ce que contiendra l'archive, à lire avant de l'enregistrer. */
 .diagnostic { max-height: 220px; overflow: auto; margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--row-line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.8em; }
 input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }

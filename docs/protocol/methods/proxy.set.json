@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/proxy.set.json",
+  "title": "proxy.set",
+  "description": "Change le proxy (F-07) : system (par défaut), none ou manual (url http, https, socks5 ou socks5h, exceptions, identifiant). password : absent, gardé ; null, retiré ; un texte, le nouveau, rangé au coffre du système. Les torrents ne passent jamais par le proxy ; les connexions limitées au réseau public ne suivent qu'un proxy SOCKS5. Portée admin. Depuis le 2026-11-12.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["system", "none", "manual"]},
+        "url": {"type": "string"},
+        "exceptions": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+        "username": {"type": "string"},
+        "password": {"type": ["string", "null"]}
+      },
+      "required": ["mode"]
+    },
+    "result": {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/proxy"}
+  }
+}

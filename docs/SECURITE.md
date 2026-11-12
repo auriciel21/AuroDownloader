@@ -150,6 +150,28 @@ machine à plusieurs comptes.
 - **Session expirée** : un WebSocket ouvert par cookie dure jusqu'à sa fermeture. Le retrait
   du jeton, ou la fermeture de l'écoute, le ferme aussitôt.
 
+## Complément du 2026-11-12 : proxy (F-07, phase 7)
+
+- **Connexions limitées au réseau public.** Un proxy HTTP ou HTTPS résout lui-même les
+  noms (`CONNECT hôte`). Un proxy d'entreprise à DNS séparé pourrait donc joindre une
+  adresse interne qu'un nom public cache, hors du contrôle du moteur.
+  - Ces connexions (jetons distants, plugins, leurs tâches) ne suivent qu'un proxy SOCKS5,
+    interrogé en `socks5://`. Le moteur y résout le nom par son résolveur filtrant, refuse
+    une adresse interne, puis donne l'adresse IP au proxy.
+  - Avec un proxy HTTP, ou celui du système, elles sortent en direct (décision de
+    l'utilisateur).
+  - Tests : `public_connections_never_go_through_an_http_proxy`, et
+    `socks5_proxies_resolve_where_asked_and_public_connections_stay_checked` (une adresse
+    interne est refusée avant que le proxy soit joint).
+- **Mot de passe du proxy.**
+  - Il est rangé au coffre du système ; la base n'en garde que la référence, comptée dans
+    le ramassage des secrets du démarrage.
+  - Il n'est jamais rendu par le protocole ni écrit dans un journal.
+  - yt-dlp le reçoit par son environnement, jamais en argument : les arguments d'un
+    processus se lisent par les autres comptes de la machine.
+  - Test : `downloads_follow_the_proxy_and_its_password_stays_in_the_vault` (il n'apparaît
+    ni dans la base ni dans son journal WAL).
+
 ## 5. Vérifications
 
 - Campagne de la porte, sous Windows et sous Linux :

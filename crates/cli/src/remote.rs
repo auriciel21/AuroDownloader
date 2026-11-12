@@ -1249,6 +1249,48 @@ pub async fn history(rpc: &mut Rpc, query: Option<&str>, csv: bool) -> Result<()
     Ok(())
 }
 
+/// Réglages du proxy, lisibles ; jamais le mot de passe.
+fn print_proxy(view: &Value) {
+    let mode = view["mode"].as_str().unwrap_or_default();
+    match mode {
+        "system" => println!("Proxy : celui du système."),
+        "none" => println!("Proxy : aucun (toujours en direct)."),
+        _ => {
+            println!("Proxy : {}", view["url"].as_str().unwrap_or("?"));
+            let exceptions: Vec<&str> = view["exceptions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if !exceptions.is_empty() {
+                println!("En direct : {}", exceptions.join(", "));
+            }
+            if let Some(user) = view["username"].as_str() {
+                let password = if view["hasPassword"] == true {
+                    "mot de passe au coffre du système"
+                } else {
+                    "sans mot de passe"
+                };
+                println!("Identifiant : {user} ({password})");
+            }
+        }
+    }
+    println!("Les torrents ne passent jamais par le proxy.");
+}
+
+/// `auro proxy` : les réglages du proxy.
+pub async fn proxy_show(rpc: &mut Rpc) -> Result<()> {
+    print_proxy(&rpc.call("proxy.get", json!({})).await?);
+    Ok(())
+}
+
+/// `auro proxy system|none|manual` : change le proxy, puis l'affiche.
+pub async fn proxy_set(rpc: &mut Rpc, params: Value) -> Result<()> {
+    print_proxy(&rpc.call("proxy.set", params).await?);
+    Ok(())
+}
+
 /// Lignes de journal montrées avant l'enregistrement (les dernières).
 const DIAGNOSTIC_SHOWN: usize = 20;
 

@@ -688,6 +688,30 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .await?;
             Ok(json!({}))
         }
+        // Proxy (F-07, phase 7) : jamais le mot de passe en sortie.
+        "proxy.get" => Ok(proxy_json(&ctx.engine.proxy().await?)),
+        "proxy.set" => {
+            use crate::net::proxy::{Mode, Settings};
+            let mode = p.required_str("mode")?;
+            let mode = Mode::parse(&mode)
+                .ok_or_else(|| Params::wrong("mode", "system, none ou manual"))?;
+            let password = match p.0.get("password") {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(Value::String(s)) => Some(Some(s.clone())),
+                Some(_) => return Err(Params::wrong("password", "texte ou null")),
+            };
+            let change = crate::scheduler::ProxyChange {
+                settings: Settings {
+                    mode,
+                    url: p.str("url")?,
+                    exceptions: p.strings("exceptions")?.unwrap_or_default(),
+                    username: p.str("username")?,
+                },
+                password,
+            };
+            Ok(proxy_json(&ctx.engine.set_proxy(change).await?))
+        }
         // Diagnostic (N-12, phase 7) : état sans adresses ni identifiants, journaux nettoyés.
         "engine.diagnostic" => diagnostic(ctx, &p).await,
         "engine.cancelEndAction" => {
@@ -707,6 +731,17 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         _ => Err(RpcError::method_not_found(method)),
     }
+}
+
+/// Le proxy tel que le protocole le montre : jamais le mot de passe.
+fn proxy_json(view: &crate::scheduler::ProxyView) -> Value {
+    json!({
+        "mode": view.settings.mode.as_str(),
+        "url": view.settings.url,
+        "exceptions": view.settings.exceptions,
+        "username": view.settings.username,
+        "hasPassword": view.has_password,
+    })
 }
 
 /// Journaux d'un diagnostic, au plus (les plus récents).

@@ -68,8 +68,25 @@ pub enum ExtractError {
 }
 
 /// Commande yt-dlp avec les options communes à tous ses usages.
-pub(crate) fn ytdlp_command(ytdlp: &Path) -> tokio::process::Command {
+pub(crate) fn ytdlp_command(ytdlp: &Path, client: &crate::net::Client) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(ytdlp);
+    // Proxy du moteur (F-07) : celui du système, rien à dire ; en direct, `--proxy ""`
+    // (sans quoi yt-dlp prendrait celui du système) ; manuel, par l'environnement, où
+    // l'identifiant ne se lit pas par les autres utilisateurs.
+    let proxy = client.proxy();
+    match crate::net::proxy::route(&proxy, client.is_public_only()) {
+        crate::net::proxy::Route::System => {}
+        crate::net::proxy::Route::Direct => {
+            command.args(["--proxy", ""]);
+        }
+        crate::net::proxy::Route::Manual => {
+            for (key, value) in
+                crate::net::proxy::environment(&proxy, client.is_public_only()).unwrap_or_default()
+            {
+                command.env(key, value);
+            }
+        }
+    }
     command
         .args(["--ignore-config", "--no-cache-dir", "--no-color"])
         .stdin(Stdio::null())
@@ -91,8 +108,13 @@ pub(crate) fn ytdlp_command(ytdlp: &Path) -> tokio::process::Command {
 const READ_PAGE: [&str; 4] = ["-J", "--no-playlist", "--no-warnings", "--write-subs"];
 
 /// Décrit la vidéo de `page_url` (`yt-dlp -J --no-playlist`).
-pub async fn probe(ytdlp: &Path, page_url: &str, timeout: Duration) -> Result<Probe, ExtractError> {
-    let mut command = ytdlp_command(ytdlp);
+pub async fn probe(
+    ytdlp: &Path,
+    client: &crate::net::Client,
+    page_url: &str,
+    timeout: Duration,
+) -> Result<Probe, ExtractError> {
+    let mut command = ytdlp_command(ytdlp, client);
     command.args(READ_PAGE).args(["--", page_url]);
     let output = run(command, timeout).await?;
     let json: Value = serde_json::from_slice(&output)
@@ -361,11 +383,12 @@ pub struct Resolved {
 /// Résout `format` pour `page_url`.
 pub async fn resolve(
     ytdlp: &Path,
+    client: &crate::net::Client,
     page_url: &str,
     format: &str,
     timeout: Duration,
 ) -> Result<Resolution, ExtractError> {
-    let mut command = ytdlp_command(ytdlp);
+    let mut command = ytdlp_command(ytdlp, client);
     command.args(READ_PAGE).args(["-f", format, "--", page_url]);
     let output = run(command, timeout).await?;
     let json: Value = serde_json::from_slice(&output)

@@ -279,6 +279,16 @@ export const EN = {
   "Utiliser mon certificat…": "Use my certificate…",
   "Revenir au certificat d'AuroDownloader": "Go back to AuroDownloader's certificate",
   "Certificat d'AuroDownloader rétabli": "AuroDownloader's certificate restored",
+  // Proxy (F-07, phase 7)
+  "Proxy": "Proxy",
+  "Celui du système": "The system's",
+  "Aucun (toujours en direct)": "None (always direct)",
+  "Celui-ci :": "This one:",
+  "En direct pour (séparés par des virgules)": "Direct for (comma-separated)",
+  "Identifiant (facultatif)": "User name (optional)",
+  "Adresses http://, https://, socks5:// ou socks5h:// (le proxy résout alors les noms). Les torrents n'y passent jamais ; les connexions des appareils distants et des plugins ne suivent qu'un proxy SOCKS5. Le mot de passe est rangé dans le coffre du système.":
+    "http://, https://, socks5:// or socks5h:// addresses (the proxy then resolves names). Torrents never go through it; connections of remote devices and plugins only follow a SOCKS5 proxy. The password is kept in the system vault.",
+  "Proxy appliqué": "Proxy applied",
   // Journaux et diagnostic (N-12, phase 7)
   "Détail des journaux": "Log detail",
   "Erreurs seulement": "Errors only",

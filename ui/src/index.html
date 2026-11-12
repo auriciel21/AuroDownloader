@@ -755,6 +755,29 @@
           <select id="pref-limit"></select>
         </label>
         <p class="note flush" data-i18n="Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.">Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.</p>
+        <fieldset id="proxy-box" class="proxy" data-needs="admin" aria-describedby="proxy-note">
+          <legend data-i18n="Proxy">Proxy</legend>
+          <label class="check"><input type="radio" name="proxy-mode" value="system" id="proxy-system">
+            <span data-i18n="Celui du système">Celui du système</span></label>
+          <label class="check"><input type="radio" name="proxy-mode" value="none" id="proxy-none">
+            <span data-i18n="Aucun (toujours en direct)">Aucun (toujours en direct)</span></label>
+          <label class="check"><input type="radio" name="proxy-mode" value="manual" id="proxy-manual">
+            <span data-i18n="Celui-ci :">Celui-ci :</span></label>
+          <div id="proxy-fields" class="proxy-fields">
+            <label class="field"><span data-i18n="Adresse">Adresse</span>
+              <input id="proxy-url" type="text" spellcheck="false" autocomplete="off" placeholder="socks5://127.0.0.1:1080"></label>
+            <label class="field"><span data-i18n="En direct pour (séparés par des virgules)">En direct pour (séparés par des virgules)</span>
+              <input id="proxy-except" type="text" spellcheck="false" autocomplete="off" placeholder="localhost, .lan, 192.168.0.0/16"></label>
+            <label class="field"><span data-i18n="Identifiant (facultatif)">Identifiant (facultatif)</span>
+              <input id="proxy-user" type="text" spellcheck="false" autocomplete="off"></label>
+            <label class="field"><span data-i18n="Mot de passe">Mot de passe</span>
+              <input id="proxy-password" type="password" autocomplete="new-password" aria-describedby="proxy-password-note"></label>
+            <p class="note flush" id="proxy-password-note" hidden data-i18n="Laisser vide pour garder le mot de passe enregistré.">Laisser vide pour garder le mot de passe enregistré.</p>
+          </div>
+          <p class="note" id="proxy-note" data-i18n="Adresses http://, https://, socks5:// ou socks5h:// (le proxy résout alors les noms). Les torrents n'y passent jamais ; les connexions des appareils distants et des plugins ne suivent qu'un proxy SOCKS5. Le mot de passe est rangé dans le coffre du système.">Adresses http://, https://, socks5:// ou socks5h:// (le proxy résout alors les noms). Les torrents n'y passent jamais ; les connexions des appareils distants et des plugins ne suivent qu'un proxy SOCKS5. Le mot de passe est rangé dans le coffre du système.</p>
+          <span class="row"><button type="button" id="proxy-apply" data-i18n="Appliquer">Appliquer</button></span>
+          <p id="proxy-error" class="form-error" role="alert" hidden></p>
+        </fieldset>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-torrent" aria-labelledby="tab-torrent" hidden>
         <label class="field">

@@ -41,7 +41,7 @@ quick-xml = "0.41.0"
 # Certificat auto-signé de l'interface distante (SPEC §7.19, étape 3b), et autorité de
 # certification du serveur HTTPS de test (fonctionnalité `testing`).
 rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "socks", "system-proxy"] }
 # Certificat refusé dans la chaîne d'erreurs de reqwest ; serveur TLS de l'interface
 # distante (aws-lc, comme le reste du moteur).
 rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }

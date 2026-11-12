@@ -300,6 +300,12 @@ enum Command {
         #[arg(long, conflicts_with = "query")]
         clear: bool,
     },
+    /// Proxy des connexions HTTP(S) : celui du système (par défaut), aucun, ou un proxy
+    /// choisi ; sans argument, l'affiche
+    Proxy {
+        #[command(subcommand)]
+        action: Option<ProxyAction>,
+    },
     /// Diagnostic du moteur, sans adresses ni identifiants : état résumé et journaux
     /// nettoyés, montrés ; avec --save, enregistrés dans une archive .zip à joindre à un
     /// signalement
@@ -534,6 +540,34 @@ enum LoginAction {
     },
     /// Retire les identifiants d'un site
     Remove { site: String },
+}
+
+#[derive(Subcommand)]
+enum ProxyAction {
+    /// Réglages du proxy (par défaut) ; jamais le mot de passe
+    Show,
+    /// Le proxy du système (par défaut) : réglages Internet sous Windows, variables
+    /// d'environnement ailleurs
+    System,
+    /// Aucun proxy : toujours en direct
+    None,
+    /// Un proxy choisi : http://hôte:port, https://…, socks5://… ou socks5h://… (le proxy
+    /// résout alors les noms). Les torrents n'y passent jamais. Avec --user, le mot de passe
+    /// est demandé sans écho et rangé au coffre du système
+    Manual {
+        url: String,
+        /// Hôtes joints en direct, séparés par des virgules (localhost,.lan,192.168.0.0/16)
+        #[arg(long, value_delimiter = ',', value_name = "HÔTES")]
+        except: Vec<String>,
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        /// Lire le mot de passe sur l'entrée standard (une ligne), pour un script
+        #[arg(long, requires = "user", conflicts_with = "keep_password")]
+        password_stdin: bool,
+        /// Garder le mot de passe déjà enregistré
+        #[arg(long, requires = "user")]
+        keep_password: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -965,6 +999,34 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     false => remote::history(&mut rpc, query.as_deref(), csv).await,
                 },
                 Command::Diagnostic { save } => remote::diagnostic(&mut rpc, save.as_deref()).await,
+                Command::Proxy { action } => match action.unwrap_or(ProxyAction::Show) {
+                    ProxyAction::Show => remote::proxy_show(&mut rpc).await,
+                    ProxyAction::System => {
+                        remote::proxy_set(&mut rpc, json!({"mode": "system"})).await
+                    }
+                    ProxyAction::None => remote::proxy_set(&mut rpc, json!({"mode": "none"})).await,
+                    ProxyAction::Manual {
+                        url,
+                        except,
+                        user,
+                        password_stdin,
+                        keep_password,
+                    } => {
+                        let mut params =
+                            json!({"mode": "manual", "url": url, "exceptions": except});
+                        if let Some(user) = user {
+                            params["username"] = json!(user);
+                            if !keep_password {
+                                params["password"] = json!(match password_stdin {
+                                    true => display::read_line_stdin()?,
+                                    false => rpassword::prompt_password("Mot de passe du proxy : ")
+                                        .context("lecture du mot de passe")?,
+                                });
+                            }
+                        }
+                        remote::proxy_set(&mut rpc, params).await
+                    }
+                },
                 Command::Dir { path, reset } => {
                     remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }

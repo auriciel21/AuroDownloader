@@ -185,9 +185,14 @@ fn error_messages_never_cite_an_address() {
 async fn ytdlp_is_run_with_the_address_after_the_options() {
     let dir = tempfile::tempdir().unwrap();
     let ytdlp = fake_ytdlp(dir.path(), &sample().to_string(), "", 0, 0);
-    let probe = probe(&ytdlp, "https://exemple.org/video/1", PROBE_TIMEOUT)
-        .await
-        .unwrap();
+    let probe = probe(
+        &ytdlp,
+        &crate::net::Client::new().unwrap(),
+        "https://exemple.org/video/1",
+        PROBE_TIMEOUT,
+    )
+    .await
+    .unwrap();
     assert_eq!(probe.title, "Un film libre");
     let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
     for wanted in [
@@ -217,9 +222,14 @@ async fn a_failing_ytdlp_gives_its_message_without_the_address() {
         1,
         0,
     );
-    let err = probe(&ytdlp, "https://exemple.org/rien", PROBE_TIMEOUT)
-        .await
-        .unwrap_err();
+    let err = probe(
+        &ytdlp,
+        &crate::net::Client::new().unwrap(),
+        "https://exemple.org/rien",
+        PROBE_TIMEOUT,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         err,
         ExtractError::Failed("[generic] Unsupported URL: <adresse>".into())
@@ -233,6 +243,7 @@ async fn a_slow_ytdlp_is_stopped_at_its_deadline() {
     let started = std::time::Instant::now();
     let err = probe(
         &ytdlp,
+        &crate::net::Client::new().unwrap(),
         "https://exemple.org/lent",
         Duration::from_millis(500),
     )
@@ -247,12 +258,19 @@ async fn garbage_output_and_a_missing_program_are_errors() {
     let dir = tempfile::tempdir().unwrap();
     let ytdlp = fake_ytdlp(dir.path(), "pas du JSON", "", 0, 0);
     assert!(matches!(
-        probe(&ytdlp, "https://exemple.org/x", PROBE_TIMEOUT).await,
+        probe(
+            &ytdlp,
+            &crate::net::Client::new().unwrap(),
+            "https://exemple.org/x",
+            PROBE_TIMEOUT
+        )
+        .await,
         Err(ExtractError::Failed(_))
     ));
     assert!(matches!(
         probe(
             &dir.path().join("absent"),
+            &crate::net::Client::new().unwrap(),
             "https://exemple.org/x",
             PROBE_TIMEOUT
         )
@@ -298,9 +316,14 @@ async fn real_probe_of_free_videos() {
     let (ytdlp, _running) = tools.ytdlp().await.unwrap();
     for page in FREE_PAGES {
         let started = std::time::Instant::now();
-        let probe = probe(&ytdlp, page, PROBE_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| panic!("{page} : {e}"));
+        let probe = probe(
+            &ytdlp,
+            &crate::net::Client::new().unwrap(),
+            page,
+            PROBE_TIMEOUT,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{page} : {e}"));
         let mut protocols: Vec<&str> = probe.formats.iter().map(|f| f.protocol.as_str()).collect();
         protocols.sort();
         protocols.dedup();
