@@ -451,6 +451,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 *k != DOWNLOAD_DIR
                     && *k != TORRENT_RATIO
                     && *k != TORRENT_INTERFACE
+                    && *k != settings::LOGS_LEVEL
                     && *k != REMOTE_LISTEN
                     && *k != REMOTE_HOSTS
                     && *k != REMOTE_TLS_CERT
@@ -460,8 +461,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 let known: Vec<_> = Flag::ALL.iter().map(|f| f.key()).collect();
                 return Err(RpcError::invalid_params(format!(
                     "réglage inconnu : {key} (pris en charge : {DOWNLOAD_DIR}, \
-                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {REMOTE_LISTEN}, {REMOTE_HOSTS}, \
+                     {TORRENT_RATIO}, {TORRENT_INTERFACE}, {}, {REMOTE_LISTEN}, {REMOTE_HOSTS}, \
                      {REMOTE_TLS_CERT}, {REMOTE_TLS_KEY}, {})",
+                    settings::LOGS_LEVEL,
                     known.join(", ")
                 )));
             }
@@ -540,6 +542,25 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     ));
                 }
             };
+            // Niveau des journaux (N-12) : error, warn, info ou debug.
+            let logs_level = match values.get(settings::LOGS_LEVEL) {
+                None => None,
+                Some(Value::String(text)) => match crate::logs::Level::parse(text) {
+                    Some(level) => Some(level),
+                    None => {
+                        return Err(Params::wrong(
+                            settings::LOGS_LEVEL,
+                            "error, warn, info ou debug",
+                        ));
+                    }
+                },
+                Some(_) => {
+                    return Err(Params::wrong(
+                        settings::LOGS_LEVEL,
+                        "error, warn, info ou debug",
+                    ));
+                }
+            };
             // Écoute de l'interface distante (SPEC §7.19) : adresse:port, ou null pour celle par
             // défaut.
             let listen = match values.get(REMOTE_LISTEN) {
@@ -578,6 +599,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             }
             if let Some(interface) = interface {
                 ctx.engine.set_torrent_interface(interface).await?;
+            }
+            if let Some(level) = logs_level {
+                ctx.engine.set_logs_level(level).await?;
             }
             if let Some(listen) = listen {
                 ctx.engine.set_remote_listen(listen).await?;
@@ -629,6 +653,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     &s.flags,
                     s.torrent_ratio,
                     s.torrent_interface,
+                    s.logs_level,
                 ),
                 "networkUsable": s.network_usable,
                 "networkMetered": s.network_metered,
@@ -663,6 +688,8 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 .await?;
             Ok(json!({}))
         }
+        // Diagnostic (N-12, phase 7) : état sans adresses ni identifiants, journaux nettoyés.
+        "engine.diagnostic" => diagnostic(ctx, &p).await,
         "engine.cancelEndAction" => {
             let cancelled = ctx.engine.cancel_end_action().await?;
             Ok(json!({"cancelled": cancelled}))
@@ -680,6 +707,95 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         _ => Err(RpcError::method_not_found(method)),
     }
+}
+
+/// Journaux d'un diagnostic, au plus (les plus récents).
+const DIAGNOSTIC_LOGS: usize = 2 << 20;
+
+/// `engine.diagnostic` (N-12) : de quoi comprendre un problème sans rien révéler de
+/// l'utilisateur. Ni adresse, ni nom de fichier, ni chemin, ni identifiant : des comptes,
+/// des états, des codes ; les journaux nettoyés (`logs::scrub`). Le client le montre avant
+/// de l'enregistrer.
+async fn diagnostic(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    use std::collections::BTreeMap;
+    let max_bytes = p
+        .u32("maxLogBytes")?
+        .map_or(DIAGNOSTIC_LOGS, |n| (n as usize).min(DIAGNOSTIC_LOGS));
+    let engine = &ctx.engine;
+    let snapshot = engine.snapshot().await?;
+    let count = |items: Vec<&str>| {
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        for item in items {
+            *counts.entry(item.to_owned()).or_default() += 1;
+        }
+        json!(counts)
+    };
+    let tasks = &snapshot.tasks;
+    let defined = |set: bool| if set { json!("<défini>") } else { Value::Null };
+    let mut flags = Map::new();
+    for (flag, on) in &snapshot.flags {
+        flags.insert(flag.key().to_owned(), json!(on));
+    }
+    let remote = engine.remote_state();
+    let tools = engine.media_tools().ok();
+    let plugins = engine.plugins().await?;
+    let report = json!({
+        "generatedAt": crate::store::now_ms(),
+        "engine": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "protocol": PROTOCOL_VERSIONS.iter().map(|(a, b)| format!("{a}.{b}")).collect::<Vec<_>>(),
+        },
+        "settings": {
+            "downloads.dir": defined(snapshot.download_dir.is_some()),
+            "torrent.ratioLimit": snapshot.torrent_ratio,
+            "torrent.interface": defined(snapshot.torrent_interface.is_some()),
+            "logs.level": snapshot.logs_level.as_str(),
+            "flags": flags,
+        },
+        "limits": {
+            "downloadBps": snapshot.download_limit.is_some(),
+            "uploadBps": snapshot.upload_limit.is_some(),
+        },
+        "network": {
+            "usable": snapshot.network_usable,
+            "metered": snapshot.network_metered,
+            "torrentInterfaceUp": snapshot.torrent_interface_up,
+        },
+        "tasks": {
+            "count": tasks.len(),
+            "byState": count(tasks.iter().map(|t| t.state.as_sql()).collect()),
+            "byKind": count(tasks.iter().map(|t| t.kind.as_sql()).collect()),
+            "errorCodes": count(tasks.iter().filter_map(|t| t.error_code.as_deref()).collect()),
+            "pauseReasons": count(tasks.iter().filter_map(|t| t.pause_reason.as_deref()).collect()),
+            "publicOnly": tasks.iter().filter(|t| t.public_only).count(),
+            "moving": tasks.iter().filter(|t| t.moving).count(),
+        },
+        "queues": snapshot.queues.len(),
+        "schedules": snapshot.schedules.len(),
+        "endActionPending": snapshot.end_action.is_some(),
+        "plugins": {
+            "installed": plugins.len(),
+            "enabled": plugins.iter().filter(|p| p.enabled).count(),
+        },
+        "remote": {
+            "enabled": remote.enabled,
+            "listening": remote.listening,
+            "tls": remote.tls,
+            "error": remote.error.is_some(),
+            "generatedCertificate": remote.certificate.as_ref().map(|c| c.generated),
+            "hosts": remote.hosts.len(),
+        },
+        "media": tools.as_ref().map(tools_json),
+    });
+    let download_dir = engine.download_dir().await?;
+    let masks = crate::logs::Masks::of_machine(Some(engine.data_dir()), download_dir.as_deref());
+    let dir = crate::logs::installed_dir()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| engine.data_dir().join(crate::logs::DIR));
+    let logs = crate::logs::collect(&dir, &masks, max_bytes);
+    Ok(json!({"report": report, "logs": logs}))
 }
 
 fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
@@ -750,7 +866,8 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let ratio = ctx.engine.torrent_ratio().await?;
     let ratio = ratio.map_or(Value::Null, Value::from);
     let interface = ctx.engine.torrent_interface().await?;
-    let mut values = settings_json(dir, &flags, ratio, interface);
+    let level = ctx.engine.logs_level().await?;
+    let mut values = settings_json(dir, &flags, ratio, interface, level);
     // Les réglages de l'écoute (chemins du certificat et de sa clé, noms) ne regardent que
     // le canal local (SPEC §7.19) : une connexion à jeton ne les voit pas.
     if ctx.engine.is_restricted() {
@@ -776,11 +893,13 @@ fn settings_json(
     flags: &[(Flag, bool)],
     ratio: Value,
     interface: Option<String>,
+    logs_level: crate::logs::Level,
 ) -> Value {
     let mut values = json!({
         DOWNLOAD_DIR: download_dir,
         TORRENT_RATIO: ratio,
         TORRENT_INTERFACE: interface,
+        settings::LOGS_LEVEL: logs_level.as_str(),
     });
     for (flag, on) in flags {
         values[flag.key()] = json!(on);

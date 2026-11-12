@@ -56,6 +56,12 @@ thiserror = "2.0.21"
 # Dates du certificat fabriqué (type de rcgen) ; déjà tirée par rcgen.
 time = { version = "0.3.45", default-features = false }
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+# Archive de ffmpeg sous Windows (builds BtbN, SPEC §7.17, `media::tools`) ; archive du
+# diagnostic (N-12, `logs::write_archive`).
+zip = { version = "7.3.0", default-features = false, features = ["deflate-flate2"] }
+# Journaux (N-12, phase 7) : événements en lignes JSON, fichiers tournants (`logs`).
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std", "registry"] }
 # TLS de l'interface distante sur une connexion tokio ; déjà tirée par reqwest.
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["tls12"] }
 # Fin de validité et noms d'un certificat (interface distante, SPEC §7.19).
@@ -103,8 +109,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
-# Archive de ffmpeg sous Windows (builds BtbN, SPEC §7.17, `media::tools`).
-zip ={ version = "7.3.0", default-features = false, features = ["deflate-flate2"] }
 
 # Coffre du système sous Linux : Secret Service par D-Bus (`secrets`).
 [target.'cfg(target_os = "linux")'.dependencies]

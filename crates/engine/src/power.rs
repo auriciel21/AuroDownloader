@@ -22,7 +22,7 @@ pub fn unplugged(action: EndAction) -> io::Result<()> {
 
 /// Écrit l'action dans le journal au lieu de l'exécuter (essais manuels).
 pub fn simulate(action: EndAction) -> io::Result<()> {
-    eprintln!("aurod : action de fin simulée : {}", action.as_str());
+    tracing::info!(action = action.as_str(), "action de fin simulée");
     Ok(())
 }
 

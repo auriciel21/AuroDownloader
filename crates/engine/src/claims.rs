@@ -126,16 +126,14 @@ pub fn recover(conn: &Connection) -> Result<usize, StoreError> {
         match removed {
             Ok(()) => {
                 let _ = sync_parent_dir(&path);
-                eprintln!(
-                    "aurod : tâche {} : nom réservé avant un arrêt, effacé ({})",
-                    claim.task_id, claim.name
-                );
+                tracing::info!(tache = %claim.task_id, "nom réservé avant un arrêt, effacé");
             }
             // Gardé tel quel : la réservation part quand même, le fichier n'est plus
             // jamais touché par le moteur.
-            Err(e) => eprintln!(
-                "aurod : tâche {} : nom réservé avant un arrêt, laissé ({}) : {e}",
-                claim.task_id, claim.name
+            Err(e) => tracing::warn!(
+                tache = %claim.task_id,
+                erreur = %e,
+                "nom réservé avant un arrêt, laissé"
             ),
         }
         claims::delete(conn, &claim.dir, &claim.name)?;

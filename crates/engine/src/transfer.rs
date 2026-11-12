@@ -496,7 +496,7 @@ async fn request_headers(
         match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
             Ok(Some(secret)) => list.push((name, secret)),
             Ok(None) => {
-                eprintln!("aurod : tâche {task_id} : en-tête {name} absent du coffre, non envoyé")
+                tracing::warn!(tache = %task_id, entete = %name, "en-tête absent du coffre, non envoyé")
             }
             Err(e) => return fail(Failure::Vault(e)),
         }
@@ -538,10 +538,7 @@ async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Aut
             password,
         })))),
         Ok(None) => {
-            eprintln!(
-                "aurod : identifiants de {} : mot de passe absent du coffre, non envoyé",
-                login.site
-            );
+            tracing::warn!(host = %login.site, "mot de passe absent du coffre, non envoyé");
             Ok(Ok(None))
         }
         Err(e) => fail(Failure::Vault(e)),

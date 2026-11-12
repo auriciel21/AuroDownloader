@@ -45,6 +45,8 @@ impl Host {
             .enable_all()
             .build()
             .map_err(|e| format!("moteur : {e}"))?;
+        // Journaux (N-12) : dans logs/ à côté de la base, dans le dossier de l'application.
+        let _ = auro_engine::logs::init(&auro_engine::logs::dir_for(db));
         let client = Client::new().map_err(|e| e.to_string())?;
         let config = Config {
             db_path: db.to_owned(),
@@ -67,6 +69,7 @@ impl Host {
         let engine = runtime
             .block_on(async { Engine::start(config) })
             .map_err(|e| e.to_string())?;
+        runtime.spawn(auro_engine::logs::follow(engine.clone()));
 
         let (ours, theirs) = tokio::io::duplex(PIPE);
         let (read, write) = tokio::io::split(theirs);

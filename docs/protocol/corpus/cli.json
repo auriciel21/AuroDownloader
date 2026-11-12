@@ -32,6 +32,8 @@
     {"method": "engine.cancelEndAction", "params": {}},
     {"method": "sync.snapshot", "params": {}},
     {"method": "settings.get", "params": {}},
+    {"method": "settings.set", "params": {"values": {"logs.level": "warn"}}},
+    {"method": "engine.diagnostic", "params": {}},
     {"method": "settings.set", "params": {"values": {"torrent.ratioLimit": 2, "media.autoUpdate": false}}},
     {"method": "settings.set", "params": {"values": {"remote.enabled": false, "remote.listen": "127.0.0.1:7380"}}},
     {"method": "settings.set", "params": {"values": {"remote.hosts": null}}},

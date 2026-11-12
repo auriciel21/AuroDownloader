@@ -394,6 +394,14 @@
       "description": "Réglages du moteur ; une connexion à jeton ne voit pas ceux de remote.*.",
       "type": "object",
       "properties": {
+        "logs.level": {
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ]
+        },
         "downloads.dir": {
           "type": [
             "string",
@@ -457,6 +465,14 @@
       "description": "Réglages à changer (settings.set) : ceux de settingsValues ; remote.hosts et remote.listen à null reviennent à leur valeur par défaut ; remote.tlsCert et remote.tlsKey se donnent ensemble.",
       "type": "object",
       "properties": {
+        "logs.level": {
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ]
+        },
         "downloads.dir": {
           "type": [
             "string",

@@ -163,7 +163,7 @@ impl Vault {
         tokio::task::spawn_blocking(move || {
             for id in ids {
                 if let Err(e) = vault.delete(&id) {
-                    eprintln!("aurod : secret {id} non effacé : {e}");
+                    tracing::warn!(secret = %id, erreur = %e, "secret non effacé");
                 }
             }
         });

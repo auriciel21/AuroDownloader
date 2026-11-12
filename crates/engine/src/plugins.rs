@@ -373,7 +373,7 @@ pub(crate) async fn watch(
         refreshed.insert(task_id.clone(), Instant::now());
         tokio::spawn(async move {
             if let Err(e) = handle.refresh_plugin_link(&task_id).await {
-                eprintln!("aurod : lien du plugin non renouvelé pour la tâche {task_id} : {e}");
+                tracing::warn!(tache = %task_id, erreur = %e, "lien du plugin non renouvelé");
             }
         });
     }

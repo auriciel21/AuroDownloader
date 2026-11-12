@@ -194,7 +194,9 @@ pub fn generated(dir: &Path, names: &Names, now_ms: i64) -> Result<Tls, String> 
                 return Ok(tls);
             }
             Ok(_) => {}
-            Err(e) => eprintln!("aurod : interface distante : certificat fabriqué refait ({e})"),
+            Err(e) => {
+                tracing::warn!(raison = %e, "interface distante : certificat fabriqué refait")
+            }
         }
     }
     let (cert_pem, key_pem) = generate(names, now_ms)?;

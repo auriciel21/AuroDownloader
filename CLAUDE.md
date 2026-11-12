@@ -129,6 +129,11 @@ téléchargement.
   `store::plugins` (table `plugins`, migration 10 ; `tasks.plugin_page`, `plugin_id`),
   `store::headers::replace` ; méthodes `plugin.*`, `plugin` de `task.add` ; plugins
   d'essai en texte WebAssembly : `testing::plugin_files`.
+  Journaux (N-12, phase 7) : `logs` (événements `tracing` en lignes JSON dans `logs/` à côté
+  de la base, fichiers tournants `Rotating`, niveau `logs.level` suivi par `logs::follow`,
+  `AURO_LOG` qui l'impose ; seuls nos modules y écrivent ; `scrub`, `collect` et
+  `write_archive` pour le diagnostic) ; méthode `engine.diagnostic` ; installés par `aurod`
+  et par l'hôte Android (`logs::init`).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -319,6 +324,7 @@ cargo run -p auro-cli -- dir <dossier> ; dir --reset   # dossier des ajouts sans
 cargo run -p auro-cli -- add <url> -H "Referer: …" -H "Cookie: …"   # Cookie : coffre du système
 cargo run -p auro-cli -- add fichier.torrent ; files <id> --select 0,2-4 ; limit --upload 500K
 cargo run -p auro-cli -- config ; config torrent.ratioLimit 1.5 ; config media.autoUpdate false
+cargo run -p auro-cli -- config logs.level debug ; diagnostic ; diagnostic --save diag.zip
 cargo run -p auro-cli -- video tools --install ; video info <page> ; video get <page> --subs fr,en
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
@@ -385,6 +391,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
+- Journaux (N-12) : par `tracing` seulement (jamais `eprintln!` dans le moteur, hors
+  erreurs de démarrage d'`aurod`). Jamais une adresse complète, un en-tête ni un nom de
+  fichier dans un événement : l'identifiant de la tâche, un hôte au plus (champ `host`,
+  que le diagnostic retire), un chemin dans un champ (que le diagnostic coupe). Tout ce
+  que rend `engine.diagnostic` passe par `logs::scrub`.
 - Licence GPL-3.0 ou ultérieure (N-11). Toute dépendance ajoutée ou mise à jour passe
   `cargo deny check licenses` (et sa variante du bureau) ; une licence nouvelle ne s'ajoute
   à `deny.toml` qu'après vérification de sa compatibilité, notée dans la SPEC 8.3. Les
@@ -604,7 +615,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   bloquants de la SPEC 9.1) : 1. contrat du protocole (schémas JSON des échanges de
   référence, client de la version précédente ; décisions du 2026-11-12 : JSON Schema, tout
   le protocole, version 1 figée et corpus des clients ; fait le même jour) ; 2. journaux et
-  diagnostic (N-12) ; 3. proxy
+  diagnostic (N-12) (décisions du 2026-11-12 : lignes JSON et rotation, `info` réglable,
+  archive nettoyée montrée avant l'enregistrement, jamais d'adresse ; fait le même jour) ; 3. proxy
   (F-07) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
   (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt

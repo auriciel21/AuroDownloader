@@ -82,9 +82,11 @@ pub fn remove_quietly(path: &Path, why: &str) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!(
-            "aurod : {why} : impossible d'effacer {} : {e}",
-            path.display()
+        Err(e) => tracing::warn!(
+            pourquoi = why,
+            chemin = %path.display(),
+            erreur = %e,
+            "fichier impossible à effacer"
         ),
     }
 }
@@ -117,13 +119,13 @@ pub fn recover(conn: &mut Connection) -> Result<Vec<(String, Recovered)>, StoreE
     let mut done = Vec::new();
     for m in moves::all(conn)? {
         let outcome = recover_one(conn, &m)?;
-        eprintln!(
-            "aurod : tâche {} : déplacement interrompu {}",
-            m.task_id,
-            match outcome {
+        tracing::info!(
+            tache = %m.task_id,
+            issue = match outcome {
                 Recovered::Finished => "terminé",
                 Recovered::Abandoned => "annulé, la tâche garde son emplacement",
-            }
+            },
+            "déplacement interrompu"
         );
         done.push((m.task_id, outcome));
     }

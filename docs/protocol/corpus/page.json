@@ -8,6 +8,8 @@
     {"method": "settings.set", "params": {"values": {"downloads.dir": "${dir}"}}},
     {"method": "settings.set", "params": {"values": {"downloads.preallocate": true}}},
     {"method": "settings.set", "params": {"values": {"downloads.neighborChecksum": false}}},
+    {"method": "settings.set", "params": {"values": {"logs.level": "debug"}}},
+    {"method": "engine.diagnostic", "params": {}},
     {"method": "task.add", "params": {"sources": [{"url": "${url:/a.bin}"}], "startPaused": true}, "save": {"task": "/taskId"}},
     {"method": "task.add", "params": {"sources": [{"url": "${url:/b.bin}"}, {"url": "${url:/b-miroir.bin}"}], "startPaused": true, "checksum": {"algo": "sha256", "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}},
     {"method": "task.add", "params": {"sources": [{"url": "${url:/c.bin}"}], "startPaused": true, "subDir": "ISO/Debian", "plugin": false}},

@@ -367,6 +367,33 @@ fn read_plugin(path: String) -> Result<opened::TorrentFile, String> {
     opened::read_plugin(&path)
 }
 
+/// Enregistre le diagnostic montré (`engine.diagnostic`, N-12) dans une archive choisie par
+/// l'utilisateur ; `None` s'il renonce. Un fichier choisi qui existe déjà (remplacement
+/// confirmé par la boîte du système) est remplacé.
+#[tauri::command]
+async fn save_diagnostic(
+    app: AppHandle,
+    diagnostic: serde_json::Value,
+) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name("diagnostic-aurodownloader.zip")
+        .add_filter("Zip", &["zip"])
+        .save_file(move |path| {
+            let _ = tx.send(path.and_then(|p| p.into_path().ok()));
+        });
+    let Some(path) = rx.await.ok().flatten() else {
+        return Ok(None);
+    };
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(|e| format!("{} : {e}", path.display()))?;
+    }
+    auro_engine::logs::write_archive(&path, &diagnostic)
+        .map_err(|e| format!("{} : {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// Lit une liste de liens choisie, comme un texte, pour `linkscan.run`.
 #[tauri::command]
 fn read_list(path: String) -> Result<opened::ListFile, String> {
@@ -545,6 +572,7 @@ fn main() {
             open_file,
             reveal_file,
             save_text,
+            save_diagnostic,
             take_opened,
             read_torrent,
             pick_torrents,

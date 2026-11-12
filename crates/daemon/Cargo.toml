@@ -16,6 +16,8 @@ anyhow = "1.0.104"
 auro-engine = { path = "../engine" }
 clap = { version = "4.6.7", features = ["derive"] }
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "signal"] }
+# Événements du journal (N-12), installé par `auro_engine::logs`.
+tracing = "0.1.44"
 
 [dev-dependencies]
 # Banc des torrents : le fichier .torrent passe en base64 (`task.add`).

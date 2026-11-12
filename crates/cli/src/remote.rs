@@ -1249,6 +1249,48 @@ pub async fn history(rpc: &mut Rpc, query: Option<&str>, csv: bool) -> Result<()
     Ok(())
 }
 
+/// Lignes de journal montrées avant l'enregistrement (les dernières).
+const DIAGNOSTIC_SHOWN: usize = 20;
+
+/// `auro diagnostic` (N-12) : montre ce que contient le diagnostic, sans adresses ni
+/// identifiants ; avec `save`, l'écrit dans une archive `.zip`.
+pub async fn diagnostic(rpc: &mut Rpc, save: Option<&Path>) -> Result<()> {
+    let found = rpc.call("engine.diagnostic", json!({})).await?;
+    println!("Rapport :");
+    println!("{}", serde_json::to_string_pretty(&found["report"])?);
+    let logs = found["logs"].as_array().cloned().unwrap_or_default();
+    println!();
+    println!(
+        "Journaux : {} ligne(s), nettoyées (adresses, hôtes, chemins, nom de l'utilisateur et jetons retirés).",
+        logs.len()
+    );
+    if !logs.is_empty() {
+        println!("Les {} dernières :", DIAGNOSTIC_SHOWN.min(logs.len()));
+        for line in logs
+            .iter()
+            .skip(logs.len().saturating_sub(DIAGNOSTIC_SHOWN))
+        {
+            println!("  {}", line.as_str().unwrap_or_default());
+        }
+    }
+    match save {
+        Some(path) => {
+            auro_engine::logs::write_archive(path, &found)
+                .with_context(|| format!("archive {}", path.display()))?;
+            println!();
+            println!(
+                "Enregistré : {} (rapport.json, journaux.jsonl).",
+                path.display()
+            );
+        }
+        None => {
+            println!();
+            println!("Rien n'est enregistré : relancer avec --save diagnostic.zip pour l'archive.");
+        }
+    }
+    Ok(())
+}
+
 /// Efface tout l'historique ; les tâches et les fichiers restent.
 pub async fn clear_history(rpc: &mut Rpc) -> Result<()> {
     let result = rpc.call("history.clear", json!({})).await?;

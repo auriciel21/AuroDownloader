@@ -2003,6 +2003,87 @@ async fn the_rest_of_the_protocol_follows_its_contract() {
     crate::testing::stop(&engine).await;
 }
 
+/// Journaux et diagnostic (N-12) : le niveau se lit et se change ; le diagnostic ne porte ni
+/// adresse, ni hôte, ni nom de fichier, ni chemin, même quand le journal en contient.
+#[tokio::test]
+async fn the_diagnostic_reveals_no_address_name_or_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let server = site(4096);
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    assert_eq!(
+        c.result("settings.get", json!({})).await["values"]["logs.level"],
+        "info"
+    );
+    let set = c
+        .result("settings.set", json!({"values": {"logs.level": "debug"}}))
+        .await;
+    assert_eq!(set["values"]["logs.level"], "debug");
+    let note = c
+        .notification("settings.updated", |p| {
+            p["values"]["logs.level"].is_string()
+        })
+        .await;
+    assert_eq!(note["values"]["logs.level"], "debug");
+    for bad in [json!("trace"), json!(3)] {
+        assert_eq!(
+            c.error_code("settings.set", json!({"values": {"logs.level": bad}}))
+                .await,
+            "INVALID_PARAMS"
+        );
+    }
+
+    // Une tâche, un journal qui nomme son adresse, son hôte et un chemin.
+    let url = server.url("/secret-rapport.pdf");
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": url}], "destDir": dir_text(dir.path()), "startPaused": true}),
+        )
+        .await;
+    let logs = dir.path().join(crate::logs::DIR);
+    std::fs::create_dir_all(&logs).unwrap();
+    let line = json!({"level": "WARN", "fields": {
+        "message": format!("échec de {url}"),
+        "host": "127.0.0.1",
+        "chemin": dir.path().join("secret-rapport.pdf").to_string_lossy(),
+    }});
+    std::fs::write(logs.join(crate::logs::FILE), format!("{line}\n")).unwrap();
+
+    let diagnostic = c.result("engine.diagnostic", json!({})).await;
+    let text = diagnostic.to_string();
+    let id = added["taskId"].as_str().unwrap();
+    for leak in [
+        "secret-rapport",
+        "127.0.0.1",
+        id,
+        &dir.path().to_string_lossy().replace('\\', "\\\\"),
+    ] {
+        assert!(!text.contains(leak), "{leak} dans {text}");
+    }
+    assert_eq!(diagnostic["report"]["tasks"]["byState"]["paused"], 1);
+    assert_eq!(diagnostic["report"]["settings"]["logs.level"], "debug");
+    let logged = diagnostic["logs"].as_array().unwrap();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    let logged_line = logged[0].as_str().unwrap();
+    for kept in ["http://…", "<hôte>", "<données>"] {
+        assert!(logged_line.contains(kept), "{kept} absent de {logged_line}");
+    }
+    // Réservé au canal local (admin).
+    let mut reader = TestClient::connect(&engine);
+    let mut params = hello();
+    params["scope"] = json!("control");
+    reader.result("engine.hello", params).await;
+    assert_eq!(
+        reader.error_code("engine.diagnostic", json!({})).await,
+        "UNAUTHORIZED"
+    );
+    crate::testing::stop(&engine).await;
+}
+
 /// Contrat du protocole (SPEC §9.1) : « un client de la version précédente doit toujours
 /// fonctionner ». Les requêtes réelles de chaque client (`docs/protocol/corpus`) suivent
 /// leur schéma de paramètres, et sont rejouées contre le moteur : résultat ou erreur

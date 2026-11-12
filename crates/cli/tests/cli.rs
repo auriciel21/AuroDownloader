@@ -626,6 +626,31 @@ async fn the_remote_interface_is_opened_moved_and_closed() {
     auro_engine::testing::stop(&engine).await;
 }
 
+/// `auro diagnostic` (N-12) : le rapport et les journaux nettoyés, montrés ; enregistrés
+/// en archive avec --save, jamais par-dessus un fichier. `auro config logs.level`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_diagnostic_is_shown_then_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "diagnostic", Options::default()).await;
+    let set = ok(&ep, &["config", "logs.level", "debug"]).await;
+    assert!(set.contains("debug"), "{set}");
+    let shown = ok(&ep, &["diagnostic"]).await;
+    assert!(
+        shown.contains("Rapport")
+            && shown.contains("\"logs.level\": \"debug\"")
+            && shown.contains("--save"),
+        "{shown}"
+    );
+    let archive = dir.path().join("diagnostic.zip");
+    let archive_text = archive.to_string_lossy().into_owned();
+    let saved = ok(&ep, &["diagnostic", "--save", &archive_text]).await;
+    assert!(saved.contains("Enregistré"), "{saved}");
+    assert!(archive.is_file());
+    let again = auro(&ep, &["diagnostic", "--save", &archive_text]).await;
+    assert!(!again.status.success(), "jamais par-dessus un fichier");
+    auro_engine::testing::stop(&engine).await;
+}
+
 /// `auro plugin` (SPEC §7.20) : permissions montrées avant toute installation, installé
 /// avec --yes, liens d'une page, ajout direct d'une page, ajout de liens choisis, retrait.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

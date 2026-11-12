@@ -45,6 +45,8 @@ const caps = {
   qr: typeof host.qrCode === "function",
   // Rubrique « Plugins » (étape 4c) : seulement avec un hôte qui sait lire un fichier choisi.
   plugins: typeof host.readPlugin === "function",
+  // Export du diagnostic (N-12) : seulement avec un hôte qui sait enregistrer l'archive.
+  diagnostic: typeof host.saveDiagnostic === "function",
 };
 
 function applyScope(scope) {
@@ -1699,7 +1701,68 @@ function renderDest() {
   $("pref-preallocate").checked = store.settings["downloads.preallocate"] !== false;
   // F-11 : de même.
   $("pref-neighbor").checked = store.settings["downloads.neighborChecksum"] !== false;
+  // Journaux (N-12) : `info` tant que le moteur ne dit pas autre chose.
+  $("pref-logs-level").value = store.settings["logs.level"] ?? "info";
+  $("pref-logs-level").disabled = !connected;
+  $("diagnostic-export").disabled = !connected;
   syncLoginButtons();
+}
+
+/// Niveau des journaux du moteur (N-12), appliqué sans redémarrer.
+async function saveLogsLevel() {
+  const level = $("pref-logs-level").value;
+  try {
+    await host.call("settings.set", { values: { "logs.level": level } });
+    announce(t("Détail des journaux changé"));
+  } catch (e) {
+    showError(refused(e));
+    renderDest();
+  }
+}
+
+/// Lignes de journal montrées avant l'enregistrement (les dernières).
+const DIAGNOSTIC_SHOWN = 20;
+/// Diagnostic lu (`engine.diagnostic`), montré puis enregistré tel quel.
+let pendingDiagnostic = null;
+
+async function openDiagnostic() {
+  let found;
+  try {
+    found = await host.call("engine.diagnostic", {});
+  } catch (e) {
+    showError(refused(e));
+    return;
+  }
+  pendingDiagnostic = found;
+  const logs = found.logs ?? [];
+  $("diag-report").textContent = JSON.stringify(found.report, null, 2);
+  $("diag-count").textContent = logs.length
+    ? t("{0} ligne(s) de journal ; les {1} dernières :", logs.length, Math.min(DIAGNOSTIC_SHOWN, logs.length))
+    : t("Aucune ligne de journal.");
+  $("diag-logs").textContent = logs.slice(-DIAGNOSTIC_SHOWN).join("\n");
+  $("diag-logs").hidden = !logs.length;
+  $("diagnostic-error").hidden = true;
+  const dialog = $("diagnostic-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("diagnostic-save").focus();
+}
+
+async function saveDiagnostic() {
+  if (!pendingDiagnostic) return;
+  $("diagnostic-save").disabled = true;
+  try {
+    const path = await host.saveDiagnostic(pendingDiagnostic);
+    if (path) {
+      $("diagnostic-dialog").close();
+      announce(t("Diagnostic enregistré : {0}", path));
+    }
+  } catch (e) {
+    $("diagnostic-error").textContent = e?.message ?? String(e);
+    $("diagnostic-error").hidden = false;
+  } finally {
+    $("diagnostic-save").disabled = false;
+  }
 }
 
 /// Réservation de la place des fichiers (F-10), réglage du moteur.
@@ -3745,6 +3808,16 @@ function wire() {
   $("tb-schedule").addEventListener("click", openSchedule);
   $("tb-history").addEventListener("click", openHistory);
   $("pref-preallocate").addEventListener("change", savePreallocate);
+  // Journaux et diagnostic (N-12).
+  $("pref-logs-level").addEventListener("change", saveLogsLevel);
+  $("diagnostic-export").addEventListener("click", openDiagnostic);
+  $("diagnostic-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    // Enregistré d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    saveDiagnostic();
+  });
+  $("diagnostic-dialog").addEventListener("close", () => { pendingDiagnostic = null; });
   $("pref-neighbor").addEventListener("change", saveNeighbor);
   $("h-query").addEventListener("input", () => {
     // Recherche pendant la frappe, une fois la saisie posée.

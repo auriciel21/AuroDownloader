@@ -710,11 +710,8 @@ pub async fn run(
         End::SeedingStopped => Ok(Outcome::Seeding),
         End::Failed(failure) => record_failure(conn, task_id, &failure),
         End::SeedingFailed(failure) => {
-            eprintln!(
-                "aurod : tâche {task_id} : partage arrêté : {} [{}]",
-                failure.detail(),
-                failure.code()
-            );
+            tracing::warn!(tache = %task_id, code = failure.code(), "partage arrêté");
+            tracing::debug!(tache = %task_id, detail = %failure.detail(), "partage arrêté");
             finish_sharing(conn, task_id)
         }
     }
@@ -1060,7 +1057,11 @@ impl Pass<'_> {
                         let now = selected_files(conn, task_id)?;
                         if now != selected {
                             if let Err(e) = self.session.update_only_files(&handle, &now).await {
-                                eprintln!("aurod : tâche {task_id} : choix des fichiers : {e:#}");
+                                tracing::warn!(
+                                    tache = %task_id,
+                                    erreur = %format!("{e:#}"),
+                                    "choix des fichiers d'un torrent"
+                                );
                             }
                             selected = now;
                             counters.total =
@@ -1105,12 +1106,16 @@ impl Pass<'_> {
         // lectures et écritures en cours finissent. Les fichiers ne se renomment ni ne
         // s'effacent qu'une fois tous fermés.
         if let Err(e) = self.session.delete(id.into(), false).await {
-            eprintln!("aurod : tâche {task_id} : torrent non retiré de la session : {e:#}");
+            tracing::warn!(
+                tache = %task_id,
+                erreur = %format!("{e:#}"),
+                "torrent non retiré de la session"
+            );
         }
         let file_progress = handle.stats().file_progress;
         drop(handle);
         if !factory.wait_closed(CLOSE_WAIT).await {
-            eprintln!("aurod : tâche {task_id} : fichiers du torrent encore ouverts");
+            tracing::warn!(tache = %task_id, "fichiers du torrent encore ouverts");
         }
         let files = (!sharing).then_some(&file_progress);
         save_counters(conn, task_id, counters, files)?;

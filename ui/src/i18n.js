@@ -279,6 +279,25 @@ export const EN = {
   "Utiliser mon certificat…": "Use my certificate…",
   "Revenir au certificat d'AuroDownloader": "Go back to AuroDownloader's certificate",
   "Certificat d'AuroDownloader rétabli": "AuroDownloader's certificate restored",
+  // Journaux et diagnostic (N-12, phase 7)
+  "Détail des journaux": "Log detail",
+  "Erreurs seulement": "Errors only",
+  "Erreurs et avertissements": "Errors and warnings",
+  "Ordinaire (conseillé)": "Normal (recommended)",
+  "Détaillé, pour un dépannage": "Detailed, for troubleshooting",
+  "Journaux du moteur, gardés à côté de ses données (25 Mo au plus) : jamais d'adresse complète, de mot de passe ni de cookie.":
+    "Engine logs, kept next to its data (25 MB at most): never a full address, a password or a cookie.",
+  "Exporter un diagnostic…": "Export a diagnostic…",
+  "Diagnostic": "Diagnostic",
+  "Voici tout ce que contiendra l'archive : un résumé de l'état du moteur, et ses journaux nettoyés (ni adresse, ni hôte, ni chemin, ni nom d'utilisateur, ni jeton). Rien n'est envoyé : vous l'enregistrez, puis la joignez vous-même à un signalement.":
+    "This is everything the archive will hold: a summary of the engine's state, and its cleaned logs (no address, host, path, user name or token). Nothing is sent: you save it, then attach it yourself to a report.",
+  "Résumé": "Summary",
+  "Journaux": "Logs",
+  "Enregistrer…": "Save…",
+  "{0} ligne(s) de journal ; les {1} dernières :": "{0} log line(s); the last {1}:",
+  "Aucune ligne de journal.": "No log line.",
+  "Diagnostic enregistré : {0}": "Diagnostic saved: {0}",
+  "Détail des journaux changé": "Log detail changed",
   // Plugins d'hébergeurs (étape 4c)
   "Plugins": "Plugins",
   "Un plugin lit la page d'un hébergeur de fichiers et en donne les liens directs, qu'AuroDownloader télécharge. Il tourne isolé : ni fichiers ni système, réseau seulement vers les domaines qu'il déclare, et jamais vos cookies ni vos mots de passe.":

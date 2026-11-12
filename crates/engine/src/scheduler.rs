@@ -374,6 +374,8 @@ pub struct Snapshot {
     pub torrent_interface: Option<String>,
     /// L'interface des torrents est là, ou aucune n'est demandée (SPEC §7.16).
     pub torrent_interface_up: bool,
+    /// Niveau des journaux (réglage `logs.level`, N-12).
+    pub logs_level: crate::logs::Level,
 }
 
 /// Erreurs d'une commande au moteur.
@@ -773,6 +775,8 @@ enum Command {
     /// Avertissement du moteur à annoncer (`engine.warning`).
     Warn(&'static str, String),
     SetTorrentInterface(Option<String>, Reply<()>),
+    LogsLevel(Reply<crate::logs::Level>),
+    SetLogsLevel(crate::logs::Level, Reply<()>),
     RemoteListen(Reply<std::net::SocketAddr>),
     SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
     RemoteConfig(Reply<settings::RemoteConfig>),
@@ -885,7 +889,7 @@ impl Engine {
                 Ok(Ok(found)) if !found.is_empty() => {
                     let _ = collect.send(Command::CollectSecrets(found)).await;
                 }
-                Ok(Err(e)) => eprintln!("aurod : relevé du coffre impossible : {e}"),
+                Ok(Err(e)) => tracing::warn!(erreur = %e, "relevé du coffre impossible"),
                 _ => {}
             }
         });
@@ -1142,7 +1146,7 @@ impl Engine {
             let installing = Arc::clone(&tools);
             tokio::spawn(async move {
                 if let Err(e) = installing.install(force).await {
-                    eprintln!("aurod : outils de la vidéo non installés : {e}");
+                    tracing::warn!(erreur = %e, "outils de la vidéo non installés");
                 }
                 let _ = commands
                     .send(Command::ToolsChanged(installing.status()))
@@ -1215,6 +1219,16 @@ impl Engine {
     pub async fn set_torrent_interface(&self, name: Option<String>) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetTorrentInterface(name, reply))
             .await
+    }
+
+    /// Niveau des journaux (réglage `logs.level`, N-12).
+    pub async fn logs_level(&self) -> Result<crate::logs::Level, EngineError> {
+        self.ask(Command::LogsLevel).await
+    }
+
+    /// Change le niveau des journaux ; [`crate::logs::follow`] l'applique aussitôt.
+    pub async fn set_logs_level(&self, level: crate::logs::Level) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetLogsLevel(level, reply)).await
     }
 
     /// Adresse et port d'écoute de l'interface distante (`remote.listen`, SPEC §7.19).
@@ -2796,6 +2810,12 @@ impl Scheduler {
             Command::SetTorrentInterface(name, reply) => {
                 let _ = reply.send(self.set_torrent_interface(name));
             }
+            Command::LogsLevel(reply) => {
+                let _ = reply.send(settings::logs_level(&self.conn).map_err(Into::into));
+            }
+            Command::SetLogsLevel(level, reply) => {
+                let _ = reply.send(self.set_logs_level(level));
+            }
             Command::RemoteListen(reply) => {
                 let _ = reply.send(settings::remote_listen(&self.conn).map_err(Into::into));
             }
@@ -2855,6 +2875,7 @@ impl Scheduler {
             network_metered: self.network_metered,
             torrent_interface: self.iface_name.clone(),
             torrent_interface_up: self.interface_up(),
+            logs_level: settings::logs_level(&self.conn)?,
         })
     }
 
@@ -3622,9 +3643,9 @@ impl Scheduler {
         };
         let orphans: Vec<String> = found.into_iter().filter(|id| !known.contains(id)).collect();
         if !orphans.is_empty() {
-            eprintln!(
-                "aurod : {} secret(s) orphelin(s) effacé(s) du coffre",
-                orphans.len()
+            tracing::info!(
+                secrets = orphans.len(),
+                "secrets orphelins effacés du coffre"
             );
         }
         self.vault().forget(orphans);
@@ -4379,6 +4400,16 @@ impl Scheduler {
             rev,
             key: settings::TORRENT_INTERFACE,
             value: name.map_or(serde_json::Value::Null, serde_json::Value::from),
+        });
+        Ok(())
+    }
+
+    fn set_logs_level(&mut self, level: crate::logs::Level) -> Result<(), EngineError> {
+        settings::set_logs_level(&self.conn, level)?;
+        self.emit(|rev| Event::SettingChanged {
+            rev,
+            key: settings::LOGS_LEVEL,
+            value: serde_json::Value::from(level.as_str()),
         });
         Ok(())
     }

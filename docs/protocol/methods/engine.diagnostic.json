@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/engine.diagnostic.json",
+  "title": "engine.diagnostic",
+  "description": "Diagnostic sans adresses ni identifiants (N-12) : comptes, états et codes ; journaux nettoyés (adresses réduites à leur protocole, hôtes, chemins, nom de l'utilisateur et jetons retirés). Portée admin. Depuis le 2026-11-12.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "maxLogBytes": {
+          "description": "Taille des journaux rendus, au plus (2 Mio par défaut, et au plus).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "report": {
+          "type": "object",
+          "properties": {
+            "generatedAt": {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+            },
+            "engine": {
+              "type": "object",
+              "properties": {
+                "version": {"type": "string"},
+                "platform": {"type": "string"},
+                "arch": {"type": "string"},
+                "protocol": {"type": "array", "items": {"type": "string"}}
+              },
+              "required": ["version", "platform", "arch", "protocol"]
+            },
+            "settings": {"type": "object"},
+            "limits": {"type": "object"},
+            "network": {"type": "object"},
+            "tasks": {
+              "type": "object",
+              "properties": {
+                "count": {"type": "integer", "minimum": 0},
+                "byState": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "byKind": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "errorCodes": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "pauseReasons": {"type": "object", "additionalProperties": {"type": "integer"}}
+              },
+              "required": ["count", "byState", "byKind", "errorCodes", "pauseReasons"]
+            },
+            "queues": {"type": "integer", "minimum": 0},
+            "schedules": {"type": "integer", "minimum": 0},
+            "endActionPending": {"type": "boolean"},
+            "plugins": {"type": "object"},
+            "remote": {"type": "object"},
+            "media": {
+              "anyOf": [
+                {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tools"},
+                {"type": "null"}
+              ]
+            }
+          },
+          "required": ["generatedAt", "engine", "settings", "tasks"]
+        },
+        "logs": {
+          "description": "Lignes de journal nettoyées, les plus anciennes d'abord.",
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["report", "logs"]
+    }
+  }
+}

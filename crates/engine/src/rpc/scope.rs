@@ -102,6 +102,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         // Jetons de l'interface distante (SPEC §7.19) : un jeton n'a jamais `admin`, ces
         // méthodes ne s'atteignent donc que par le canal local.
         "token.create" | "token.list" | "token.revoke" | "remote.status" => Scope::Admin,
+        // Diagnostic (N-12) : nettoyé, mais tout l'état du moteur.
+        "engine.diagnostic" => Scope::Admin,
         // Installer, voir les permissions, activer, retirer (SPEC §7.20).
         "plugin.inspect" | "plugin.install" | "plugin.list" | "plugin.remove"
         | "plugin.enable" => Scope::Admin,

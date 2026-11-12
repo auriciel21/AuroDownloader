@@ -300,6 +300,14 @@ enum Command {
         #[arg(long, conflicts_with = "query")]
         clear: bool,
     },
+    /// Diagnostic du moteur, sans adresses ni identifiants : état résumé et journaux
+    /// nettoyés, montrés ; avec --save, enregistrés dans une archive .zip à joindre à un
+    /// signalement
+    Diagnostic {
+        /// Archive à écrire (.zip), jamais par-dessus un fichier existant
+        #[arg(long, value_name = "FICHIER")]
+        save: Option<PathBuf>,
+    },
     /// Dossier des téléchargements du moteur, pour les ajouts sans dossier (extension,
     /// application) ; sans argument, l'affiche
     Dir {
@@ -956,6 +964,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     true => remote::clear_history(&mut rpc).await,
                     false => remote::history(&mut rpc, query.as_deref(), csv).await,
                 },
+                Command::Diagnostic { save } => remote::diagnostic(&mut rpc, save.as_deref()).await,
                 Command::Dir { path, reset } => {
                     remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }

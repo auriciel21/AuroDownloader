@@ -592,6 +592,23 @@
     </form>
   </dialog>
 
+  <dialog id="diagnostic-dialog" class="wide" aria-labelledby="diagnostic-title" aria-describedby="diagnostic-note">
+    <form method="dialog" id="diagnostic-form">
+      <h2 id="diagnostic-title" data-i18n="Diagnostic">Diagnostic</h2>
+      <p class="note flush" id="diagnostic-note" data-i18n="Voici tout ce que contiendra l'archive : un résumé de l'état du moteur, et ses journaux nettoyés (ni adresse, ni hôte, ni chemin, ni nom d'utilisateur, ni jeton). Rien n'est envoyé : vous l'enregistrez, puis la joignez vous-même à un signalement.">Voici tout ce que contiendra l'archive : un résumé de l'état du moteur, et ses journaux nettoyés (ni adresse, ni hôte, ni chemin, ni nom d'utilisateur, ni jeton). Rien n'est envoyé : vous l'enregistrez, puis la joignez vous-même à un signalement.</p>
+      <h3 id="diag-report-title" data-i18n="Résumé">Résumé</h3>
+      <pre id="diag-report" class="diagnostic" tabindex="0" aria-labelledby="diag-report-title"></pre>
+      <h3 id="diag-logs-title" data-i18n="Journaux">Journaux</h3>
+      <p id="diag-count" class="note flush"></p>
+      <pre id="diag-logs" class="diagnostic" tabindex="0" aria-labelledby="diag-logs-title"></pre>
+      <p id="diagnostic-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="diagnostic-save" class="primary" data-i18n="Enregistrer…">Enregistrer…</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="plugin-dialog" class="wide" aria-labelledby="plugin-title" aria-describedby="plugin-warning">
     <form method="dialog" id="plugin-form">
       <h2 id="plugin-title" data-i18n="Installer un plugin">Installer un plugin</h2>
@@ -844,6 +861,19 @@
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
         <p id="about"></p>
+        <div data-needs="admin">
+          <label class="field">
+            <span data-i18n="Détail des journaux">Détail des journaux</span>
+            <select id="pref-logs-level" aria-describedby="pref-logs-note">
+              <option value="error" data-i18n="Erreurs seulement">Erreurs seulement</option>
+              <option value="warn" data-i18n="Erreurs et avertissements">Erreurs et avertissements</option>
+              <option value="info" data-i18n="Ordinaire (conseillé)">Ordinaire (conseillé)</option>
+              <option value="debug" data-i18n="Détaillé, pour un dépannage">Détaillé, pour un dépannage</option>
+            </select>
+          </label>
+          <p class="note" id="pref-logs-note" data-i18n="Journaux du moteur, gardés à côté de ses données (25 Mo au plus) : jamais d'adresse complète, de mot de passe ni de cookie.">Journaux du moteur, gardés à côté de ses données (25 Mo au plus) : jamais d'adresse complète, de mot de passe ni de cookie.</p>
+          <button type="button" id="diagnostic-export" data-needs="diagnostic" data-i18n="Exporter un diagnostic…">Exporter un diagnostic…</button>
+        </div>
         <button type="button" id="stop-engine" data-needs="app" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
       </div>
       <div class="buttons end">

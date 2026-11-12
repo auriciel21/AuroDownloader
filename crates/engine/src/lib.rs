@@ -15,6 +15,7 @@ pub mod io;
 pub mod launch;
 pub mod limit;
 pub mod linkscan;
+pub mod logs;
 pub mod media;
 pub mod metalink;
 pub mod mirrors;

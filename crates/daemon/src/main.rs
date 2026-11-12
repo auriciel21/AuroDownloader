@@ -78,6 +78,11 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("impossible de créer {}", dir.display()))?;
     }
+    // Journaux (N-12) : dans logs/ à côté de la base, avant le démarrage du moteur (la
+    // reprise du démarrage y figure). Sans eux, le moteur tourne quand même.
+    if let Err(e) = auro_engine::logs::init(&auro_engine::logs::dir_for(&db)) {
+        eprintln!("aurod : journaux indisponibles : {e}");
+    }
     let endpoint = args.endpoint.unwrap_or_else(paths::endpoint);
     let client = match &args.ca_cert {
         None => Client::new()?,
@@ -156,10 +161,18 @@ async fn run(
         planning,
     })
     .with_context(|| format!("impossible de démarrer le moteur sur {}", db.display()))?;
+    // Niveau des journaux suivi (réglage `logs.level`), changements d'état notés.
+    tokio::spawn(auro_engine::logs::follow(engine.clone()));
     let mut listening = tokio::spawn({
         let (engine, endpoint) = (engine.clone(), endpoint.clone());
         async move { local::listen(engine, &endpoint).await }
     });
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        base = %db.display(),
+        point = %endpoint,
+        "moteur démarré"
+    );
     eprintln!("aurod : base {}, point d'accès {endpoint}", db.display());
     // Interface distante (SPEC §7.19) : ouverte seulement si `remote.enabled` ; suit ses
     // réglages jusqu'à l'arrêt du moteur.
@@ -173,12 +186,14 @@ async fn run(
             return Ok(());
         }
         _ = stop_signal() => {
+            tracing::info!("arrêt demandé, enregistrement des tâches en cours");
             eprintln!("aurod : arrêt demandé, enregistrement des tâches en cours…");
             engine.shutdown().await;
         }
         _ = engine.stopped() => {}
     }
     listening.await??;
+    tracing::info!("moteur arrêté");
     eprintln!("aurod : arrêté");
     Ok(())
 }

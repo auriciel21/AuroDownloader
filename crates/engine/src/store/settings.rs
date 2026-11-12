@@ -393,6 +393,25 @@ pub fn set_torrent_ratio(conn: &Connection, ratio: Option<f64>) -> Result<(), St
     set(conn, TORRENT_RATIO, &ratio.map_or(Value::Null, Value::from))
 }
 
+/// Niveau des journaux (N-12, phase 7) : `error`, `warn`, `info` (par défaut) ou `debug`.
+pub const LOGS_LEVEL: &str = "logs.level";
+
+pub fn logs_level(conn: &Connection) -> Result<crate::logs::Level, StoreError> {
+    match get(conn, LOGS_LEVEL)? {
+        None | Some(Value::Null) => Ok(crate::logs::Level::Info),
+        Some(Value::String(text)) => crate::logs::Level::parse(&text).ok_or_else(|| {
+            StoreError::BadValue(format!("réglage {LOGS_LEVEL} : {text} n'est pas un niveau"))
+        }),
+        Some(v) => Err(StoreError::BadValue(format!(
+            "réglage {LOGS_LEVEL} : {v} n'est pas un niveau"
+        ))),
+    }
+}
+
+pub fn set_logs_level(conn: &Connection, level: crate::logs::Level) -> Result<(), StoreError> {
+    set(conn, LOGS_LEVEL, &Value::from(level.as_str()))
+}
+
 /// Interface réseau des torrents ; `None` : aucune.
 pub fn torrent_interface(conn: &Connection) -> Result<Option<String>, StoreError> {
     match get(conn, TORRENT_INTERFACE)? {

@@ -53,9 +53,10 @@ impl SecretService {
                 Ok(Some(service))
             }
             Err(e) if usable.is_none() => {
-                eprintln!(
-                    "aurod : pas de Secret Service ({e}) ; les cookies et jetons des tâches \
-                     restent en mémoire, perdus à l'arrêt du moteur"
+                tracing::warn!(
+                    erreur = %e,
+                    "pas de Secret Service : les cookies et jetons des tâches restent en \
+                     mémoire, perdus à l'arrêt du moteur"
                 );
                 *usable = Some(false);
                 Ok(None)

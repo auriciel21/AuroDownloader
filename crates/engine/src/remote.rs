@@ -186,7 +186,7 @@ pub(crate) async fn supervise(engine: Engine, tls_everywhere: bool) {
             let (state, task, renew) =
                 open(&engine, enabled, &config, tls_everywhere, &mut bound).await;
             if let Some(error) = &state.error {
-                eprintln!("aurod : interface distante : {error}");
+                tracing::warn!(erreur = %error, "interface distante");
             }
             engine.set_remote_state(state);
             (serving, renew_at, applied) = (task, renew, current);
@@ -306,9 +306,9 @@ async fn open(
         match load_tls(engine, config).await {
             Ok(tls) => {
                 if tls.renewed {
-                    eprintln!(
-                        "aurod : interface distante : certificat fabriqué, empreinte SHA-256 {}",
-                        tls.fingerprint
+                    tracing::info!(
+                        empreinte = %tls.fingerprint,
+                        "interface distante : certificat fabriqué"
                     );
                 }
                 renew_at = tls.renew_at_ms();
