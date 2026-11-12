@@ -1,0 +1,14 @@
+# Prototype des plugins (SPEC F-41, phase 6, étape 4a) : wasmtime face à wasmi, même plugin
+# d'essai. Espace de travail à part, hors de celui du projet ; ne fait pas partie du produit.
+[workspace]
+resolver = "3"
+members = ["sample", "host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[profile.release]
+debug = false

@@ -198,7 +198,7 @@ Les clients envoient des commandes à l'API et affichent les notifications ; le 
 | Interface de bureau | Tauri 2 (choisi le 2026-11-06, après deux prototypes comparés sous Windows et Linux : `experiments/desktop/README.md`) | Une seule page web pour le bureau et l'interface distante (F-39), servie par l'hôte de chacune ; client du moteur en Rust, repris du moteur. Qt Quick était plus léger (mémoire, processeur fenêtre ouverte, démarrage), mais aurait demandé une seconde interface |
 | Interface Android | Kotlin avec Jetpack Compose, moteur chargé comme bibliothèque native | Partage, services et stockage sont des API Android natives |
 | Extension | WebExtension (Chrome, Edge, Firefox) et programme relais natif | Seule voie propre vers le moteur local |
-| Plugins | WebAssembly | Bac à sable, plusieurs langages possibles |
+| Plugins | WebAssembly, moteur wasmi (interpréteur) | Bac à sable, plusieurs langages possibles. Prototype du 2026-11-12 (`experiments/plugins/README.md`) : wasmi 2.0 face à wasmtime 50 sur le même plugin d'essai ; les deux tiennent le bac à sable (calcul, mémoire, pile, domaines), wasmtime est 6 fois plus rapide mais ajoute 11 Mo, 96 crates, environ 250 ms de compilation par plugin et produit du code machine. Décision de l'utilisateur du 2026-11-12 : wasmi ; interface en WebAssembly de base et messages JSON, qui laisserait changer de moteur |
 
 ### 4.4 Android
 

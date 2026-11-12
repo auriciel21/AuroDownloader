@@ -1,0 +1,20 @@
+[package]
+name = "host"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Un des deux moteurs à la fois (`--features wasmtime` ou `--features wasmi`) ; sans
+# aucun, le binaire de référence pour mesurer ce que chacun ajoute.
+[features]
+wasmtime = ["dep:wasmtime"]
+wasmi = ["dep:wasmi"]
+
+[dependencies]
+serde_json = "1"
+wasmtime = { version = "=50", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
+wasmi = { version = "2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

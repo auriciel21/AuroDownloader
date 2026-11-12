@@ -254,6 +254,10 @@ téléchargement.
   `magnet.sh` (`PROTO_DIR`), mesures dans `README.md`. Essais sur l'essaim Debian
   seulement, envoi limité, arrêt sans partager ; mesurer sous WSL (sous Windows, un port
   d'écoute fait apparaître la fenêtre du pare-feu).
+- `experiments/plugins` : prototype des plugins (phase 6, étape 4a) : `sample` (plugin
+  d'essai, `wasm32-unknown-unknown`, exports hostiles), `host` (wasmtime ou wasmi selon
+  `--features`, sans eux binaire de référence), espace de travail Cargo à part ; mesures et
+  décision (wasmi) dans `README.md`. Ne fait pas partie du produit.
 
 ## Commandes
 
@@ -546,9 +550,17 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   système, ajout sur clic, désactivée par défaut, avertissement si Windows coupe les
   notifications ; `apps/desktop/src/clipboard.rs` ; essai de l'interface validé ; étape 2
   terminée) ; 3. interface web
-  distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF) ; 4. plugins (F-41 :
-  prototype du bac à sable WebAssembly d'abord) ; 5. porte : revue de sécurité de l'API
-  distante et des plugins.
+  distante (F-39 : WebSocket, jetons, `Host` et `Origin`, TLS, SSRF ; 3a à 3e faites, la
+  dernière le 2026-11-12 : page servie, rubrique du bureau et QR code, fuzzing, essai réel
+  depuis un téléphone sur le Wi-Fi validé ; étape 3 terminée) ; 4. plugins (F-41 :
+  décisions de l'utilisateur du 2026-11-12 : 4a prototype comparant wasmtime et wasmi
+  (`experiments/plugins`, fait le même jour : wasmi choisi par l'utilisateur, SPEC 4.3) ; hébergeurs seulement en v1 (un plugin reçoit l'adresse d'une
+  page de ses domaines déclarés et rend des liens directs, que le moteur télécharge) ; ni
+  fichiers ni système, réseau seulement par le moteur vers les domaines déclarés (réseau
+  public), limites de mémoire, de calcul et de temps ; installé depuis un fichier choisi
+  par l'utilisateur, sans catalogue ni mise à jour seule, permissions et empreinte
+  acceptées, de nouveau si elles changent ; Windows et Linux d'abord, Android plus tard) ;
+  5. porte : revue de sécurité de l'API distante et des plugins.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
