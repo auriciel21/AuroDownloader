@@ -591,7 +591,18 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   5. porte : revue de sécurité de l'API distante et des plugins (faite le 2026-11-12,
   décisions de l'utilisateur : revue écrite et essais, failles corrigées au fil ; rapport
   `docs/SECURITE.md`, six constats corrigés). Porte franchie le 2026-11-12, déclarée par
-  l'utilisateur. Phase 7 (version 1) à planifier.
+  l'utilisateur.
+- Phase 7, plan du 2026-11-12 (validé par l'utilisateur ; version 1, porte : tous les tests
+  bloquants de la SPEC 9.1) : 1. contrat du protocole (schémas JSON des échanges de
+  référence, client de la version précédente) ; 2. journaux et diagnostic (N-12) ; 3. proxy
+  (F-07) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
+  (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
+  automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
+  GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
+  émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
+  signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en
+  anglais (`docs/guide`), page de manuel, README ; 10. porte (banc de 1 000 reprises sur
+  1 Gio, performance, tout le 9.1).
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
   `transfer::pump`). Un seau dont la limite change se règle par `Bucket::set_rate`,
