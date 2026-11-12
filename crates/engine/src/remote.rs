@@ -20,6 +20,8 @@ use crate::store::settings::{
     Flag, REMOTE_HOSTS, REMOTE_LISTEN, REMOTE_TLS_CERT, REMOTE_TLS_KEY, RemoteConfig,
 };
 
+#[cfg(test)]
+mod fuzz;
 pub mod page;
 pub mod server;
 #[cfg(test)]
@@ -165,6 +167,8 @@ pub(crate) async fn supervise(engine: Engine, tls_everywhere: bool) {
     let mut applied: Option<(bool, RemoteConfig)> = None;
     let mut serving: Option<tokio::task::JoinHandle<std::io::Result<()>>> = None;
     let mut renew_at: Option<i64> = None;
+    // Le socket d'écoute, gardé tant que son adresse ne change pas.
+    let mut bound: Option<Bound> = None;
     loop {
         let (Ok(enabled), Ok(config)) = (
             engine.flag(Flag::RemoteEnabled).await,
@@ -179,7 +183,8 @@ pub(crate) async fn supervise(engine: Engine, tls_everywhere: bool) {
                 task.abort();
                 let _ = task.await;
             }
-            let (state, task, renew) = open(&engine, enabled, &config, tls_everywhere).await;
+            let (state, task, renew) =
+                open(&engine, enabled, &config, tls_everywhere, &mut bound).await;
             if let Some(error) = &state.error {
                 eprintln!("aurod : interface distante : {error}");
             }
@@ -235,6 +240,36 @@ async fn sleep_or_forever(wait: Option<std::time::Duration>) {
 
 type Serving = Option<tokio::task::JoinHandle<std::io::Result<()>>>;
 
+/// Socket d'écoute ouvert sur une adresse. L'écoute qui repart sur la même adresse (noms,
+/// certificat changés, certificat refait) en reprend une copie, sans jamais rendre le
+/// port : entre la fermeture et une nouvelle ouverture, un autre programme, ou une connexion
+/// sortante à qui le système le donnerait comme port local, pourrait le prendre (trouvé
+/// sous Linux, test de la CLI en parallèle d'autres).
+/// L'écouteur est partagé avec la tâche qui sert (pas de copie du socket : sous Windows,
+/// une copie ne reçoit pas les connexions par l'exécuteur de tokio).
+struct Bound {
+    addr: SocketAddr,
+    listener: std::sync::Arc<tokio::net::TcpListener>,
+}
+
+/// Un écouteur sur `listen` : celui gardé s'il est à cette adresse, sinon un nouveau
+/// (l'ancien rendu d'abord).
+async fn listener_for(
+    bound: &mut Option<Bound>,
+    listen: SocketAddr,
+) -> std::io::Result<std::sync::Arc<tokio::net::TcpListener>> {
+    if let Some(b) = bound.as_ref().filter(|b| b.addr == listen) {
+        return Ok(std::sync::Arc::clone(&b.listener));
+    }
+    *bound = None;
+    let listener = std::sync::Arc::new(tokio::net::TcpListener::bind(listen).await?);
+    *bound = Some(Bound {
+        addr: listen,
+        listener: std::sync::Arc::clone(&listener),
+    });
+    Ok(listener)
+}
+
 /// Ouvre l'écoute voulue par les réglages ; rend son état, sa tâche et l'échéance de son
 /// certificat fabriqué.
 async fn open(
@@ -242,6 +277,7 @@ async fn open(
     enabled: bool,
     config: &RemoteConfig,
     tls_everywhere: bool,
+    bound: &mut Option<Bound>,
 ) -> (RemoteState, Serving, Option<i64>) {
     let listen = config.listen;
     let mut state = RemoteState {
@@ -253,9 +289,11 @@ async fn open(
         ..RemoteState::default()
     };
     if !enabled {
+        // Coupée : le port est rendu.
+        *bound = None;
         return (state, None, None);
     }
-    let listener = match tokio::net::TcpListener::bind(listen).await {
+    let listener = match listener_for(bound, listen).await {
         Ok(listener) => listener,
         Err(e) => {
             state.error = Some(format!("écoute impossible sur {listen} : {e}"));
@@ -284,6 +322,7 @@ async fn open(
             }
             Err(e) => {
                 state.error = Some(format!("TLS : {e}"));
+                *bound = None;
                 return (state, None, None);
             }
         }

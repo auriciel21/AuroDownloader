@@ -40,7 +40,11 @@ async fn listening(engine: &Engine) -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     let names = super::tls::known_names(&[]);
     let plain = server::Listening { tls: None, names };
-    tokio::spawn(server::serve(engine.clone(), listener, plain));
+    tokio::spawn(server::serve(
+        engine.clone(),
+        std::sync::Arc::new(listener),
+        plain,
+    ));
     addr
 }
 

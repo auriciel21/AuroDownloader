@@ -69,6 +69,9 @@ struct Shared {
     /// Change (se ferme) quand l'écoute s'arrête : les WebSocket en cours se ferment avec
     /// elle.
     closed: watch::Receiver<()>,
+    /// Délai de la négociation TLS, des en-têtes et du corps de `/login` ([`HEADER_TIMEOUT`],
+    /// plus court dans les tests).
+    timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,8 +145,18 @@ impl HostRule {
 /// connexions en cours s'arrêtent avec elle.
 pub async fn serve(
     engine: Engine,
-    listener: TcpListener,
+    listener: Arc<TcpListener>,
     listening: Listening,
+) -> std::io::Result<()> {
+    serve_timed(engine, listener, listening, HEADER_TIMEOUT).await
+}
+
+/// [`serve`], avec un autre délai des clients lents ou muets (tests).
+pub(super) async fn serve_timed(
+    engine: Engine,
+    listener: Arc<TcpListener>,
+    listening: Listening,
+    timeout: Duration,
 ) -> std::io::Result<()> {
     let addr = listener.local_addr()?;
     let tls = listening.tls.map(tokio_rustls::TlsAcceptor::from);
@@ -155,6 +168,7 @@ pub async fn serve(
         scheme: if tls.is_some() { "https" } else { "http" },
         failures: Mutex::default(),
         closed,
+        timeout,
     });
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut connections = JoinSet::new();
@@ -182,7 +196,7 @@ pub async fn serve(
                         // muet ne garde pas sa place.
                         Some(acceptor) => {
                             if let Ok(Ok(stream)) =
-                                tokio::time::timeout(HEADER_TIMEOUT, acceptor.accept(stream)).await
+                                tokio::time::timeout(shared.timeout, acceptor.accept(stream)).await
                             {
                                 serve_connection(shared, stream, peer).await;
                             }
@@ -200,13 +214,14 @@ async fn serve_connection<S>(shared: Arc<Shared>, stream: S, peer: SocketAddr)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let timeout = shared.timeout;
     let service = hyper::service::service_fn(move |request| {
         let shared = Arc::clone(&shared);
         async move { Ok::<_, Infallible>(route(shared, peer.ip(), request).await) }
     });
     let mut http = hyper::server::conn::http1::Builder::new();
     http.timer(TokioTimer::new())
-        .header_read_timeout(HEADER_TIMEOUT)
+        .header_read_timeout(timeout)
         .max_buf_size(64 * 1024);
     let _ = http
         .serve_connection(TokioIo::new(stream), service)
@@ -291,6 +306,11 @@ fn checked_host(shared: &Shared, headers: &HeaderMap) -> Option<String> {
 /// `Ok(true)` : `Origin` présent et de même origine ; `Ok(false)` : absent ; `Err` : une
 /// autre origine (ou `null`, ou plusieurs).
 fn checked_origin(shared: &Shared, headers: &HeaderMap, host: &str) -> Result<bool, ()> {
+    origin_matches(shared.scheme, headers, host)
+}
+
+/// Lecteur de `Origin` de [`checked_origin`], pour `scheme://host` (fuzzing).
+pub(super) fn origin_matches(scheme: &str, headers: &HeaderMap, host: &str) -> Result<bool, ()> {
     let mut values = headers.get_all(header::ORIGIN).iter();
     let Some(origin) = values.next() else {
         return Ok(false);
@@ -299,20 +319,20 @@ fn checked_origin(shared: &Shared, headers: &HeaderMap, host: &str) -> Result<bo
         return Err(());
     }
     let origin = origin.to_str().map_err(|_| ())?.to_ascii_lowercase();
-    if origin == format!("{}://{host}", shared.scheme) {
+    if origin == format!("{scheme}://{host}") {
         Ok(true)
     } else {
         Err(())
     }
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(super) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+pub(super) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -603,16 +623,11 @@ async fn login(
             "trop d'essais refusés : réessayer dans une minute",
         );
     }
-    let body = match read_body(request, MAX_LOGIN, HEADER_TIMEOUT).await {
+    let body = match read_body(request, MAX_LOGIN, shared.timeout).await {
         Ok(body) => body,
         Err(reply) => return *reply,
     };
-    let token = serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
-        v.get("token")
-            .and_then(Value::as_str)
-            .map(|t| t.trim().to_owned())
-    });
-    let Some(token) = token else {
+    let Some(token) = login_token(&body) else {
         return plain(StatusCode::BAD_REQUEST, "{\"token\": \"…\"} attendu");
     };
     let row = match shared.engine.authenticate(&token).await {
@@ -641,6 +656,12 @@ async fn login(
     reply
 }
 
+/// Le jeton du corps de `POST /login` (`{"token": "…"}`), sans les espaces autour.
+pub(super) fn login_token(body: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    Some(value.get("token")?.as_str()?.trim().to_owned())
+}
+
 /// `POST /logout` : la session du cookie est fermée, le cookie effacé.
 async fn logout(
     shared: Arc<Shared>,
@@ -664,7 +685,7 @@ async fn logout(
     reply
 }
 
-fn is_json(headers: &HeaderMap) -> bool {
+pub(super) fn is_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())

@@ -106,7 +106,8 @@ téléchargement.
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
-  `/logout` ; `Host` et `Origin` vérifiés ; TLS hors de la boucle locale), `remote::page` (la page `ui/src` intégrée, `GET /session`), `remote::tls` (certificat
+  `/logout` ; `Host` et `Origin` vérifiés ; TLS hors de la boucle locale ; fuzzing des
+  lecteurs de requêtes et clients lents dans `remote::fuzz`), `remote::page` (la page `ui/src` intégrée, `GET /session`), `remote::tls` (certificat
   fabriqué à côté de la base, `remote-cert.pem` et `remote-key.pem` lisible par l'utilisateur
   seul, 824 jours, refait à 30 jours ou quand un nom manque ; ou fourni par
   `remote.tlsCert` et `remote.tlsKey`), `winsec` (droits Windows réservés à l'utilisateur :
@@ -301,6 +302,8 @@ AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_local
 # … et vidéos libres réelles téléchargées jusqu'au bout, sous-titres et HLS compris
 # (PeerTube, Commons, Archive, Framatube ; une centaine de Mio) :
 AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_free --nocapture
+# Fuzzing du serveur de l'interface distante, version longue (requêtes abîmées) :
+AURO_FUZZ_CASES=5000 cargo test -p auro-engine --lib remote::fuzz -- --nocapture
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
 AURO_CRASH_CYCLES=1000 AURO_CRASH_SIZE=1073741824 AURO_CRASH_SECONDS=8 \
   cargo test --release -p auro-cli --test crash_resume -- --nocapture
