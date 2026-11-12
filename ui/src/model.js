@@ -740,3 +740,89 @@ export function scopeAllows(scope, need) {
   if (scope === "control") return need !== "admin";
   return scope === need;
 }
+
+// ---------- Accès à distance (SPEC §7.19, étape 3d) ----------
+
+/// Le réglage `remote.listen` (`127.0.0.1:7380`, `[fd00::20]:7380`) en adresse et port ;
+/// null s'il n'a pas cette forme.
+export function splitListen(text) {
+  const found = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d{1,5})$/.exec(text ?? "");
+  if (!found) return null;
+  const port = Number(found[3]);
+  return port >= 1 && port <= 65535 ? { host: found[1] ?? found[2], port } : null;
+}
+
+/// L'inverse : une adresse IPv6 entre crochets.
+export function joinListen(host, port) {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+/// L'adresse de la page (`https://192.168.1.20:7380`, une des `urls` de `remote.status`)
+/// avec le jeton dans l'ancre, que le navigateur n'envoie jamais au serveur.
+export function pageLink(url, token) {
+  return `${url.replace(/\/+$/, "")}/#token=${token}`;
+}
+
+/// Une adresse de la page qui ne se joint que depuis cet ordinateur.
+export function isLoopbackUrl(url) {
+  let host;
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
+/// Adresses qu'aura la page une fois l'accès ouvert, d'après les réglages (même règle que
+/// le moteur : HTTP sur la boucle locale, HTTPS ailleurs ; pour une écoute sur toutes les
+/// adresses, celles des interfaces ; puis les noms de `remote.hosts`). Le QR code d'un
+/// appareil ajouté avant l'ouverture sert ainsi quand elle viendra.
+export function plannedUrls(settings, addresses) {
+  const listen = splitListen(settings["remote.listen"]) ?? { host: "127.0.0.1", port: 7380 };
+  const loopback = listen.host === "localhost" || listen.host === "::1" || /^127\./.test(listen.host);
+  const scheme = loopback ? "http" : "https";
+  const at = (host) => `${scheme}://${joinListen(host, listen.port)}`;
+  let hosts;
+  if (listen.host === "0.0.0.0" || listen.host === "::") {
+    hosts = (addresses ?? []).map((a) => a.address).filter((ip) => listen.host === "::" || !ip.includes(":"));
+  } else {
+    hosts = [listen.host];
+  }
+  const urls = hosts.map(at);
+  for (const name of settings["remote.hosts"] ?? []) {
+    const url = name.includes(":") ? at(name) : `${scheme}://${name}:${listen.port}`;
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+/// Adresses de la page à proposer pour le QR code : celles du réseau d'abord.
+export function qrUrls(urls) {
+  return [...(urls ?? [])].sort((a, b) => Number(isLoopbackUrl(a)) - Number(isLoopbackUrl(b)));
+}
+
+/// Tracé SVG des modules foncés d'un QR code (`{width, modules}` de l'hôte), décalé de la
+/// marge de 4 modules qu'exige la norme.
+export function qrPath(width, modules) {
+  let d = "";
+  for (let y = 0; y < width; y++) {
+    for (let x = 0; x < width; x++) {
+      if (modules[y * width + x] === "1") d += `M${x + 4} ${y + 4}h1v1h-1z`;
+    }
+  }
+  return d;
+}
+
+/// L'écoute suit-elle les réglages enregistrés ? (Le moteur l'ajuste un instant après
+/// `settings.set` ; même règle que `auro remote`.)
+export function remoteSettled(status, settings) {
+  if (!status) return false;
+  const wanted = settings["remote.enabled"] === true;
+  const applied = status.enabled === wanted
+    && (status.listen ?? null) === (settings["remote.listen"] ?? null)
+    && JSON.stringify(status.hosts ?? []) === JSON.stringify(settings["remote.hosts"] ?? [])
+    && (status.tlsCert ?? null) === (settings["remote.tlsCert"] ?? null);
+  const settled = wanted ? status.listening === true || typeof status.error === "string" : !status.listening;
+  return applied && settled;
+}

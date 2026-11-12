@@ -19,6 +19,7 @@ mod files;
 mod links;
 mod opened;
 mod prefs;
+mod qr;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -316,6 +317,32 @@ async fn pick_list(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// QR code de l'accès à distance (étape 3d) : adresse de la page et jeton dans l'ancre.
+#[tauri::command]
+fn qr_code(text: String) -> Result<qr::Qr, String> {
+    qr::encode(&text)
+}
+
+/// Choix d'un certificat ou d'une clé PEM fournis pour l'accès à distance (réglages
+/// `remote.tlsCert` et `remote.tlsKey`) ; `None` si l'utilisateur renonce. Le moteur les lit
+/// lui-même.
+#[tauri::command]
+async fn pick_pem(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("PEM", &["pem", "crt", "cer", "key"])
+        .add_filter("*", &["*"])
+        .pick_file(move |file| {
+            let _ = tx.send(file);
+        });
+    rx.await
+        .ok()
+        .flatten()
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Lit une liste de liens choisie, comme un texte, pour `linkscan.run`.
 #[tauri::command]
 fn read_list(path: String) -> Result<opened::ListFile, String> {
@@ -502,6 +529,8 @@ fn main() {
             links_status,
             set_links,
             notifications_blocked,
+            qr_code,
+            pick_pem,
             quit
         ])
         .setup(move |app| {

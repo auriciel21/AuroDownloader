@@ -22,6 +22,9 @@
 //   notification arrive par onOpened, {kind: "link", link} ou {kind: "magnet", link}.
 //   notificationsBlocked(), facultative : vrai quand le système n'affichera pas ces
 //   notifications (Windows : coupées en général ou pour l'application).
+// - accès à distance (étape 3d), facultatifs : qrCode(text) rend {width, modules} (matrice,
+//   « 1 » pour un module foncé, ligne par ligne) ; pickPem() rend le chemin d'un fichier PEM
+//   choisi, ou null. Sans qrCode, pas de rubrique « Accès à distance ».
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -48,6 +51,9 @@ export function tauriHost() {
     // `watchClipboard`.
     watchesClipboard: true,
     notificationsBlocked: () => invoke("notifications_blocked"),
+    // Accès à distance (étape 3d) : QR code d'un appareil, certificat fourni.
+    qrCode: (text) => invoke("qr_code", { text }),
+    pickPem: () => invoke("pick_pem"),
     linksStatus: () => invoke("links_status"),
     setLinks: (enabled) => invoke("set_links", { enabled }),
   };

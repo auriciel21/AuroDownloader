@@ -9,6 +9,7 @@ import {
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
   subDirParts, scopeAllows, pastedToken, isToken,
+  splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 import { webHost } from "./web.js";
@@ -40,6 +41,8 @@ const caps = {
   add: true,
   control: true,
   admin: true,
+  // Accès à distance (étape 3d) : seulement avec un hôte qui sait faire un QR code.
+  qr: typeof host.qrCode === "function",
 };
 
 function applyScope(scope) {
@@ -1639,6 +1642,8 @@ function onEngine(event) {
       if (result.settings) renderDest();
       if (result.limits || result.settings || result.torrentInterface) renderTorrentSettings();
       if (result.tools || result.settings) renderTools();
+      // Réglages de l'écoute changés ailleurs (CLI) pendant que la rubrique est ouverte.
+      if (result.settings && $("settings").open && !$("panel-remote").hidden) settleRemote();
       // Outils installés pendant que la boîte « Vidéo » attendait : la page est analysée.
       if (result.tools && probeAfterInstall && store.tools?.ready && $("video-dialog").open) {
         probeAfterInstall = false;
@@ -2937,6 +2942,288 @@ async function deleteLogin() {
   (logins.length ? $("logins") : $("login-new")).focus();
 }
 
+// ---------- Accès à distance (SPEC §7.19, étape 3d) ----------
+
+/// État de l'écoute (`remote.status`) et jetons (`token.list`), lus à l'ouverture de la
+/// rubrique et après chaque changement.
+let remoteStatus = null;
+let remoteTokens = [];
+/// Une attente que l'écoute suive les réglages est en cours.
+let remoteSettling = false;
+/// Jeton de l'appareil qu'on vient d'ajouter, montré une fois puis oublié.
+let deviceToken = null;
+
+const SCOPE_LABELS = { read: "Regarder seulement", add: "Ajouter seulement", control: "Tout piloter" };
+
+function remoteFailed(e) {
+  $("r-error").textContent = refused(e);
+  $("r-error").hidden = false;
+}
+
+async function loadRemote() {
+  $("r-error").hidden = true;
+  try {
+    remoteStatus = await host.call("remote.status");
+    remoteTokens = (await host.call("token.list")).tokens ?? [];
+  } catch (e) {
+    remoteFailed(e);
+  }
+  renderRemote();
+}
+
+function remoteStateText(status) {
+  if (!status) return "";
+  if (!status.enabled) return t("Accès coupé.");
+  if (status.listening) return t("Ouvert. Adresses de la page : {0}", (status.urls ?? []).join(", "));
+  if (status.error) return t("Activé, mais fermé : {0}", status.error);
+  return t("Ouverture…");
+}
+
+function renderRemote() {
+  const status = remoteStatus;
+  const listen = splitListen(store.settings["remote.listen"]) ?? { host: "127.0.0.1", port: 7380 };
+  $("r-enabled").checked = store.settings["remote.enabled"] === true;
+  const options = [new Option(t("Cet ordinateur seulement ({0})", "127.0.0.1"), "127.0.0.1")];
+  for (const choice of status?.addresses ?? []) {
+    options.push(new Option(`${choice.interface} — ${choice.address}`, choice.address));
+  }
+  // Une adresse réglée ailleurs (CLI) ou d'une interface absente reste visible.
+  if (!options.some((o) => o.value === listen.host)) {
+    const all = listen.host === "0.0.0.0" || listen.host === "::";
+    options.push(new Option(all ? t("Toutes les interfaces ({0})", listen.host) : t("{0} (absente)", listen.host), listen.host));
+  }
+  $("r-address").replaceChildren(...options);
+  $("r-address").value = listen.host;
+  if (document.activeElement !== $("r-port")) $("r-port").value = String(listen.port);
+  const state = $("r-state");
+  state.textContent = remoteStateText(status);
+  state.classList.toggle("warn", Boolean(status?.enabled && !status.listening && status.error));
+  const cert = status?.certificate;
+  $("r-cert-box").hidden = !cert;
+  if (cert) {
+    $("r-cert-kind").textContent = cert.generated ? t("fabriqué par AuroDownloader") : t("fourni");
+    $("r-fingerprint").textContent = cert.fingerprint;
+    $("r-expires").textContent = longDateFormat.format(new Date(cert.expiresAt));
+    $("r-cert-note").hidden = !cert.generated;
+  }
+  $("r-cert-generated").hidden = !store.settings["remote.tlsCert"];
+  const list = $("r-tokens");
+  const keep = list.value;
+  list.replaceChildren(...remoteTokens.map((token) => {
+    const used = token.lastUsedAt
+      ? t("utilisé le {0}", dateFormat.format(new Date(token.lastUsedAt)))
+      : t("jamais utilisé");
+    return new Option(`${token.name} — ${t(SCOPE_LABELS[token.scope] ?? token.scope)} — ${used}`, token.id);
+  }));
+  if (remoteTokens.some((token) => token.id === keep)) list.value = keep;
+  list.hidden = !remoteTokens.length;
+  $("r-tokens-empty").hidden = remoteTokens.length > 0;
+  for (const id of ["r-enabled", "r-address", "r-port", "r-refresh", "r-cert-provide", "r-cert-generated", "r-token-new"]) {
+    $(id).disabled = !connected;
+  }
+  $("r-token-revoke").disabled = !connected || !list.value;
+}
+
+/// Attend que l'écoute suive les réglages enregistrés (au plus 5 s), en montrant l'état.
+async function settleRemote() {
+  if (remoteSettling) return;
+  remoteSettling = true;
+  try {
+    for (let i = 0; i < 50; i++) {
+      remoteStatus = await host.call("remote.status");
+      renderRemote();
+      if (remoteSettled(remoteStatus, store.settings)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } catch (e) {
+    remoteFailed(e);
+  } finally {
+    remoteSettling = false;
+  }
+}
+
+async function changeRemote(values, done) {
+  $("r-error").hidden = true;
+  try {
+    const result = await host.call("settings.set", { values });
+    Object.assign(store.settings, result.values);
+    if (done) announce(done);
+  } catch (e) {
+    remoteFailed(e);
+  }
+  renderRemote();
+  await settleRemote();
+}
+
+function changeListen() {
+  const port = Number($("r-port").value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    $("r-port").reportValidity();
+    return;
+  }
+  const listen = joinListen($("r-address").value, port);
+  if (listen !== store.settings["remote.listen"]) changeRemote({ "remote.listen": listen });
+}
+
+function openCertDialog() {
+  $("cert-file").value = store.settings["remote.tlsCert"] ?? "";
+  $("cert-key").value = store.settings["remote.tlsKey"] ?? "";
+  $("cert-error").hidden = true;
+  const dialog = $("cert-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("cert-file").focus();
+}
+
+async function pickPem(field) {
+  const path = await host.pickPem().catch(() => null);
+  if (path) $(field).value = path;
+  $(field).focus();
+}
+
+async function saveCert() {
+  $("cert-save").disabled = true;
+  try {
+    const values = { "remote.tlsCert": $("cert-file").value.trim(), "remote.tlsKey": $("cert-key").value.trim() };
+    const result = await host.call("settings.set", { values });
+    Object.assign(store.settings, result.values);
+    $("cert-dialog").close();
+    await settleRemote();
+    $("r-cert-provide").focus();
+  } catch (e) {
+    $("cert-error").textContent = e?.message ?? String(e);
+    $("cert-error").hidden = false;
+  } finally {
+    $("cert-save").disabled = false;
+  }
+}
+
+async function revokeDevice() {
+  const token = remoteTokens.find((x) => x.id === $("r-tokens").value);
+  if (!token) return;
+  try {
+    await host.call("token.revoke", { tokenId: token.id });
+    announce(t("Appareil « {0} » retiré : ses sessions sont fermées", token.name));
+  } catch (e) {
+    remoteFailed(e);
+  }
+  await loadRemote();
+  (remoteTokens.length ? $("r-tokens") : $("r-token-new")).focus();
+}
+
+function openDevice() {
+  forgetDevice();
+  $("device-ask").hidden = false;
+  $("device-show").hidden = true;
+  $("device-create").hidden = false;
+  $("device-cancel").hidden = false;
+  $("device-done").hidden = true;
+  $("device-name").value = "";
+  $("device-scope").value = "control";
+  $("device-error").hidden = true;
+  const dialog = $("device-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("device-name").focus();
+}
+
+/// Le jeton ne reste pas dans la page une fois la boîte fermée.
+function forgetDevice() {
+  deviceToken = null;
+  $("device-token").value = "";
+  $("device-qr").replaceChildren();
+  $("device-url").replaceChildren();
+}
+
+async function createDevice() {
+  $("device-create").disabled = true;
+  try {
+    const made = await host.call("token.create", {
+      name: $("device-name").value.trim(),
+      scope: $("device-scope").value,
+    });
+    deviceToken = made.token;
+    $("device-token").value = made.token;
+    // L'écoute peut avoir changé depuis l'ouverture de la rubrique.
+    remoteStatus = await host.call("remote.status").catch(() => remoteStatus);
+    // Accès pas encore ouvert : l'adresse qu'aura la page, d'après les réglages.
+    const urls = qrUrls(remoteStatus?.listening
+      ? remoteStatus.urls
+      : plannedUrls(store.settings, remoteStatus?.addresses));
+    $("device-url").replaceChildren(...urls.map((url) => new Option(url, url)));
+    $("device-url-field").hidden = urls.length < 2;
+    $("device-ask").hidden = true;
+    $("device-show").hidden = false;
+    $("device-create").hidden = true;
+    $("device-cancel").hidden = true;
+    $("device-done").hidden = false;
+    await drawDeviceQr();
+    $("device-done").focus();
+    announce(t("Appareil « {0} » ajouté", made.name));
+    loadRemote();
+  } catch (e) {
+    $("device-error").textContent = e?.message ?? String(e);
+    $("device-error").hidden = false;
+  } finally {
+    $("device-create").disabled = false;
+  }
+}
+
+async function drawDeviceQr() {
+  const url = $("device-url").value;
+  const box = $("device-qr");
+  box.replaceChildren();
+  const local = $("device-local");
+  const notes = [];
+  if (!remoteStatus?.listening) {
+    notes.push(t("L'accès n'est pas encore ouvert : ce code servira dès que la case « Piloter les téléchargements depuis un autre appareil » sera cochée."));
+  }
+  if (!url || isLoopbackUrl(url)) {
+    notes.push(t("L'écoute est réservée à cet ordinateur : choisissez une adresse du réseau local pour qu'un téléphone puisse joindre la page."));
+  }
+  local.textContent = notes.join(" ");
+  local.hidden = !notes.length;
+  box.hidden = !url;
+  $("device-qr-note").hidden = !url;
+  if (!url || !deviceToken) return;
+  try {
+    box.append(qrSvg(await host.qrCode(pageLink(url, deviceToken))));
+  } catch (e) {
+    $("device-error").textContent = e?.message ?? String(e);
+    $("device-error").hidden = false;
+  }
+}
+
+/// Le QR code dessiné en SVG, noir sur blanc, avec sa marge.
+function qrSvg({ width, modules }) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  const size = width + 8;
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("shape-rendering", "crispEdges");
+  svg.setAttribute("aria-hidden", "true");
+  const background = document.createElementNS(NS, "rect");
+  background.setAttribute("width", String(size));
+  background.setAttribute("height", String(size));
+  background.setAttribute("fill", "#fff");
+  const dark = document.createElementNS(NS, "path");
+  dark.setAttribute("d", qrPath(width, modules));
+  dark.setAttribute("fill", "#000");
+  svg.append(background, dark);
+  return svg;
+}
+
+async function copyDeviceToken() {
+  const field = $("device-token");
+  try {
+    await navigator.clipboard.writeText(field.value);
+    announce(t("Jeton copié"));
+  } catch {
+    field.focus();
+    field.select();
+  }
+}
+
 // ---------- Options ----------
 
 function selectTab(tab, focus = false) {
@@ -3171,9 +3458,44 @@ function wire() {
     $("settings").showModal();
     if (connected) loadLogins();
     if (connected) loadInterfaces();
+    if (connected && caps.qr && caps.admin) loadRemote();
     renderLinks();
     loadTools();
     renderClipboardWarning();
+  });
+  // Accès à distance (étape 3d).
+  $("r-enabled").addEventListener("change", (e) => changeRemote(
+    { "remote.enabled": e.target.checked },
+    e.target.checked ? t("Accès à distance ouvert") : t("Accès à distance coupé"),
+  ));
+  $("r-address").addEventListener("change", changeListen);
+  $("r-port").addEventListener("change", changeListen);
+  $("r-refresh").addEventListener("click", loadRemote);
+  $("r-cert-provide").addEventListener("click", openCertDialog);
+  $("r-cert-generated").addEventListener("click", () => changeRemote(
+    { "remote.tlsCert": null, "remote.tlsKey": null },
+    t("Certificat d'AuroDownloader rétabli"),
+  ));
+  $("cert-file-pick").addEventListener("click", () => pickPem("cert-file"));
+  $("cert-key-pick").addEventListener("click", () => pickPem("cert-key"));
+  $("cert-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    event.preventDefault();
+    saveCert();
+  });
+  $("r-tokens").addEventListener("change", renderRemote);
+  $("r-token-new").addEventListener("click", openDevice);
+  $("r-token-revoke").addEventListener("click", revokeDevice);
+  $("device-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "create") return;
+    event.preventDefault();
+    createDevice();
+  });
+  $("device-url").addEventListener("change", drawDeviceQr);
+  $("device-copy").addEventListener("click", copyDeviceToken);
+  $("device-dialog").addEventListener("close", () => {
+    forgetDevice();
+    $("r-token-new").focus();
   });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {

@@ -148,7 +148,8 @@ téléchargement.
   ne jamais l'activer pour de vrai sans l'accord de l'utilisateur) ; `clipboard` : liens
   copiés (F-30, option désactivée par défaut ; notification du système, clic vers
   « Ajouter » ; sous Windows, une variante lancée depuis `target` notifie sous le nom de
-  PowerShell). Paquets : `bundle.ps1`,
+  PowerShell) ; `qr` : matrice du QR code de l'accès à distance (étape 3d, rubrique des
+  Options ; la page la dessine). Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).

@@ -3442,3 +3442,27 @@ async fn a_sub_folder_is_created_under_the_destination_and_never_escapes_it() {
     assert!(all.get("remote.listen").is_some(), "{all}");
     crate::testing::stop(&engine).await;
 }
+
+/// `remote.status` donne les adresses où l'écoute peut s'ouvrir (étape 3d) : jamais la
+/// boucle locale ni une adresse locale au lien, chacune avec le nom de son interface.
+#[tokio::test]
+async fn remote_status_lists_the_addresses_where_listening_can_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    let status = local.result("remote.status", json!({})).await;
+    let addresses = status["addresses"].as_array().expect("addresses");
+    for choice in addresses {
+        let ip: std::net::IpAddr = choice["address"].as_str().unwrap().parse().unwrap();
+        assert!(!ip.is_loopback() && !ip.is_unspecified(), "{choice}");
+        if let std::net::IpAddr::V4(v4) = ip {
+            assert!(!v4.is_link_local(), "{choice}");
+        }
+        assert!(
+            choice["interface"].as_str().is_some_and(|n| !n.is_empty()),
+            "{choice}"
+        );
+    }
+    crate::testing::stop(&engine).await;
+}

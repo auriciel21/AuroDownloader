@@ -370,6 +370,11 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "urls": state.urls,
                 "hosts": state.hosts,
                 "tlsCert": state.tls_cert,
+                // Adresses où l'écoute peut s'ouvrir (étape 3d, choix du bureau).
+                "addresses": crate::remote::listen_choices().iter().map(|c| json!({
+                    "interface": c.interface,
+                    "address": c.address.to_string(),
+                })).collect::<Vec<_>>(),
             }))
         }
         "token.revoke" => {

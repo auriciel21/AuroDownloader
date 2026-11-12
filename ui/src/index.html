@@ -585,6 +585,70 @@
     </form>
   </dialog>
 
+  <dialog id="device-dialog" aria-labelledby="device-title">
+    <form method="dialog" id="device-form">
+      <h2 id="device-title" data-i18n="Ajouter un appareil">Ajouter un appareil</h2>
+      <div id="device-ask">
+        <label class="field">
+          <span data-i18n="Nom de l'appareil">Nom de l'appareil</span>
+          <input id="device-name" type="text" spellcheck="false" autocomplete="off" maxlength="64" required>
+        </label>
+        <label class="field">
+          <span data-i18n="Droits">Droits</span>
+          <select id="device-scope">
+            <option value="control" data-i18n="Tout piloter : ajouter, arrêter, supprimer">Tout piloter : ajouter, arrêter, supprimer</option>
+            <option value="add" data-i18n="Ajouter seulement">Ajouter seulement</option>
+            <option value="read" data-i18n="Regarder seulement">Regarder seulement</option>
+          </select>
+        </label>
+        <p class="note flush" data-i18n="Les options, les identifiants de sites et cette rubrique restent réservés à cet ordinateur.">Les options, les identifiants de sites et cette rubrique restent réservés à cet ordinateur.</p>
+      </div>
+      <div id="device-show" hidden>
+        <div class="field" id="device-url-field">
+          <label for="device-url" data-i18n="Adresse de la page">Adresse de la page</label>
+          <select id="device-url"></select>
+        </div>
+        <div id="device-qr" class="qr" role="img" data-i18n-label="QR code de l'adresse de la page, jeton compris" aria-label="QR code de l'adresse de la page, jeton compris"></div>
+        <p id="device-qr-note" class="note flush" data-i18n="Visez ce code avec l'appareil photo du téléphone : la page s'ouvre et entre d'elle-même.">Visez ce code avec l'appareil photo du téléphone : la page s'ouvre et entre d'elle-même.</p>
+        <p id="device-local" class="note flush warn" role="status" hidden></p>
+        <div class="field">
+          <label for="device-token" data-i18n="Jeton, à coller dans la page si besoin">Jeton, à coller dans la page si besoin</label>
+          <span class="row"><input id="device-token" type="text" readonly spellcheck="false" class="token">
+            <button type="button" id="device-copy" data-i18n="Copier">Copier</button></span>
+        </div>
+        <p class="note flush warn" data-i18n="Ce code et ce jeton ne seront plus montrés : quiconque les photographie peut entrer avec les droits de cet appareil. Pour en refaire, retirez l'appareil puis ajoutez-le de nouveau.">Ce code et ce jeton ne seront plus montrés : quiconque les photographie peut entrer avec les droits de cet appareil. Pour en refaire, retirez l'appareil puis ajoutez-le de nouveau.</p>
+      </div>
+      <p id="device-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" id="device-cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="create" id="device-create" class="primary" data-i18n="Créer le jeton">Créer le jeton</button>
+        <button value="done" id="device-done" class="primary" formnovalidate hidden data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="cert-dialog" aria-labelledby="cert-title">
+    <form method="dialog" id="cert-form">
+      <h2 id="cert-title" data-i18n="Certificat fourni">Certificat fourni</h2>
+      <p class="note flush" data-i18n="Un certificat et sa clé au format PEM, par exemple ceux d'un nom de domaine de votre réseau. AuroDownloader les relit lui-même ; il ne les copie pas.">Un certificat et sa clé au format PEM, par exemple ceux d'un nom de domaine de votre réseau. AuroDownloader les relit lui-même ; il ne les copie pas.</p>
+      <div class="field">
+        <label for="cert-file" data-i18n="Certificat (chaîne comprise)">Certificat (chaîne comprise)</label>
+        <span class="row"><input id="cert-file" type="text" spellcheck="false" autocomplete="off" required>
+          <button type="button" id="cert-file-pick" data-i18n="Parcourir…" data-i18n-label="Choisir le certificat">Parcourir…</button></span>
+      </div>
+      <div class="field">
+        <label for="cert-key" data-i18n="Clé privée">Clé privée</label>
+        <span class="row"><input id="cert-key" type="text" spellcheck="false" autocomplete="off" required>
+          <button type="button" id="cert-key-pick" data-i18n="Parcourir…" data-i18n-label="Choisir la clé privée">Parcourir…</button></span>
+      </div>
+      <p id="cert-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="cert-save" class="primary" data-i18n="Utiliser">Utiliser</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="settings" class="wide" aria-labelledby="settings-title">
     <form method="dialog">
       <h2 id="settings-title" data-i18n="Options">Options</h2>
@@ -595,6 +659,7 @@
         <button type="button" role="tab" id="tab-torrent" data-needs="admin" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
         <button type="button" role="tab" id="tab-media" data-needs="admin" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
         <button type="button" role="tab" id="tab-logins" data-needs="admin" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
+        <button type="button" role="tab" id="tab-remote" data-needs="admin qr" aria-controls="panel-remote" aria-selected="false" tabindex="-1" data-i18n="Accès à distance">Accès à distance</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
@@ -691,6 +756,39 @@
           <button type="button" id="login-delete" data-i18n="Supprimer">Supprimer</button>
         </div>
         <p id="logins-error" class="form-error" role="alert" hidden></p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-remote" aria-labelledby="tab-remote" hidden>
+        <label class="check"><input type="checkbox" id="r-enabled" aria-describedby="r-enabled-note">
+          <span data-i18n="Piloter les téléchargements depuis un autre appareil">Piloter les téléchargements depuis un autre appareil</span></label>
+        <p class="note" id="r-enabled-note" data-i18n="Un téléphone ou un autre ordinateur ouvre la page d'AuroDownloader dans son navigateur. Chaque appareil entre avec son propre jeton, que vous pouvez lui retirer.">Un téléphone ou un autre ordinateur ouvre la page d'AuroDownloader dans son navigateur. Chaque appareil entre avec son propre jeton, que vous pouvez lui retirer.</p>
+        <div class="field">
+          <label for="r-address" data-i18n="Adresse d'écoute">Adresse d'écoute</label>
+          <span class="row"><select id="r-address" aria-describedby="r-address-note"></select>
+            <input type="number" id="r-port" class="port" min="1" max="65535" required data-i18n-label="Port" aria-label="Port">
+            <button type="button" id="r-refresh" data-i18n="Actualiser la liste">Actualiser la liste</button></span>
+          <span class="note" id="r-address-note" data-i18n="Hors de cet ordinateur, les connexions passent en HTTPS. Sous Windows, le pare-feu demande votre accord à la première ouverture.">Hors de cet ordinateur, les connexions passent en HTTPS. Sous Windows, le pare-feu demande votre accord à la première ouverture.</span>
+        </div>
+        <p id="r-state" class="note flush" role="status"></p>
+        <div id="r-cert-box" hidden>
+          <dl class="facts">
+            <div><dt data-i18n="Certificat">Certificat</dt><dd id="r-cert-kind"></dd></div>
+            <div><dt data-i18n="Empreinte SHA-256">Empreinte SHA-256</dt><dd id="r-fingerprint" class="fingerprint"></dd></div>
+            <div><dt data-i18n="Valable jusqu'au">Valable jusqu'au</dt><dd id="r-expires"></dd></div>
+          </dl>
+          <p class="note flush" id="r-cert-note" data-i18n="Le navigateur de l'appareil prévient que ce certificat n'est pas reconnu : avant de continuer, vérifiez que l'empreinte qu'il montre est bien celle-ci.">Le navigateur de l'appareil prévient que ce certificat n'est pas reconnu : avant de continuer, vérifiez que l'empreinte qu'il montre est bien celle-ci.</p>
+        </div>
+        <span class="row">
+          <button type="button" id="r-cert-provide" data-i18n="Utiliser mon certificat…">Utiliser mon certificat…</button>
+          <button type="button" id="r-cert-generated" data-i18n="Revenir au certificat d'AuroDownloader">Revenir au certificat d'AuroDownloader</button>
+        </span>
+        <h3 id="r-tokens-title" data-i18n="Appareils">Appareils</h3>
+        <select id="r-tokens" size="5" class="logins" aria-labelledby="r-tokens-title"></select>
+        <p id="r-tokens-empty" class="note" data-i18n="Aucun appareil.">Aucun appareil.</p>
+        <div class="row">
+          <button type="button" id="r-token-new" data-i18n="Ajouter un appareil…">Ajouter un appareil…</button>
+          <button type="button" id="r-token-revoke" data-i18n="Retirer">Retirer</button>
+        </div>
+        <p id="r-error" class="form-error" role="alert" hidden></p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
         <p id="about"></p>

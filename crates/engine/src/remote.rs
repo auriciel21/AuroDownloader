@@ -98,6 +98,54 @@ pub struct CertificateInfo {
     pub names: Vec<String>,
 }
 
+/// Une adresse où l'écoute peut s'ouvrir, avec le nom de son interface (« Wi-Fi »), pour
+/// le choix de l'adresse d'écoute au bureau (étape 3d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenChoice {
+    pub interface: String,
+    pub address: IpAddr,
+}
+
+/// Adresses des interfaces réseau où ouvrir l'écoute, hors boucle locale (le bureau propose
+/// « cet ordinateur seulement » à part) : ni adresse locale au lien, ni interface de boucle
+/// locale (`lo` de WSL porte aussi 10.255.255.254). IPv4 d'abord, puis par interface.
+pub fn listen_choices() -> Vec<ListenChoice> {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    let Ok(nics) = NetworkInterface::show() else {
+        return Vec::new();
+    };
+    let loopbacks: Vec<&str> = nics
+        .iter()
+        .filter(|n| n.addr.iter().any(|a| a.ip().is_loopback()))
+        .map(|n| n.name.as_str())
+        .collect();
+    let mut choices: Vec<ListenChoice> = nics
+        .iter()
+        .filter(|n| !loopbacks.contains(&n.name.as_str()))
+        .flat_map(|n| {
+            n.addr.iter().map(|a| ListenChoice {
+                interface: n.name.clone(),
+                address: a.ip(),
+            })
+        })
+        .filter(|c| listenable(&c.address))
+        .collect();
+    choices.sort_by(|a, b| {
+        (a.address.is_ipv6(), &a.interface, a.address).cmp(&(
+            b.address.is_ipv6(),
+            &b.interface,
+            b.address,
+        ))
+    });
+    choices.dedup();
+    choices
+}
+
+/// Une adresse proposée pour l'écoute : joignable depuis un autre appareil.
+fn listenable(ip: &IpAddr) -> bool {
+    crate::torrent::usable_addr(ip) && !ip.is_loopback() && !ip.is_multicast()
+}
+
 /// Délai maximal entre deux contrôles de l'échéance du certificat fabriqué.
 const RENEW_CHECK: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 

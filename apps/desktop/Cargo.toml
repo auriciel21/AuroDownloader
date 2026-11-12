@@ -28,6 +28,8 @@ serde_json = "1.0.154"
 arboard = { version = "3", default-features = false }
 # Langue du système, pour le menu de l'icône avant que la page ne soit chargée.
 sys-locale = "0.3"
+# QR code de l'accès à distance (étape 3d) : la matrice seule, dessinée par la page.
+qrcode = { version = "0.14", default-features = false }
 tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"

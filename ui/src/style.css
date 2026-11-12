@@ -886,3 +886,14 @@ select.logins { display: block; width: 100%; margin: 0.5em 0; }
 #l-links td:first-child { width: 72px; text-align: center; }
 #l-links td:nth-child(3) { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 #l-links td:nth-child(4) { color: var(--muted); }
+
+/* Accès à distance (étape 3d) : port, empreinte, jeton, QR code. Le QR code reste noir sur
+   blanc quel que soit le thème : les appareils photo lisent mal l'inverse. */
+input.port { width: 6.5em; }
+.fingerprint { overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+.note.warn { color: var(--fail); }
+.qr { display: flex; justify-content: center; margin: 8px 0; }
+/* Sans le trait des icônes (règle svg ci-dessus) : il épaissirait chaque module. */
+.qr svg { width: 240px; height: 240px; background: #fff; border-radius: 4px; stroke: none; }
+#panel-remote h3 { margin: 14px 0 0; font-size: 1em; }

@@ -8,6 +8,7 @@ import {
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, parseSizeText, linkFilter,
   reclassifyLink,
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken,
+  splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -590,4 +591,70 @@ test("interface distante : jeton de l'ancre, sous-dossier, portées", () => {
   assert.ok(scopeAllows("admin", "admin") && scopeAllows("control", "add") && scopeAllows("control", "read"));
   assert.ok(!scopeAllows("control", "admin") && !scopeAllows("read", "add") && !scopeAllows("add", "read"));
   assert.ok(scopeAllows("read", "read") && scopeAllows("add", "add"));
+});
+
+test("accès à distance : adresse d'écoute lue et écrite, IPv6 entre crochets", () => {
+  assert.deepEqual(splitListen("127.0.0.1:7380"), { host: "127.0.0.1", port: 7380 });
+  assert.deepEqual(splitListen("[fd00::20]:443"), { host: "fd00::20", port: 443 });
+  assert.equal(splitListen("fd00::20:443"), null);
+  assert.equal(splitListen("127.0.0.1:70000"), null);
+  assert.equal(splitListen(""), null);
+  assert.equal(joinListen("192.168.1.20", 7380), "192.168.1.20:7380");
+  assert.equal(joinListen("fd00::20", 7380), "[fd00::20]:7380");
+  for (const text of ["10.0.0.5:8080", "[::1]:7380"]) {
+    const { host, port } = splitListen(text);
+    assert.equal(joinListen(host, port), text);
+  }
+});
+
+test("accès à distance : lien du QR code, jeton dans l'ancre, adresses du réseau d'abord", () => {
+  const token = "auro_" + "a".repeat(43);
+  const link = pageLink("https://192.168.1.20:7380", token);
+  assert.equal(link, `https://192.168.1.20:7380/#token=${token}`);
+  // La page le relit tel quel.
+  assert.equal(takeHashToken(new URL(link).hash), token);
+  assert.equal(pageLink("https://nas.maison:7380/", token), `https://nas.maison:7380/#token=${token}`);
+  assert.ok(isLoopbackUrl("http://127.0.0.1:7380"));
+  assert.ok(isLoopbackUrl("https://[::1]:7380"));
+  assert.ok(isLoopbackUrl("https://localhost:7380"));
+  assert.ok(!isLoopbackUrl("https://192.168.1.20:7380"));
+  assert.ok(!isLoopbackUrl("https://[fd00::20]:7380"));
+  assert.deepEqual(
+    qrUrls(["http://127.0.0.1:7380", "https://192.168.1.20:7380", "https://nas.maison:7380"]),
+    ["https://192.168.1.20:7380", "https://nas.maison:7380", "http://127.0.0.1:7380"],
+  );
+});
+
+test("accès à distance : tracé du QR code, marge de 4 modules", () => {
+  assert.equal(qrPath(2, "1001"), "M4 4h1v1h-1zM5 5h1v1h-1z");
+  assert.equal(qrPath(1, "0"), "");
+});
+
+test("accès à distance : l'écoute suit-elle les réglages ?", () => {
+  const settings = { "remote.enabled": true, "remote.listen": "192.168.1.20:7380", "remote.hosts": [], "remote.tlsCert": null };
+  const status = { enabled: true, listen: "192.168.1.20:7380", listening: true, hosts: [], tlsCert: null };
+  assert.ok(remoteSettled(status, settings));
+  // Pas encore déplacée.
+  assert.ok(!remoteSettled({ ...status, listen: "127.0.0.1:7380" }, settings));
+  // Activée mais fermée, avec la raison : c'est fini aussi.
+  assert.ok(remoteSettled({ ...status, listening: false, error: "port occupé" }, settings));
+  assert.ok(!remoteSettled({ ...status, listening: false }, settings));
+  // Coupée : fini quand l'écoute est fermée.
+  const off = { ...settings, "remote.enabled": false };
+  assert.ok(remoteSettled({ ...status, enabled: false, listening: false }, off));
+  assert.ok(!remoteSettled({ ...status, enabled: false, listening: true }, off));
+  assert.ok(!remoteSettled(null, settings));
+});
+
+test("accès à distance : adresse de la page avant l'ouverture, d'après les réglages", () => {
+  const settings = (listen, hosts = []) => ({ "remote.listen": listen, "remote.hosts": hosts });
+  assert.deepEqual(plannedUrls(settings("127.0.0.1:7380"), []), ["http://127.0.0.1:7380"]);
+  assert.deepEqual(plannedUrls({}, []), ["http://127.0.0.1:7380"]);
+  assert.deepEqual(plannedUrls(settings("192.168.1.20:7391", ["nas.maison"]), []),
+    ["https://192.168.1.20:7391", "https://nas.maison:7391"]);
+  assert.deepEqual(plannedUrls(settings("[fd00::20]:7380"), []), ["https://[fd00::20]:7380"]);
+  const addresses = [{ interface: "Wi-Fi", address: "192.168.1.20" }, { interface: "Wi-Fi", address: "fd00::20" }];
+  assert.deepEqual(plannedUrls(settings("0.0.0.0:7380"), addresses), ["https://192.168.1.20:7380"]);
+  assert.deepEqual(plannedUrls(settings("[::]:7380"), addresses),
+    ["https://192.168.1.20:7380", "https://[fd00::20]:7380"]);
 });
