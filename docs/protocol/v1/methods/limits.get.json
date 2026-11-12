@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/limits.get.json",
+  "title": "limits.get",
+  "description": "Limites globales.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limits"
+    }
+  }
+}

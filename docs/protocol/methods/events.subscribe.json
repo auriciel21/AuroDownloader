@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/events.subscribe.json",
+  "title": "events.subscribe",
+  "description": "S'abonne aux notifications (SPEC 6.5).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "topics": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "tasks",
+              "queues",
+              "progress"
+            ]
+          }
+        },
+        "progressIntervalMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "topics"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "progressIntervalMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        }
+      },
+      "required": [
+        "topics",
+        "progressIntervalMs",
+        "rev"
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/media.tools.json",
+  "title": "media.tools",
+  "description": "État des outils de la vidéo.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tools"
+    }
+  }
+}

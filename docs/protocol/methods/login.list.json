@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/login.list.json",
+  "title": "login.list",
+  "description": "Identifiants de sites, sans mot de passe (SPEC 7.14).",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/login"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    }
+  }
+}

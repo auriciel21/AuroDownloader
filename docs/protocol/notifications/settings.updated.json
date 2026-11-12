@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/settings.updated.json",
+  "title": "settings.updated",
+  "description": "Réglages changés, seulement eux.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "values": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/settingsValues"
+        }
+      },
+      "required": [
+        "rev",
+        "values"
+      ]
+    }
+  }
+}

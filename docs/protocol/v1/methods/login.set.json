@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/login.set.json",
+  "title": "login.set",
+  "description": "Crée ou change des identifiants ; le mot de passe ne ressort jamais.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        },
+        "site": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "site",
+        "username"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/login"
+    }
+  }
+}

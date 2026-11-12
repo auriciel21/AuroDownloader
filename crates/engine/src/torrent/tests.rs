@@ -580,6 +580,11 @@ async fn choosing_files_downloads_only_those() {
 
     let task = engine.set_files(&id, vec![1]).await.unwrap();
     assert_eq!(task.total_bytes, Some(LEN as u64));
+    // Contrat du protocole (SPEC §9.1) : `task.setFiles` rend cette tâche.
+    crate::rpc::contract::check_reply(
+        "task.setFiles",
+        &serde_json::json!({"result": crate::rpc::task_json(&task)}),
+    );
     // Rien de choisi, ou un rang inconnu : refusé.
     assert!(engine.set_files(&id, vec![]).await.is_err());
     assert!(engine.set_files(&id, vec![9]).await.is_err());

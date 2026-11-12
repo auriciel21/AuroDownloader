@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/engine.cancelEndAction.json",
+  "title": "engine.cancelEndAction",
+  "description": "Annule l'action de fin annoncée.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cancelled"
+      ]
+    }
+  }
+}

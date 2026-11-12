@@ -1,0 +1,9 @@
+{
+  "client": "desktop",
+  "description": "La liaison de l'application de bureau avec le moteur (apps/desktop/src/bridge.rs) ; les autres requêtes sont celles de la page.",
+  "steps": [
+    {"method": "engine.hello", "params": {"client": {"name": "auro-desktop", "version": "0.1.0"}, "protocol": {"min": "1.0", "max": "1.0"}}},
+    {"method": "events.subscribe", "params": {"topics": ["tasks", "queues", "progress"], "progressIntervalMs": 1000}},
+    {"method": "engine.shutdown", "params": {"graceful": true}}
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/engine.warning.json",
+  "title": "engine.warning",
+  "description": "Avertissement du moteur (événements perdus, outils…).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rev",
+        "code",
+        "message"
+      ]
+    }
+  }
+}

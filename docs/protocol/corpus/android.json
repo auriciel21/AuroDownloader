@@ -1,0 +1,23 @@
+{
+  "client": "android",
+  "description": "L'application Android (apps/android, connexion dans le processus, sans engine.hello).",
+  "steps": [
+    {"method": "events.subscribe", "params": {"topics": ["tasks", "queues", "progress"]}},
+    {"method": "sync.snapshot", "params": {}},
+    {"method": "engine.setNetwork", "params": {"usable": true, "metered": false}},
+    {"method": "task.add", "params": {"sources": [{"url": "${url:/android.bin}"}]}, "save": {"task": "/taskId"}},
+    {"method": "task.add", "params": {"sources": [{"torrent": "${torrent}"}]}, "save": {"torrent": "/taskId"}},
+    {"method": "task.get", "params": {"taskId": "${torrent}", "include": ["files"]}},
+    {"method": "task.setFiles", "params": {"taskId": "${torrent}", "selected": [1]}, "expect": ["ok", "INVALID_PARAMS"]},
+    {"method": "task.pause", "params": {"taskIds": ["${task}"]}, "expect": ["ok"]},
+    {"method": "task.resume", "params": {"taskIds": ["${task}"]}},
+    {"method": "task.cancel", "params": {"taskIds": ["${task}"], "deleteFiles": true}},
+    {"method": "task.restart", "params": {"taskIds": ["${task}"]}, "expect": ["ok", "INVALID_STATE"]},
+    {"method": "task.remove", "params": {"taskIds": ["${task}", "${torrent}"], "deleteFiles": true}},
+    {"method": "limits.set", "params": {"downloadBps": null}},
+    {"method": "limits.set", "params": {"uploadBps": 50000}},
+    {"method": "settings.get", "params": {}},
+    {"method": "settings.set", "params": {"values": {"torrent.ratioLimit": 1}}},
+    {"method": "engine.setNetwork", "params": {"usable": false, "metered": false}}
+  ]
+}

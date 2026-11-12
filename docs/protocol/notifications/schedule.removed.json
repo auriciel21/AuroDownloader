@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/schedule.removed.json",
+  "title": "schedule.removed",
+  "description": "Une planification supprimée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "scheduleId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rev",
+        "scheduleId"
+      ]
+    }
+  }
+}

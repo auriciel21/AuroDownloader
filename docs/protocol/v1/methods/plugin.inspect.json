@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/plugin.inspect.json",
+  "title": "plugin.inspect",
+  "description": "Lit et vérifie un plugin sans l'installer.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fetch": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "pluginId",
+        "name",
+        "version",
+        "author",
+        "description",
+        "sites",
+        "fetch",
+        "digest",
+        "size"
+      ]
+    }
+  }
+}

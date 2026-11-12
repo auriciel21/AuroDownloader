@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/history.clear.json",
+  "title": "history.clear",
+  "description": "Efface l'historique (avant une date, ou tout).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "before": {
+          "type": "integer"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "removed"
+      ]
+    }
+  }
+}

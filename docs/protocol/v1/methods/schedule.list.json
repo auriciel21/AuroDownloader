@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/schedule.list.json",
+  "title": "schedule.list",
+  "description": "Les planifications.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/schedule"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    }
+  }
+}

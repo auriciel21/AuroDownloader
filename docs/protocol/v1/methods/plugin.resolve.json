@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/plugin.resolve.json",
+  "title": "plugin.resolve",
+  "description": "Lance le plugin sur une page ; jamais les cookies du site.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "resolutionId": {
+          "type": "string"
+        },
+        "pluginId": {
+          "type": "string"
+        },
+        "pluginName": {
+          "type": "string"
+        },
+        "page": {
+          "type": "string"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            },
+            "required": [
+              "url",
+              "name",
+              "size"
+            ]
+          }
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "resolutionId",
+        "pluginId",
+        "pluginName",
+        "page",
+        "links",
+        "logs"
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.setFiles.json",
+  "title": "task.setFiles",
+  "description": "Fichiers d'un torrent à télécharger (SPEC 7.16).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "taskId",
+        "selected"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/engine.network.json",
+  "title": "engine.network",
+  "description": "Réseau utilisable ou non, facturé ou non.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "usable": {
+          "type": "boolean"
+        },
+        "metered": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rev",
+        "usable",
+        "metered"
+      ]
+    }
+  }
+}

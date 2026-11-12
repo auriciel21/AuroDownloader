@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/task.stateChanged.json",
+  "title": "task.stateChanged",
+  "description": "Changement d'état d'une tâche (jamais abandonné).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskState"
+        },
+        "to": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskState"
+        },
+        "pauseReason": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/pauseReason"
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rev",
+        "taskId",
+        "from",
+        "to",
+        "pauseReason",
+        "errorCode"
+      ]
+    }
+  }
+}

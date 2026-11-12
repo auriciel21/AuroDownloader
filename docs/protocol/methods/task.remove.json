@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.remove.json",
+  "title": "task.remove",
+  "description": "Retire des tâches de la liste.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "deleteFiles": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "taskIds"
+      ]
+    },
+    "result": {
+      "allOf": [
+        {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/batchResult"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "removed"
+      ]
+    }
+  }
+}

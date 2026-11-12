@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/media.tools.json",
+  "title": "media.tools",
+  "description": "État des outils de la vidéo changé.",
+  "$defs": {
+    "params": {
+      "allOf": [
+        {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tools"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        }
+      },
+      "required": [
+        "rev"
+      ]
+    }
+  }
+}

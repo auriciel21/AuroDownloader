@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/linkscan.run.json",
+  "title": "linkscan.run",
+  "description": "Liens d'un texte ou d'une page (SPEC 7.18).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "pageUrl": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "ext": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "file",
+                  "page",
+                  "magnet"
+                ]
+              }
+            },
+            "required": [
+              "url",
+              "name",
+              "ext",
+              "kind"
+            ]
+          }
+        },
+        "pageUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "links"
+      ]
+    }
+  }
+}

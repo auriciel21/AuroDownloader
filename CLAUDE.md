@@ -13,6 +13,10 @@ téléchargement.
 - `docs/ESSAI-EXTENSION.md` : procédure de l'essai de l'extension dans les navigateurs, faite
   par l'utilisateur le 2026-11-08 (porte de la phase 3, franchie) ; essais 10 à 17 de
   l'étape 5d (torrents et vidéo) validés sous Edge le 2026-11-10.
+- `docs/protocol` : contrat du protocole (SPEC 9.1, phase 7) : schémas JSON de chaque méthode
+  et notification, définitions communes, corpus des requêtes de chaque client, version 1
+  figée ; tests dans `crates/engine/src/rpc/contract.rs` ; mode d'emploi dans son
+  `README.md`.
 - `docs/SECURITE.md` : revue de sécurité de l'interface distante, des plugins et du canal
   local (porte de la phase 6, 2026-11-12) : modèle de menace, points vérifiés, constats
   corrigés, risques résiduels. À tenir à jour quand ces parties changent.
@@ -373,7 +377,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Une migration publiée ne se modifie jamais : ajouter `000N_nom.sql`, l'enregistrer dans
   `MIGRATIONS` (`store.rs`) et mettre à jour la section 5 de la spécification.
 - Protocole : ajouter un champ optionnel ou une méthode ne casse rien ; renommer ou supprimer
-  exige une nouvelle version majeure (SPEC 6.1). Mettre à jour la section 6.
+  exige une nouvelle version majeure (SPEC 6.1). Mettre à jour la section 6, et le schéma de
+  la méthode ou de la notification dans `docs/protocol` (les tests du protocole valident
+  chaque réponse et chaque notification contre lui ; une méthode sans schéma les fait
+  échouer). Une requête nouvelle d'un client va dans son corpus (`docs/protocol/corpus`).
+  Ne jamais modifier `docs/protocol/v1` (version 1 figée, garde de compatibilité).
 - Ordre d'écriture : octets écrits et vidés sur disque (`fdatasync`), puis seulement le
   compteur en base (SPEC 5.6, règle 1).
 - Aucune télémétrie. Aucun secret en base ni dans les journaux (SPEC 5.1 et 8.2).
@@ -594,7 +602,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   l'utilisateur.
 - Phase 7, plan du 2026-11-12 (validé par l'utilisateur ; version 1, porte : tous les tests
   bloquants de la SPEC 9.1) : 1. contrat du protocole (schémas JSON des échanges de
-  référence, client de la version précédente) ; 2. journaux et diagnostic (N-12) ; 3. proxy
+  référence, client de la version précédente ; décisions du 2026-11-12 : JSON Schema, tout
+  le protocole, version 1 figée et corpus des clients ; fait le même jour) ; 2. journaux et
+  diagnostic (N-12) ; 3. proxy
   (F-07) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
   (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt

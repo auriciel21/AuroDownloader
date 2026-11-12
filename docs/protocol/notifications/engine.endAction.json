@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/engine.endAction.json",
+  "title": "engine.endAction",
+  "description": "Action de fin annoncée, annulée ou en échec.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "pending": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/endAction"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rev",
+        "pending",
+        "error"
+      ]
+    }
+  }
+}

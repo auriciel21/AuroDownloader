@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/login.delete.json",
+  "title": "login.delete",
+  "description": "Supprime des identifiants.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId"
+      ]
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}

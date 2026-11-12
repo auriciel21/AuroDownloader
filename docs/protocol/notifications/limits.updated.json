@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/limits.updated.json",
+  "title": "limits.updated",
+  "description": "Limites globales changées.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "downloadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        },
+        "uploadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        }
+      },
+      "required": [
+        "rev",
+        "downloadBps",
+        "uploadBps"
+      ]
+    }
+  }
+}

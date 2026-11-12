@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/limits.set.json",
+  "title": "limits.set",
+  "description": "Change les limites globales.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "downloadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "uploadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limits"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/plugin.remove.json",
+  "title": "plugin.remove",
+  "description": "Retire un plugin et son fichier.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId"
+      ]
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}

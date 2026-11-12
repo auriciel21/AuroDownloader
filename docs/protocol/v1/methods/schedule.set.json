@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/schedule.set.json",
+  "title": "schedule.set",
+  "description": "Crée ou change une planification.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "rules": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rules"
+        }
+      },
+      "required": [
+        "name",
+        "rules"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/schedule"
+    }
+  }
+}

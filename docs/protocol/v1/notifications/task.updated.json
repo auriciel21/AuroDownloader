@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/task.updated.json",
+  "title": "task.updated",
+  "description": "Champs d'une tâche qui ont changé, seulement eux.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        },
+        "checksum": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksum"
+        },
+        "fileName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "totalBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "doneBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorDetail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "moving": {
+          "type": "boolean"
+        },
+        "moveError": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rev",
+        "taskId"
+      ]
+    }
+  }
+}

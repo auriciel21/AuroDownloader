@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.list.json",
+  "title": "task.list",
+  "description": "Les tâches, filtrées, page par page.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskState"
+          }
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor",
+        "rev"
+      ]
+    }
+  }
+}

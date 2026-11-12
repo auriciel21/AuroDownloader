@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.add.json",
+  "title": "task.add",
+  "description": "Ajoute un téléchargement.",
+  "$defs": {
+    "params": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/addParams"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId"
+      ]
+    }
+  }
+}

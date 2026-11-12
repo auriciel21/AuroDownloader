@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/engine.hello.json",
+  "title": "engine.hello",
+  "description": "Ouverture de session (SPEC 6.3).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "client": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": []
+        },
+        "protocol": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "string"
+            },
+            "max": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "read",
+            "add",
+            "control",
+            "admin"
+          ]
+        }
+      },
+      "required": [
+        "protocol"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "platform": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "platform"
+          ]
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "scope": {
+          "enum": [
+            "read",
+            "add",
+            "control",
+            "admin"
+          ]
+        }
+      },
+      "required": [
+        "engine",
+        "protocol",
+        "capabilities",
+        "rev",
+        "scope"
+      ]
+    }
+  }
+}

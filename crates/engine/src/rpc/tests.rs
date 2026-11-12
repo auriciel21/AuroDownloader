@@ -19,7 +19,11 @@ use crate::transfer::Options;
 const WAIT: Duration = Duration::from_secs(30);
 
 fn engine(dir: &Path) -> Engine {
-    Engine::start(Config {
+    Engine::start(engine_config(dir)).unwrap()
+}
+
+fn engine_config(dir: &Path) -> Config {
+    Config {
         db_path: dir.join("auro.db"),
         client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
         transfer: Options {
@@ -31,8 +35,7 @@ fn engine(dir: &Path) -> Engine {
         },
         disk_recheck: DISK_RECHECK,
         planning: Planning::default(),
-    })
-    .unwrap()
+    }
 }
 
 fn site(len: u64) -> Server {
@@ -77,7 +80,12 @@ impl TestClient {
             .await
             .expect("pas de message")
             .unwrap()?;
-        Some(serde_json::from_str(&line).unwrap())
+        let message: Value = serde_json::from_str(&line).unwrap();
+        // Contrat du protocole (SPEC §9.1) : toute notification suit son schéma.
+        if message.get("method").is_some() && message.get("id").is_none() {
+            super::contract::check_notification(&message);
+        }
+        Some(message)
     }
 
     /// Prochaine réponse (avec `id`, ou lot) ; met les notifications de côté.
@@ -98,6 +106,8 @@ impl TestClient {
         self.send_raw(&request.to_string()).await;
         let reply = self.reply().await;
         assert_eq!(reply["id"], json!(id));
+        // Contrat du protocole (SPEC §9.1) : tout résultat, toute erreur suit son schéma.
+        super::contract::check_reply(method, &reply);
         reply
     }
 
@@ -1911,6 +1921,228 @@ async fn a_torrent_file_in_base64_makes_a_torrent_task() {
         );
     }
     crate::testing::stop(&engine).await;
+}
+
+/// Contrat du protocole (SPEC §9.1) : ce que les autres tests n'atteignent pas par le
+/// protocole est appelé ici, et validé par son schéma : choix des fichiers d'un torrent,
+/// interfaces réseau, fin d'abonnement, annonce et exécution d'une action de fin.
+#[tokio::test]
+async fn the_rest_of_the_protocol_follows_its_contract() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(Config {
+        planning: Planning {
+            check_every: Duration::from_millis(20),
+            end_delay: Duration::from_millis(200),
+            ..Planning::default()
+        },
+        ..engine_config(dir.path())
+    })
+    .unwrap();
+    let server = site(64 * 1024);
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks", "queues"]}))
+        .await;
+
+    // Torrent de deux fichiers, en pause : ses fichiers, puis un seul choisi.
+    let mut metainfo = b"d4:infod5:filesld6:lengthi3e4:pathl5:a.binee\
+        d6:lengthi4e4:pathl5:b.bineee4:name3:lot12:piece lengthi16384e6:pieces20:"
+        .to_vec();
+    metainfo.extend([7u8; 20]);
+    metainfo.extend_from_slice(b"ee");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&metainfo);
+    let dest = dir_text(dir.path());
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"torrent": encoded}], "destDir": dest, "startPaused": true}),
+        )
+        .await["taskId"]
+        .clone();
+    // Fichiers pas encore connus (métadonnées attendues) : refusé, selon le contrat des
+    // erreurs ; le résultat de `task.setFiles` est validé par le test des torrents.
+    c.result("task.get", json!({"taskId": id, "include": ["files"]}))
+        .await;
+    assert_eq!(
+        c.error_code("task.setFiles", json!({"taskId": id, "selected": [1]}))
+            .await,
+        "INVALID_PARAMS"
+    );
+    c.result("task.remove", json!({"taskIds": [id], "deleteFiles": true}))
+        .await;
+    c.result("torrent.interfaces", json!({})).await;
+
+    // Action de fin : une planification ouverte à toute heure, la veille à la fin (sans
+    // effet dans les tests) ; un téléchargement fini l'annonce, puis elle s'exécute.
+    let rules = json!({
+        "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "00:00"}],
+        "onDone": "sleep",
+    });
+    let schedule = c
+        .result("schedule.set", json!({"name": "Toujours", "rules": rules}))
+        .await;
+    let queue = c.result("queue.list", json!({})).await["items"][0]["queueId"].clone();
+    c.result(
+        "queue.update",
+        json!({"queueId": queue, "scheduleId": schedule["scheduleId"]}),
+    )
+    .await;
+    c.result(
+        "task.add",
+        json!({"sources": [{"url": server.url("/fin.bin")}], "destDir": dest}),
+    )
+    .await;
+    let announced = c
+        .notification("engine.endAction", |p| !p["pending"].is_null())
+        .await;
+    assert_eq!(announced["pending"]["action"], "sleep");
+    c.notification("engine.endAction", |p| p["pending"].is_null())
+        .await;
+    c.result("events.unsubscribe", json!({})).await;
+    crate::testing::stop(&engine).await;
+}
+
+/// Contrat du protocole (SPEC §9.1) : « un client de la version précédente doit toujours
+/// fonctionner ». Les requêtes réelles de chaque client (`docs/protocol/corpus`) suivent
+/// leur schéma de paramètres, et sont rejouées contre le moteur : résultat ou erreur
+/// attendus, validés par leur schéma.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_clients_corpus_still_works() {
+    use base64::Engine as _;
+    use std::collections::HashMap;
+
+    let corpus_dir = super::contract::dir().join("corpus");
+    let mut files: Vec<_> = std::fs::read_dir(&corpus_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    files.sort();
+    assert!(files.len() >= 5, "{files:?}");
+    for file in files {
+        let corpus: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let client = corpus["client"].as_str().unwrap().to_owned();
+        let dir = tempfile::tempdir().unwrap();
+        let site = Arc::new(Mutex::new(FileSite::new(64 * 1024)));
+        let file_handler = crate::testing::file_handler(site);
+        let server = crate::testing::serve(move |r| match r.path.as_str() {
+            "/page.html" | "/video.html" => crate::testing::reply(
+                "200 OK",
+                &[("Content-Type", "text/html")],
+                b"<html><body><a href=\"d.bin\">d</a> <a href=\"e.zip\">e</a></body></html>",
+            ),
+            "/lot.meta4" => {
+                let xml = "<?xml version=\"1.0\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\">\
+                    <file name=\"m.bin\"><size>65536</size><url>http://HOTE/m.bin</url></file></metalink>"
+                    .replace("HOTE", r.header("host").unwrap_or_default());
+                crate::testing::reply(
+                    "200 OK",
+                    &[("Content-Type", "application/metalink4+xml")],
+                    xml.as_bytes(),
+                )
+            }
+            _ => file_handler(r),
+        });
+        let engine = engine(dir.path());
+        engine
+            .set_download_dir(Some(dir_text(dir.path())))
+            .await
+            .unwrap();
+        let mut vars: HashMap<String, Value> = HashMap::new();
+        let b64 = |bytes: &[u8]| json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        vars.insert("dir".into(), json!(dir_text(dir.path())));
+        let mut metainfo = b"d4:infod5:filesld6:lengthi3e4:pathl5:a.binee\
+            d6:lengthi4e4:pathl5:b.bineee4:name3:lot12:piece lengthi16384e6:pieces20:"
+            .to_vec();
+        metainfo.extend([7u8; 20]);
+        metainfo.extend_from_slice(b"ee");
+        vars.insert("torrent".into(), b64(&metainfo));
+        let meta = format!(
+            "<?xml version=\"1.0\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\">\
+             <file name=\"m.bin\"><size>65536</size><url>{}</url></file></metalink>",
+            server.url("/m.bin")
+        );
+        vars.insert("metalink".into(), b64(meta.as_bytes()));
+        let out = format!(
+            r#"{{"links": [{{"url": "{}", "name": "p.bin"}}]}}"#,
+            server.url("/p.bin")
+        );
+        let plugin = crate::testing::plugin_files::fixed(&out);
+        vars.insert(
+            "pluginDigest".into(),
+            json!(crate::plugins::digest_of(&plugin)),
+        );
+        vars.insert("plugin".into(), b64(&plugin));
+
+        let mut c = TestClient::connect(&engine);
+        for (i, step) in corpus["steps"].as_array().unwrap().iter().enumerate() {
+            let method = step["method"].as_str().unwrap();
+            let params = substitute(&step["params"], &vars, &server);
+            let at = format!("{client} n° {i} : {method} {params}");
+            // Ce que le client envoie suit le contrat.
+            super::contract::check_params(method, &params);
+            if step["replay"] == json!(false) {
+                continue;
+            }
+            let expect: Vec<String> = match step.get("expect") {
+                None => vec!["ok".into()],
+                Some(list) => list
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_owned())
+                    .collect(),
+            };
+            let reply = c.call(method, params.clone()).await;
+            let outcome = match reply.get("error") {
+                None => "ok".to_owned(),
+                Some(e) => e["data"]["code"].as_str().unwrap_or_default().to_owned(),
+            };
+            assert!(expect.contains(&outcome), "{at} → {reply}");
+            if let Some(save) = step.get("save").and_then(Value::as_object) {
+                for (name, pointer) in save {
+                    let value = reply["result"]
+                        .pointer(pointer.as_str().unwrap())
+                        .unwrap_or_else(|| panic!("{at} : {pointer} absent de {reply}"));
+                    vars.insert(name.clone(), value.clone());
+                }
+            }
+        }
+        crate::testing::stop(&engine).await;
+    }
+
+    /// `${nom}` seul : la valeur ; dans un texte, `${url:/chemin}` et `${dir}` remplacés.
+    fn substitute(value: &Value, vars: &HashMap<String, Value>, server: &Server) -> Value {
+        match value {
+            Value::String(s) => {
+                if let Some(name) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}'))
+                    && !name.contains(['$', ':'])
+                {
+                    return vars
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| panic!("variable inconnue : {name}"));
+                }
+                let mut text = s.clone();
+                while let Some(start) = text.find("${url:") {
+                    let end = start + text[start..].find('}').expect("} attendu");
+                    let path = text[start + 6..end].to_owned();
+                    text.replace_range(start..=end, &server.url(&path));
+                }
+                Value::String(text.replace("${dir}", vars["dir"].as_str().unwrap()))
+            }
+            Value::Array(items) => {
+                Value::Array(items.iter().map(|v| substitute(v, vars, server)).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), substitute(v, vars, server)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
 }
 
 /// Un gros `.torrent` (16 Mio au plus côté clients, SPEC §6.3) passe en un seul message :

@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/metalink.read.json",
+  "title": "metalink.read",
+  "description": "Lit un Metalink (SPEC 7.7), contenu ou adresse.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "Contenu en base64.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "enum": [
+            "4",
+            "3"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "checksum": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "algo": {
+                        "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/algo"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "algo",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "urls": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "droppedUrls": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "index",
+              "name",
+              "path",
+              "size",
+              "checksum",
+              "urls",
+              "droppedUrls"
+            ]
+          }
+        },
+        "ignored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "reason"
+            ]
+          }
+        },
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "files",
+        "ignored"
+      ]
+    }
+  }
+}

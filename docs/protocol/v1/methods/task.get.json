@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.get.json",
+  "title": "task.get",
+  "description": "Une tâche, et sur demande ses segments, ses sources et ses fichiers.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "segments",
+              "sources",
+              "files"
+            ]
+          }
+        }
+      },
+      "required": [
+        "taskId"
+      ]
+    },
+    "result": {
+      "allOf": [
+        {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "idx": {
+                "type": "integer"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "doneBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "receiving": {
+                "type": "boolean"
+              },
+              "sourceId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "idx",
+              "start",
+              "end",
+              "doneBytes",
+              "receiving"
+            ]
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceId": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "acceptsRanges": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "rank": {
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "unknown",
+                  "ok",
+                  "slow",
+                  "failed"
+                ]
+              },
+              "avgBps": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "failCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "sourceId",
+              "url",
+              "acceptsRanges",
+              "rank",
+              "state",
+              "avgBps",
+              "failCount",
+              "lastError"
+            ]
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string"
+              },
+              "length": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "selected": {
+                "type": "boolean"
+              },
+              "doneBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "index",
+              "path",
+              "length",
+              "selected",
+              "doneBytes"
+            ]
+          }
+        },
+        "plugin": {
+          "type": "object",
+          "properties": {
+            "page": {
+              "type": "string"
+            },
+            "pluginId": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "page",
+            "pluginId",
+            "name"
+          ]
+        }
+      }
+    }
+  }
+}

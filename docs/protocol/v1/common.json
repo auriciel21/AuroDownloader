@@ -1,0 +1,902 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/common.json",
+  "title": "Définitions communes du protocole d'AuroDownloader",
+  "$defs": {
+    "rev": {
+      "description": "Révision du moteur (SPEC 6.10).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "ms": {
+      "description": "Date en millisecondes Unix (UTC).",
+      "type": "integer"
+    },
+    "bytes": {
+      "description": "Taille en octets.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "bps": {
+      "description": "Débit en octets par seconde.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "description": "Limite de débit en octets par seconde ; null : aucune.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "limitParam": {
+      "description": "Limite de débit : absente, inchangée ; null, retirée ; sinon un entier strictement positif.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "taskKind": {
+      "enum": [
+        "http",
+        "torrent",
+        "media"
+      ]
+    },
+    "taskState": {
+      "enum": [
+        "queued",
+        "active",
+        "paused",
+        "retry_wait",
+        "verifying",
+        "post_processing",
+        "seeding",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "pauseReason": {
+      "enum": [
+        "user",
+        "schedule",
+        "disk_full",
+        "network",
+        "file_changed",
+        null
+      ]
+    },
+    "algo": {
+      "enum": [
+        "sha256",
+        "sha1",
+        "md5"
+      ]
+    },
+    "checksum": {
+      "description": "Empreinte attendue (F-11) ; source : fichier voisin où le moteur l'a lue, null si elle vient de l'utilisateur.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "algo": {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/algo"
+            },
+            "value": {
+              "type": "string"
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "algo",
+            "value",
+            "source"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "checksumParam": {
+      "description": "Empreinte donnée : algorithme et valeur en hexadécimal ; null la retire (task.update).",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "algo": {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/algo"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "algo",
+            "value"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task": {
+      "description": "Une tâche (SPEC 6.4).",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskKind"
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskState"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "totalBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "doneBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxConnections": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        },
+        "pauseReason": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/pauseReason"
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorDetail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "createdAt": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+        },
+        "finishedAt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "moving": {
+          "type": "boolean"
+        },
+        "publicOnly": {
+          "type": "boolean"
+        },
+        "checksum": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksum"
+        }
+      },
+      "required": [
+        "taskId",
+        "kind",
+        "queueId",
+        "state",
+        "priority",
+        "displayName",
+        "destDir",
+        "fileName",
+        "totalBytes",
+        "doneBytes",
+        "maxConnections",
+        "speedLimitBps",
+        "pauseReason",
+        "errorCode",
+        "errorDetail",
+        "retryCount",
+        "createdAt",
+        "finishedAt",
+        "moving",
+        "publicOnly",
+        "checksum"
+      ]
+    },
+    "queue": {
+      "description": "Une file.",
+      "type": "object",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "maxActive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        },
+        "scheduleId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "queueId",
+        "name",
+        "position",
+        "maxActive",
+        "speedLimitBps",
+        "scheduleId"
+      ]
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7
+          }
+        },
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "days",
+        "start",
+        "end"
+      ]
+    },
+    "rules": {
+      "type": "object",
+      "properties": {
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/window"
+          }
+        },
+        "onDone": {
+          "enum": [
+            "none",
+            "sleep",
+            "shutdown"
+          ]
+        }
+      },
+      "required": [
+        "windows",
+        "onDone"
+      ]
+    },
+    "schedule": {
+      "description": "Une planification et son ouverture (SPEC 7.11).",
+      "type": "object",
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "rules": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rules"
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "nextChangeAt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scheduleId",
+        "name",
+        "enabled",
+        "rules",
+        "open",
+        "nextChangeAt"
+      ]
+    },
+    "endAction": {
+      "description": "Action de fin annoncée, ou null.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "queueId": {
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "sleep",
+                "shutdown"
+              ]
+            },
+            "at": {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+            }
+          },
+          "required": [
+            "queueId",
+            "action",
+            "at"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settingsValues": {
+      "description": "Réglages du moteur ; une connexion à jeton ne voit pas ceux de remote.*.",
+      "type": "object",
+      "properties": {
+        "downloads.dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "downloads.preallocate": {
+          "type": "boolean"
+        },
+        "downloads.neighborChecksum": {
+          "type": "boolean"
+        },
+        "torrent.ratioLimit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "torrent.upnp": {
+          "type": "boolean"
+        },
+        "torrent.interface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media.autoUpdate": {
+          "type": "boolean"
+        },
+        "remote.enabled": {
+          "type": "boolean"
+        },
+        "remote.allowPrivate": {
+          "type": "boolean"
+        },
+        "remote.listen": {
+          "type": "string"
+        },
+        "remote.hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remote.tlsCert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote.tlsKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "settingsChange": {
+      "description": "Réglages à changer (settings.set) : ceux de settingsValues ; remote.hosts et remote.listen à null reviennent à leur valeur par défaut ; remote.tlsCert et remote.tlsKey se donnent ensemble.",
+      "type": "object",
+      "properties": {
+        "downloads.dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "downloads.preallocate": {
+          "type": "boolean"
+        },
+        "downloads.neighborChecksum": {
+          "type": "boolean"
+        },
+        "torrent.ratioLimit": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "torrent.upnp": {
+          "type": "boolean"
+        },
+        "torrent.interface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media.autoUpdate": {
+          "type": "boolean"
+        },
+        "remote.enabled": {
+          "type": "boolean"
+        },
+        "remote.allowPrivate": {
+          "type": "boolean"
+        },
+        "remote.tlsCert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote.tlsKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote.listen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote.hosts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "downloadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        },
+        "uploadBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limit"
+        }
+      },
+      "required": [
+        "downloadBps",
+        "uploadBps"
+      ]
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "origin": {
+              "enum": [
+                "download",
+                "system"
+              ]
+            }
+          },
+          "required": [
+            "version",
+            "origin"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tools": {
+      "description": "Outils de la vidéo (SPEC 7.17).",
+      "type": "object",
+      "properties": {
+        "ytdlp": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tool"
+        },
+        "ffmpeg": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tool"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "installing": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ytdlp",
+        "ffmpeg",
+        "ready",
+        "installing",
+        "error"
+      ]
+    },
+    "plugin": {
+      "description": "Un plugin installé (SPEC 7.20).",
+      "type": "object",
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fetch": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "digest": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "installedAt": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+        }
+      },
+      "required": [
+        "pluginId",
+        "name",
+        "version",
+        "author",
+        "description",
+        "sites",
+        "fetch",
+        "digest",
+        "enabled",
+        "installedAt"
+      ]
+    },
+    "login": {
+      "type": "object",
+      "properties": {
+        "loginId": {
+          "type": "string"
+        },
+        "site": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId",
+        "site",
+        "username"
+      ]
+    },
+    "token": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "read",
+            "add",
+            "control"
+          ]
+        },
+        "createdAt": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+        },
+        "lastUsedAt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "scope",
+        "createdAt",
+        "lastUsedAt"
+      ]
+    },
+    "taskError": {
+      "description": "Une tâche refusée, avec le code d'erreur de la section 6.7.",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "code",
+        "message"
+      ]
+    },
+    "indexError": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "code",
+        "message"
+      ]
+    },
+    "indexTask": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "taskId"
+      ]
+    },
+    "batchResult": {
+      "type": "object",
+      "properties": {
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/taskError"
+          }
+        }
+      },
+      "required": [
+        "taskIds",
+        "errors"
+      ]
+    },
+    "rpcError": {
+      "description": "Erreur JSON-RPC (SPEC 6.7) : data.code est stable.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ]
+    },
+    "addParams": {
+      "description": "Paramètres de task.add (SPEC 6.4).",
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "torrent": {
+                "description": "Fichier .torrent en base64.",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "media": {
+          "type": "object",
+          "properties": {
+            "pageUrl": {
+              "type": "string"
+            },
+            "format": {
+              "type": "string"
+            },
+            "container": {
+              "type": "string"
+            },
+            "subtitles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pageUrl"
+          ]
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "subDir": {
+          "type": "string"
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": "string"
+        },
+        "maxConnections": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "startPaused": {
+          "type": "boolean"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "checksum": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksumParam"
+        },
+        "plugin": {
+          "description": "false : l'adresse telle quelle, sans plugin (SPEC 7.20).",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

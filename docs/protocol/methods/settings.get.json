@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/settings.get.json",
+  "title": "settings.get",
+  "description": "Réglages du moteur.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/settingsValues"
+        }
+      },
+      "required": [
+        "values"
+      ]
+    }
+  }
+}

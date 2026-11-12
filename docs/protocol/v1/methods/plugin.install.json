@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/plugin.install.json",
+  "title": "plugin.install",
+  "description": "Installe un plugin sur l'empreinte acceptée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "digest"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/plugin"
+    }
+  }
+}

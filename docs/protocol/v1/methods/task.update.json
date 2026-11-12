@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.update.json",
+  "title": "task.update",
+  "description": "Change la limite, l'empreinte, l'adresse, ou le dossier et le nom d'une tâche (un à la fois).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "checksum": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksumParam"
+        },
+        "url": {
+          "type": "string"
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/queue.updated.json",
+  "title": "queue.updated",
+  "description": "Une file créée ou changée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "queue": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/queue"
+        }
+      },
+      "required": [
+        "rev",
+        "queue"
+      ]
+    }
+  }
+}

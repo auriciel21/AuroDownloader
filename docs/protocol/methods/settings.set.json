@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/settings.set.json",
+  "title": "settings.set",
+  "description": "Change des réglages ; tous vérifiés avant d'en changer un.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/settingsChange"
+        }
+      },
+      "required": [
+        "values"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/settingsValues"
+        }
+      },
+      "required": [
+        "values"
+      ]
+    }
+  }
+}

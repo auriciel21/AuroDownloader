@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/metalink.add.json",
+  "title": "metalink.add",
+  "description": "Une tâche par fichier choisi d'un Metalink.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "select": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "idempotencyKey": {
+          "type": "string"
+        },
+        "maxConnections": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "subDir": {
+          "type": "string"
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "startPaused": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string"
+              },
+              "taskId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "path",
+              "taskId"
+            ]
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "path",
+              "code",
+              "message"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tasks",
+        "errors"
+      ]
+    }
+  }
+}

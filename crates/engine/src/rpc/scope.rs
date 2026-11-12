@@ -157,27 +157,7 @@ mod tests {
     /// par son nom) doit donc y avoir la sienne, sauf `engine.hello`.
     #[test]
     fn every_served_method_has_a_scope() {
-        let source = include_str!("methods.rs");
-        let mut served = Vec::new();
-        for line in source.lines() {
-            let line = line.trim_start().trim_start_matches("| ");
-            let Some(rest) = line.strip_prefix('"') else {
-                continue;
-            };
-            let Some((name, after)) = rest.split_once('"') else {
-                continue;
-            };
-            let arm = after.trim_start().starts_with("=>") || after.trim_start().starts_with('|');
-            let dotted = name.split_once('.').is_some_and(|(a, b)| {
-                !a.is_empty()
-                    && !b.is_empty()
-                    && a.bytes().all(|c| c.is_ascii_lowercase())
-                    && b.bytes().all(|c| c.is_ascii_alphabetic())
-            });
-            if arm && dotted {
-                served.push(name.to_owned());
-            }
-        }
+        let served = super::super::contract::served_methods();
         assert!(served.len() > 40, "{} méthodes trouvées", served.len());
         let none = json!({});
         let missing: Vec<&String> = served

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/task.removed.json",
+  "title": "task.removed",
+  "description": "Une tâche retirée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rev",
+        "taskId"
+      ]
+    }
+  }
+}

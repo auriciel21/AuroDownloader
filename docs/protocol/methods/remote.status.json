@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/remote.status.json",
+  "title": "remote.status",
+  "description": "État de l'écoute de l'interface distante (SPEC 7.19).",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "listen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "listening": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tls": {
+          "type": "boolean"
+        },
+        "certificate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "fingerprint": {
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+                },
+                "generated": {
+                  "type": "boolean"
+                },
+                "names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "fingerprint",
+                "expiresAt",
+                "generated",
+                "names"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tlsCert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "interface": {
+                "type": "string"
+              },
+              "address": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "interface",
+              "address"
+            ]
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "listen",
+        "listening",
+        "error",
+        "tls",
+        "certificate",
+        "urls",
+        "hosts",
+        "tlsCert",
+        "addresses"
+      ]
+    }
+  }
+}

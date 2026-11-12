@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/engine.torrentInterface.json",
+  "title": "engine.torrentInterface",
+  "description": "L'interface réseau des torrents est là ou non.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "up": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rev",
+        "up"
+      ]
+    }
+  }
+}

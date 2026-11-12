@@ -662,7 +662,7 @@ Le moteur parle JSON-RPC 2.0, quel que soit le client ou le transport : applicat
 - **Paramètres nommés** : `params` est toujours un objet, jamais un tableau.
 - **Noms de méthodes** : `espace.verbe`, en minuscules et casse mixte (`task.add`, `queue.update`).
 - **Dates et tailles** : millisecondes Unix en UTC, octets, octets par seconde, tous en entiers.
-- **Évolution** : ajouter un champ optionnel ou une méthode ne casse rien ; supprimer ou renommer exige une nouvelle version majeure du protocole.
+- **Évolution** : ajouter un champ optionnel ou une méthode ne casse rien ; supprimer ou renommer exige une nouvelle version majeure du protocole. Les schémas JSON de chaque méthode et notification sont dans `docs/protocol` (depuis le 2026-11-12, phase 7) ; ceux de la version 1 y sont figés (`docs/protocol/v1`), et un test refuse tout changement qui casserait un client de cette version. Un client ignore un champ qu'il ne connaît pas et traite une valeur inconnue (nouvel état, nouveau code d'erreur) comme une valeur générique : une réponse peut gagner des valeurs.
 - **Idempotence** : `task.add` accepte une `idempotencyKey` ; rejouer le même appel ne crée pas de doublon (utile pour l'extension qui réessaie). Mise en œuvre (2026-11-07) : une clé de 1 à 256 octets ; un ajout dont la clé est déjà celle d'une tâche présente rend cette tâche, sans rien changer ni annoncer, même si ses autres paramètres diffèrent ; la clé est libérée quand la tâche est retirée.
 
 ### 6.2 Transports et authentification
@@ -1790,7 +1790,7 @@ Le projet repose sur un principe simple : aucune version ne sort si un test de r
 | Reprise sous arrêt brutal | Tuer le moteur à des instants aléatoires pendant un téléchargement de 1 Go, puis vérifier l'empreinte du fichier final ; 1 000 cycles (objectif de la section 1) | Oui |
 | Performance | Mesures face à aria2, à nombre de connexions égal, sur serveur local bridé (HTTP et HTTPS) et sur serveurs réels. Bloquent : un débit inférieur de plus de 5 % à celui d'aria2, et un coût processeur par octet (processus et vidage sur disque) au-dessus du seuil de N-01. La porte se mesure sous Linux en intégration continue ; Windows se mesure à part, avec et sans exclusion antivirus du dossier de téléchargement | Oui |
 | Sécurité | Cas de la section 8.1 (traversée de dossier, `Host` et `Origin` falsifiés, SSRF), fuzzing des lecteurs d'en-têtes, d'URL et de fichiers `.torrent` | Oui |
-| Contrat du protocole | Échanges de référence validés par des schémas JSON ; un client de la version précédente doit toujours fonctionner | Oui |
+| Contrat du protocole | Échanges de référence validés par des schémas JSON ; un client de la version précédente doit toujours fonctionner | Oui. Fait le 2026-11-12 (phase 7, étape 1) : schémas JSON Schema 2020-12 de toutes les méthodes et notifications (`docs/protocol`), réponses et notifications de tous les tests du protocole validées, corpus des requêtes réelles de la page, de la CLI, du relais, d'Android et du bureau rejoué contre le moteur, garde de compatibilité avec la version 1 figée |
 | Plateformes | Intégration continue sur Windows, Linux et émulateur Android | Oui |
 | Accessibilité | Parcours au clavier et avec les lecteurs d'écran NVDA (Windows), Orca (Linux) et TalkBack (Android) | Pour la v1 seulement |
 

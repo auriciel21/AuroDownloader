@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/schedule.delete.json",
+  "title": "schedule.delete",
+  "description": "Supprime une planification.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "scheduleId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId"
+      ]
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/task.restart.json",
+  "title": "task.restart",
+  "description": "Retélécharge des tâches depuis le début.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "deleteFiles": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "taskIds"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/batchResult"
+    }
+  }
+}

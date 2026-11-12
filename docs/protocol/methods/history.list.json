@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/history.list.json",
+  "title": "history.list",
+  "description": "Historique, les plus récents d'abord (F-35).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "before": {
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "historyId": {
+                "type": "string"
+              },
+              "taskId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "finalPath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "totalBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "sourceHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finalState": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finishedAt": {
+                "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ms"
+              }
+            },
+            "required": [
+              "historyId",
+              "taskId",
+              "displayName",
+              "finalPath",
+              "totalBytes",
+              "sourceHost",
+              "finalState",
+              "sha256",
+              "finishedAt"
+            ]
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ]
+    }
+  }
+}

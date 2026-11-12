@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/sync.snapshot.json",
+  "title": "sync.snapshot",
+  "description": "État complet, pour repartir après un trou de révision (SPEC 6.10).",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+          }
+        },
+        "queues": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/queue"
+          }
+        },
+        "limits": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limits"
+        },
+        "settings": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/settingsValues"
+        },
+        "networkUsable": {
+          "type": "boolean"
+        },
+        "networkMetered": {
+          "type": "boolean"
+        },
+        "torrentInterfaceUp": {
+          "type": "boolean"
+        },
+        "schedules": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/schedule"
+          }
+        },
+        "endAction": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/endAction"
+        }
+      },
+      "required": [
+        "rev",
+        "tasks",
+        "queues",
+        "limits",
+        "settings",
+        "networkUsable",
+        "networkMetered",
+        "torrentInterfaceUp",
+        "schedules",
+        "endAction"
+      ]
+    }
+  }
+}

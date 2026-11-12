@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/task.added.json",
+  "title": "task.added",
+  "description": "Une tâche ajoutée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "task": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/task"
+        }
+      },
+      "required": [
+        "rev",
+        "task"
+      ]
+    }
+  }
+}

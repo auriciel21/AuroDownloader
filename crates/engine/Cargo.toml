@@ -77,6 +77,9 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 rustls = { version = "0.23.46", features = ["aws_lc_rs"] }
 tempfile = "3.27.0"
+# Contrat du protocole (SPEC §9.1, phase 7) : réponses et notifications validées contre les
+# schémas de `docs/protocol`. Sans résolution par le réseau.
+jsonschema = { version = "0.61.2", default-features = false }
 # Temps simulé pour les tests des seaux de jetons (`limit`).
 tokio = { version = "1.53.3", features = ["macros", "rt", "test-util", "time"] }
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/token.revoke.json",
+  "title": "token.revoke",
+  "description": "Retire un jeton et ferme ses connexions.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "tokenId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenId"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "revoked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revoked"
+      ]
+    }
+  }
+}

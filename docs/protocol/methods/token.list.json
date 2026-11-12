@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/token.list.json",
+  "title": "token.list",
+  "description": "Les jetons, sans leur valeur.",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/token"
+          }
+        }
+      },
+      "required": [
+        "tokens"
+      ]
+    }
+  }
+}

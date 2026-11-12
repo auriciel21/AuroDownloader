@@ -1,0 +1,14 @@
+{
+  "client": "relay",
+  "description": "Le relais de l'extension navigateur (crates/cli/src/relay.rs), limité à la portée add.",
+  "steps": [
+    {"method": "engine.hello", "params": {"client": {"name": "auro-relay", "version": "0.1.0"}, "protocol": {"min": "1.0", "max": "1.0"}, "scope": "add"}},
+    {"method": "task.add", "params": {"sources": [{"url": "${url:/capture.bin}"}], "startPaused": false, "idempotencyKey": "extension-1", "headers": {"Referer": "https://exemple.org/page", "Cookie": "session=1", "User-Agent": "Mozilla/5.0"}}},
+    {"method": "task.add", "params": {"sources": [{"url": "${url:/capture.bin}"}], "startPaused": false, "idempotencyKey": "extension-1"}},
+    {"method": "task.add", "params": {"sources": [{"torrent": "${torrent}"}], "startPaused": true, "idempotencyKey": "extension-2"}},
+    {"method": "task.add", "params": {"sources": [{"url": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=essai"}], "startPaused": true}},
+    {"method": "media.probe", "params": {"pageUrl": "${url:/video.html}"}, "expect": ["TOOLS_MISSING", "EXTRACTOR_FAILED"]},
+    {"method": "task.add", "params": {"media": {"pageUrl": "${url:/video.html}", "format": "bv*+ba/b"}, "idempotencyKey": "extension-3"}, "expect": ["ok", "TOOLS_MISSING"]},
+    {"method": "task.list", "params": {}, "expect": ["UNAUTHORIZED"]}
+  ]
+}

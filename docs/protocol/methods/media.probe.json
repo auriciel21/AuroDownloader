@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/media.probe.json",
+  "title": "media.probe",
+  "description": "Décrit la vidéo d'une page par yt-dlp (SPEC 7.17).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "pageUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pageUrl"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "durationS": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "extractor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thumbnail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "formats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "formatId": {
+                "type": "string"
+              },
+              "ext": {
+                "type": "string"
+              },
+              "vcodec": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "acodec": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "height": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "fps": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tbr": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "filesize": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "filesizeApprox": {
+                "type": "boolean"
+              },
+              "protocol": {
+                "type": "string"
+              },
+              "drm": {
+                "type": "boolean"
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "formatId",
+              "ext",
+              "vcodec",
+              "acodec",
+              "width",
+              "height",
+              "fps",
+              "tbr",
+              "filesize",
+              "filesizeApprox",
+              "protocol",
+              "drm",
+              "note"
+            ]
+          }
+        },
+        "subtitles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "durationS",
+        "extractor",
+        "thumbnail",
+        "formats",
+        "subtitles"
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/schedule.updated.json",
+  "title": "schedule.updated",
+  "description": "Une planification créée, changée, ouverte ou fermée.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "schedule": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/schedule"
+        }
+      },
+      "required": [
+        "rev",
+        "schedule"
+      ]
+    }
+  }
+}

@@ -15,6 +15,8 @@ use crate::scheduler::{EngineError, PendingEnd, ScheduleView};
 use crate::store::StoreError;
 use crate::store::tasks::{QueueRow, TaskRow};
 
+#[cfg(test)]
+pub(crate) mod contract;
 pub mod local;
 mod methods;
 mod scope;

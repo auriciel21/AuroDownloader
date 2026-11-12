@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/task.progress.json",
+  "title": "task.progress",
+  "description": "Avancement groupé ; peut être sauté par un client lent.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "doneBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "totalBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "bps": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "connections": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "etaS": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "verifiedBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uploadedBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uploadBps": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "taskId",
+              "doneBytes",
+              "totalBytes",
+              "bps",
+              "connections",
+              "etaS"
+            ]
+          }
+        }
+      },
+      "required": [
+        "rev",
+        "items"
+      ]
+    }
+  }
+}

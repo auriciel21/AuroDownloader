@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/media.installTools.json",
+  "title": "media.installTools",
+  "description": "Installe yt-dlp et ffmpeg (sur accord de l'utilisateur).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/tools"
+    }
+  }
+}

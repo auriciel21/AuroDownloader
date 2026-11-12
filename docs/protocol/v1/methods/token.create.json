@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/token.create.json",
+  "title": "token.create",
+  "description": "Crée un jeton de l'interface distante ; il n'est rendu qu'ici.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "read",
+            "add",
+            "control"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "result": {
+      "allOf": [
+        {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/token"
+        }
+      ],
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token"
+      ]
+    }
+  }
+}

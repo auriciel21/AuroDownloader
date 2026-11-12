@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/queue.update.json",
+  "title": "queue.update",
+  "description": "Change une file.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "maxActive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "scheduleId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "queueId"
+      ]
+    },
+    "result": {
+      "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/queue"
+    }
+  }
+}

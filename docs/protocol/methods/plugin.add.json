@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/plugin.add.json",
+  "title": "plugin.add",
+  "description": "Une tâche par lien choisi d'une résolution.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "resolutionId": {
+          "type": "string"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "destDir": {
+          "type": "string"
+        },
+        "subDir": {
+          "type": "string"
+        },
+        "queueId": {
+          "type": "string"
+        },
+        "speedLimitBps": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/limitParam"
+        },
+        "startPaused": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "resolutionId",
+        "links"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/indexTask"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/indexError"
+          }
+        }
+      },
+      "required": [
+        "tasks",
+        "errors"
+      ]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/engine.shutdown.json",
+  "title": "engine.shutdown",
+  "description": "Arrêt du moteur ; les tâches en cours repartiront au prochain démarrage.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "graceful": {
+          "description": "Envoyé par la CLI et le bureau ; l'arrêt est toujours propre (tâches enregistrées).",
+          "type": "boolean"
+        }
+      }
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}
