@@ -157,7 +157,9 @@ téléchargement.
   copiés (F-30, option désactivée par défaut ; notification du système, clic vers
   « Ajouter » ; sous Windows, une variante lancée depuis `target` notifie sous le nom de
   PowerShell) ; `qr` : matrice du QR code de l'accès à distance (étape 3d, rubrique des
-  Options ; la page la dessine). Paquets : `bundle.ps1`,
+  Options ; la page la dessine) ; plugins (étape 4c) : `pick_plugin` et `opened::read_plugin`
+  (`.wasm` choisi, lu en base64 pour le moteur, jamais exécuté par l'application), rubrique
+  « Plugins » des Options de la page. Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).
@@ -568,7 +570,11 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   fichiers ni système, réseau seulement par le moteur vers les domaines déclarés (réseau
   public), limites de mémoire, de calcul et de temps ; installé depuis un fichier choisi
   par l'utilisateur, sans catalogue ni mise à jour seule, permissions et empreinte
-  acceptées, de nouveau si elles changent ; Windows et Linux d'abord, Android plus tard) ;
+  acceptées, de nouveau si elles changent ; Windows et Linux d'abord, Android plus tard ;
+  4b moteur et CLI, faite le 2026-11-12, SPEC 7.20 ; 4c bureau et page : rubrique
+  « Plugins », plugin lancé à la validation d'« Ajouter », liens à cocher comme un
+  Metalink, case « sans plugin », page d'origine dans les Propriétés, décisions de
+  l'utilisateur du 2026-11-12) ;
   5. porte : revue de sécurité de l'API distante et des plugins.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans

@@ -8,7 +8,7 @@ import {
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
-  subDirParts, scopeAllows, pastedToken, isToken,
+  subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
 } from "./model.js";
 import { tauriHost } from "./host.js";
@@ -43,6 +43,8 @@ const caps = {
   admin: true,
   // Accès à distance (étape 3d) : seulement avec un hôte qui sait faire un QR code.
   qr: typeof host.qrCode === "function",
+  // Rubrique « Plugins » (étape 4c) : seulement avec un hôte qui sait lire un fichier choisi.
+  plugins: typeof host.readPlugin === "function",
 };
 
 function applyScope(scope) {
@@ -969,6 +971,11 @@ function renderDetails() {
   set("name", name);
   set("dir", task.destDir ?? "");
   set("url", source?.url ?? "");
+  // Tâche venue d'un plugin (SPEC §7.20) : sa page, et le plugin qui l'a lue.
+  const origin = detailsFull?.plugin;
+  set("plugin", origin
+    ? t("{0} (plugin {1})", origin.page, origin.name ?? t("retiré"))
+    : "");
   set("state", taskStateText(task));
   set("size", task.totalBytes != null ? bytes(task.totalBytes, lang, t) : t("inconnue"));
   set("done", pct ? t("{0} ({1})", bytes(task.doneBytes, lang, t), pct) : bytes(task.doneBytes, lang, t));
@@ -1236,6 +1243,7 @@ function mirrorsError({ error, url }) {
     case "many": return t("Des miroirs ne valent que pour une seule adresse.");
     case "torrent": return t("Un torrent trouve ses pairs lui-même : pas de miroir à donner.");
     case "metalink": return t("Un Metalink donne lui-même les miroirs de chaque fichier.");
+    case "plugin": return t("Une page d'hébergeur donne ses liens par son plugin : pas de miroir à donner.");
     case "scheme": return t("Un miroir est une adresse http:// ou https:// : {0}", url);
     case "twice": return t("Adresse donnée deux fois : {0}", url);
     default: return t("{0} sources au plus, la principale comprise.", MAX_SOURCES);
@@ -1847,6 +1855,110 @@ function renderAddMetalinks() {
   box.hidden = !addMetalinks.length;
 }
 
+/// Pages d'hébergeurs lues par leur plugin (SPEC §7.20, étape 4c), en attente de l'ajout :
+/// `{resolution, chosen}`, `resolution` rendue par `plugin.resolve` (gardée 10 minutes par
+/// le moteur), `chosen` les rangs des liens cochés.
+let addPluginPages = [];
+/// Numéro de la dernière recherche des plugins des adresses saisies : une réponse plus
+/// ancienne est écartée.
+let pluginMatchSeq = 0;
+let pluginMatchTimer = 0;
+
+/// Plugins des adresses (`plugin.match`, sans requête vers les sites) : adresse → `{pluginId,
+/// name}`. Un moteur sans plugins, ou un refus, ne donne rien.
+async function matchPlugins(urls) {
+  const found = new Map();
+  for (const url of urls.filter(pluginCandidate).slice(0, 50)) {
+    try {
+      const { plugin } = await host.call("plugin.match", { url });
+      if (plugin) found.set(url, plugin);
+    } catch {
+      break;
+    }
+  }
+  return found;
+}
+
+/// Montre, sous les adresses, les plugins qui liront certaines d'entre elles, et la case
+/// pour les ajouter telles quelles.
+async function renderPluginMatch() {
+  const seq = ++pluginMatchSeq;
+  const urls = $("urls").value.split(/\s+/).filter(Boolean);
+  const found = connected ? await matchPlugins(urls) : new Map();
+  if (seq !== pluginMatchSeq) return;
+  const names = [...new Set([...found.values()].map((p) => p.name))];
+  $("add-plugin-note").textContent = names.length === 1
+    ? t("Page lue par le plugin {0}, qui en donnera les liens.", names[0])
+    : t("Pages lues par les plugins {0}, qui en donneront les liens.", names.join(", "));
+  $("add-plugin-row").hidden = !names.length;
+}
+
+function schedulePluginMatch() {
+  clearTimeout(pluginMatchTimer);
+  pluginMatchTimer = setTimeout(renderPluginMatch, 300);
+}
+
+/// Liens de chaque page lue, à cocher, et les messages du plugin, repliés.
+function renderAddPluginPages() {
+  const box = $("add-plugin-pages");
+  box.replaceChildren(...addPluginPages.map((entry) => {
+    const r = entry.resolution;
+    const group = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    const title = document.createElement("span");
+    title.className = "path";
+    title.textContent = t("{0} (plugin {1})", r.page, r.pluginName);
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = t("Retirer");
+    drop.setAttribute("aria-label", t("Retirer {0}", r.page));
+    drop.addEventListener("click", () => {
+      addPluginPages.splice(addPluginPages.indexOf(entry), 1);
+      renderAddPluginPages();
+      $("urls").focus();
+    });
+    legend.append(title, drop);
+    group.append(legend);
+    r.links.forEach((link, index) => {
+      const label = document.createElement("label");
+      label.className = "check";
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = entry.chosen.has(index);
+      tick.addEventListener("change", () => {
+        if (tick.checked) entry.chosen.add(index);
+        else entry.chosen.delete(index);
+      });
+      const text = document.createElement("span");
+      text.className = "path";
+      const name = pluginLinkName(link);
+      text.textContent = link.size != null ? t("{0} ({1})", name, bytes(link.size, lang, t)) : name;
+      text.title = link.url;
+      label.append(tick, text);
+      group.append(label);
+    });
+    if (!r.links.length) {
+      const none = document.createElement("p");
+      none.className = "note flush";
+      none.textContent = t("Le plugin n'a trouvé aucun lien sur cette page.");
+      group.append(none);
+    }
+    // Messages du plugin (`auro.log`) : repliés, ouverts quand il n'a rien trouvé.
+    if (r.logs?.length) {
+      const details = document.createElement("details");
+      details.open = !r.links.length;
+      const summary = document.createElement("summary");
+      summary.textContent = t("Messages du plugin ({0})", r.logs.length);
+      const pre = document.createElement("pre");
+      pre.textContent = r.logs.join("\n");
+      details.append(summary, pre);
+      group.append(details);
+    }
+    return group;
+  }));
+  box.hidden = !addPluginPages.length;
+}
+
 async function pickTorrentFiles() {
   const paths = await host.pickTorrents().catch(() => []);
   await takeTorrentFiles(paths);
@@ -1885,6 +1997,8 @@ function openAdd() {
   renderDest();
   renderAddTorrents();
   readWaitingMetalinks();
+  renderAddPluginPages();
+  renderPluginMatch();
   const dialog = $("add-dialog");
   dialog.returnValue = "";
   dialog.showModal();
@@ -1899,19 +2013,26 @@ async function closeAdd() {
   }
   const field = $("urls");
   let urls = field.value.split(/\s+/).filter(Boolean);
-  if ((!urls.length && !addTorrents.length && !addMetalinks.length) || !connected) return;
+  if ((!urls.length && !addTorrents.length && !addMetalinks.length && !addPluginPages.length) || !connected) return;
+  // Pages d'hébergeurs (SPEC §7.20) : celles qu'un plugin lira, sauf « sans plugin ».
+  const noPlugin = $("add-no-plugin").checked;
+  const pluginUrls = noPlugin ? new Map() : await matchPlugins(urls);
+  const hosted = pluginUrls.size > 0 || addPluginPages.length > 0;
   // F-11 : l'empreinte est celle d'un seul fichier, téléchargé en HTTP.
   const { checksum, error } = parseChecksum($("add-checksum").value);
   const torrents = addTorrents.length > 0 || urls.some(isMagnet);
   const metalinks = addMetalinks.length > 0 || urls.some(isMetalinkUrl);
-  if (error || (checksum && (urls.length + addTorrents.length + addMetalinks.length > 1 || torrents || metalinks))) {
+  const items = urls.length + addTorrents.length + addMetalinks.length + addPluginPages.length;
+  if (error || (checksum && (items > 1 || torrents || metalinks || hosted))) {
     showError(error
       ? checksumError()
       : torrents
         ? t("Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.")
         : metalinks
           ? t("Un Metalink donne lui-même l'empreinte de chaque fichier.")
-          : t("Une empreinte ne vaut que pour une seule adresse."));
+          : hosted
+            ? t("Une page d'hébergeur donne ses liens par son plugin : pas d'empreinte à donner.")
+            : t("Une empreinte ne vaut que pour une seule adresse."));
     openAdd();
     $("add-checksum").focus();
     return;
@@ -1925,6 +2046,7 @@ async function closeAdd() {
   }
   // Miroirs (SPEC §7.7) : d'autres adresses du même fichier, pour une seule adresse HTTP.
   const parsed = parseMirrors($("add-mirrors").value, urls, addTorrents.length, addMetalinks.length);
+  if (!parsed.error && parsed.mirrors.length && hosted) parsed.error = "plugin";
   if (parsed.error) {
     showError(mirrorsError(parsed));
     openAdd();
@@ -1960,14 +2082,45 @@ async function closeAdd() {
       return;
     }
   }
+  // Pages d'hébergeurs : lues d'abord par leur plugin. Une page d'un seul lien s'ajoute
+  // ensuite avec le reste ; une page de plusieurs liens, ou d'aucun, revient dans la boîte
+  // pour le choix. Une page que le plugin n'a pas pu lire reste dans le champ.
+  if (pluginUrls.size) {
+    const unread = [];
+    let readError = null;
+    let toChoose = false;
+    for (const url of pluginUrls.keys()) {
+      try {
+        const resolution = await host.call("plugin.resolve", { url });
+        addPluginPages.push({ resolution, chosen: new Set(resolution.links.map((_, i) => i)) });
+        toChoose ||= resolution.links.length !== 1;
+      } catch (e) {
+        unread.push(url);
+        readError ??= { message: t("{0} : {1}", url, e?.message ?? String(e)) };
+      }
+    }
+    urls = urls.filter((u) => !pluginUrls.has(u) || unread.includes(u));
+    field.value = urls.join("\n");
+    renderPluginMatch();
+    if (readError || toChoose) {
+      showError(readError
+        ? refused(readError)
+        : t("Choisissez les liens des pages d'hébergeurs, puis « Démarrer » ou « Télécharger plus tard »."));
+      openAdd();
+      return;
+    }
+  }
   const failed = [];
   const failedTorrents = [];
   const failedMetalinks = [];
+  const failedPages = [];
   let firstError = null;
-  // Sans destDir : le dossier des téléchargements du moteur.
+  // Sans destDir : le dossier des téléchargements du moteur. « Sans plugin » : la page
+  // telle quelle (`plugin: false`).
   const add = async (source) => {
     const params = { sources: [source, ...(source.url ? mirrors : [])], startPaused: choice === "later", ...sub };
     if (checksum) params.checksum = checksum;
+    if (noPlugin && source.url) params.plugin = false;
     await host.call("task.add", params);
   };
   for (const url of urls) {
@@ -2007,13 +2160,39 @@ async function closeAdd() {
       firstError ??= e;
     }
   }
+  // Une tâche par lien coché d'une page lue ; une page dont un lien est refusé reste dans
+  // la boîte, ce lien seul coché.
+  for (const page of addPluginPages) {
+    const r = page.resolution;
+    const links = [...page.chosen].sort((a, b) => a - b);
+    if (!links.length) {
+      failedPages.push(page);
+      firstError ??= { message: t("aucun lien choisi dans {0}", r.page) };
+      continue;
+    }
+    try {
+      const result = await host.call("plugin.add", { resolutionId: r.resolutionId, links, startPaused: choice === "later", ...sub });
+      if (result.errors.length) {
+        page.chosen = new Set(result.errors.map((e) => e.index));
+        failedPages.push(page);
+        const first = result.errors[0];
+        firstError ??= { message: t("{0} : {1}", pluginLinkName(r.links[first.index] ?? { url: r.page }), first.message) };
+      }
+    } catch (e) {
+      failedPages.push(page);
+      firstError ??= e;
+    }
+  }
   field.value = failed.join("\n");
   addTorrents = failedTorrents;
   addMetalinks = failedMetalinks;
-  const refusedCount = failed.length + failedTorrents.length + failedMetalinks.length;
+  addPluginPages = failedPages;
+  const refusedCount = failed.length + failedTorrents.length + failedMetalinks.length + failedPages.length;
   if (!refusedCount) {
     $("add-checksum").value = "";
     $("add-mirrors").value = "";
+    $("add-no-plugin").checked = false;
+    $("add-plugin-row").hidden = true;
   }
   if (refusedCount) {
     showError(t("{0} ajout(s) refusé(s) : {1}", refusedCount, firstError?.message ?? ""));
@@ -2942,6 +3121,160 @@ async function deleteLogin() {
   (logins.length ? $("logins") : $("login-new")).focus();
 }
 
+// ---------- Plugins d'hébergeurs (SPEC §7.20, étape 4c) ----------
+
+/// Plugins installés (`plugin.list`), lus à l'ouverture des Options et après chaque changement.
+let plugins = [];
+/// Fichier lu et vérifié par le moteur (`plugin.inspect`), en attente de l'accord :
+/// `{name, data, inspected}`.
+let pendingPlugin = null;
+
+async function loadPlugins(select) {
+  $("plugins-error").hidden = true;
+  try {
+    plugins = (await host.call("plugin.list")).plugins ?? [];
+  } catch (e) {
+    plugins = [];
+    $("plugins-error").textContent = refused(e);
+    $("plugins-error").hidden = false;
+  }
+  renderPlugins(select);
+}
+
+const pluginLabel = (p) => p.enabled ? t("{0} {1}", p.name, p.version) : t("{0} {1} (désactivé)", p.name, p.version);
+
+function renderPlugins(select) {
+  const list = $("plugins");
+  const keep = select ?? list.value;
+  list.replaceChildren(...plugins.map((p) => {
+    const option = document.createElement("option");
+    option.value = p.pluginId;
+    option.textContent = pluginLabel(p);
+    return option;
+  }));
+  if (plugins.some((p) => p.pluginId === keep)) list.value = keep;
+  else if (plugins.length) list.value = plugins[0].pluginId;
+  list.hidden = !plugins.length;
+  $("plugins-empty").hidden = plugins.length > 0;
+  const chosen = plugins.find((p) => p.pluginId === list.value);
+  $("plugin-facts").hidden = !chosen;
+  if (chosen) {
+    $("pf-sites").textContent = chosen.sites.join(", ");
+    $("pf-fetch").textContent = chosen.fetch.join(", ");
+    $("pf-author").textContent = chosen.author ?? "";
+    $("pf-author-row").hidden = !chosen.author;
+    $("pf-description").textContent = chosen.description ?? "";
+    $("pf-description-row").hidden = !chosen.description;
+    $("pf-digest").textContent = chosen.digest;
+    $("pf-installed").textContent = dateFormat.format(new Date(chosen.installedAt));
+  }
+  $("plugin-install").disabled = !connected;
+  $("plugin-toggle").disabled = !connected || !chosen;
+  $("plugin-remove").disabled = !connected || !chosen;
+  $("plugin-toggle").textContent = chosen && !chosen.enabled ? t("Activer") : t("Désactiver");
+}
+
+/// Choix d'un fichier `.wasm`, lu par le moteur sans être installé, puis montré pour accord.
+async function pickPlugin() {
+  $("plugins-error").hidden = true;
+  let file;
+  try {
+    const path = await host.pickPlugin();
+    if (!path) return;
+    file = await host.readPlugin(path);
+  } catch (e) {
+    $("plugins-error").textContent = refused(e);
+    $("plugins-error").hidden = false;
+    return;
+  }
+  let inspected;
+  try {
+    inspected = await host.call("plugin.inspect", { data: file.data });
+  } catch (e) {
+    $("plugins-error").textContent = t("{0} : {1}", file.name, e?.message ?? String(e));
+    $("plugins-error").hidden = false;
+    return;
+  }
+  pendingPlugin = { name: file.name, data: file.data, inspected };
+  const fill = (id, text) => {
+    $(id).textContent = text ?? "";
+    const row = $(`${id}-row`);
+    if (row) row.hidden = !text;
+  };
+  fill("pi-file", file.name);
+  fill("pi-name", inspected.name);
+  fill("pi-id", inspected.pluginId);
+  fill("pi-version", inspected.version);
+  fill("pi-author", inspected.author);
+  fill("pi-description", inspected.description);
+  fill("pi-sites", inspected.sites.join(", "));
+  fill("pi-fetch", inspected.fetch.join(", "));
+  fill("pi-size", bytes(inspected.size, lang, t));
+  fill("pi-digest", inspected.digest);
+  // Même identifiant : une mise à jour, que l'utilisateur voit comme telle.
+  const installed = plugins.find((p) => p.pluginId === inspected.pluginId);
+  $("pi-replace").textContent = !installed
+    ? ""
+    : installed.digest === inspected.digest
+      ? t("Ce plugin est déjà installé, identique.")
+      : t("Remplace la version {0} installée ; ses permissions sont celles montrées ici.", installed.version);
+  $("pi-replace").hidden = !installed;
+  $("plugin-error").hidden = true;
+  const dialog = $("plugin-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("plugin-accept").focus();
+}
+
+/// Installe le fichier montré, sur l'empreinte que l'utilisateur vient d'accepter.
+async function installPlugin() {
+  if (!pendingPlugin) return;
+  $("plugin-accept").disabled = true;
+  try {
+    const row = await host.call("plugin.install", {
+      data: pendingPlugin.data,
+      digest: pendingPlugin.inspected.digest,
+    });
+    $("plugin-dialog").close();
+    announce(t("Plugin {0} installé", row.name));
+    await loadPlugins(row.pluginId);
+    $("plugins").focus();
+  } catch (e) {
+    $("plugin-error").textContent = e?.message ?? String(e);
+    $("plugin-error").hidden = false;
+  } finally {
+    $("plugin-accept").disabled = false;
+  }
+}
+
+async function togglePlugin() {
+  const chosen = plugins.find((p) => p.pluginId === $("plugins").value);
+  if (!chosen) return;
+  try {
+    await host.call("plugin.enable", { pluginId: chosen.pluginId, enabled: !chosen.enabled });
+    announce(chosen.enabled ? t("Plugin {0} désactivé", chosen.name) : t("Plugin {0} activé", chosen.name));
+  } catch (e) {
+    $("plugins-error").textContent = refused(e);
+    $("plugins-error").hidden = false;
+  }
+  await loadPlugins(chosen.pluginId);
+  $("plugin-toggle").focus();
+}
+
+async function removePlugin() {
+  const chosen = plugins.find((p) => p.pluginId === $("plugins").value);
+  if (!chosen) return;
+  try {
+    await host.call("plugin.remove", { pluginId: chosen.pluginId });
+    announce(t("Plugin {0} retiré", chosen.name));
+  } catch (e) {
+    $("plugins-error").textContent = refused(e);
+    $("plugins-error").hidden = false;
+  }
+  await loadPlugins();
+  (plugins.length ? $("plugins") : $("plugin-install")).focus();
+}
+
 // ---------- Accès à distance (SPEC §7.19, étape 3d) ----------
 
 /// État de l'écoute (`remote.status`) et jetons (`token.list`), lus à l'ouverture de la
@@ -3459,6 +3792,7 @@ function wire() {
     if (connected) loadLogins();
     if (connected) loadInterfaces();
     if (connected && caps.qr && caps.admin) loadRemote();
+    if (connected && caps.plugins && caps.admin) loadPlugins();
     renderLinks();
     loadTools();
     renderClipboardWarning();
@@ -3497,6 +3831,19 @@ function wire() {
     forgetDevice();
     $("r-token-new").focus();
   });
+  // Plugins (étape 4c).
+  $("plugins").addEventListener("change", () => renderPlugins());
+  $("plugin-install").addEventListener("click", pickPlugin);
+  $("plugin-toggle").addEventListener("click", togglePlugin);
+  $("plugin-remove").addEventListener("click", removePlugin);
+  $("plugin-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "install") return;
+    // Installé d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    installPlugin();
+  });
+  // Le fichier lu ne reste pas dans la page ; la boîte rend elle-même le focus au bouton.
+  $("plugin-dialog").addEventListener("close", () => { pendingPlugin = null; });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {
     const login = logins.find((l) => l.loginId === $("logins").value);
@@ -3563,6 +3910,8 @@ function wire() {
   addEventListener("resize", () => closeMenu(false));
 
   $("add-dialog").addEventListener("close", closeAdd);
+  // Plugins des adresses saisies (étape 4c) : `plugin.match` seulement, sans requête aux sites.
+  $("urls").addEventListener("input", schedulePluginMatch);
   $("urls").addEventListener("keydown", (event) => {
     // Entrée démarre ; Maj+Entrée passe à la ligne.
     if (event.key === "Enter" && !event.shiftKey) {

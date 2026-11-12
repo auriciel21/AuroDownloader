@@ -178,6 +178,14 @@ export const isMetalinkName = (name) => /\.(meta4|metalink)$/i.test((name ?? "")
 export const isMetalinkUrl = (text) =>
   /^https?:\/\/[^?#\s]*\.(meta4|metalink)([?#]\S*)?$/i.test((text ?? "").trim());
 
+/// Adresse qu'un plugin d'hébergeur pourrait lire (SPEC §7.20) : une page HTTP(S), pas un
+/// Metalink. Le moteur dit lui-même quel plugin la prend en charge (`plugin.match`).
+export const pluginCandidate = (url) => /^https?:\/\//i.test(url ?? "") && !isMetalinkUrl(url);
+
+/// Nom d'un lien rendu par un plugin : le sien, sinon la fin de son adresse, sinon l'adresse.
+export const pluginLinkName = (link) =>
+  link.name || link.url.split(/[?#]/)[0].split("/").pop() || link.url;
+
 /// Adresse HTTP ou HTTPS : la seule que prend un miroir.
 const isWebUrl = (text) => /^https?:\/\/\S+$/i.test(text);
 

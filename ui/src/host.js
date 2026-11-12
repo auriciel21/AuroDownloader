@@ -25,6 +25,9 @@
 // - accès à distance (étape 3d), facultatifs : qrCode(text) rend {width, modules} (matrice,
 //   « 1 » pour un module foncé, ligne par ligne) ; pickPem() rend le chemin d'un fichier PEM
 //   choisi, ou null. Sans qrCode, pas de rubrique « Accès à distance ».
+// - plugins (étape 4c), facultatifs : pickPlugin() rend le chemin d'un fichier .wasm choisi,
+//   ou null ; readPlugin(path) rend {name, data} (base64). Sans eux, pas de rubrique
+//   « Plugins » (l'ajout par un plugin reste possible).
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -54,6 +57,9 @@ export function tauriHost() {
     // Accès à distance (étape 3d) : QR code d'un appareil, certificat fourni.
     qrCode: (text) => invoke("qr_code", { text }),
     pickPem: () => invoke("pick_pem"),
+    // Plugins d'hébergeurs (étape 4c) : fichier choisi, lu pour le moteur.
+    pickPlugin: () => invoke("pick_plugin"),
+    readPlugin: (path) => invoke("read_plugin", { path }),
     linksStatus: () => invoke("links_status"),
     setLinks: (enabled) => invoke("set_links", { enabled }),
   };

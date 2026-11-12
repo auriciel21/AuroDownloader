@@ -1429,11 +1429,22 @@ async fn task_get(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
             }
         }
     }
-    let details = ctx
-        .engine
-        .details(&p.required_str("taskId")?, include)
-        .await?;
-    Ok(details_json(&details))
+    let task_id = p.required_str("taskId")?;
+    let details = ctx.engine.details(&task_id, include).await?;
+    let mut task = details_json(&details);
+    // Tâche venue d'un plugin (SPEC §7.20, depuis le 2026-11-12) : sa page et le plugin,
+    // dont le nom est null s'il a été retiré depuis.
+    if let Some((page, plugin_id)) = ctx.engine.plugin_origin(&task_id).await? {
+        let name = ctx
+            .engine
+            .plugins()
+            .await?
+            .into_iter()
+            .find(|row| row.id == plugin_id)
+            .map(|row| row.name);
+        task["plugin"] = json!({"page": page, "pluginId": plugin_id, "name": name});
+    }
+    Ok(task)
 }
 
 fn details_json(d: &TaskDetails) -> Value {

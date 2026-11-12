@@ -142,6 +142,12 @@
         <span data-i18n="Adresses ou liens magnet, un par ligne">Adresses ou liens magnet, un par ligne</span>
         <textarea id="urls" rows="4" spellcheck="false" autocomplete="off"></textarea>
       </label>
+      <div id="add-plugin-row" hidden>
+        <p id="add-plugin-note" class="note flush" role="status"></p>
+        <label class="check"><input type="checkbox" id="add-no-plugin" aria-describedby="add-plugin-note">
+          <span data-i18n="Ajouter ces pages telles quelles, sans plugin">Ajouter ces pages telles quelles, sans plugin</span></label>
+      </div>
+      <div id="add-plugin-pages" class="metalink-list" hidden></div>
       <div class="field" id="add-torrents-field">
         <span id="add-torrents-title" data-i18n="Fichiers .torrent ou Metalink">Fichiers .torrent ou Metalink</span>
         <ul id="add-torrents" class="torrent-list" aria-labelledby="add-torrents-title"></ul>
@@ -471,6 +477,7 @@
         <div id="f-name"><dt data-i18n="Fichier">Fichier</dt><dd id="d-name" class="path"></dd></div>
         <div id="f-dir"><dt data-i18n="Dossier">Dossier</dt><dd id="d-dir" class="path"></dd></div>
         <div id="f-url"><dt data-i18n="Adresse">Adresse</dt><dd id="d-url" class="path"></dd></div>
+        <div id="f-plugin"><dt data-i18n="Page d'origine">Page d'origine</dt><dd id="d-plugin" class="path"></dd></div>
         <div id="f-state"><dt data-i18n="Statut">Statut</dt><dd id="d-state"></dd></div>
         <div id="f-size"><dt data-i18n="Taille">Taille</dt><dd id="d-size"></dd></div>
         <div id="f-done"><dt data-i18n="Téléchargé">Téléchargé</dt><dd id="d-done"></dd></div>
@@ -585,6 +592,31 @@
     </form>
   </dialog>
 
+  <dialog id="plugin-dialog" class="wide" aria-labelledby="plugin-title" aria-describedby="plugin-warning">
+    <form method="dialog" id="plugin-form">
+      <h2 id="plugin-title" data-i18n="Installer un plugin">Installer un plugin</h2>
+      <dl class="facts">
+        <div><dt data-i18n="Fichier">Fichier</dt><dd id="pi-file" class="path"></dd></div>
+        <div><dt data-i18n="Nom">Nom</dt><dd id="pi-name"></dd></div>
+        <div><dt data-i18n="Identifiant">Identifiant</dt><dd id="pi-id" class="path"></dd></div>
+        <div><dt data-i18n="Version">Version</dt><dd id="pi-version"></dd></div>
+        <div id="pi-author-row"><dt data-i18n="Auteur">Auteur</dt><dd id="pi-author"></dd></div>
+        <div id="pi-description-row"><dt data-i18n="Description">Description</dt><dd id="pi-description"></dd></div>
+        <div><dt data-i18n="Pages prises en charge">Pages prises en charge</dt><dd id="pi-sites" class="path"></dd></div>
+        <div><dt data-i18n="Domaines contactés">Domaines contactés</dt><dd id="pi-fetch" class="path"></dd></div>
+        <div><dt data-i18n="Taille">Taille</dt><dd id="pi-size"></dd></div>
+        <div><dt data-i18n="Empreinte SHA-256">Empreinte SHA-256</dt><dd id="pi-digest" class="fingerprint"></dd></div>
+      </dl>
+      <p id="pi-replace" class="note flush" role="status" hidden></p>
+      <p id="plugin-warning" class="note flush" data-i18n="Le plugin pourra lire les pages de ces domaines, sans vos cookies ni vos mots de passe, et choisir les liens que vous téléchargerez. N'installez que des plugins d'une source à laquelle vous faites confiance, et vérifiez l'empreinte si elle est publiée.">Le plugin pourra lire les pages de ces domaines, sans vos cookies ni vos mots de passe, et choisir les liens que vous téléchargerez. N'installez que des plugins d'une source à laquelle vous faites confiance, et vérifiez l'empreinte si elle est publiée.</p>
+      <p id="plugin-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="install" id="plugin-accept" class="primary" data-i18n="Installer">Installer</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="device-dialog" aria-labelledby="device-title">
     <form method="dialog" id="device-form">
       <h2 id="device-title" data-i18n="Ajouter un appareil">Ajouter un appareil</h2>
@@ -659,6 +691,7 @@
         <button type="button" role="tab" id="tab-torrent" data-needs="admin" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
         <button type="button" role="tab" id="tab-media" data-needs="admin" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
         <button type="button" role="tab" id="tab-logins" data-needs="admin" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
+        <button type="button" role="tab" id="tab-plugins" data-needs="admin plugins" aria-controls="panel-plugins" aria-selected="false" tabindex="-1" data-i18n="Plugins">Plugins</button>
         <button type="button" role="tab" id="tab-remote" data-needs="admin qr" aria-controls="panel-remote" aria-selected="false" tabindex="-1" data-i18n="Accès à distance">Accès à distance</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
@@ -756,6 +789,25 @@
           <button type="button" id="login-delete" data-i18n="Supprimer">Supprimer</button>
         </div>
         <p id="logins-error" class="form-error" role="alert" hidden></p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-plugins" aria-labelledby="tab-plugins" hidden>
+        <p class="note flush" id="plugins-note" data-i18n="Un plugin lit la page d'un hébergeur de fichiers et en donne les liens directs, qu'AuroDownloader télécharge. Il tourne isolé : ni fichiers ni système, réseau seulement vers les domaines qu'il déclare, et jamais vos cookies ni vos mots de passe.">Un plugin lit la page d'un hébergeur de fichiers et en donne les liens directs, qu'AuroDownloader télécharge. Il tourne isolé : ni fichiers ni système, réseau seulement vers les domaines qu'il déclare, et jamais vos cookies ni vos mots de passe.</p>
+        <select id="plugins" size="5" class="logins" aria-labelledby="tab-plugins" aria-describedby="plugins-note"></select>
+        <p id="plugins-empty" class="note" data-i18n="Aucun plugin installé.">Aucun plugin installé.</p>
+        <dl class="facts" id="plugin-facts" hidden>
+          <div><dt data-i18n="Pages prises en charge">Pages prises en charge</dt><dd id="pf-sites" class="path"></dd></div>
+          <div><dt data-i18n="Domaines contactés">Domaines contactés</dt><dd id="pf-fetch" class="path"></dd></div>
+          <div id="pf-author-row"><dt data-i18n="Auteur">Auteur</dt><dd id="pf-author"></dd></div>
+          <div id="pf-description-row"><dt data-i18n="Description">Description</dt><dd id="pf-description"></dd></div>
+          <div><dt data-i18n="Empreinte SHA-256">Empreinte SHA-256</dt><dd id="pf-digest" class="fingerprint"></dd></div>
+          <div><dt data-i18n="Installé le">Installé le</dt><dd id="pf-installed"></dd></div>
+        </dl>
+        <div class="row">
+          <button type="button" id="plugin-install" data-i18n="Installer un plugin…">Installer un plugin…</button>
+          <button type="button" id="plugin-toggle" data-i18n="Désactiver">Désactiver</button>
+          <button type="button" id="plugin-remove" data-i18n="Retirer">Retirer</button>
+        </div>
+        <p id="plugins-error" class="form-error" role="alert" hidden></p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-remote" aria-labelledby="tab-remote" hidden>
         <label class="check"><input type="checkbox" id="r-enabled" aria-describedby="r-enabled-note">

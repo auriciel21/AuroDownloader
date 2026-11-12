@@ -140,6 +140,38 @@ pub fn read_torrent(path: &str) -> Result<TorrentFile, String> {
     })
 }
 
+/// Taille maximale d'un fichier de plugin (celle du moteur, SPEC §7.20).
+pub const MAX_PLUGIN_FILE: u64 = 8 << 20;
+
+/// Lit un fichier de plugin `.wasm` choisi par l'utilisateur (8 Mio au plus), par son chemin
+/// absolu, pour `plugin.inspect` et `plugin.install` (base64). Rien n'en est exécuté ici.
+pub fn read_plugin(path: &str) -> Result<TorrentFile, String> {
+    let path = Path::new(path);
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("wasm"))
+    {
+        return Err("fichier de plugin .wasm attendu".into());
+    }
+    if !path.is_absolute() {
+        return Err("chemin absolu attendu".into());
+    }
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("{} : {e}", path.display()))?
+        .len();
+    if len > MAX_PLUGIN_FILE {
+        return Err(format!("{} : fichier trop gros", path.display()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
+    Ok(TorrentFile {
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
 /// Taille maximale d'une liste de liens importée (celle du moteur, SPEC §7.18).
 pub const MAX_LIST_FILE: u64 = 4 << 20;
 
@@ -198,6 +230,24 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_plugin_file_is_read_in_base64_within_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Hebergeur.WASM");
+        std::fs::write(&path, b"\0asm\x01\0\0\0").unwrap();
+        let file = read_plugin(path.to_str().unwrap()).unwrap();
+        assert_eq!(file.name, "Hebergeur.WASM");
+        assert_eq!(file.data, "AGFzbQEAAAA=");
+        // Pas un .wasm, relatif, absent, trop gros : refusé.
+        std::fs::write(dir.path().join("p.txt"), b"x").unwrap();
+        assert!(read_plugin(dir.path().join("p.txt").to_str().unwrap()).is_err());
+        assert!(read_plugin("p.wasm").is_err());
+        assert!(read_plugin(dir.path().join("absent.wasm").to_str().unwrap()).is_err());
+        let big = dir.path().join("gros.wasm");
+        std::fs::write(&big, vec![0u8; MAX_PLUGIN_FILE as usize + 1]).unwrap();
+        assert!(read_plugin(big.to_str().unwrap()).is_err());
+    }
 
     #[test]
     fn magnets_and_existing_torrent_files_are_taken_from_the_arguments() {

@@ -7,7 +7,7 @@ import {
   isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, parseSizeText, linkFilter,
   reclassifyLink,
-  takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken,
+  takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
 } from "../src/model.js";
 
@@ -657,4 +657,15 @@ test("accès à distance : adresse de la page avant l'ouverture, d'après les r�
   assert.deepEqual(plannedUrls(settings("0.0.0.0:7380"), addresses), ["https://192.168.1.20:7380"]);
   assert.deepEqual(plannedUrls(settings("[::]:7380"), addresses),
     ["https://192.168.1.20:7380", "https://[fd00::20]:7380"]);
+});
+
+test("plugins : pages candidates et noms des liens rendus", () => {
+  assert.ok(pluginCandidate("https://fichiers.exemple/f/abc"));
+  assert.ok(pluginCandidate("HTTP://fichiers.exemple/"));
+  for (const url of ["magnet:?xt=urn:btih:abc", "ftp://a.exemple/f", "https://a.exemple/lot.meta4", "fichiers.exemple/f", "", undefined]) {
+    assert.ok(!pluginCandidate(url), String(url));
+  }
+  assert.equal(pluginLinkName({ url: "https://cdn.exemple/x/f.iso?jeton=1", name: "Debian.iso" }), "Debian.iso");
+  assert.equal(pluginLinkName({ url: "https://cdn.exemple/x/f.iso?jeton=1#a", name: null }), "f.iso");
+  assert.equal(pluginLinkName({ url: "https://cdn.exemple/", name: "" }), "https://cdn.exemple/");
 });

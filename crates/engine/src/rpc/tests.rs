@@ -3772,10 +3772,9 @@ async fn a_hoster_page_keeps_its_single_link_and_an_expired_link_is_renewed() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(
-        local.result("task.get", json!({"taskId": plain})).await["displayName"],
-        "dossier"
-    );
+    let plain_task = local.result("task.get", json!({"taskId": plain})).await;
+    assert_eq!(plain_task["displayName"], "dossier");
+    assert!(plain_task.get("plugin").is_none());
 
     // Lien seul : ajouté ; refusé (403) ; redemandé au plugin ; repris jusqu'au bout.
     let id = local
@@ -3784,6 +3783,11 @@ async fn a_hoster_page_keeps_its_single_link_and_an_expired_link_is_renewed() {
         .as_str()
         .unwrap()
         .to_owned();
+    // Sa page et son plugin, dans `task.get`.
+    let origin = &local.result("task.get", json!({"taskId": id})).await["plugin"];
+    assert_eq!(origin["page"], "http://fichiers.exemple/page");
+    assert_eq!(origin["pluginId"], "org.essai.un");
+    assert!(origin["name"].is_string());
     local
         .notification("task.stateChanged", |p| {
             p["taskId"] == id.as_str() && p["to"] == "failed"

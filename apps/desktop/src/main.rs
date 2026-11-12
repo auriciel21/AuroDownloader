@@ -343,6 +343,30 @@ async fn pick_pem(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Choix d'un fichier de plugin `.wasm` (SPEC §7.20) ; `None` si l'utilisateur renonce.
+#[tauri::command]
+async fn pick_plugin(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Plugin", &["wasm"])
+        .pick_file(move |file| {
+            let _ = tx.send(file);
+        });
+    rx.await
+        .ok()
+        .flatten()
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Lit un fichier de plugin choisi (base64), pour `plugin.inspect` et `plugin.install` ;
+/// le moteur le vérifie, rien n'en est exécuté par l'application.
+#[tauri::command]
+fn read_plugin(path: String) -> Result<opened::TorrentFile, String> {
+    opened::read_plugin(&path)
+}
+
 /// Lit une liste de liens choisie, comme un texte, pour `linkscan.run`.
 #[tauri::command]
 fn read_list(path: String) -> Result<opened::ListFile, String> {
@@ -531,6 +555,8 @@ fn main() {
             notifications_blocked,
             qr_code,
             pick_pem,
+            pick_plugin,
+            read_plugin,
             quit
         ])
         .setup(move |app| {

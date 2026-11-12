@@ -661,6 +661,9 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 .metalink-list fieldset { border: 1px solid var(--row-line); border-radius: 4px; margin: 0 0 6px; padding: 4px 8px; }
 .metalink-list legend { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
 .metalink-list label.check { display: flex; padding: 2px 0; }
+/* Liens d'une page lue par un plugin (étape 4c) : ses messages, repliés. */
+.metalink-list details summary { cursor: pointer; color: var(--muted); }
+.metalink-list details pre { margin: 4px 0; max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
 #pref-interface-state.warn { color: var(--fail); }
 #pref-clipboard-off { color: var(--fail); }
 
