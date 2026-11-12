@@ -3466,3 +3466,335 @@ async fn remote_status_lists_the_addresses_where_listening_can_open() {
     }
     crate::testing::stop(&engine).await;
 }
+
+/// Plugins (SPEC §7.20) : montrés, installés sur l'empreinte acceptée, servis à l'ajout par
+/// une connexion à jeton `add` (sans jamais lui montrer les cookies), désactivés, retirés
+/// avec leur fichier ; gestion réservée au canal local.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugins_are_installed_on_consent_used_to_add_and_removed() {
+    use crate::testing::plugin_files::{MANIFEST, fetch_call, packed, plugin};
+    use base64::Engine as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let server = crate::testing::serve(|request| {
+        if request.path == "/page" {
+            crate::testing::reply(
+                "200 OK",
+                &[("Set-Cookie", "session=secret-du-site; Path=/")],
+                b"page",
+            )
+        } else {
+            crate::testing::reply("404 Not Found", &[], b"")
+        }
+    });
+    let engine = engine(dir.path());
+    let addr: std::net::SocketAddr = server.base.trim_start_matches("http://").parse().unwrap();
+    engine.plugins_resolve_to("fichiers.exemple", addr);
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.dir": dir_text(&downloads)}}),
+        )
+        .await;
+
+    let page = r#"{"url": "http://fichiers.exemple/page"}"#;
+    let links = r#"{"links": [{"url": "http://fichiers.exemple/dl/f.iso", "name": "f.iso", "size": 5},
+        {"url": "http://fichiers.exemple/dl/g.iso", "name": "g.iso"}]}"#;
+    let resolve = format!("(drop {}) {}", fetch_call(1, page), packed(0, links));
+    let bytes = plugin(MANIFEST, &[links, page], &resolve, "");
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    let shown = local.result("plugin.inspect", json!({"data": data})).await;
+    assert_eq!(shown["pluginId"], "org.essai.fichiers", "{shown}");
+    assert_eq!(shown["sites"], json!(["fichiers.exemple"]));
+    let digest = shown["digest"].as_str().unwrap().to_owned();
+    // Rien d'installé tant que l'empreinte acceptée n'est pas celle du fichier.
+    assert_eq!(
+        local
+            .error_code(
+                "plugin.install",
+                json!({"data": data, "digest": "0".repeat(64)})
+            )
+            .await,
+        "INVALID_PARAMS"
+    );
+    assert_eq!(
+        local.result("plugin.list", json!({})).await["plugins"],
+        json!([])
+    );
+    let installed = local
+        .result("plugin.install", json!({"data": data, "digest": digest}))
+        .await;
+    assert_eq!(installed["enabled"], true, "{installed}");
+    let file = dir.path().join("plugins").join(format!("{digest}.wasm"));
+    assert!(file.is_file());
+    let found = local
+        .result(
+            "plugin.match",
+            json!({"url": "http://www.fichiers.exemple/f/1"}),
+        )
+        .await;
+    assert_eq!(found["plugin"]["pluginId"], "org.essai.fichiers");
+    assert_eq!(
+        local
+            .result("plugin.match", json!({"url": "https://autre.exemple/"}))
+            .await["plugin"],
+        Value::Null
+    );
+
+    // Une connexion à jeton `add` s'en sert, sans pouvoir en installer.
+    let token = local
+        .result("token.create", json!({"name": "tél", "scope": "add"}))
+        .await;
+    let peer = super::Peer::token(token["id"].as_str().unwrap(), super::Scope::Add);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    remote.result("engine.hello", hello()).await;
+    for method in [
+        "plugin.install",
+        "plugin.list",
+        "plugin.remove",
+        "plugin.enable",
+    ] {
+        assert_eq!(
+            remote
+                .error_code(
+                    method,
+                    json!({"data": data, "digest": digest, "pluginId": "x", "enabled": false})
+                )
+                .await,
+            "UNAUTHORIZED",
+            "{method}"
+        );
+    }
+    let resolved = remote
+        .result(
+            "plugin.resolve",
+            json!({"url": "http://fichiers.exemple/page"}),
+        )
+        .await;
+    assert_eq!(resolved["links"].as_array().unwrap().len(), 2, "{resolved}");
+    assert_eq!(resolved["links"][0]["size"], 5);
+    assert!(
+        !resolved.to_string().contains("secret-du-site"),
+        "{resolved}"
+    );
+    let resolution = resolved["resolutionId"].as_str().unwrap().to_owned();
+    for bad in [json!([]), json!([2]), json!([1, 1])] {
+        assert_eq!(
+            remote
+                .error_code(
+                    "plugin.add",
+                    json!({"resolutionId": resolution, "links": bad})
+                )
+                .await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        remote
+            .error_code(
+                "plugin.add",
+                json!({"resolutionId": "inconnue", "links": [0]})
+            )
+            .await,
+        "PLUGIN_NOT_FOUND"
+    );
+    let added = remote
+        .result(
+            "plugin.add",
+            json!({"resolutionId": resolution, "links": [1], "startPaused": true, "subDir": "Hébergeur"}),
+        )
+        .await;
+    assert_eq!(added["errors"], json!([]), "{added}");
+    let id = added["tasks"][0]["taskId"].as_str().unwrap().to_owned();
+    let task = local.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["displayName"], "g.iso", "{task}");
+    assert_eq!(task["publicOnly"], true, "{task}");
+    assert_eq!(
+        task["destDir"],
+        json!(dir_text(&downloads.join("Hébergeur")))
+    );
+    assert!(!task.to_string().contains("secret-du-site"), "{task}");
+    // En base : le Referer (la page) en clair, le cookie du site par le coffre seulement,
+    // et la page d'origine pour un lien neuf.
+    {
+        let db = rusqlite::Connection::open(dir.path().join("auro.db")).unwrap();
+        let mut stmt = db
+            .prepare(
+                "SELECT name, value, secret_ref FROM task_headers WHERE task_id = ?1 ORDER BY name",
+            )
+            .unwrap();
+        let headers: Vec<(String, Option<String>, Option<String>)> = stmt
+            .query_map([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(headers.len(), 2, "{headers:?}");
+        assert_eq!(headers[0].0.to_ascii_lowercase(), "cookie");
+        assert!(
+            headers[0].1.is_none() && headers[0].2.is_some(),
+            "{headers:?}"
+        );
+        assert_eq!(headers[1].0.to_ascii_lowercase(), "referer");
+        assert_eq!(
+            headers[1].1.as_deref(),
+            Some("http://fichiers.exemple/page")
+        );
+        let origin: (String, String) = db
+            .query_row(
+                "SELECT plugin_page, plugin_id FROM tasks WHERE id = ?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            origin,
+            (
+                "http://fichiers.exemple/page".into(),
+                "org.essai.fichiers".into()
+            )
+        );
+    }
+
+    // Désactivé : plus de plugin pour ce site.
+    let off = local
+        .result(
+            "plugin.enable",
+            json!({"pluginId": "org.essai.fichiers", "enabled": false}),
+        )
+        .await;
+    assert_eq!(off["enabled"], false);
+    assert_eq!(
+        remote
+            .error_code(
+                "plugin.resolve",
+                json!({"url": "http://fichiers.exemple/page"})
+            )
+            .await,
+        "PLUGIN_NOT_FOUND"
+    );
+    // Retiré, avec son fichier.
+    local
+        .result("plugin.remove", json!({"pluginId": "org.essai.fichiers"}))
+        .await;
+    assert!(!file.exists());
+    assert_eq!(
+        local
+            .error_code("plugin.remove", json!({"pluginId": "org.essai.fichiers"}))
+            .await,
+        "PLUGIN_NOT_FOUND"
+    );
+    crate::testing::stop(&engine).await;
+}
+
+/// Plugins (SPEC §7.20) : `task.add` d'une page garde son lien s'il est seul, refuse s'il
+/// y en a plusieurs (`PLUGIN_CHOICE`), ajoute l'adresse telle quelle avec `plugin: false` ;
+/// un lien expiré (403) est redemandé au plugin, une fois, puis la tâche reprend et finit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hoster_page_keeps_its_single_link_and_an_expired_link_is_renewed() {
+    use crate::testing::plugin_files::{fetch_call, packed, plugin};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const LEN: u64 = 300_000;
+    let dir = tempfile::tempdir().unwrap();
+    let page_hits = Arc::new(AtomicUsize::new(0));
+    let site = Arc::new(Mutex::new(FileSite::new(LEN)));
+    let file = crate::testing::file_handler(site);
+    let hits = Arc::clone(&page_hits);
+    let server = crate::testing::serve(move |request| match request.path.as_str() {
+        "/page" => {
+            hits.fetch_add(1, Ordering::SeqCst);
+            crate::testing::reply("200 OK", &[], b"page")
+        }
+        // Le lien ne vaut qu'après la seconde lecture de la page.
+        "/dl/f.bin" if hits.load(Ordering::SeqCst) < 2 => {
+            crate::testing::reply("403 Forbidden", &[("Content-Length", "0")], b"")
+        }
+        "/dl/f.bin" => file(request),
+        _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+    });
+    let engine = engine(dir.path());
+    let addr: std::net::SocketAddr = server.base.trim_start_matches("http://").parse().unwrap();
+    engine.plugins_resolve_to("fichiers.exemple", addr);
+    engine.plugins_resolve_to("multi.exemple", addr);
+    engine.plugins_allow_private();
+
+    let manifest = |id: &str, site: &str| {
+        format!(
+            r#"{{"abi": 1, "id": "{id}", "name": "{id}", "version": "1", "sites": ["{site}"], "fetch": ["{site}"]}}"#
+        )
+    };
+    let page = r#"{"url": "http://fichiers.exemple/page"}"#;
+    let one = format!(
+        r#"{{"links": [{{"url": "{}", "name": "f.bin"}}]}}"#,
+        server.url("/dl/f.bin")
+    );
+    let single = plugin(
+        &manifest("org.essai.un", "fichiers.exemple"),
+        &[&one, page],
+        &format!("(drop {}) {}", fetch_call(1, page), packed(0, &one)),
+        "",
+    );
+    let two = r#"{"links": [{"url": "https://a.exemple/1"}, {"url": "https://a.exemple/2"}]}"#;
+    let several = plugin(
+        &manifest("org.essai.deux", "multi.exemple"),
+        &[two],
+        &packed(0, two),
+        "",
+    );
+    for bytes in [single, several] {
+        let digest = crate::plugins::digest_of(&bytes);
+        engine.install_plugin(bytes, &digest).await.unwrap();
+    }
+
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let add = |url: &str| json!({"sources": [{"url": url}], "destDir": dir_text(dir.path())});
+    assert_eq!(
+        local
+            .error_code("task.add", add("https://multi.exemple/dossier"))
+            .await,
+        "PLUGIN_CHOICE"
+    );
+    // `plugin: false` : l'adresse telle quelle, sans lancer le plugin.
+    let mut raw = add("https://multi.exemple/dossier");
+    raw["plugin"] = json!(false);
+    raw["startPaused"] = json!(true);
+    let plain = local.result("task.add", raw).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        local.result("task.get", json!({"taskId": plain})).await["displayName"],
+        "dossier"
+    );
+
+    // Lien seul : ajouté ; refusé (403) ; redemandé au plugin ; repris jusqu'au bout.
+    let id = local
+        .result("task.add", add("http://fichiers.exemple/page"))
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    local
+        .notification("task.stateChanged", |p| {
+            p["taskId"] == id.as_str() && p["to"] == "failed"
+        })
+        .await;
+    local
+        .notification("task.stateChanged", |p| {
+            p["taskId"] == id.as_str() && p["to"] == "completed"
+        })
+        .await;
+    assert_eq!(page_hits.load(Ordering::SeqCst), 2);
+    crate::testing::same_as_served(&dir.path().join("f.bin"), 0, LEN).unwrap();
+    crate::testing::stop(&engine).await;
+}

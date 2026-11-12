@@ -21,6 +21,7 @@ pub mod mirrors;
 pub mod moves;
 pub mod net;
 pub mod paths;
+pub mod plugins;
 pub mod power;
 pub mod remote;
 pub mod rpc;

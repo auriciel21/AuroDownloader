@@ -214,6 +214,49 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         // Fichiers Metalink (F-27, SPEC §7.7, depuis le 2026-11-11).
         "metalink.read" => metalink_read(ctx, &p).await,
         "metalink.add" => metalink_add(ctx, &p).await,
+        // Plugins d'hébergeurs (F-41, SPEC §7.20, depuis le 2026-11-12).
+        "plugin.inspect" => {
+            let inspected = ctx.engine.inspect_plugin(plugin_data(&p)?).await?;
+            Ok(inspected_json(&inspected))
+        }
+        "plugin.install" => {
+            let digest = p.required_str("digest")?;
+            let row = ctx.engine.install_plugin(plugin_data(&p)?, &digest).await?;
+            Ok(plugin_json(&row))
+        }
+        "plugin.list" => {
+            let rows = ctx.engine.plugins().await?;
+            Ok(json!({"plugins": rows.iter().map(plugin_json).collect::<Vec<_>>()}))
+        }
+        "plugin.remove" => {
+            ctx.engine
+                .remove_plugin(&p.required_str("pluginId")?)
+                .await?;
+            Ok(json!({}))
+        }
+        "plugin.enable" => {
+            let Some(Value::Bool(enabled)) = p.get("enabled") else {
+                return Err(Params::wrong("enabled", "booléen"));
+            };
+            let row = ctx
+                .engine
+                .enable_plugin(&p.required_str("pluginId")?, *enabled)
+                .await?;
+            Ok(plugin_json(&row))
+        }
+        "plugin.match" => {
+            let found = ctx.engine.plugin_for(&p.required_str("url")?).await?;
+            let plugin = found.map(|row| json!({"pluginId": row.id, "name": row.name}));
+            Ok(json!({ "plugin": plugin }))
+        }
+        "plugin.resolve" => {
+            let resolution = ctx
+                .engine
+                .resolve_with_plugin(&p.required_str("url")?)
+                .await?;
+            Ok(resolution_json(&resolution))
+        }
+        "plugin.add" => plugin_add(ctx, &p).await,
         // Analyse de liens (F-29, F-31, SPEC §7.18, depuis le 2026-11-11).
         "task.addBatch" => task_add_batch(ctx, &p).await,
         "linkscan.run" => linkscan_run(ctx, &p).await,
@@ -858,6 +901,9 @@ async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
 }
 
 async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    if !matches!(p.get("plugin"), None | Some(Value::Null | Value::Bool(_))) {
+        return Err(Params::wrong("plugin", "booléen"));
+    }
     let idempotency_key = p.str("idempotencyKey")?;
     if idempotency_key
         .as_ref()
@@ -968,6 +1014,10 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             // Posés par la poignée restreinte d'une connexion à jeton (SPEC §7.19).
             remote: false,
             public_only: false,
+            plugin: None,
+            // `plugin: false` : l'adresse telle quelle, même pour un site d'un plugin
+            // (SPEC §7.20).
+            no_plugin: matches!(p.get("plugin"), Some(Value::Bool(false))),
         })
         .await?;
     Ok(json!({"taskId": task_id}))
@@ -1213,6 +1263,111 @@ async fn metalink_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             Err(e) => {
                 let e = RpcError::from(e);
                 errors.push(json!({"index": index, "path": file.path(), "code": e.data_code, "message": e.message}));
+            }
+        }
+    }
+    Ok(json!({"tasks": added, "errors": errors}))
+}
+
+/// `data` d'un fichier de plugin (SPEC §7.20) : contenu en base64, 8 Mio au plus.
+fn plugin_data(p: &Params) -> Result<Vec<u8>, RpcError> {
+    let text = p.required_str("data")?;
+    if text.len() > crate::plugins::manifest::MAX_FILE / 3 * 4 + 4 {
+        return Err(RpcError::invalid_params(format!(
+            "data : fichier de plugin de {} Mio au plus",
+            crate::plugins::manifest::MAX_FILE >> 20
+        )));
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(text.trim())
+        .map_err(|_| RpcError::invalid_params("data : base64 invalide"))
+}
+
+fn manifest_json(m: &crate::plugins::Manifest) -> Value {
+    json!({
+        "pluginId": m.id,
+        "name": m.name,
+        "version": m.version,
+        "author": m.author,
+        "description": m.description,
+        "sites": m.sites,
+        "fetch": m.fetch,
+    })
+}
+
+fn inspected_json(i: &crate::plugins::Inspected) -> Value {
+    let mut view = manifest_json(&i.manifest);
+    view["digest"] = json!(i.digest);
+    view["size"] = json!(i.size);
+    view
+}
+
+fn plugin_json(row: &crate::store::plugins::PluginRow) -> Value {
+    json!({
+        "pluginId": row.id,
+        "name": row.name,
+        "version": row.version,
+        "author": row.author,
+        "description": row.description,
+        "sites": row.sites,
+        "fetch": row.fetch,
+        "digest": row.digest,
+        "enabled": row.enabled,
+        "installedAt": row.installed_at,
+    })
+}
+
+/// Une résolution : jamais ses cookies.
+fn resolution_json(r: &crate::plugins::Resolution) -> Value {
+    json!({
+        "resolutionId": r.id,
+        "pluginId": r.plugin_id,
+        "pluginName": r.plugin_name,
+        "page": r.page,
+        "links": r.links.iter().map(|l| json!({
+            "url": l.url,
+            "name": l.name,
+            "size": l.size,
+        })).collect::<Vec<_>>(),
+        "logs": r.logs,
+    })
+}
+
+/// `plugin.add` (SPEC §7.20) : les liens choisis (`links`, rangs) d'une résolution gardée ;
+/// dossier, sous-dossier, file et pause comme `task.add`. Chaque lien est ajouté ou refusé
+/// pour lui-même.
+async fn plugin_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let resolution = p.required_str("resolutionId")?;
+    let picked: Vec<usize> = p
+        .get("links")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Params::wrong("links", "liste de rangs de liens"))?
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| Params::wrong("links", "liste de rangs de liens"))
+        })
+        .collect::<Result<_, _>>()?;
+    let base = AddTask {
+        dest_dir: p.str("destDir")?,
+        queue_id: p.str("queueId")?,
+        speed_limit_bps: p.limit("speedLimitBps")?.flatten(),
+        start_paused: p.bool("startPaused")?,
+        sub_dir: sub_dir_param(p)?,
+        ..AddTask::default()
+    };
+    let results = ctx
+        .engine
+        .add_from_plugin(&resolution, &picked, base)
+        .await?;
+    let (mut added, mut errors) = (Vec::new(), Vec::new());
+    for (index, result) in picked.iter().zip(results) {
+        match result {
+            Ok(task_id) => added.push(json!({"index": index, "taskId": task_id})),
+            Err(e) => {
+                let e = RpcError::from(e);
+                errors.push(json!({"index": index, "code": e.data_code, "message": e.message}));
             }
         }
     }

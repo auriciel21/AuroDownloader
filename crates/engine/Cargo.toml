@@ -9,7 +9,7 @@ publish.workspace = true
 
 [features]
 # Serveur HTTP et HTTPS de test (module `testing`), pour les tests des autres paquets.
-testing = []
+testing = ["dep:wat"]
 
 [dependencies]
 # Erreurs des traits de librqbit (stockage du module `torrent`).
@@ -61,11 +61,18 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["tls1
 # Fin de validité et noms d'un certificat (interface distante, SPEC §7.19).
 x509-parser = "0.18.1"
 uuid = { version = "1.26.1", features = ["v4", "v7"] }
+# Plugins d'hébergeurs (F-41, SPEC §7.20) : interpréteur WebAssembly (prototype de l'étape
+# 4a, `experiments/plugins`) ; sans `wat` ni `memory64`.
+wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+# Plugins d'essai écrits en texte WebAssembly (`testing::plugin_files`, fonctionnalité
+# `testing` et tests).
+wat = { version = "1", optional = true }
 # Signature des publications de yt-dlp (SPEC §7.17, `media::openpgp`) : RSA PKCS #1 ;
 # déjà tirée par librqbit et rustls.
 aws-lc-rs = "1.18"
 
 [dev-dependencies]
+wat = "1"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 rustls = { version = "0.23.46", features = ["aws_lc_rs"] }

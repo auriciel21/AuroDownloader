@@ -821,3 +821,18 @@ async fn a_restricted_client_never_reaches_internal_addresses() {
     // Le client restreint est fabriqué une fois, puis partagé.
     assert!(restricted.restricted().unwrap().is_public_only());
 }
+
+/// Le statut relu dans le détail d'un échec enregistré (plugins, SPEC §7.20) suit le
+/// message de `NetError::Status`.
+#[test]
+fn status_detail_round_trip() {
+    for status in [403, 410, 503] {
+        let detail = NetError::Status {
+            status,
+            retry_after: None,
+        }
+        .to_string();
+        assert_eq!(super::status_in_detail(&detail), Some(status), "{detail}");
+    }
+    assert_eq!(super::status_in_detail("délai dépassé"), None);
+}

@@ -710,6 +710,40 @@ pub fn restrict_to_public(conn: &Connection, task_id: &str) -> Result<(), StoreE
     Ok(())
 }
 
+/// Note la page et le plugin d'où vient le lien d'une tâche (SPEC §7.20).
+pub fn set_plugin_origin(
+    conn: &Connection,
+    task_id: &str,
+    page: &str,
+    plugin_id: &str,
+) -> Result<(), StoreError> {
+    let changed = conn.execute(
+        "UPDATE tasks SET plugin_page = ?2, plugin_id = ?3 WHERE id = ?1",
+        params![task_id, page, plugin_id],
+    )?;
+    if changed == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// La page et le plugin d'où vient le lien d'une tâche, s'il vient d'un plugin.
+pub fn plugin_origin(
+    conn: &Connection,
+    task_id: &str,
+) -> Result<Option<(String, String)>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT plugin_page, plugin_id FROM tasks
+             WHERE id = ?1 AND plugin_page IS NOT NULL AND plugin_id IS NOT NULL",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// Remplace l'adresse de la source préférée d'une tâche, et oublie ses échecs. Avec
 /// `check`, les validateurs de la source deviennent ceux de la nouvelle adresse, que les
 /// requêtes suivantes vérifieront (`If-Range`) ; sans (tâche pas encore préparée), la

@@ -61,6 +61,8 @@ pub struct AddOptions<'a> {
     pub mirrors: &'a [String],
     /// Fichiers d'un Metalink à ajouter (rangs de `auro metalink`) ; tous sinon.
     pub select: Option<&'a [u32]>,
+    /// L'adresse telle quelle, même si un plugin prend son site en charge (SPEC §7.20).
+    pub no_plugin: bool,
 }
 
 /// Taille maximale d'un fichier Metalink lu par la CLI (celle du moteur, SPEC §7.7).
@@ -227,6 +229,9 @@ async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<Stri
     if let Some(c) = opts.checksum {
         params["checksum"] = checksum_json(c);
     }
+    if opts.no_plugin {
+        params["plugin"] = json!(false);
+    }
     if let Some(queue) = opts.queue {
         params["queueId"] = json!(queue_id(rpc, queue).await?);
     }
@@ -256,6 +261,9 @@ fn tools_hint(e: anyhow::Error) -> anyhow::Error {
         Some(r) if r.code == "TOOLS_MISSING" => {
             e.context("outils de la vidéo absents : auro video tools --install")
         }
+        Some(r) if r.code == "PLUGIN_CHOICE" => e.context(
+            "plusieurs liens sur cette page : auro plugin resolve <page>, puis auro plugin add \n             <page> --select <rangs>",
+        ),
         _ => e,
     }
 }
@@ -1641,4 +1649,217 @@ pub async fn remote_set(rpc: &mut Rpc, change: RemoteChange<'_>) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     remote_status(rpc).await
+}
+
+// ---------- Plugins d'hébergeurs (F-41, SPEC §7.20) ----------
+
+/// Domaines d'une liste JSON, séparés par des virgules.
+fn domain_list(v: &Value) -> String {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+/// Montre un plugin à installer (manifeste, permissions, empreinte) ; l'installe avec
+/// `yes`, l'accord de l'utilisateur donné sur ce qu'il vient de voir.
+pub async fn plugin_install(rpc: &mut Rpc, file: &Path, yes: bool) -> Result<()> {
+    use base64::Engine as _;
+    let size = std::fs::metadata(file)
+        .with_context(|| format!("{} illisible", file.display()))?
+        .len();
+    if size > 8 << 20 {
+        bail!("fichier de plugin de 8 Mio au plus");
+    }
+    let bytes = std::fs::read(file).with_context(|| format!("{} illisible", file.display()))?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let shown = rpc.call("plugin.inspect", json!({ "data": data })).await?;
+    let id = shown["pluginId"].as_str().unwrap_or_default();
+    println!(
+        "Plugin « {} » {} ({id})",
+        shown["name"].as_str().unwrap_or_default(),
+        shown["version"].as_str().unwrap_or_default()
+    );
+    if let Some(author) = shown["author"].as_str() {
+        println!("Auteur : {author}");
+    }
+    if let Some(description) = shown["description"].as_str() {
+        println!("{description}");
+    }
+    println!("Pages prises en charge : {}", domain_list(&shown["sites"]));
+    println!(
+        "Domaines qu'il peut faire demander : {}",
+        domain_list(&shown["fetch"])
+    );
+    println!(
+        "Empreinte SHA-256 : {}",
+        shown["digest"].as_str().unwrap_or_default()
+    );
+    // Nouvelle version d'un plugin installé : ce qu'elle demande de plus.
+    let installed = rpc.call("plugin.list", json!({})).await?;
+    if let Some(old) = installed["plugins"]
+        .as_array()
+        .and_then(|list| list.iter().find(|p| p["pluginId"] == id))
+    {
+        let had = |key: &str, d: &str| {
+            old[key]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|x| x == d))
+        };
+        let added: Vec<String> = ["sites", "fetch"]
+            .iter()
+            .flat_map(|key| {
+                shown[*key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .filter(|d| !had(key, d))
+                    .map(|d| d.to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        println!(
+            "Remplace la version {} installée.{}",
+            old["version"].as_str().unwrap_or_default(),
+            if added.is_empty() {
+                String::new()
+            } else {
+                format!(" Domaines nouveaux : {}", added.join(", "))
+            }
+        );
+    }
+    if !yes {
+        println!("Rien n'est installé : relancer avec --yes pour accepter ces permissions.");
+        return Ok(());
+    }
+    let row = rpc
+        .call(
+            "plugin.install",
+            json!({"data": data, "digest": shown["digest"]}),
+        )
+        .await?;
+    println!(
+        "Installé et activé : {}.",
+        row["name"].as_str().unwrap_or(id)
+    );
+    Ok(())
+}
+
+/// Les plugins installés.
+pub async fn plugins(rpc: &mut Rpc) -> Result<()> {
+    let list = rpc.call("plugin.list", json!({})).await?;
+    let items = list["plugins"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Aucun plugin.");
+        return Ok(());
+    }
+    for p in items {
+        println!(
+            "{} {} ({}){} — pages : {} ; demandes : {}",
+            p["name"].as_str().unwrap_or_default(),
+            p["version"].as_str().unwrap_or_default(),
+            p["pluginId"].as_str().unwrap_or_default(),
+            if p["enabled"] == true {
+                ""
+            } else {
+                ", désactivé"
+            },
+            domain_list(&p["sites"]),
+            domain_list(&p["fetch"]),
+        );
+    }
+    Ok(())
+}
+
+pub async fn plugin_remove(rpc: &mut Rpc, id: &str) -> Result<()> {
+    rpc.call("plugin.remove", json!({ "pluginId": id })).await?;
+    println!("Plugin {id} retiré, avec son fichier.");
+    Ok(())
+}
+
+pub async fn plugin_enable(rpc: &mut Rpc, id: &str, enabled: bool) -> Result<()> {
+    rpc.call("plugin.enable", json!({"pluginId": id, "enabled": enabled}))
+        .await?;
+    println!(
+        "Plugin {id} {}.",
+        if enabled { "activé" } else { "désactivé" }
+    );
+    Ok(())
+}
+
+/// Lance le plugin d'une page et montre ses liens, numérotés pour `--select`.
+async fn plugin_links(rpc: &mut Rpc, page: &str) -> Result<Value> {
+    let found = rpc.call("plugin.resolve", json!({ "url": page })).await?;
+    let links = found["links"].as_array().cloned().unwrap_or_default();
+    println!(
+        "{} : {} lien(s) par « {} »",
+        page,
+        links.len(),
+        found["pluginName"].as_str().unwrap_or_default()
+    );
+    for (i, link) in links.iter().enumerate() {
+        let size = link["size"]
+            .as_u64()
+            .map_or_else(String::new, |n| format!(" ({})", size(n)));
+        println!(
+            "  {i}. {}{size}  {}",
+            link["name"].as_str().unwrap_or("(sans nom)"),
+            link["url"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(found)
+}
+
+pub async fn plugin_resolve(rpc: &mut Rpc, page: &str) -> Result<()> {
+    plugin_links(rpc, page).await.map(|_| ())
+}
+
+/// Ajoute des liens choisis (tous sinon) d'une page, par son plugin.
+pub async fn plugin_add(
+    rpc: &mut Rpc,
+    page: &str,
+    select: Option<&[u32]>,
+    dir: &Path,
+    paused: bool,
+) -> Result<()> {
+    let found = plugin_links(rpc, page).await?;
+    let count = found["links"].as_array().map_or(0, Vec::len);
+    let picked: Vec<u64> = match select {
+        Some(list) => list.iter().map(|&i| u64::from(i)).collect(),
+        None => (0..count as u64).collect(),
+    };
+    if picked.is_empty() {
+        bail!("aucun lien à ajouter");
+    }
+    let added = rpc
+        .call(
+            "plugin.add",
+            json!({
+                "resolutionId": found["resolutionId"],
+                "links": picked,
+                "destDir": dest_dir(dir)?,
+                "startPaused": paused,
+            }),
+        )
+        .await?;
+    for task in added["tasks"].as_array().into_iter().flatten() {
+        println!(
+            "Ajouté : lien {} → tâche {}",
+            task["index"],
+            task["taskId"].as_str().unwrap_or_default()
+        );
+    }
+    for error in added["errors"].as_array().into_iter().flatten() {
+        println!(
+            "Refusé : lien {} : {}",
+            error["index"],
+            error["message"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
 }

@@ -77,6 +77,28 @@ pub fn secret_refs(conn: &Connection, task_id: &str) -> Result<Vec<String>, Stor
     Ok(refs)
 }
 
+/// Remplace tous les en-têtes d'une tâche (lien neuf rendu par un plugin, SPEC §7.20), en
+/// une transaction ; renvoie les références des secrets remplacés, à effacer ensuite du
+/// coffre (les nouveaux secrets y sont déjà, SPEC §5.1).
+pub fn replace(
+    conn: &mut Connection,
+    task_id: &str,
+    headers: &[StoredHeader],
+) -> Result<Vec<String>, StoreError> {
+    let tx = conn.transaction()?;
+    let old: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT secret_ref FROM task_headers WHERE task_id = ?1 AND secret_ref IS NOT NULL",
+        )?;
+        let refs = statement.query_map([task_id], |r| r.get(0))?;
+        refs.collect::<Result<_, _>>()?
+    };
+    tx.execute("DELETE FROM task_headers WHERE task_id = ?1", [task_id])?;
+    insert(&tx, task_id, headers)?;
+    tx.commit()?;
+    Ok(old)
+}
+
 /// Retire de la base les en-têtes secrets de la tâche ; renvoie leurs références, à
 /// effacer ensuite du coffre (SPEC §5.1 : la référence d'abord).
 pub fn drop_secrets(conn: &Connection, task_id: &str) -> Result<Vec<String>, StoreError> {

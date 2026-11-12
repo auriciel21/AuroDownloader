@@ -95,6 +95,9 @@ enum Command {
         /// tous sinon
         #[arg(long, value_name = "RANGS", value_parser = parse_selection)]
         select: Option<Selection>,
+        /// L'adresse telle quelle, même si un plugin prend son site en charge
+        #[arg(long)]
+        no_plugin: bool,
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
@@ -322,6 +325,11 @@ enum Command {
     Remote {
         #[command(subcommand)]
         action: Option<RemoteAction>,
+    },
+    /// Plugins d'hébergeurs : installer (permissions montrées d'abord), lister, retirer
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
     },
     /// Jetons de l'interface distante (lecture, ajout ou contrôle ; jamais administration)
     Token {
@@ -564,6 +572,41 @@ enum RemoteAction {
 }
 
 #[derive(Subcommand)]
+enum PluginAction {
+    /// Montre un plugin (fichier .wasm) : pages, domaines demandés, empreinte ; l'installe
+    /// avec --yes
+    Install {
+        file: PathBuf,
+        /// Accepter ces permissions et installer
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Liste les plugins installés et leurs permissions
+    List,
+    /// Retire un plugin, avec son fichier
+    Remove { plugin: String },
+    /// Active un plugin
+    Enable { plugin: String },
+    /// Désactive un plugin (gardé, mais plus utilisé)
+    Disable { plugin: String },
+    /// Montre les liens qu'un plugin trouve sur une page, numérotés
+    Resolve { page: String },
+    /// Ajoute des liens d'une page par son plugin (tous, ou ceux de --select)
+    Add {
+        page: String,
+        /// Dossier de destination
+        #[arg(short = 'o', long, default_value = ".")]
+        dir: PathBuf,
+        /// Liens à ajouter : « 0,2-4 » (rangs montrés par auro plugin resolve)
+        #[arg(long, value_name = "RANGS", value_parser = parse_selection)]
+        select: Option<Selection>,
+        /// Ajouter en pause
+        #[arg(long)]
+        paused: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum TokenAction {
     /// Crée un jeton et l'affiche, une seule fois
     Create {
@@ -747,6 +790,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 checksum: checksum.as_ref(),
                 mirrors: &mirrors,
                 select: select.as_ref().map(|s| s.0.as_slice()),
+                no_plugin: false,
             };
             remote::get(target, remote::NewTask::File(&url, &opts)).await
         }
@@ -771,6 +815,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     checksum,
                     mirrors,
                     select,
+                    no_plugin,
                 } => {
                     if checksum.is_some() && urls.len() > 1 {
                         bail!("--checksum : une seule adresse, l'empreinte est celle d'un fichier");
@@ -788,6 +833,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         checksum: checksum.as_ref(),
                         mirrors: &mirrors,
                         select: select.as_ref().map(|s| s.0.as_slice()),
+                        no_plugin,
                     };
                     remote::add(&mut rpc, &urls, &opts).await
                 }
@@ -970,6 +1016,31 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                             ..Default::default()
                         };
                         remote::remote_set(&mut rpc, change).await
+                    }
+                },
+                Command::Plugin { action } => match action {
+                    PluginAction::Install { file, yes } => {
+                        remote::plugin_install(&mut rpc, &file, yes).await
+                    }
+                    PluginAction::List => remote::plugins(&mut rpc).await,
+                    PluginAction::Remove { plugin } => {
+                        remote::plugin_remove(&mut rpc, &plugin).await
+                    }
+                    PluginAction::Enable { plugin } => {
+                        remote::plugin_enable(&mut rpc, &plugin, true).await
+                    }
+                    PluginAction::Disable { plugin } => {
+                        remote::plugin_enable(&mut rpc, &plugin, false).await
+                    }
+                    PluginAction::Resolve { page } => remote::plugin_resolve(&mut rpc, &page).await,
+                    PluginAction::Add {
+                        page,
+                        dir,
+                        select,
+                        paused,
+                    } => {
+                        let select = select.as_ref().map(|s| s.0.as_slice());
+                        remote::plugin_add(&mut rpc, &page, select, &dir, paused).await
                     }
                 },
                 Command::Token { action } => match action {

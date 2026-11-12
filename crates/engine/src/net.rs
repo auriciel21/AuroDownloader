@@ -128,7 +128,7 @@ pub enum NetError {
 }
 
 impl NetError {
-    fn from_reqwest(error: reqwest::Error) -> Self {
+    pub(crate) fn from_reqwest(error: reqwest::Error) -> Self {
         let error = error.without_url();
         if has_cause::<reach::Forbidden>(&error) {
             NetError::AddressForbidden
@@ -347,6 +347,30 @@ impl Observed {
     fn file_length(&self) -> Option<u64> {
         self.length.filter(|_| !self.encoded)
     }
+}
+
+/// Client HTTP(S) des requêtes des plugins (SPEC §7.20) : réseau public seulement
+/// (résolution filtrée, sans mandataire), aucune redirection suivie (le module `plugins`
+/// les suit lui-même, vers les domaines déclarés seulement), cookies tenus à part.
+/// `resolve_to` : noms imposés (tests seulement, serveur local).
+pub(crate) fn plugin_http(
+    resolve_to: &[(String, std::net::SocketAddr)],
+) -> Result<reqwest::Client, NetError> {
+    if !tls_available() {
+        return Err(NetError::TlsUnavailable);
+    }
+    let mut builder = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .redirect(redirect::Policy::none())
+        .referer(false)
+        .dns_resolver(Arc::new(reach::PublicResolver))
+        .no_proxy();
+    for (name, addr) in resolve_to {
+        builder = builder.resolve(name, *addr);
+    }
+    builder.build().map_err(NetError::from_reqwest)
 }
 
 /// Client HTTP(S) du moteur, partagé par ses tâches pendant toute la session.
@@ -933,6 +957,17 @@ fn conclude(
         attachment: pick(|o| &o.disposition_name).is_some(),
         final_url,
     }
+}
+
+/// Statut HTTP d'un échec `HTTP_STATUS` enregistré (`error_detail`), tel que l'écrit
+/// [`NetError::Status`] (le test `status_detail_round_trip` les tient d'accord).
+pub fn status_in_detail(detail: &str) -> Option<u16> {
+    detail
+        .strip_prefix("le serveur a répondu ")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Vérifie qu'une adresse est utilisable (HTTP ou HTTPS) avant de créer une tâche.

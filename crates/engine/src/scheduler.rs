@@ -466,6 +466,20 @@ pub enum EngineError {
     /// yt-dlp n'a pas pu lire la page (SPEC §7.17) ; message sans l'adresse.
     #[error("yt-dlp : {0}")]
     Extractor(String),
+
+    /// Un plugin d'hébergeur s'est arrêté, ou a rendu une sortie refusée (SPEC §7.20).
+    #[error("plugin : {0}")]
+    PluginFailed(String),
+
+    /// Plugin inconnu, aucun plugin activé pour ce site, ou résolution expirée.
+    #[error("{0}")]
+    PluginNotFound(String),
+
+    /// La page d'un plugin donne plusieurs liens : à choisir (`plugin.resolve`).
+    #[error(
+        "le plugin a trouvé {0} liens sur cette page : les choisir (plugin.resolve, plugin.add)"
+    )]
+    PluginChoice(usize),
 }
 
 /// Tâche à ajouter.
@@ -508,8 +522,63 @@ pub struct AddTask {
     /// téléchargements.
     pub remote: bool,
     /// Réseau public seulement, pour toute la vie de la tâche (connexion à jeton, sauf
-    /// réglage `remote.allowPrivate`).
+    /// réglage `remote.allowPrivate` ; lien rendu par un plugin).
     pub public_only: bool,
+    /// Lien rendu par un plugin d'hébergeur (SPEC §7.20) : la page et le plugin, pour
+    /// redemander un lien neuf quand celui-ci expire.
+    pub plugin: Option<PluginOrigin>,
+    /// Adresse ajoutée telle quelle, même si un plugin prend son site en charge
+    /// (`plugin: false` de `task.add`, SPEC §7.20).
+    pub no_plugin: bool,
+}
+
+/// Poignée faible du moteur ([`Engine::downgrade`]).
+#[derive(Clone)]
+pub(crate) struct WeakEngine {
+    commands: mpsc::WeakSender<Command>,
+    /// Le reste de la poignée, sans canal vers la boucle ni annonces.
+    rest: Engine,
+}
+
+impl WeakEngine {
+    /// Une poignée, tant que le moteur tourne.
+    pub(crate) fn upgrade(&self) -> Option<Engine> {
+        Some(Engine {
+            commands: self.commands.upgrade()?,
+            ..self.rest.clone()
+        })
+    }
+
+    /// Le moteur s'est arrêté.
+    pub(crate) fn stopped(&self) -> watch::Receiver<bool> {
+        self.rest.stopped.clone()
+    }
+}
+
+/// Page d'origine d'une tâche dont le lien vient d'un plugin (SPEC §7.20).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginOrigin {
+    pub page: String,
+    pub plugin_id: String,
+}
+
+/// Opérations sur la table des plugins, faites par la boucle du planificateur.
+#[derive(Debug)]
+pub enum PluginOp {
+    List,
+    Install(Box<store::plugins::PluginRow>),
+    Remove(String),
+    SetEnabled(String, bool),
+}
+
+/// Réponse à une [`PluginOp`] ; les empreintes rendues sont celles de fichiers que plus
+/// aucun plugin n'utilise, à effacer.
+#[derive(Debug)]
+pub enum PluginAnswer {
+    Rows(Vec<store::plugins::PluginRow>),
+    Installed(store::plugins::PluginRow, Option<String>),
+    Removed { found: bool, unused: Option<String> },
+    Enabled(Option<store::plugins::PluginRow>),
 }
 
 /// Fichier Metalink à lire (`metalink.read`, `metalink.add`, SPEC §7.7).
@@ -725,6 +794,12 @@ enum Command {
     DeleteLogin(String, Reply<()>),
     /// Jetons et sessions de l'interface distante (SPEC §7.19).
     Tokens(crate::remote::TokenOp, Reply<crate::remote::TokenAnswer>),
+    /// Plugins installés (SPEC §7.20).
+    Plugins(PluginOp, Reply<PluginAnswer>),
+    /// Page et plugin d'origine d'une tâche (SPEC §7.20).
+    PluginOrigin(String, Reply<Option<(String, String)>>),
+    /// En-têtes d'une tâche remplacés (lien neuf rendu par un plugin).
+    ReplaceHeaders(String, Vec<(String, String)>, Reply<()>),
     /// Secrets relevés dans le coffre au démarrage, pour le ramassage.
     CollectSecrets(Vec<String>),
     Shutdown(oneshot::Sender<()>),
@@ -746,6 +821,8 @@ pub struct Engine {
     tools: Option<Arc<media::tools::Tools>>,
     /// État de l'écoute de l'interface distante (SPEC §7.19), partagé par les copies.
     remote_state: Arc<std::sync::Mutex<crate::remote::RemoteState>>,
+    /// Plugins d'hébergeurs (SPEC §7.20) : fichiers, places, résolutions gardées.
+    plugins: Arc<crate::plugins::Plugins>,
     /// Dossier de la base : certificat fabriqué de l'interface distante (SPEC §7.19).
     data_dir: PathBuf,
     /// Poignée d'une connexion à jeton (SPEC §7.19) : ajouts et déplacements sous le dossier
@@ -812,7 +889,7 @@ impl Engine {
                 _ => {}
             }
         });
-        Ok(Engine {
+        let engine = Engine {
             commands,
             client,
             vault: vault_for_handle,
@@ -824,8 +901,16 @@ impl Engine {
             public_only: false,
             remote: false,
             remote_state: Arc::default(),
+            plugins: Arc::new(crate::plugins::Plugins::new(&data_dir)),
             data_dir,
-        })
+        };
+        // Liens expirés des tâches venues d'un plugin (SPEC §7.20) : poignée faible, qui
+        // n'empêche pas le moteur de s'arrêter quand ses poignées disparaissent.
+        tokio::spawn(crate::plugins::watch(
+            engine.downgrade(),
+            engine.subscribe(),
+        ));
+        Ok(engine)
     }
 
     /// La poignée d'une connexion à jeton (SPEC §7.19) : ses lectures du réseau passent
@@ -1213,6 +1298,10 @@ impl Engine {
 
     /// Ajoute une tâche `queued` (ou `paused`) ; renvoie son identifiant.
     pub async fn add(&self, mut task: AddTask) -> Result<String, EngineError> {
+        // Page d'un site qu'un plugin prend en charge : son lien direct (SPEC §7.20).
+        if let Some(through) = self.through_plugin(&task).await? {
+            task = through;
+        }
         task.remote |= self.remote;
         if self.public_only {
             task.public_only = true;
@@ -1599,6 +1688,328 @@ impl Engine {
         {
             crate::remote::TokenAnswer::Done(done) => Ok(done),
             _ => Err(EngineError::Stopped),
+        }
+    }
+
+    // ---------- Plugins d'hébergeurs (SPEC §7.20) ----------
+
+    async fn plugin_op(&self, op: PluginOp) -> Result<PluginAnswer, EngineError> {
+        self.ask(|reply| Command::Plugins(op, reply)).await
+    }
+
+    /// Lit et vérifie un fichier de plugin sans l'installer : manifeste, permissions et
+    /// empreinte, à montrer à l'utilisateur avant son accord.
+    pub async fn inspect_plugin(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<crate::plugins::Inspected, EngineError> {
+        tokio::task::spawn_blocking(move || crate::plugins::inspect(&bytes))
+            .await
+            .map_err(|_| EngineError::Stopped)?
+            .map_err(EngineError::BadRequest)
+    }
+
+    /// Installe un plugin dont l'utilisateur a accepté l'empreinte `accepted`, après avoir
+    /// vu son manifeste et ses permissions ; remplace la version installée sous le même
+    /// identifiant.
+    pub async fn install_plugin(
+        &self,
+        bytes: Vec<u8>,
+        accepted: &str,
+    ) -> Result<store::plugins::PluginRow, EngineError> {
+        let digest = crate::plugins::digest_of(&bytes);
+        if !digest.eq_ignore_ascii_case(accepted.trim()) {
+            return Err(EngineError::BadRequest(
+                "l'empreinte acceptée n'est pas celle de ce fichier : le montrer de nouveau".into(),
+            ));
+        }
+        let (inspected, bytes) =
+            tokio::task::spawn_blocking(move || (crate::plugins::inspect(&bytes), bytes))
+                .await
+                .map_err(|_| EngineError::Stopped)?;
+        let inspected = inspected.map_err(EngineError::BadRequest)?;
+        let plugins = Arc::clone(&self.plugins);
+        let file_digest = digest.clone();
+        tokio::task::spawn_blocking(move || plugins.save(&file_digest, &bytes))
+            .await
+            .map_err(|_| EngineError::Stopped)?
+            .map_err(|e| EngineError::Store(StoreError::Io(e)))?;
+        let m = inspected.manifest;
+        let row = store::plugins::PluginRow {
+            id: m.id,
+            name: m.name,
+            version: m.version,
+            author: m.author,
+            description: m.description,
+            digest,
+            sites: m.sites,
+            fetch: m.fetch,
+            enabled: true,
+            installed_at: 0,
+        };
+        match self.plugin_op(PluginOp::Install(Box::new(row))).await? {
+            PluginAnswer::Installed(row, unused) => {
+                if let Some(old) = unused {
+                    self.plugins.delete_file(&old);
+                }
+                Ok(row)
+            }
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Les plugins installés.
+    pub async fn plugins(&self) -> Result<Vec<store::plugins::PluginRow>, EngineError> {
+        match self.plugin_op(PluginOp::List).await? {
+            PluginAnswer::Rows(rows) => Ok(rows),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    fn plugin_unknown(id: &str) -> EngineError {
+        EngineError::PluginNotFound(format!("plugin inconnu : {id}"))
+    }
+
+    /// Retire un plugin, et son fichier.
+    pub async fn remove_plugin(&self, id: &str) -> Result<(), EngineError> {
+        match self.plugin_op(PluginOp::Remove(id.to_owned())).await? {
+            PluginAnswer::Removed { found: false, .. } => Err(Self::plugin_unknown(id)),
+            PluginAnswer::Removed { unused, .. } => {
+                if let Some(digest) = unused {
+                    self.plugins.delete_file(&digest);
+                }
+                Ok(())
+            }
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Active ou désactive un plugin.
+    pub async fn enable_plugin(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<store::plugins::PluginRow, EngineError> {
+        match self
+            .plugin_op(PluginOp::SetEnabled(id.to_owned(), enabled))
+            .await?
+        {
+            PluginAnswer::Enabled(Some(row)) => Ok(row),
+            PluginAnswer::Enabled(None) => Err(Self::plugin_unknown(id)),
+            _ => Err(EngineError::Stopped),
+        }
+    }
+
+    /// Le plugin activé qui prend en charge cette page, s'il y en a un.
+    pub async fn plugin_for(
+        &self,
+        url: &str,
+    ) -> Result<Option<store::plugins::PluginRow>, EngineError> {
+        let rows = self.plugins().await?;
+        Ok(crate::plugins::matching(&rows, url).cloned())
+    }
+
+    /// Lance le plugin de cette page ; la résolution est gardée 10 minutes pour
+    /// [`Engine::add_from_plugin`].
+    pub async fn resolve_with_plugin(
+        &self,
+        url: &str,
+    ) -> Result<crate::plugins::Resolution, EngineError> {
+        net::check_url(url)?;
+        let row = self.plugin_for(url).await?.ok_or_else(|| {
+            EngineError::PluginNotFound("aucun plugin activé ne prend en charge ce site".into())
+        })?;
+        let resolution = self
+            .plugins
+            .run(&row, url)
+            .await
+            .map_err(EngineError::PluginFailed)?;
+        self.plugins.keep(resolution.clone());
+        Ok(resolution)
+    }
+
+    /// La tâche d'un lien rendu par un plugin : réseau public seulement, `Referer` (celui
+    /// du plugin, sinon la page) et cookies du site, page retenue pour un lien neuf.
+    fn plugin_task(
+        &self,
+        resolution: &crate::plugins::Resolution,
+        link: &crate::plugins::Link,
+        mut task: AddTask,
+    ) -> AddTask {
+        let referer = link
+            .referer
+            .clone()
+            .unwrap_or_else(|| resolution.page.clone());
+        let mut headers = vec![("Referer".to_owned(), referer)];
+        if let Some(cookie) = resolution.cookie_for(link) {
+            headers.push(("Cookie".to_owned(), cookie));
+        }
+        task.url = link.url.clone();
+        task.file_name = task.file_name.or_else(|| link.name.clone());
+        task.headers = headers;
+        task.public_only = !self.plugins.private_ok();
+        task.torrent = None;
+        task.media = None;
+        task.mirrors = Vec::new();
+        task.plugin = Some(PluginOrigin {
+            page: resolution.page.clone(),
+            plugin_id: resolution.plugin_id.clone(),
+        });
+        task
+    }
+
+    /// Ajoute les liens choisis (`picked`, rangs dans la résolution) d'une résolution
+    /// gardée : une tâche par lien, sur le modèle de `base` (dossier, file, pause…).
+    /// Chaque ajout réussit ou échoue pour lui-même.
+    pub async fn add_from_plugin(
+        &self,
+        resolution_id: &str,
+        picked: &[usize],
+        base: AddTask,
+    ) -> Result<Vec<Result<String, EngineError>>, EngineError> {
+        let resolution = self.plugins.kept(resolution_id).ok_or_else(|| {
+            EngineError::PluginNotFound(
+                "résolution inconnue ou expirée (10 minutes) : relancer plugin.resolve".into(),
+            )
+        })?;
+        if picked.is_empty()
+            || picked.iter().any(|&i| i >= resolution.links.len())
+            || (1..picked.len()).any(|i| picked[..i].contains(&picked[i]))
+        {
+            return Err(EngineError::BadRequest(format!(
+                "liens à ajouter : rangs distincts de 0 à {}",
+                resolution.links.len().saturating_sub(1)
+            )));
+        }
+        let mut added = Vec::with_capacity(picked.len());
+        for &i in picked {
+            let task = self.plugin_task(&resolution, &resolution.links[i], base.clone());
+            added.push(self.add(task).await);
+        }
+        Ok(added)
+    }
+
+    /// Impose l'adresse d'un nom aux requêtes des plugins (tests : serveur local).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn plugins_resolve_to(&self, name: &str, addr: std::net::SocketAddr) {
+        self.plugins.resolve_to(name, addr);
+    }
+
+    /// Les liens des plugins joignent aussi le réseau interne (tests : serveur local).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn plugins_allow_private(&self) {
+        self.plugins.allow_private();
+    }
+
+    /// Si `task` est l'adresse d'une page qu'un plugin activé prend en charge (adresse
+    /// seule : ni en-têtes, ni miroirs, ni torrent, ni vidéo, ni `plugin: false`), la tâche
+    /// de son lien direct, s'il est seul (SPEC §7.20).
+    async fn through_plugin(&self, task: &AddTask) -> Result<Option<AddTask>, EngineError> {
+        if task.no_plugin
+            || task.plugin.is_some()
+            || !task.headers.is_empty()
+            || !task.mirrors.is_empty()
+            || task.torrent.is_some()
+            || task.media.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(row) = self.plugin_for(&task.url).await? else {
+            return Ok(None);
+        };
+        let resolution = self
+            .plugins
+            .run(&row, &task.url)
+            .await
+            .map_err(EngineError::PluginFailed)?;
+        match resolution.links.len() {
+            0 => Err(EngineError::PluginFailed(
+                "aucun lien trouvé sur cette page".into(),
+            )),
+            1 => Ok(Some(self.plugin_task(
+                &resolution,
+                &resolution.links[0],
+                task.clone(),
+            ))),
+            n => Err(EngineError::PluginChoice(n)),
+        }
+    }
+
+    /// Page et plugin d'origine d'une tâche, si son lien vient d'un plugin.
+    pub async fn plugin_origin(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(String, String)>, EngineError> {
+        let id = task_id.to_owned();
+        self.ask(|reply| Command::PluginOrigin(id, reply)).await
+    }
+
+    /// Lien neuf d'une tâche venue d'un plugin, en échec sur un lien expiré (`403`, `410`,
+    /// SPEC §7.20) : le plugin relit la page, le lien de même nom (ou le seul) remplace
+    /// l'ancien, avec le `Referer` et les cookies de cette lecture, puis la tâche reprend.
+    /// Faux si la tâche n'est pas dans ce cas.
+    pub async fn refresh_plugin_link(&self, task_id: &str) -> Result<bool, EngineError> {
+        let task = self.get(task_id).await?;
+        let expired = task.state == TaskState::Failed
+            && task.error_code.as_deref() == Some("HTTP_STATUS")
+            && task
+                .error_detail
+                .as_deref()
+                .and_then(net::status_in_detail)
+                .is_some_and(|status| status == 403 || status == 410);
+        if !expired {
+            return Ok(false);
+        }
+        let Some((page, plugin_id)) = self.plugin_origin(task_id).await? else {
+            return Ok(false);
+        };
+        let row = self
+            .plugins()
+            .await?
+            .into_iter()
+            .find(|r| r.id == plugin_id && r.enabled)
+            .ok_or_else(|| {
+                EngineError::PluginNotFound(format!("plugin {plugin_id} absent ou désactivé"))
+            })?;
+        let resolution = self
+            .plugins
+            .run(&row, &page)
+            .await
+            .map_err(EngineError::PluginFailed)?;
+        let link = resolution
+            .links
+            .iter()
+            .find(|l| l.name.as_deref() == Some(task.display_name.as_str()))
+            .or_else(|| (resolution.links.len() == 1).then(|| &resolution.links[0]))
+            .ok_or_else(|| {
+                EngineError::PluginFailed("aucun lien de même nom sur la page".into())
+            })?;
+        let fresh = self.plugin_task(&resolution, link, AddTask::default());
+        let (id, headers) = (task_id.to_owned(), fresh.headers.clone());
+        self.ask(|reply| Command::ReplaceHeaders(id, headers, reply))
+            .await?;
+        // Le lien d'un plugin ne se vérifie que sur le réseau public, comme sa tâche.
+        let checker = match fresh.public_only {
+            true => self.restricted(false)?,
+            false => self.clone(),
+        };
+        checker.set_url(task_id, &fresh.url).await?;
+        self.resume(task_id).await?;
+        Ok(true)
+    }
+
+    /// Une poignée faible : elle n'empêche pas le moteur de s'arrêter quand ses poignées
+    /// disparaissent (superviseurs internes).
+    pub(crate) fn downgrade(&self) -> WeakEngine {
+        let (inert, _) = mpsc::channel(1);
+        let (events, _) = broadcast::channel(1);
+        WeakEngine {
+            commands: self.commands.downgrade(),
+            rest: Engine {
+                commands: inert,
+                events,
+                ..self.clone()
+            },
         }
     }
 
@@ -2281,6 +2692,15 @@ impl Scheduler {
             Command::Tokens(op, reply) => {
                 let _ = reply.send(self.tokens(op));
             }
+            Command::Plugins(op, reply) => {
+                let _ = reply.send(self.plugin_op(op));
+            }
+            Command::PluginOrigin(id, reply) => {
+                let _ = reply.send(tasks::plugin_origin(&self.conn, &id).map_err(Into::into));
+            }
+            Command::ReplaceHeaders(id, headers, reply) => {
+                let _ = reply.send(self.replace_headers(&id, headers));
+            }
             Command::CollectSecrets(found) => self.collect_secrets(found),
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
@@ -2772,6 +3192,9 @@ impl Scheduler {
                 return Err(e.into());
             }
         };
+        if let Some(origin) = &task.plugin {
+            tasks::set_plugin_origin(&self.conn, &task_id, &origin.page, &origin.plugin_id)?;
+        }
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
         if task.start_paused {
@@ -3052,6 +3475,73 @@ impl Scheduler {
             id,
             site,
             username: username.to_owned(),
+        })
+    }
+
+    /// Remplace les en-têtes d'une tâche arrêtée (lien neuf d'un plugin, SPEC §7.20) : les
+    /// nouveaux secrets au coffre d'abord, les anciens effacés après (SPEC §5.1).
+    fn replace_headers(
+        &mut self,
+        task_id: &str,
+        headers: Vec<(String, String)>,
+    ) -> Result<(), EngineError> {
+        net::check_task_headers(&headers).map_err(|e| EngineError::BadRequest(e.to_string()))?;
+        let task = load_task(&self.conn, task_id)?;
+        if self.running.contains_key(task_id) {
+            return Err(EngineError::InvalidState {
+                task_id: task_id.to_owned(),
+                state: task.state.as_sql(),
+                action: "remplacer ses en-têtes",
+            });
+        }
+        let stored = self.store_secrets(headers)?;
+        let new_ids: Vec<String> = stored
+            .iter()
+            .filter_map(|(_, s)| match s {
+                Stored::Secret(id) => Some(id.clone()),
+                Stored::Plain(_) => None,
+            })
+            .collect();
+        match store::headers::replace(&mut self.conn, task_id, &stored) {
+            Ok(old) => {
+                self.vault().forget(old);
+                Ok(())
+            }
+            Err(e) => {
+                self.vault().forget(new_ids);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Table des plugins (SPEC §7.20). Les empreintes rendues sont celles de fichiers que
+    /// plus aucun plugin n'utilise.
+    fn plugin_op(&mut self, op: PluginOp) -> Result<PluginAnswer, EngineError> {
+        use store::plugins as rows;
+        let unused =
+            |conn: &Connection, digest: Option<String>| -> Result<Option<String>, EngineError> {
+                Ok(match digest {
+                    Some(d) if !rows::digest_in_use(conn, &d)? => Some(d),
+                    _ => None,
+                })
+            };
+        Ok(match op {
+            PluginOp::List => PluginAnswer::Rows(rows::list(&self.conn)?),
+            PluginOp::Install(row) => {
+                let (saved, replaced) = rows::install(&self.conn, &row)?;
+                PluginAnswer::Installed(saved, unused(&self.conn, replaced)?)
+            }
+            PluginOp::Remove(id) => {
+                let digest = rows::remove(&self.conn, &id)?;
+                PluginAnswer::Removed {
+                    found: digest.is_some(),
+                    unused: unused(&self.conn, digest)?,
+                }
+            }
+            PluginOp::SetEnabled(id, on) => {
+                rows::set_enabled(&self.conn, &id, on)?;
+                PluginAnswer::Enabled(rows::load(&self.conn, &id)?)
+            }
         })
     }
 

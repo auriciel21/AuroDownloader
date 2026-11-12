@@ -115,6 +115,13 @@ téléchargement.
   seulement : résolveur filtrant, `Client::restricted`), `Engine::restricted` (poignée
   d'une connexion à jeton : dossier des téléchargements, `tasks.public_only`),
   `rpc::serve_messages` (tout transport) ; méthodes `token.*` et `remote.status`.
+  Plugins d'hébergeurs (F-41, SPEC 7.20, étape 4b) : `plugins` (`manifest` : section
+  `auro-plugin` du `.wasm` ; `runtime` : wasmi, instance neuve, limites ; `fetch` : requêtes
+  du plugin vers ses domaines, réseau public, cookies du site tenus par le moteur ;
+  `watch` : lien expiré redemandé au plugin, poignée faible `scheduler::WeakEngine`),
+  `store::plugins` (table `plugins`, migration 10 ; `tasks.plugin_page`, `plugin_id`),
+  `store::headers::replace` ; méthodes `plugin.*`, `plugin` de `task.add` ; plugins
+  d'essai en texte WebAssembly : `testing::plugin_files`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -283,6 +290,8 @@ cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> 
 cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
+cargo run -p auro-cli -- plugin install <fichier.wasm> [--yes] ; plugin list ; plugin resolve <page>
+cargo run -p auro-cli -- plugin add <page> --select 0,2 -o . ; add <page> --no-plugin
 cargo run -p auro-cli -- remote enable --listen 127.0.0.1:7380 ; remote ; remote disable
 cargo run -p auro-cli -- remote hosts nas.maison ; remote cert --file c.pem --key k.pem ; remote cert --generated
 cargo run -p auro-cli -- add <url> --checksum sha256:<hex>   # ou la valeur seule
@@ -580,6 +589,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Vidéo (SPEC 7.17) : une tâche interne (`parent_id` non nul) ne se lance que par l'exécution
   de sa vidéo ; toute nouvelle requête qui liste, compte ou planifie des tâches l'exclut
   (`parent_id IS NULL`), mais celles des noms pris et des contrôles d'intégrité la gardent.
+- Plugins (SPEC 7.20) : un plugin ne voit jamais un secret (cookies du site, identifiants,
+  jetons) ; ses requêtes passent seulement par `plugins::fetch` (domaines déclarés, réseau
+  public, en-têtes de la liste) ; seuls `auro.fetch` et `auro.log` sont importables ; ses
+  liens font des tâches au réseau public seulement, et un lien neuf se vérifie par une
+  poignée restreinte. Un fichier de plugin ne s'installe que sur l'empreinte acceptée par
+  l'utilisateur, et se revérifie à chaque chargement.
 - Copies corrigées (`third_party`) : ne jamais modifier une dépendance ailleurs. Toute
   modification y est marquée « AuroDownloader » et notée dans `third_party/README.md` ;
   monter la version d'une de ces crates demande d'y reporter les modifications.

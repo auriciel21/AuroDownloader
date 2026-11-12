@@ -7,6 +7,7 @@
 //! Compilé pour les tests du moteur et, avec la fonctionnalité `testing`, pour ceux des
 //! autres paquets (banc de reprise de la CLI). Ne fait pas partie de l'API du moteur.
 
+pub mod plugin_files;
 pub mod swarm;
 pub mod tools;
 
@@ -488,7 +489,9 @@ fn is_neighbor(path: &str) -> bool {
     .any(|end| path.ends_with(end))
 }
 
-fn file_handler(site: Arc<Mutex<FileSite>>) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
+pub fn file_handler(
+    site: Arc<Mutex<FileSite>>,
+) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
     let cuts_done = AtomicUsize::new(0);
     let busy_done = AtomicUsize::new(0);
     move |r: &Request| {

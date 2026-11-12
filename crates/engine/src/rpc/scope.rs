@@ -68,7 +68,11 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         // Fichiers Metalink (SPEC §7.7) : lus, au besoin à une adresse, puis ajoutés.
         | "metalink.read" | "metalink.add"
         // Tailles des liens analysés : une requête vers chaque adresse (SPEC §7.18).
-        | "linkscan.probe" => Scope::Add,
+        | "linkscan.probe"
+        // Plugins d'hébergeurs (SPEC §7.20) : s'en servir à l'ajout, jamais en installer.
+        | "plugin.match"
+        | "plugin.resolve"
+        | "plugin.add" => Scope::Add,
         // Attacher une planification peut éteindre la machine (SPEC §7.11).
         "queue.create" | "queue.update" if params.get("scheduleId").is_some() => Scope::Admin,
         "task.pause"
@@ -98,6 +102,9 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         // Jetons de l'interface distante (SPEC §7.19) : un jeton n'a jamais `admin`, ces
         // méthodes ne s'atteignent donc que par le canal local.
         "token.create" | "token.list" | "token.revoke" | "remote.status" => Scope::Admin,
+        // Installer, voir les permissions, activer, retirer (SPEC §7.20).
+        "plugin.inspect" | "plugin.install" | "plugin.list" | "plugin.remove"
+        | "plugin.enable" => Scope::Admin,
         _ => return None,
     })
 }

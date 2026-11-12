@@ -118,6 +118,9 @@ impl From<EngineError> for RpcError {
             EngineError::CapabilityMissing(_) => Self::capability_missing(message),
             EngineError::ToolsMissing(_) => Self::new(-32031, "TOOLS_MISSING", message),
             EngineError::Extractor(_) => Self::new(-32032, "EXTRACTOR_FAILED", message),
+            EngineError::PluginFailed(_) => Self::new(-32034, "PLUGIN_FAILED", message),
+            EngineError::PluginNotFound(_) => Self::new(-32035, "PLUGIN_NOT_FOUND", message),
+            EngineError::PluginChoice(_) => Self::new(-32036, "PLUGIN_CHOICE", message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
                 Self::internal(message)
             }

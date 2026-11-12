@@ -625,3 +625,138 @@ async fn the_remote_interface_is_opened_moved_and_closed() {
     assert!(!bad.status.success());
     auro_engine::testing::stop(&engine).await;
 }
+
+/// `auro plugin` (SPEC §7.20) : permissions montrées avant toute installation, installé
+/// avec --yes, liens d'une page, ajout direct d'une page, ajout de liens choisis, retrait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugins_are_shown_installed_used_and_removed() {
+    use auro_engine::testing::plugin_files::{fetch_call, packed, plugin};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "plugins", Options::default()).await;
+    let server = auro_engine::testing::serve(|request| {
+        auro_engine::testing::reply(
+            if request.path == "/page" {
+                "200 OK"
+            } else {
+                "404 Not Found"
+            },
+            &[("Content-Length", "0")],
+            b"",
+        )
+    });
+    let addr: std::net::SocketAddr = server.base.trim_start_matches("http://").parse().unwrap();
+    engine.plugins_resolve_to("fichiers.exemple", addr);
+    engine.plugins_resolve_to("multi.exemple", addr);
+    let manifest = |id: &str, site: &str| {
+        format!(
+            r#"{{"abi": 1, "id": "{id}", "name": "{id}", "version": "1", "sites": ["{site}"], "fetch": ["{site}"]}}"#
+        )
+    };
+    let page = r#"{"url": "http://fichiers.exemple/page"}"#;
+    let one = r#"{"links": [{"url": "https://cdn.exemple/f.iso", "name": "f.iso", "size": 2048}]}"#;
+    let single = plugin(
+        &manifest("org.essai.un", "fichiers.exemple"),
+        &[one, page],
+        &format!("(drop {}) {}", fetch_call(1, page), packed(0, one)),
+        "",
+    );
+    let two = r#"{"links": [{"url": "https://cdn.exemple/a.iso", "name": "a.iso"},
+        {"url": "https://cdn.exemple/b.iso", "name": "b.iso"}]}"#;
+    let several = plugin(
+        &manifest("org.essai.deux", "multi.exemple"),
+        &[two],
+        &packed(0, two),
+        "",
+    );
+    let (file_one, file_two) = (dir.path().join("un.wasm"), dir.path().join("deux.wasm"));
+    std::fs::write(&file_one, single).unwrap();
+    std::fs::write(&file_two, several).unwrap();
+    let path = |p: &Path| p.to_string_lossy().into_owned();
+
+    // Montré, pas installé sans --yes.
+    let shown = ok(&ep, &["plugin", "install", &path(&file_one)]).await;
+    assert!(
+        shown.contains("Pages prises en charge : fichiers.exemple")
+            && shown.contains("Empreinte SHA-256")
+            && shown.contains("--yes"),
+        "{shown}"
+    );
+    assert!(ok(&ep, &["plugin", "list"]).await.contains("Aucun plugin."));
+    for file in [&file_one, &file_two] {
+        let done = ok(&ep, &["plugin", "install", &path(file), "--yes"]).await;
+        assert!(done.contains("Installé et activé"), "{done}");
+    }
+    let listed = ok(&ep, &["plugin", "list"]).await;
+    assert!(
+        listed.contains("org.essai.un") && listed.contains("org.essai.deux"),
+        "{listed}"
+    );
+
+    let links = ok(&ep, &["plugin", "resolve", "https://multi.exemple/x"]).await;
+    assert!(
+        links.contains("0. a.iso") && links.contains("1. b.iso"),
+        "{links}"
+    );
+    let dest = dir.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    // Ajout direct : un lien, gardé ; plusieurs, refusé avec la marche à suivre.
+    let added = ok(
+        &ep,
+        &[
+            "add",
+            "http://fichiers.exemple/page",
+            "-o",
+            &path(&dest),
+            "--paused",
+        ],
+    )
+    .await;
+    assert!(!added.is_empty(), "{added}");
+    let refused = auro(&ep, &["add", "https://multi.exemple/x", "-o", &path(&dest)]).await;
+    let (_, stderr) = text(&refused);
+    assert!(
+        !refused.status.success() && stderr.contains("auro plugin resolve"),
+        "{stderr}"
+    );
+    let picked = ok(
+        &ep,
+        &[
+            "plugin",
+            "add",
+            "https://multi.exemple/x",
+            "--select",
+            "1",
+            "-o",
+            &path(&dest),
+            "--paused",
+        ],
+    )
+    .await;
+    assert!(picked.contains("Ajouté : lien 1"), "{picked}");
+    let tasks = ok(&ep, &["list"]).await;
+    assert!(
+        tasks.contains("f.iso") && tasks.contains("b.iso") && !tasks.contains("a.iso"),
+        "{tasks}"
+    );
+
+    assert!(
+        ok(&ep, &["plugin", "disable", "org.essai.deux"])
+            .await
+            .contains("désactivé")
+    );
+    assert!(ok(&ep, &["plugin", "list"]).await.contains(", désactivé"));
+    ok(&ep, &["plugin", "remove", "org.essai.deux"]).await;
+    assert!(
+        !ok(&ep, &["plugin", "list"])
+            .await
+            .contains("org.essai.deux")
+    );
+    assert!(
+        !auro(&ep, &["plugin", "remove", "org.essai.deux"])
+            .await
+            .status
+            .success()
+    );
+    auro_engine::testing::stop(&engine).await;
+}
