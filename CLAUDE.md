@@ -583,7 +583,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   « Plugins », plugin lancé à la validation d'« Ajouter », liens à cocher comme un
   Metalink, case « sans plugin », page d'origine dans les Propriétés, décisions de
   l'utilisateur du 2026-11-12 ; 4d plugin d'exemple Internet Archive en Rust, `plugins/`,
-  essai réel par la CLI ; essai de l'interface à faire) ;
+  essai réel par la CLI ; essai de l'interface validé par l'utilisateur le 2026-11-12 sur
+  la variante d'essai ; étape 4 terminée) ;
   5. porte : revue de sécurité de l'API distante et des plugins.
 - Limites de débit (SPEC 7.6) : toute lecture réseau d'un segment attend
   `Throttle::ready`, puis paie ce qu'elle a reçu (`Throttle::pay`, dans
