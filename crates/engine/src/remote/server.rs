@@ -228,11 +228,53 @@ async fn route(shared: Arc<Shared>, ip: IpAddr, request: Request<hyper::body::In
         (&Method::POST, "/rpc") => rpc_post(shared, ip, request).await,
         (&Method::POST, "/login") => login(shared, ip, origin, request).await,
         (&Method::POST, "/logout") => logout(shared, origin, request).await,
-        (_, "/ws" | "/rpc" | "/login" | "/logout") => plain(
+        (&Method::GET, "/session") => session(shared, ip, request).await,
+        (_, "/ws" | "/rpc" | "/login" | "/logout" | "/session") => plain(
             StatusCode::METHOD_NOT_ALLOWED,
             "méthode non prise en charge",
         ),
+        (&Method::GET, path) => match super::page::find(path) {
+            Some(asset) => page_file(&shared, asset, &host),
+            None => plain(StatusCode::NOT_FOUND, "introuvable"),
+        },
         _ => plain(StatusCode::NOT_FOUND, "introuvable"),
+    }
+}
+
+/// Un fichier de la page (étape 3c), sans authentification ; la page porte sa politique de
+/// sécurité.
+fn page_file(shared: &Shared, asset: &super::page::Asset, host: &str) -> Reply {
+    let mut reply = Response::new(Full::new(Bytes::from_static(asset.body)));
+    reply.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(asset.content_type),
+    );
+    let mut reply = hardened(reply);
+    if asset.path == "/index.html"
+        && let Ok(csp) = HeaderValue::from_str(&super::page::csp(host, shared.scheme == "https"))
+    {
+        reply
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, csp);
+    }
+    reply
+}
+
+/// `GET /session` : la page demande si sa session (cookie) est encore valable, avant
+/// d'ouvrir le WebSocket ou de montrer la connexion. Un navigateur n'envoie pas `Origin`
+/// pour un `GET` de même origine : le cookie `SameSite=Strict` ne part de toute façon pas
+/// d'un autre site, et la réponse ne se lit pas d'ailleurs (aucun CORS).
+async fn session(
+    shared: Arc<Shared>,
+    ip: IpAddr,
+    request: Request<hyper::body::Incoming>,
+) -> Reply {
+    match authenticate(&shared, ip, request.headers(), true).await {
+        Ok((row, _)) => json_reply(
+            StatusCode::OK,
+            json!({"name": row.name, "scope": row.scope}).to_string(),
+        ),
+        Err(reply) => *reply,
     }
 }
 
@@ -565,9 +607,11 @@ async fn login(
         Ok(body) => body,
         Err(reply) => return *reply,
     };
-    let token = serde_json::from_slice::<Value>(&body)
-        .ok()
-        .and_then(|v| v.get("token").and_then(Value::as_str).map(str::to_owned));
+    let token = serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
+        v.get("token")
+            .and_then(Value::as_str)
+            .map(|t| t.trim().to_owned())
+    });
     let Some(token) = token else {
         return plain(StatusCode::BAD_REQUEST, "{\"token\": \"…\"} attendu");
     };

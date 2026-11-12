@@ -7,6 +7,7 @@ import {
   isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, parseSizeText, linkFilter,
   reclassifyLink,
+  takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -557,4 +558,36 @@ test("un lien sans extension que le serveur décrit comme un fichier en devient 
   assert.equal(reclassifyLink(sums, null).kind, "page");
   const zip = { url: "https://a.example/a.zip", ext: "zip", kind: "file" };
   assert.equal(reclassifyLink(zip, "page"), zip, "un fichier le reste");
+});
+
+test("interface distante : jeton de l'ancre, sous-dossier, portées", () => {
+  const token = "auro_" + "A".repeat(43);
+  assert.equal(takeHashToken(`#token=${token}`), token);
+  assert.equal(takeHashToken(`#x=1&token=${token}`), token);
+  for (const bad of ["", "#", "#token=", "#token=auro_court", `#token=${token}x`, `#jeton=${token}`]) {
+    assert.equal(takeHashToken(bad), null, bad);
+  }
+  // Ce qu'on colle dans la connexion : le jeton seul, entouré d'espaces, l'adresse, la ligne.
+  assert.equal(pastedToken(token), token);
+  assert.equal(pastedToken(`  ${token}\n`), token);
+  assert.equal(pastedToken(`http://192.168.1.20:7380/#token=${token}`), token);
+  assert.equal(pastedToken(`control : http://127.0.0.1:7391/#token=${token}`), token);
+  assert.equal(pastedToken("  pas un jeton "), "pas un jeton");
+  assert.equal(pastedToken(`${token}x`), `${token}x`);
+  assert.ok(isToken(token) && !isToken(`${token}x`) && !isToken("auro_…") && !isToken(""));
+  assert.equal(sessionError(401).code, "UNAUTHORIZED");
+  assert.equal(sessionError(429).code, "TOO_MANY_ATTEMPTS");
+  assert.equal(sessionError(500).code, "ENGINE_DOWN");
+
+  assert.equal(subDirParts(""), "");
+  assert.equal(subDirParts("  "), "");
+  assert.equal(subDirParts("ISO/Debian"), "ISO/Debian");
+  assert.equal(subDirParts("/ISO//Debian/ "), "ISO/Debian");
+  assert.equal(subDirParts("ISO\\Debian"), "ISO/Debian");
+  assert.equal(subDirParts("../x"), null);
+  assert.equal(subDirParts("a/./b"), null);
+
+  assert.ok(scopeAllows("admin", "admin") && scopeAllows("control", "add") && scopeAllows("control", "read"));
+  assert.ok(!scopeAllows("control", "admin") && !scopeAllows("read", "add") && !scopeAllows("add", "read"));
+  assert.ok(scopeAllows("read", "read") && scopeAllows("add", "add"));
 });

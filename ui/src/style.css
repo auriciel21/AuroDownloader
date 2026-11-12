@@ -87,6 +87,8 @@ body {
 }
 
 [hidden] { display: none !important; }
+/* Absent de cette page : service de l'application, ou portée de la connexion (page distante). */
+.lacks { display: none !important; }
 
 .visually-hidden {
   position: absolute;
@@ -315,6 +317,8 @@ col.c-added { width: 132px; }
 }
 #grid td.num { font-variant-numeric: tabular-nums; }
 #grid td.size, #grid td.eta, #grid td.rate { text-align: right; }
+/* Bouton d'une carte (écran étroit) : absent du tableau. */
+#grid td.action { display: none; }
 
 #grid tbody tr { user-select: none; }
 #grid tbody tr:hover { background: var(--hover); }
@@ -717,25 +721,87 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
   col.c-eta, #grid th.eta, #grid td.eta { display: none; }
 }
 
-@media (max-width: 640px) {
+/* Téléphone et petite fenêtre (étape 3c, décision de l'utilisateur) : barre d'outils en
+   pictogrammes qui défile, vues en bandeau, une carte par téléchargement avec son bouton,
+   boîtes en plein écran, cibles assez grandes pour le doigt. */
+@media (max-width: 700px) {
   .panes { flex-direction: column; }
   #tree {
     width: auto;
-    max-height: 30vh;
     padding: 4px 16px;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    overflow: auto hidden;
   }
-  .toolbar { padding: 4px 16px; }
-  .tool { min-width: 56px; font-size: 11px; }
-  .tool svg { width: 22px; height: 22px; }
+  .tree-title, #tree .twisty, #tree .branch > ul { display: none; }
+  #tree-items { display: flex; gap: 4px; }
+  #tree .view { min-height: 36px; }
+
+  .toolbar { flex-wrap: nowrap; overflow-x: auto; padding: 4px 16px; }
+  .tool { min-width: 44px; min-height: 44px; justify-content: center; }
+  .tool svg { width: 24px; height: 24px; }
+  /* Le texte reste lu par les lecteurs d'écran. */
+  .tool span {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
   .separator { display: none; }
-  col.c-size, #grid th.size, #grid td.size,
-  col.c-rate, #grid th.rate, #grid td.rate { display: none; }
-  #grid { min-width: 0; }
-  col.c-state { width: 110px; }
+
+  #grid { min-width: 0; table-layout: auto; }
+  #grid colgroup, #grid thead { display: none; }
+  #grid tbody { display: block; }
+  #grid tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "name name action"
+      "progress progress action"
+      "state rate action";
+    align-items: center;
+    gap: 2px 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--row-line);
+  }
+  #grid td { display: block; padding: 0; border: none; }
+  #grid td.name { grid-area: name; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+  #grid td.progress { grid-area: progress; display: flex; align-items: center; gap: 8px; }
+  #grid td.progress .meter { flex: 1; }
+  #grid td.state { grid-area: state; color: var(--muted); font-size: 13px; }
+  #grid td.rate { grid-area: rate; font-size: 13px; text-align: right; }
+  #grid td.size, #grid td.eta, #grid td.added { display: none; }
+  #grid td.action { grid-area: action; display: block; }
+  .row-action {
+    width: 44px; height: 44px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+  }
+  .row-action svg { width: 22px; height: 22px; }
+  .row-action.resume svg { color: var(--done); }
+  .row-action.pause svg { color: var(--amber); }
+
   footer { padding: 4px 16px; }
   .facts > div { grid-template-columns: 110px 1fr; }
+
+  /* Boîtes en plein écran ; champs de 16 px, que les navigateurs mobiles ne grossissent pas. */
+  dialog, dialog.wide {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    overflow: auto;
+  }
+  input, select, textarea { font-size: 16px; }
+  button, select { min-height: 40px; }
+  .link-filters { grid-template-columns: minmax(0, 1fr); }
+  #menu [role="menuitem"] { padding: 10px 14px; }
 }
 
 /* ---------- Planification ---------- */

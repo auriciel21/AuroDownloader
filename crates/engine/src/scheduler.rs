@@ -2687,10 +2687,10 @@ impl Scheduler {
         {
             return Ok(existing);
         }
-        if !task.sub_dir.is_empty() && (task.torrent.is_some() || task.media.is_some()) {
-            return Err(EngineError::BadRequest(
-                "sous-dossier : seulement pour un téléchargement HTTP".into(),
-            ));
+        let mut task = task;
+        if !task.sub_dir.is_empty() {
+            task.dest_dir = Some(self.resolve_sub_dir(&task)?);
+            task.sub_dir.clear();
         }
         if task.torrent.is_some() || is_magnet(&task.url) {
             if !task.mirrors.is_empty() {
@@ -2739,20 +2739,7 @@ impl Scheduler {
         if let Some(name) = &task.file_name {
             check_file_name(name)?;
         }
-        for part in &task.sub_dir {
-            check_file_name(part)?;
-        }
         let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
-        let dest_dir = if task.sub_dir.is_empty() {
-            dest_dir
-        } else {
-            let dir = sub_dir(&dest_dir, &task.sub_dir)?;
-            // Un sous-dossier déjà là pourrait être un lien vers ailleurs.
-            if task.remote {
-                self.check_within_downloads(&dir)?;
-            }
-            dir
-        };
         let display_name = task
             .file_name
             .clone()
@@ -2822,6 +2809,28 @@ impl Scheduler {
             return Err(EngineError::QueueNotFound(queue_id));
         }
         Ok((dest_dir, queue_id))
+    }
+
+    /// Le sous-dossier d'un ajout (Metalink, `subDir` de la page distante), créé sous sa
+    /// destination ; pour tout téléchargement (HTTP, torrent, vidéo). Les noms sont vérifiés
+    /// tels quels, et pour une connexion à jeton le dossier obtenu doit rester sous celui
+    /// des téléchargements (un sous-dossier déjà là pourrait être un lien vers ailleurs).
+    fn resolve_sub_dir(&self, task: &AddTask) -> Result<String, EngineError> {
+        for part in &task.sub_dir {
+            if part == "." || part == ".." {
+                return Err(EngineError::BadRequest(format!(
+                    "sous-dossier refusé : {part:?}"
+                )));
+            }
+            check_file_name(part)?;
+        }
+        let (base, _) =
+            self.destination(task.dest_dir.clone(), task.queue_id.clone(), task.remote)?;
+        let dir = sub_dir(&base, &task.sub_dir)?;
+        if task.remote {
+            self.check_within_downloads(&dir)?;
+        }
+        Ok(dir)
     }
 
     /// Ajout d'un torrent (SPEC §7.16) : lien magnet dans `url`, ou fichier `.torrent`.

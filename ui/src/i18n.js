@@ -480,6 +480,24 @@ export const EN = {
     "At most once a day, when a page is analysed; the new version's signature is checked. Sites change often: an old yt-dlp ends up unable to read them.",
   "yt-dlp ou ffmpeg absent (Options, Vidéo)": "yt-dlp or ffmpeg missing (Options, Video)",
   "assemblage de la vidéo impossible": "the video could not be assembled",
+  // Interface distante (étape 3c)
+  "Se déconnecter": "Sign out",
+  "Sous-dossier (facultatif)": "Subfolder (optional)",
+  "Créé dans le dossier ci-dessus.": "Created in the folder above.",
+  "Sous-dossier refusé : « . » et « .. » ne sont pas permis.":
+    "Subfolder refused: “.” and “..” are not allowed.",
+  "Connexion à AuroDownloader": "Sign in to AuroDownloader",
+  "Collez un jeton créé sur la machine du moteur (Options du bureau, ou auro token create). Il n'est envoyé qu'une fois, puis ce navigateur garde une session de 30 jours.":
+    "Paste a token created on the engine's machine (desktop Options, or auro token create). It is sent only once; this browser then keeps a 30-day session.",
+  "Jeton": "Token",
+  "Se connecter": "Sign in",
+  "Jeton inconnu du moteur, ou révoqué.": "Token unknown to the engine, or revoked.",
+  "Pas de jeton dans le texte collé ({0} caractères) : un jeton commence par auro_, suivi de 43 lettres, chiffres, - ou _.":
+    "No token in the pasted text ({0} characters): a token starts with auro_, followed by 43 letters, digits, - or _.",
+  "Trop d'essais refusés : réessayez dans une minute.": "Too many refused attempts: try again in a minute.",
+  "Ce jeton permet seulement d'ajouter des téléchargements.": "This token only allows adding downloads.",
+  "Arrêter {0}": "Stop {0}",
+  "Reprendre {0}": "Resume {0}",
   // Unités
   "o": "B", "Kio": "KiB", "Mio": "MiB", "Gio": "GiB", "Tio": "TiB",
   "{0} s": "{0} s",

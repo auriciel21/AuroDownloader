@@ -3317,3 +3317,128 @@ async fn allow_private_opens_the_internal_network_but_not_other_folders() {
     assert!(downloads.join("a.bin").exists());
     crate::testing::stop(&engine).await;
 }
+
+/// `subDir` (étape 3c) : la page distante range un ajout dans un sous-dossier, créé sous le
+/// dossier des téléchargements, pour tout téléchargement ; jamais au-dessus. Une connexion à
+/// jeton ne voit pas les réglages de l'écoute.
+#[tokio::test]
+async fn a_sub_folder_is_created_under_the_destination_and_never_escapes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let engine = engine(dir.path());
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.dir": dir_text(&downloads)}}),
+        )
+        .await;
+    let token = local
+        .result("token.create", json!({"name": "tél", "scope": "control"}))
+        .await;
+    let peer = super::Peer::token(token["id"].as_str().unwrap(), super::Scope::Control);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    remote.result("engine.hello", hello()).await;
+
+    let add = |sub: &str| {
+        json!({"sources": [{"url": "https://exemple.org/a.iso"}], "subDir": sub,
+               "startPaused": true})
+    };
+    let id = remote.result("task.add", add("ISO/Debian/")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = remote.result("task.get", json!({"taskId": id})).await;
+    let wanted = downloads.join("ISO").join("Debian");
+    assert_eq!(task["destDir"], json!(dir_text(&wanted)), "{task}");
+    assert!(wanted.is_dir());
+    for bad in [
+        "..",
+        "../ailleurs",
+        "a/../../ailleurs",
+        "a/./b",
+        "1/2/3/4/5/6/7/8/9",
+    ] {
+        assert_eq!(
+            remote.error_code("task.add", add(bad)).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    // Un nom que le système refuserait : refusé tel quel, jamais corrigé (« \ » partout,
+    // « : » sous Windows seulement).
+    let refused: &[&str] = if cfg!(windows) {
+        &["a\\b", "a:b"]
+    } else {
+        &["a\\b"]
+    };
+    for bad in refused {
+        assert_eq!(
+            remote.error_code("task.add", add(bad)).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    // Ailleurs, même avec un sous-dossier : refusé.
+    let outside = json!({"sources": [{"url": "https://exemple.org/b.iso"}],
+                         "destDir": dir_text(&elsewhere), "subDir": "x", "startPaused": true});
+    assert_eq!(
+        remote.error_code("task.add", outside).await,
+        "DEST_FORBIDDEN"
+    );
+    assert!(!elsewhere.join("x").exists());
+    // Un sous-dossier déjà là qui mène ailleurs (lien) : refusé.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&elsewhere, downloads.join("lien")).unwrap();
+        assert_eq!(
+            remote.error_code("task.add", add("lien")).await,
+            "DEST_FORBIDDEN"
+        );
+    }
+    // Par lot aussi.
+    let batch = remote
+        .result(
+            "task.addBatch",
+            json!({"items": [add("Lot"), add("../Lot")]}),
+        )
+        .await;
+    assert_eq!(batch["tasks"].as_array().unwrap().len(), 1, "{batch}");
+    assert_eq!(batch["errors"][0]["code"], "INVALID_PARAMS", "{batch}");
+    assert!(downloads.join("Lot").is_dir());
+
+    // Un torrent (lien magnet) aussi, depuis le canal local.
+    let magnet = json!({"sources": [{"url": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=essai"}],
+                        "destDir": dir_text(&downloads), "subDir": "Torrents", "startPaused": true});
+    let id = local.result("task.add", magnet).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = local.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(
+        task["destDir"],
+        json!(dir_text(&downloads.join("Torrents"))),
+        "{task}"
+    );
+
+    // Réglages : la connexion à jeton ne voit pas ceux de l'écoute.
+    let seen = remote.result("settings.get", json!({})).await["values"].clone();
+    assert!(seen.get("downloads.dir").is_some(), "{seen}");
+    for key in [
+        "remote.enabled",
+        "remote.allowPrivate",
+        "remote.listen",
+        "remote.hosts",
+        "remote.tlsCert",
+        "remote.tlsKey",
+    ] {
+        assert!(seen.get(key).is_none(), "{key} : {seen}");
+    }
+    let all = local.result("settings.get", json!({})).await["values"].clone();
+    assert!(all.get("remote.listen").is_some(), "{all}");
+    crate::testing::stop(&engine).await;
+}

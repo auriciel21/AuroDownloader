@@ -703,6 +703,16 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let ratio = ratio.map_or(Value::Null, Value::from);
     let interface = ctx.engine.torrent_interface().await?;
     let mut values = settings_json(dir, &flags, ratio, interface);
+    // Les réglages de l'écoute (chemins du certificat et de sa clé, noms) ne regardent que
+    // le canal local (SPEC §7.19) : une connexion à jeton ne les voit pas.
+    if ctx.engine.is_restricted() {
+        for key in [Flag::RemoteEnabled.key(), Flag::RemoteAllowPrivate.key()] {
+            if let Some(map) = values.as_object_mut() {
+                map.remove(key);
+            }
+        }
+        return Ok(json!({"values": values}));
+    }
     let remote = ctx.engine.remote_config().await?;
     values[REMOTE_LISTEN] = json!(remote.listen.to_string());
     values[REMOTE_HOSTS] = json!(remote.hosts);
@@ -949,13 +959,36 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             torrent,
             media,
             mirrors,
-            sub_dir: Vec::new(),
+            sub_dir: sub_dir_param(p)?,
             // Posés par la poignée restreinte d'une connexion à jeton (SPEC §7.19).
             remote: false,
             public_only: false,
         })
         .await?;
     Ok(json!({"taskId": task_id}))
+}
+
+/// Profondeur d'un `subDir`, au plus.
+const MAX_SUB_DIR_DEPTH: usize = 8;
+
+/// `subDir` (SPEC §6.5, étape 3c) : sous-dossier créé sous la destination, parties séparées
+/// par `/` (chacune un nom de fichier valide, vérifié par le moteur) ; absent ou vide : aucun.
+fn sub_dir_param(p: &Params) -> Result<Vec<String>, RpcError> {
+    let Some(text) = p.str("subDir")? else {
+        return Ok(Vec::new());
+    };
+    let parts: Vec<String> = text
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if parts.len() > MAX_SUB_DIR_DEPTH || parts.iter().any(|part| part == "." || part == "..") {
+        return Err(Params::wrong(
+            "subDir",
+            "sous-dossier relatif, parties séparées par / (8 au plus, sans . ni ..)",
+        ));
+    }
+    Ok(parts)
 }
 
 /// Éléments d'un `task.addBatch`, au plus.
@@ -1146,6 +1179,7 @@ async fn metalink_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             "maxConnections : de 1 à {MAX_CONNECTIONS}"
         )));
     }
+    let prefix = sub_dir_param(p)?;
     let base = AddTask {
         dest_dir: p.str("destDir")?,
         queue_id: p.str("queueId")?,
@@ -1161,7 +1195,7 @@ async fn metalink_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             url: file.urls[0].clone(),
             mirrors: file.urls[1..].to_vec(),
             file_name: Some(file.name.clone()),
-            sub_dir: file.dir.clone(),
+            sub_dir: prefix.iter().chain(&file.dir).cloned().collect(),
             checksum: file.checksum.clone(),
             // Une clé par fichier : un ajout répété rend les mêmes tâches.
             idempotency_key: idempotency_key.as_ref().map(|k| format!("{k}#{index}")),

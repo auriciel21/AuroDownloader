@@ -840,3 +840,102 @@ async fn the_generated_certificate_is_renewed_when_due() {
     );
     crate::testing::stop(&engine).await;
 }
+
+/// La page (étape 3c) : servie sans jeton, avec sa politique de sécurité (connexions vers ce
+/// serveur seulement) ; rien d'autre n'est servi. `GET /session` dit si le cookie vaut
+/// encore, sans `Origin`.
+#[tokio::test]
+async fn the_page_is_served_with_its_policy_and_the_session_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let (_, token) = engine.create_token("tablette", "read").await.unwrap();
+    let addr = listening(&engine).await;
+    let host = format!("127.0.0.1:{}", addr.port());
+    let plain = [("Host", host.as_str())];
+
+    let page = http(addr, "GET", "/", &plain, "").await;
+    assert_eq!(page.status, 200);
+    assert_eq!(
+        page.header("Content-Type").as_deref(),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        page.body
+            .contains("<script type=\"module\" src=\"main.js\">")
+    );
+    let csp = page.header("Content-Security-Policy").unwrap();
+    for part in [
+        "default-src 'none'",
+        "script-src 'self'",
+        "style-src 'self'",
+        &format!("connect-src 'self' ws://{host}"),
+        "frame-ancestors 'none'",
+    ] {
+        assert!(csp.contains(part), "{part} : {csp}");
+    }
+    assert!(!csp.contains("unsafe"), "{csp}");
+    assert_eq!(page.header("X-Frame-Options").as_deref(), Some("DENY"));
+    for (path, kind) in [
+        ("/main.js", "text/javascript"),
+        ("/web.js", "text/javascript"),
+        ("/style.css", "text/css"),
+    ] {
+        let answer = http(addr, "GET", path, &plain, "").await;
+        assert_eq!(answer.status, 200, "{path}");
+        assert!(
+            answer.header("Content-Type").unwrap().starts_with(kind),
+            "{path}"
+        );
+    }
+    for path in ["/../Cargo.toml", "/auro.db", "/favicon.ico", "/src/main.js"] {
+        assert_eq!(
+            http(addr, "GET", path, &plain, "").await.status,
+            404,
+            "{path}"
+        );
+    }
+    assert_eq!(http(addr, "POST", "/", &plain, "").await.status, 404);
+    // La page aussi refuse un nom inconnu (DNS rebinding).
+    assert_eq!(
+        http(addr, "GET", "/", &[("Host", "attaquant.example")], "")
+            .await
+            .status,
+        421
+    );
+
+    // Session : absente, puis ouverte par le jeton, puis fermée.
+    assert_eq!(http(addr, "GET", "/session", &plain, "").await.status, 401);
+    assert_eq!(http(addr, "POST", "/session", &plain, "").await.status, 405);
+    let origin = format!("http://{host}");
+    let login = [
+        ("Host", host.as_str()),
+        ("Origin", origin.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let body = json!({"token": token}).to_string();
+    let answer = http(addr, "POST", "/login", &login, &body).await;
+    let cookie = answer
+        .header("Set-Cookie")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let with_cookie = [("Host", host.as_str()), ("Cookie", cookie.as_str())];
+    let answer = http(addr, "GET", "/session", &with_cookie, "").await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let who: Value = serde_json::from_str(&answer.body).unwrap();
+    assert_eq!(who["scope"], "read", "{who}");
+    assert_eq!(who["name"], "tablette", "{who}");
+    let logout = [
+        ("Host", host.as_str()),
+        ("Origin", origin.as_str()),
+        ("Cookie", cookie.as_str()),
+    ];
+    assert_eq!(http(addr, "POST", "/logout", &logout, "").await.status, 204);
+    assert_eq!(
+        http(addr, "GET", "/session", &with_cookie, "").await.status,
+        401
+    );
+    crate::testing::stop(&engine).await;
+}

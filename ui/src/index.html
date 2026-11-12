@@ -34,11 +34,12 @@
     <symbol id="i-schedule" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v3.5l2.5 1.5"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8M12 8v4.5l3 1.8"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4.5H6.5v15H14M10.5 12h10M17 8.5l3.5 3.5-3.5 3.5"/></symbol>
     <symbol id="i-links" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3.6-3.6a4 4 0 0 0-5.7-5.7l-1.4 1.4M14 10a4 4 0 0 0-5.7 0l-3.6 3.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/></symbol>
   </svg>
 
   <div class="toolbar" role="toolbar" data-i18n-label="Actions" aria-label="Actions">
-    <button type="button" id="tb-add" class="tool add" aria-keyshortcuts="Control+N">
+    <button type="button" id="tb-add" data-needs="add" class="tool add" aria-keyshortcuts="Control+N">
       <svg aria-hidden="true"><use href="#i-add"/></svg><span data-i18n="Ajouter">Ajouter</span></button>
     <button type="button" id="tb-video" class="tool" hidden
       data-i18n-title="Télécharger la vidéo d'une page web (sites sans DRM), par yt-dlp et ffmpeg"
@@ -48,30 +49,32 @@
       data-i18n-title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois"
       title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois">
       <svg aria-hidden="true"><use href="#i-links"/></svg><span data-i18n="Liens">Liens</span></button>
-    <button type="button" id="tb-resume" class="tool resume">
+    <button type="button" id="tb-resume" data-needs="control" class="tool resume">
       <svg aria-hidden="true"><use href="#i-resume"/></svg><span data-i18n="Reprendre">Reprendre</span></button>
-    <button type="button" id="tb-pause" class="tool pause">
+    <button type="button" id="tb-pause" data-needs="control" class="tool pause">
       <svg aria-hidden="true"><use href="#i-pause"/></svg><span data-i18n="Arrêter">Arrêter</span></button>
-    <button type="button" id="tb-resume-all" class="tool resume">
+    <button type="button" id="tb-resume-all" data-needs="control" class="tool resume">
       <svg aria-hidden="true"><use href="#i-resume-all"/></svg><span data-i18n="Tout reprendre">Tout reprendre</span></button>
-    <button type="button" id="tb-pause-all" class="tool pause">
+    <button type="button" id="tb-pause-all" data-needs="control" class="tool pause">
       <svg aria-hidden="true"><use href="#i-pause-all"/></svg><span data-i18n="Tout arrêter">Tout arrêter</span></button>
     <span class="separator" aria-hidden="true"></span>
-    <button type="button" id="tb-remove" class="tool remove" aria-keyshortcuts="Delete">
+    <button type="button" id="tb-remove" data-needs="control" class="tool remove" aria-keyshortcuts="Delete">
       <svg aria-hidden="true"><use href="#i-remove"/></svg><span data-i18n="Supprimer">Supprimer</span></button>
-    <button type="button" id="tb-clear" class="tool"
+    <button type="button" id="tb-clear" data-needs="control" class="tool"
       data-i18n-title="Retirer de la liste les téléchargements terminés et annulés ; les fichiers restent sur le disque"
       title="Retirer de la liste les téléchargements terminés et annulés ; les fichiers restent sur le disque">
       <svg aria-hidden="true"><use href="#i-clear"/></svg><span data-i18n="Retirer les finis">Retirer les finis</span></button>
     <span class="separator" aria-hidden="true"></span>
     <button type="button" id="tb-properties" class="tool" aria-keyshortcuts="Enter">
       <svg aria-hidden="true"><use href="#i-properties"/></svg><span data-i18n="Propriétés">Propriétés</span></button>
-    <button type="button" id="tb-schedule" class="tool">
+    <button type="button" id="tb-schedule" data-needs="admin" class="tool">
       <svg aria-hidden="true"><use href="#i-schedule"/></svg><span data-i18n="Planification">Planification</span></button>
-    <button type="button" id="tb-history" class="tool">
+    <button type="button" id="tb-history" data-needs="read" class="tool">
       <svg aria-hidden="true"><use href="#i-history"/></svg><span data-i18n="Historique">Historique</span></button>
     <button type="button" id="tb-settings" class="tool">
       <svg aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="Options">Options</span></button>
+    <button type="button" id="tb-logout" class="tool" data-needs="remote">
+      <svg aria-hidden="true"><use href="#i-logout"/></svg><span data-i18n="Se déconnecter">Se déconnecter</span></button>
   </div>
 
   <div id="banner" role="status" hidden></div>
@@ -100,6 +103,7 @@
         <tbody id="tasks"></tbody>
       </table>
       <p id="empty" hidden data-i18n="Aucun téléchargement ici.">Aucun téléchargement ici.</p>
+      <p id="empty-add-only" class="note" hidden data-i18n="Ce jeton permet seulement d'ajouter des téléchargements.">Ce jeton permet seulement d'ajouter des téléchargements.</p>
     </main>
   </div>
 
@@ -107,7 +111,7 @@
     <span id="summary"></span>
     <span id="planning-status"></span>
     <span id="selection-count"></span>
-    <label class="limit">
+    <label class="limit" data-needs="control">
       <span data-i18n="Limite de débit globale">Limite de débit globale</span>
       <select id="limit"></select>
     </label>
@@ -116,17 +120,17 @@
   <div id="announce" class="visually-hidden" aria-live="polite"></div>
 
   <div id="menu" role="menu" hidden tabindex="-1">
-    <button type="button" role="menuitem" data-command="open" data-i18n="Ouvrir">Ouvrir</button>
-    <button type="button" role="menuitem" data-command="reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
-    <button type="button" role="menuitem" data-command="restart" data-i18n="Retélécharger…">Retélécharger…</button>
-    <button type="button" role="menuitem" data-command="move" data-i18n="Déplacer/Renommer…">Déplacer/Renommer…</button>
-    <button type="button" role="menuitem" data-command="refresh" data-i18n="Actualiser l'adresse…">Actualiser l'adresse…</button>
+    <button type="button" role="menuitem" data-command="open" data-needs="files" data-i18n="Ouvrir">Ouvrir</button>
+    <button type="button" role="menuitem" data-command="reveal" data-needs="files" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
+    <button type="button" role="menuitem" data-command="restart" data-needs="control" data-i18n="Retélécharger…">Retélécharger…</button>
+    <button type="button" role="menuitem" data-command="move" data-needs="control" data-i18n="Déplacer/Renommer…">Déplacer/Renommer…</button>
+    <button type="button" role="menuitem" data-command="refresh" data-needs="control" data-i18n="Actualiser l'adresse…">Actualiser l'adresse…</button>
     <div class="menu-separator" role="separator"></div>
-    <button type="button" role="menuitem" data-command="resume" data-i18n="Reprendre">Reprendre</button>
-    <button type="button" role="menuitem" data-command="pause" data-i18n="Arrêter">Arrêter</button>
-    <button type="button" role="menuitem" data-command="limit" data-i18n="Limiter le débit…">Limiter le débit…</button>
+    <button type="button" role="menuitem" data-command="resume" data-needs="control" data-i18n="Reprendre">Reprendre</button>
+    <button type="button" role="menuitem" data-command="pause" data-needs="control" data-i18n="Arrêter">Arrêter</button>
+    <button type="button" role="menuitem" data-command="limit" data-needs="control" data-i18n="Limiter le débit…">Limiter le débit…</button>
     <div class="menu-separator" role="separator"></div>
-    <button type="button" role="menuitem" data-command="remove" data-i18n="Supprimer…">Supprimer…</button>
+    <button type="button" role="menuitem" data-command="remove" data-needs="control" data-i18n="Supprimer…">Supprimer…</button>
     <div class="menu-separator" role="separator"></div>
     <button type="button" role="menuitem" data-command="properties" data-i18n="Propriétés">Propriétés</button>
   </div>
@@ -158,8 +162,13 @@
       <div class="field">
         <span data-i18n="Enregistrer dans">Enregistrer dans</span>
         <span class="row"><span id="dest" class="path"></span>
-          <button type="button" id="dest-change" data-i18n="Parcourir…" data-i18n-label="Changer le dossier de destination">Parcourir…</button></span>
+          <button type="button" id="dest-change" data-needs="folders" data-i18n="Parcourir…" data-i18n-label="Changer le dossier de destination">Parcourir…</button></span>
       </div>
+      <label class="field" data-needs="remote">
+        <span data-i18n="Sous-dossier (facultatif)">Sous-dossier (facultatif)</span>
+        <input id="add-subdir" type="text" spellcheck="false" autocomplete="off" placeholder="ISO/Debian" aria-describedby="add-subdir-note">
+        <span class="note" id="add-subdir-note" data-i18n="Créé dans le dossier ci-dessus.">Créé dans le dossier ci-dessus.</span>
+      </label>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
         <span class="row">
@@ -182,7 +191,7 @@
       <p id="v-status" class="note flush" role="status"></p>
       <div id="v-tools" class="tools-box" hidden>
         <p id="v-tools-text" data-i18n="Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.">Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.</p>
-        <button type="button" id="v-tools-install" data-i18n="Installer yt-dlp et ffmpeg">Installer yt-dlp et ffmpeg</button>
+        <button type="button" id="v-tools-install" data-needs="admin" data-i18n="Installer yt-dlp et ffmpeg">Installer yt-dlp et ffmpeg</button>
       </div>
       <div id="v-result" hidden>
         <dl class="facts">
@@ -229,6 +238,11 @@
         <span data-i18n="Enregistrer dans">Enregistrer dans</span>
         <span id="v-dest" class="path"></span>
       </div>
+      <label class="field" data-needs="remote">
+        <span data-i18n="Sous-dossier (facultatif)">Sous-dossier (facultatif)</span>
+        <input id="v-subdir" type="text" spellcheck="false" autocomplete="off" placeholder="ISO/Debian" aria-describedby="v-subdir-note">
+        <span class="note" id="v-subdir-note" data-i18n="Créé dans le dossier ci-dessus.">Créé dans le dossier ci-dessus.</span>
+      </label>
       <p id="v-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
@@ -288,6 +302,11 @@
         <span data-i18n="Enregistrer dans">Enregistrer dans</span>
         <span id="l-dest" class="path"></span>
       </div>
+      <label class="field" data-needs="remote">
+        <span data-i18n="Sous-dossier (facultatif)">Sous-dossier (facultatif)</span>
+        <input id="l-subdir" type="text" spellcheck="false" autocomplete="off" placeholder="ISO/Debian" aria-describedby="l-subdir-note">
+        <span class="note" id="l-subdir-note" data-i18n="Créé dans le dossier ci-dessus.">Créé dans le dossier ci-dessus.</span>
+      </label>
       <p id="l-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
@@ -322,7 +341,7 @@
       <div class="buttons">
         <span class="row">
           <button type="button" id="h-export" data-i18n="Exporter en CSV…">Exporter en CSV…</button>
-          <button type="button" id="h-clear" class="danger" data-i18n="Effacer l'historique…">Effacer l'historique…</button>
+          <button type="button" id="h-clear" data-needs="control" class="danger" data-i18n="Effacer l'historique…">Effacer l'historique…</button>
         </span>
         <button value="close" data-i18n="Fermer">Fermer</button>
       </div>
@@ -493,7 +512,7 @@
             <tbody></tbody>
           </table>
         </div>
-        <div class="field" id="d-mirror-field">
+        <div class="field" id="d-mirror-field" data-needs="control">
           <label for="d-mirror-input" data-i18n="Ajouter un miroir">Ajouter un miroir</label>
           <span class="row"><input id="d-mirror-input" type="url" spellcheck="false" autocomplete="off" aria-describedby="d-mirror-note">
             <button type="button" id="d-mirror-add" data-i18n="Ajouter">Ajouter</button></span>
@@ -514,16 +533,16 @@
             <tbody></tbody>
           </table>
         </div>
-        <span class="row"><button type="button" id="d-files-apply" data-i18n="Appliquer le choix">Appliquer le choix</button></span>
+        <span class="row"><button type="button" id="d-files-apply" data-needs="control" data-i18n="Appliquer le choix">Appliquer le choix</button></span>
       </section>
-      <div class="field limit-field" id="d-limit-field">
+      <div class="field limit-field" id="d-limit-field" data-needs="control">
         <label for="d-limit" data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</label>
         <span class="row"><select id="d-limit"></select>
           <button type="button" id="d-limit-apply" data-i18n="Appliquer">Appliquer</button></span>
         <span class="note" data-i18n="La limite globale s'applique aussi : la plus basse l'emporte.">La limite globale s'applique aussi : la plus basse l'emporte.</span>
         <span class="note" id="d-limit-torrent-note" hidden data-i18n="Pour un torrent, une nouvelle limite vaut à sa prochaine reprise.">Pour un torrent, une nouvelle limite vaut à sa prochaine reprise.</span>
       </div>
-      <div class="field" id="d-checksum-field">
+      <div class="field" id="d-checksum-field" data-needs="control">
         <label for="d-checksum-input" data-i18n="Empreinte attendue">Empreinte attendue</label>
         <span class="row"><input id="d-checksum-input" type="text" spellcheck="false" autocomplete="off" aria-describedby="d-checksum-note">
           <button type="button" id="d-checksum-apply" data-i18n="Enregistrer">Enregistrer</button></span>
@@ -531,10 +550,10 @@
       </div>
       <div class="buttons">
         <span class="row">
-          <button type="button" id="d-toggle"></button>
-          <button type="button" id="d-cancel" data-i18n="Annuler le téléchargement">Annuler le téléchargement</button>
-          <button type="button" id="d-open" data-i18n="Ouvrir">Ouvrir</button>
-          <button type="button" id="d-reveal" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
+          <button type="button" id="d-toggle" data-needs="control"></button>
+          <button type="button" id="d-cancel" data-needs="control" data-i18n="Annuler le téléchargement">Annuler le téléchargement</button>
+          <button type="button" id="d-open" data-needs="files" data-i18n="Ouvrir">Ouvrir</button>
+          <button type="button" id="d-reveal" data-needs="files" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
         </span>
         <button value="close" data-i18n="Fermer">Fermer</button>
       </div>
@@ -571,11 +590,11 @@
       <h2 id="settings-title" data-i18n="Options">Options</h2>
       <div class="tabs" role="tablist" data-i18n-label="Rubriques" aria-label="Rubriques">
         <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true" data-i18n="Général">Général</button>
-        <button type="button" role="tab" id="tab-save" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
-        <button type="button" role="tab" id="tab-connection" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
-        <button type="button" role="tab" id="tab-torrent" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
-        <button type="button" role="tab" id="tab-media" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
-        <button type="button" role="tab" id="tab-logins" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
+        <button type="button" role="tab" id="tab-save" data-needs="admin" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
+        <button type="button" role="tab" id="tab-connection" data-needs="control" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
+        <button type="button" role="tab" id="tab-torrent" data-needs="admin" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
+        <button type="button" role="tab" id="tab-media" data-needs="admin" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
+        <button type="button" role="tab" id="tab-logins" data-needs="admin" aria-controls="panel-logins" aria-selected="false" tabindex="-1" data-i18n="Identifiants de sites">Identifiants de sites</button>
         <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1" data-i18n="À propos">À propos</button>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
@@ -587,18 +606,18 @@
             <option value="en" lang="en">English</option>
           </select>
         </label>
-        <label class="check"><input type="checkbox" id="pref-autostart">
+        <label class="check" data-needs="app"><input type="checkbox" id="pref-autostart">
           <span data-i18n="Démarrer avec la session, dans la zone de notification">Démarrer avec la session, dans la zone de notification</span></label>
-        <label class="check"><input type="checkbox" id="pref-tray">
+        <label class="check" data-needs="app"><input type="checkbox" id="pref-tray">
           <span data-i18n="Fermer la fenêtre la replie dans la zone de notification">Fermer la fenêtre la replie dans la zone de notification</span></label>
-        <label class="check"><input type="checkbox" id="pref-show-on-add">
+        <label class="check" data-needs="app"><input type="checkbox" id="pref-show-on-add">
           <span data-i18n="Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)">Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)</span></label>
         <label class="check" id="pref-clipboard-row"><input type="checkbox" id="pref-clipboard" aria-describedby="pref-clipboard-note">
           <span data-i18n="Proposer d'ajouter les liens copiés">Proposer d'ajouter les liens copiés</span></label>
         <p id="pref-clipboard-note" class="note" data-i18n="L'adresse d'un fichier ou un lien magnet copié fait apparaître une notification ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé.">L'adresse d'un fichier ou un lien magnet copié fait apparaître une notification ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé.</p>
         <p id="pref-clipboard-off" class="note" role="status" hidden
           data-i18n="Windows n'affiche pas les notifications d'AuroDownloader (Paramètres, Système, Notifications) : cette option n'aura aucun effet tant qu'elles restent désactivées."></p>
-        <p id="pref-no-tray" class="note" hidden
+        <p id="pref-no-tray" data-needs="app" class="note" hidden
           data-i18n="Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent."></p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-save" aria-labelledby="tab-save" hidden>
@@ -675,10 +694,25 @@
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
         <p id="about"></p>
-        <button type="button" id="stop-engine" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
+        <button type="button" id="stop-engine" data-needs="app" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
       </div>
       <div class="buttons end">
         <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="remote-login" aria-labelledby="rl-title" aria-describedby="rl-text">
+    <form method="dialog" id="rl-form">
+      <h2 id="rl-title" data-i18n="Connexion à AuroDownloader">Connexion à AuroDownloader</h2>
+      <p id="rl-text" class="note flush" data-i18n="Collez un jeton créé sur la machine du moteur (Options du bureau, ou auro token create). Il n'est envoyé qu'une fois, puis ce navigateur garde une session de 30 jours.">Collez un jeton créé sur la machine du moteur (Options du bureau, ou auro token create). Il n'est envoyé qu'une fois, puis ce navigateur garde une session de 30 jours.</p>
+      <label class="field">
+        <span data-i18n="Jeton">Jeton</span>
+        <input id="rl-token" type="password" autocomplete="new-password" spellcheck="false" required>
+      </label>
+      <p id="rl-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons end">
+        <button value="login" id="rl-submit" class="primary" data-i18n="Se connecter">Se connecter</button>
       </div>
     </form>
   </dialog>
@@ -692,6 +726,7 @@
       <td role="gridcell" class="eta num"></td>
       <td role="gridcell" class="rate num"></td>
       <td role="gridcell" class="added num"></td>
+      <td role="gridcell" class="action" data-needs="control"><button type="button" class="row-action" hidden><svg aria-hidden="true"><use/></svg></button></td>
     </tr>
   </template>
 </body>

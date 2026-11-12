@@ -106,7 +106,7 @@ téléchargement.
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
-  `/logout` ; `Host` et `Origin` vérifiés ; TLS hors de la boucle locale), `remote::tls` (certificat
+  `/logout` ; `Host` et `Origin` vérifiés ; TLS hors de la boucle locale), `remote::page` (la page `ui/src` intégrée, `GET /session`), `remote::tls` (certificat
   fabriqué à côté de la base, `remote-cert.pem` et `remote-key.pem` lisible par l'utilisateur
   seul, 824 jours, refait à 30 jours ou quand un nom manque ; ou fourni par
   `remote.tlsCert` et `remote.tlsKey`), `winsec` (droits Windows réservés à l'utilisateur :
@@ -152,7 +152,9 @@ téléchargement.
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).
-- `ui` : la page web de l'application, destinée aussi à l'interface distante (F-39).
+- `ui` : la page web de l'application, destinée aussi à l'interface distante (F-39). `src/web.js`
+  (hôte WebSocket de la page servie par le moteur, étape 3c ; éléments marqués `data-needs` selon
+  la portée et l'hôte),
   `src/model.js` (instantané, notifications et révisions, SPEC 6.10 ; vues de
   l'arborescence, types de fichier, tri des colonnes), `src/i18n.js` (français source,
   anglais), `src/host.js` (services de l'hôte), `src/main.js` (fenêtre principale :

@@ -20,6 +20,7 @@ use crate::store::settings::{
     Flag, REMOTE_HOSTS, REMOTE_LISTEN, REMOTE_TLS_CERT, REMOTE_TLS_KEY, RemoteConfig,
 };
 
+pub mod page;
 pub mod server;
 #[cfg(test)]
 mod server_tests;

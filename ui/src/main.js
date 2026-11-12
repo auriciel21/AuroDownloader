@@ -8,10 +8,14 @@ import {
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
+  subDirParts, scopeAllows, pastedToken, isToken,
 } from "./model.js";
 import { tauriHost } from "./host.js";
+import { webHost } from "./web.js";
 
-const host = tauriHost();
+// L'application de bureau (Tauri), ou la page servie par le moteur (interface distante,
+// SPEC §7.19).
+const host = window.__TAURI__ ? tauriHost() : webHost();
 const store = new TaskStore();
 let t = translator("fr");
 let lang = "fr";
@@ -21,6 +25,46 @@ let engineVersion = "";
 let executables = new Set();
 
 const $ = (id) => document.getElementById(id);
+
+// ---------- Capacités (interface distante, étape 3c) ----------
+
+/// Ce que cette page peut faire : services de l'hôte (application de bureau, ou page
+/// distante), et portée de la connexion au moteur (SPEC §6.9 ; `admin` au bureau). Un élément
+/// marqué `data-needs="…"` n'apparaît que si toutes ses capacités sont là.
+const caps = {
+  app: !host.remote,
+  remote: Boolean(host.remote),
+  files: typeof host.openFile === "function",
+  folders: typeof host.pickFolder === "function",
+  read: true,
+  add: true,
+  control: true,
+  admin: true,
+};
+
+function applyScope(scope) {
+  for (const need of ["read", "add", "control", "admin"]) caps[need] = scopeAllows(scope ?? "admin", need);
+  markNeeds(document);
+  for (const row of rows.values()) markNeeds(row);
+  $("empty-add-only").hidden = caps.read || !caps.add;
+}
+
+/// Cache (classe `lacks`) les éléments de `root` dont une capacité manque.
+function markNeeds(root) {
+  for (const el of root.querySelectorAll("[data-needs]")) {
+    el.classList.toggle("lacks", !el.dataset.needs.split(" ").every((need) => caps[need]));
+  }
+}
+
+/// Sous-dossier saisi dans la page distante (champ `id`) : paramètres à ajouter à un ajout
+/// (`subDir`), ou null s'il est refusé (`.` ou `..`).
+function subDirParam(id) {
+  if (!caps.remote) return {};
+  const parts = subDirParts($(id).value);
+  if (parts === null) return null;
+  return parts ? { subDir: parts } : {};
+}
+
 const body = $("tasks");
 const template = $("row");
 /// Lignes affichées ou prêtes à l'être, par tâche.
@@ -315,6 +359,7 @@ function renderRow(taskId) {
   if (!row) {
     row = template.content.firstElementChild.cloneNode(true);
     row.dataset.taskId = taskId;
+    markNeeds(row);
     rows.set(taskId, row);
   }
   const name = taskName(task);
@@ -350,6 +395,14 @@ function renderRow(taskId) {
     : task.state === "seeding" ? t("↑ {0}", rate(task.uploadBps ?? 0)) : "";
   cell("added").textContent = dateText(task.createdAt);
   cell("added").title = dateText(task.createdAt, longDateFormat);
+  // Bouton de la carte (écran étroit, page distante) : arrêter ou reprendre cette tâche.
+  const action = cell("action").querySelector("button");
+  const verb = canPause(task.state) ? "pause" : canResume(task.state) ? "resume" : "";
+  action.hidden = !verb;
+  action.dataset.verb = verb;
+  action.className = `row-action ${verb}`;
+  action.querySelector("use").setAttribute("href", `#i-${verb || "pause"}`);
+  action.setAttribute("aria-label", verb === "pause" ? t("Arrêter {0}", name) : t("Reprendre {0}", name));
 }
 
 /// Met le tableau dans l'ordre de la vue ; ne déplace que les lignes mal placées, pour
@@ -440,6 +493,12 @@ function rowOf(event) {
 function onGridClick(event) {
   const row = rowOf(event);
   if (!row) return;
+  const action = event.target.closest(".row-action");
+  if (action) {
+    const task = store.tasks.get(row.dataset.taskId);
+    if (task && connected) (action.dataset.verb === "pause" ? pause : resume)([task]);
+    return;
+  }
   const id = row.dataset.taskId;
   if (event.shiftKey) moveTo(id, { extend: true, keep: event.ctrlKey || event.metaKey });
   else if (event.ctrlKey || event.metaKey) toggle(id);
@@ -477,7 +536,7 @@ function onGridKey(event) {
       if (cursor) openDetails(cursor);
       break;
     case "Delete":
-      openRemove();
+      if (caps.control) openRemove();
       break;
     case "ContextMenu":
       openMenuAtRow();
@@ -542,7 +601,8 @@ function openMenu(x, y) {
     properties: !!one,
   };
   for (const item of menu.querySelectorAll("[data-command]")) {
-    item.disabled = (!connected && item.dataset.command !== "properties") || !enable[item.dataset.command];
+    item.disabled = (!connected && item.dataset.command !== "properties") || !enable[item.dataset.command]
+      || item.classList.contains("lacks");
   }
   menuReturn = document.activeElement;
   menu.hidden = false;
@@ -1492,6 +1552,10 @@ let syncing = 0;
 async function resync() {
   const mine = ++syncing;
   store.reset();
+  if (!caps.read) {
+    renderAll();
+    return;
+  }
   let snapshot;
   try {
     snapshot = await host.call("sync.snapshot", {});
@@ -1518,10 +1582,11 @@ function onStatus(status) {
     engineVersion = status.engine?.engine?.version ?? "";
     // Vidéo : seulement si le moteur la sait (Windows et Linux, SPEC §7.17).
     mediaCapable = status.engine?.capabilities?.includes("media") === true;
-    $("tb-video").hidden = !mediaCapable;
+    applyScope(status.engine?.scope);
+    $("tb-video").hidden = !mediaCapable || !caps.add;
     // Analyse de liens (SPEC §7.18) : un moteur plus ancien ne la sait pas.
     linkscanCapable = status.engine?.capabilities?.includes("linkscan") === true;
-    $("tb-links").hidden = !linkscanCapable;
+    $("tb-links").hidden = !linkscanCapable || !caps.add;
     $("tab-media").hidden = !mediaCapable;
     resync();
     loadTools();
@@ -1810,7 +1875,7 @@ async function takeOpened() {
 }
 
 function openAdd() {
-  if (!connected || document.querySelector("dialog[open]")) return;
+  if (!connected || !caps.add || document.querySelector("dialog[open]")) return;
   openedWaiting = false;
   renderDest();
   renderAddTorrents();
@@ -1844,6 +1909,13 @@ async function closeAdd() {
           : t("Une empreinte ne vaut que pour une seule adresse."));
     openAdd();
     $("add-checksum").focus();
+    return;
+  }
+  const sub = subDirParam("add-subdir");
+  if (sub === null) {
+    showError(t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."));
+    openAdd();
+    $("add-subdir").focus();
     return;
   }
   // Miroirs (SPEC §7.7) : d'autres adresses du même fichier, pour une seule adresse HTTP.
@@ -1889,7 +1961,7 @@ async function closeAdd() {
   let firstError = null;
   // Sans destDir : le dossier des téléchargements du moteur.
   const add = async (source) => {
-    const params = { sources: [source, ...(source.url ? mirrors : [])], startPaused: choice === "later" };
+    const params = { sources: [source, ...(source.url ? mirrors : [])], startPaused: choice === "later", ...sub };
     if (checksum) params.checksum = checksum;
     await host.call("task.add", params);
   };
@@ -1919,7 +1991,7 @@ async function closeAdd() {
       continue;
     }
     try {
-      const result = await host.call("metalink.add", { data: m.data, select, startPaused: choice === "later" });
+      const result = await host.call("metalink.add", { data: m.data, select, startPaused: choice === "later", ...sub });
       if (result.errors.length) {
         m.chosen = new Set(result.errors.map((e) => e.index));
         failedMetalinks.push(m);
@@ -2177,10 +2249,16 @@ async function addVideo(choice) {
   if (container) media.container = container;
   const subtitles = [...$("v-subs").querySelectorAll("input:checked")].map((b) => b.value);
   if (subtitles.length) media.subtitles = subtitles;
+  const sub = subDirParam("v-subdir");
+  if (sub === null) {
+    $("v-error").textContent = t("Sous-dossier refusé : « . » et « .. » ne sont pas permis.");
+    $("v-error").hidden = false;
+    return;
+  }
   $("v-start").disabled = true;
   $("v-later").disabled = true;
   try {
-    await host.call("task.add", { media, startPaused: choice === "later" });
+    await host.call("task.add", { media, startPaused: choice === "later", ...sub });
     $("video-dialog").close("added");
     if (view.startsWith("completed")) chooseView("all");
     announce(t("Vidéo « {0} » ajoutée", videoProbe.title));
@@ -2443,6 +2521,11 @@ function checkShownLinks(on) {
 async function addLinks(choice) {
   const lists = chosenLinks();
   if (!lists?.chosen.length) return;
+  const sub = subDirParam("l-subdir");
+  if (sub === null) {
+    showLinksError(t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."));
+    return;
+  }
   $("l-start").disabled = true;
   $("l-later").disabled = true;
   const chosen = lists.chosen;
@@ -2452,7 +2535,7 @@ async function addLinks(choice) {
   for (let i = 0; i < chosen.length; i += BATCH_CHUNK) {
     const part = chosen.slice(i, i + BATCH_CHUNK);
     try {
-      const items = part.map((l) => ({ sources: [{ url: l.url }], startPaused: choice === "later" }));
+      const items = part.map((l) => ({ sources: [{ url: l.url }], startPaused: choice === "later", ...sub }));
       const result = await host.call("task.addBatch", { items });
       added += result.tasks.length;
       for (const e of result.errors) {
@@ -2889,7 +2972,7 @@ function applyInfo(next) {
   $("pref-lang").value = info.prefs.lang;
   $("pref-tray").checked = info.prefs.closeToTray && info.tray;
   $("pref-tray").disabled = !info.tray;
-  $("pref-no-tray").hidden = info.tray;
+  $("pref-no-tray").hidden = info.tray || !caps.app;
   // Absente d'un ancien fichier de préférences : activée, comme le défaut de l'application.
   $("pref-show-on-add").checked = info.prefs.showOnAdd !== false;
   // Presse-papiers (F-30) : seulement avec un hôte qui sait le lire (pas l'interface distante).
@@ -2963,6 +3046,7 @@ async function chooseFolder(save) {
 
 function wire() {
   $("tb-add").addEventListener("click", openAdd);
+  if (host.logout) $("tb-logout").addEventListener("click", () => host.logout());
   $("tb-video").addEventListener("click", openVideo);
   // Analyse de liens (étape 2b).
   $("tb-links").addEventListener("click", openLinks);
@@ -3278,9 +3362,47 @@ function wire() {
   });
 }
 
+/// Page distante (étape 3c) : la session de ce navigateur, ouverte au besoin avec le jeton de
+/// l'ancre de l'adresse (QR code du bureau) ou celui saisi ; rend sa portée.
+async function signIn() {
+  const fromHash = host.tokenFromHash();
+  if (fromHash) await host.login(fromHash).catch(() => null);
+  let who = await host.session();
+  const dialog = $("remote-login");
+  dialog.addEventListener("cancel", (event) => event.preventDefault());
+  while (!who) {
+    dialog.returnValue = "";
+    dialog.showModal();
+    $("rl-token").focus();
+    await new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
+    const pasted = $("rl-token").value;
+    const token = pastedToken(pasted);
+    $("rl-token").value = "";
+    // Un texte sans jeton complet n'est pas envoyé : le dire, sans le montrer.
+    if (!isToken(token)) {
+      $("rl-error").textContent = t("Pas de jeton dans le texte collé ({0} caractères) : un jeton commence par auro_, suivi de 43 lettres, chiffres, - ou _.", pasted.length);
+      $("rl-error").hidden = false;
+      continue;
+    }
+    try {
+      who = await host.login(token);
+      $("rl-error").hidden = true;
+    } catch (e) {
+      $("rl-error").textContent = e.code === "TOO_MANY_ATTEMPTS"
+        ? t("Trop d'essais refusés : réessayez dans une minute.")
+        : e.code === "UNAUTHORIZED"
+          ? t("Jeton inconnu du moteur, ou révoqué.")
+          : refused(e);
+      $("rl-error").hidden = false;
+    }
+  }
+  return who.scope;
+}
+
 async function start() {
   wire();
   applyInfo(await host.info());
+  applyScope(host.remote ? await signIn() : "admin");
   // S'abonner d'abord, puis demander l'état de la connexion : rien n'est manqué.
   await host.listen(onEngine);
   onStatus(await host.status());

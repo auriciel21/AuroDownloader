@@ -696,3 +696,47 @@ export function linkFilter({ extensions = "", min = "", max = "", regex = "", al
 /// jamais l'inverse : un fichier qui rend une page d'erreur reste un fichier.
 export const reclassifyLink = (link, probedKind) =>
   link.kind === "page" && probedKind === "file" ? { ...link, kind: "file" } : link;
+
+// --- Interface distante (SPEC §7.19, étape 3c) ---
+
+/// Jeton apporté par l'ancre de l'adresse (`#token=auro_…`, QR code du bureau) ; null sans
+/// lui. L'ancre n'est jamais envoyée au serveur.
+export function takeHashToken(hash) {
+  const params = new URLSearchParams((hash ?? "").replace(/^#/, ""));
+  const token = params.get("token");
+  return token && /^auro_[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
+}
+
+/// Un jeton complet : `auro_` suivi de 43 caractères base64url.
+export const isToken = (text) => /^auro_[A-Za-z0-9_-]{43}$/.test(text ?? "");
+
+/// Le jeton contenu dans un texte collé dans la connexion : le jeton seul, l'adresse du QR
+/// code (`…#token=auro_…`) ou une ligne qui le contient ; sinon le texte, sans ses espaces.
+export function pastedToken(text) {
+  const found = (text ?? "").match(/auro_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/);
+  return found ? found[0] : (text ?? "").trim();
+}
+
+/// Erreur d'une connexion refusée (`/login`), d'après son statut HTTP.
+export function sessionError(status) {
+  if (status === 401) return { code: "UNAUTHORIZED", message: "jeton refusé" };
+  if (status === 429) return { code: "TOO_MANY_ATTEMPTS", message: "trop d'essais refusés" };
+  return { code: "ENGINE_DOWN", message: `serveur : ${status}` };
+}
+
+/// Sous-dossier saisi dans la page distante, tel que `task.add` l'attend (`subDir`) : parties
+/// séparées par `/` (ou `\`), sans vide ; null s'il contient `.` ou `..` (refusé), "" s'il
+/// est vide.
+export function subDirParts(text) {
+  const parts = (text ?? "").split(/[\\/]+/).map((p) => p.trim()).filter((p) => p !== "");
+  if (parts.some((p) => p === "." || p === "..")) return null;
+  return parts.join("/");
+}
+
+/// Ce que permet une portée (SPEC §6.9) : `read` lit, `add` ajoute, `control` lit, ajoute
+/// et agit sur les tâches, `admin` règle aussi le moteur.
+export function scopeAllows(scope, need) {
+  if (scope === "admin") return true;
+  if (scope === "control") return need !== "admin";
+  return scope === need;
+}
