@@ -383,6 +383,8 @@ AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_local
 # … et vidéos libres réelles téléchargées jusqu'au bout, sous-titres et HLS compris
 # (PeerTube, Commons, Archive, Framatube ; une centaine de Mio) :
 AURO_TOOLS_DIR=<dossier> cargo test -p auro-engine --lib -- --ignored real_free --nocapture
+# FTP (AUTH TLS) et SFTP réels vers test.rebex.net par le proxy SOCKS5 de test (Internet) :
+cargo test -p auro-engine --lib -- --ignored real_socks5_rebex --nocapture
 # Fuzzing du serveur de l'interface distante, version longue (requêtes abîmées) :
 AURO_FUZZ_CASES=5000 cargo test -p auro-engine --lib remote::fuzz -- --nocapture
 # Banc de reprise sous arrêt brutal, version longue (la courte tourne avec cargo test) :
@@ -702,8 +704,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   acceptée relance seule ses tâches, `known_hosts` jamais lu, clé privée dans les identifiants
   de sites) ; 6d interfaces écrites le même jour (clé acceptée dans les Propriétés, rubrique
   des clés SSH ; Android : ajout et clé, sans écran d'identifiants ; essai de l'interface validé
-  par l'utilisateur le même jour) ; 6e essais réels (CLI sous Windows faite le 2026-11-17 ;
-  restent Android et SOCKS5) ;
+  par l'utilisateur le même jour) ; 6e essais réels (CLI sous Windows et SOCKS5 faits le
+  2026-11-17, `real_socks5_rebex` ; reste Android) ;
   7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

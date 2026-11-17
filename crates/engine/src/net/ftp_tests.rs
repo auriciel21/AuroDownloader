@@ -353,6 +353,86 @@ async fn socks5_carries_commands_and_data() {
     assert!(seen.iter().all(|s| s.target.starts_with("127.0.0.1:")));
 }
 
+/// Essai réel (6e, Internet ; ignoré par défaut) : `test.rebex.net` par le proxy SOCKS5 de
+/// test, qui n'écoute que sur la boucle locale. FTP chiffré par `AUTH TLS` et SFTP (clé
+/// acceptée comme le ferait l'utilisateur) passent par lui, commande et données ; FTPS
+/// implicite est refusé avant toute connexion.
+#[tokio::test]
+#[ignore = "Internet : test.rebex.net"]
+async fn real_socks5_rebex() {
+    let socks = socks5_proxy(None);
+    let client = Client::with_timeouts(Duration::from_secs(20), Duration::from_secs(20)).unwrap();
+    client
+        .set_proxy(proxy::Effective {
+            settings: proxy::Settings {
+                mode: proxy::Mode::Manual,
+                url: Some(socks.url("socks5h")),
+                ..proxy::Settings::default()
+            },
+            password: None,
+        })
+        .unwrap();
+    let check = |data: &[u8]| {
+        assert!(
+            data.starts_with(b"Welcome"),
+            "{:?}",
+            String::from_utf8_lossy(data)
+        );
+    };
+
+    let ftp = "ftp://demo:password@test.rebex.net/readme.txt";
+    let probe = client.probe(ftp, &[]).await.unwrap();
+    let whole = client.get_all(ftp, &[], probe.total_bytes).await.unwrap();
+    let data = read_all(whole).await.unwrap();
+    check(&data);
+    let after_ftp = socks.seen();
+    println!("FTP : {} octets ; proxy : {after_ftp:?}", data.len());
+    assert!(after_ftp.len() >= 2, "commande et données : {after_ftp:?}");
+    assert_eq!(after_ftp[0].target, "test.rebex.net:21");
+    assert!(after_ftp[0].by_name, "nom résolu par le proxy (socks5h)");
+
+    let sftp = "sftp://demo:password@test.rebex.net/readme.txt";
+    let e = client.probe(sftp, &[]).await.unwrap_err();
+    let NetError::HostKeyUnknown {
+        host,
+        port,
+        fingerprint,
+        ..
+    } = e
+    else {
+        panic!("clé inconnue attendue : {e}");
+    };
+    println!("SFTP : clé {fingerprint}");
+    client.host_keys().accept(&host, port, &fingerprint);
+    let probe = client.probe(sftp, &[]).await.unwrap();
+    let whole = client.get_all(sftp, &[], probe.total_bytes).await.unwrap();
+    let data = read_all(whole).await.unwrap();
+    check(&data);
+    let seen = socks.seen();
+    println!(
+        "SFTP : {} octets ; proxy : {:?}",
+        data.len(),
+        &seen[after_ftp.len()..]
+    );
+    assert!(
+        seen[after_ftp.len()..]
+            .iter()
+            .all(|s| s.target == "test.rebex.net:22"),
+        "{seen:?}"
+    );
+
+    let e = client
+        .probe("ftps://demo:password@test.rebex.net/readme.txt", &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(e, NetError::Proxy(_)), "{e}");
+    assert_eq!(
+        socks.seen().len(),
+        seen.len(),
+        "refusé avant toute connexion"
+    );
+}
+
 #[tokio::test]
 async fn public_only_refuses_the_local_network() {
     let site = FtpSite::start(FtpOptions::default()).await;
