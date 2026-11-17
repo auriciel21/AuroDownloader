@@ -7,7 +7,7 @@
     <string name="add">Add</string>
     <string name="add_title">Add a download</string>
     <string name="address">Address</string>
-    <string name="address_invalid">An http://, https:// address or a magnet link is expected.</string>
+    <string name="address_invalid">An http(s)://, ftp(s)://, sftp:// address or a magnet link is expected.</string>
     <string name="added">Download added</string>
     <string name="cancel">Cancel</string>
     <string name="close">Close</string>
@@ -56,6 +56,16 @@
     <string name="error_INTERNAL">internal engine error</string>
     <string name="error_AUTH_REQUIRED">the server asks for a user name and password</string>
     <string name="error_AUTH_FAILED">the server refused the user name or password</string>
+    <string name="error_HOST_KEY_UNKNOWN">unknown SSH server key</string>
+    <string name="error_HOST_KEY_CHANGED">SSH server key changed</string>
+    <string name="host_key_gone">The key is no longer pending (the engine restarted): retry to see it again.</string>
+    <string name="host_key_unknown_note">Unknown server: check this fingerprint with its administrator before accepting its key.</string>
+    <string name="host_key_changed_note">This server\'s key has changed since you accepted it: someone could be impersonating it.</string>
+    <string name="host_key_accept">Accept the key…</string>
+    <string name="host_key_accept_short">Accept</string>
+    <string name="host_key_confirm_title">Accept this server\'s key?</string>
+    <string name="host_key_confirm">Fingerprint: %1$s. SFTP downloads from this server will only proceed with this key; those it blocked will start again.</string>
+    <string name="host_key_confirm_changed">Fingerprint: %1$s. Warning: the key has changed. Accept it only if the server\'s administrator confirms the change.</string>
 
     <string name="unit_b">B</string>
     <string name="unit_kib">KiB</string>
@@ -108,7 +118,7 @@
     <string name="notice_resume_title">Downloads to resume</string>
     <string name="notice_resume_text">Tap to resume unfinished downloads.</string>
 
-    <string name="address_hint">https://… or magnet:?…</string>
+    <string name="address_hint">https://…, ftp://…, sftp://… or magnet:?…</string>
     <string name="state_seeding">Seeding</string>
     <string name="state_seeding_ratio">Seeding (ratio %1$s)</string>
     <string name="stop_seeding">Stop seeding</string>

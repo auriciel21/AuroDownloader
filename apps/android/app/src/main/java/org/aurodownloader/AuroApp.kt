@@ -164,6 +164,50 @@ class AuroApp : Application() {
         engine.call("settings.set", JSONObject().put("values", values)) { done(it.exceptionOrNull()) }
     }
 
+    // ---------- Clés des serveurs SSH (SFTP, SPEC §7.22, étape 6d) ----------
+
+    /** Clé d'un serveur SSH vue par le moteur, en attente de la décision de l'utilisateur. */
+    data class PendingKey(
+        val host: String,
+        val port: Int,
+        val algorithm: String,
+        val fingerprint: String,
+        val changed: Boolean,
+    )
+
+    /**
+     * Clé en attente du serveur de la tâche `taskId` (adresse `sftp://`), ou `null` : autre
+     * adresse, ou clé plus en attente (le moteur ne la garde qu'en mémoire).
+     */
+    fun pendingKey(taskId: String, done: (PendingKey?) -> Unit) {
+        val params = JSONObject().put("taskId", taskId).put("include", JSONArray().put("sources"))
+        engine.call("task.get", params) { reply ->
+            val url = reply.getOrNull()?.optJSONArray("sources")?.optJSONObject(0)?.optString("url")
+            val uri = url?.let { runCatching { android.net.Uri.parse(it) }.getOrNull() }
+            val name = uri?.host
+            if (uri?.scheme?.lowercase() != "sftp" || name.isNullOrEmpty()) {
+                done(null)
+                return@call
+            }
+            val host = name.trim('[', ']').lowercase()
+            val port = if (uri.port > 0) uri.port else 22
+            engine.call("hostkey.list") { keys ->
+                val pending = keys.getOrNull()?.optJSONArray("pending") ?: JSONArray()
+                val found = (0 until pending.length()).map { pending.getJSONObject(it) }
+                    .firstOrNull { it.optString("host") == host && it.optInt("port") == port }
+                done(found?.let {
+                    PendingKey(host, port, it.optString("algorithm"), it.optString("fingerprint"), it.optBoolean("changed"))
+                })
+            }
+        }
+    }
+
+    /** Accepte la clé ; le moteur relance les tâches qu'elle bloquait. */
+    fun acceptKey(key: PendingKey, done: (Throwable?) -> Unit = {}) {
+        val params = JSONObject().put("host", key.host).put("port", key.port).put("fingerprint", key.fingerprint)
+        engine.call("hostkey.accept", params) { done(it.exceptionOrNull()) }
+    }
+
     // ---------- Dossier et index ----------
 
     /**

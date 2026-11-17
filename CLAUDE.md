@@ -207,7 +207,9 @@ téléchargement.
   PowerShell) ; `qr` : matrice du QR code de l'accès à distance (étape 3d, rubrique des
   Options ; la page la dessine) ; plugins (étape 4c) : `pick_plugin` et `opened::read_plugin`
   (`.wasm` choisi, lu en base64 pour le moteur, jamais exécuté par l'application), rubrique
-  « Plugins » des Options de la page. Paquets : `bundle.ps1`,
+  « Plugins » des Options de la page. SFTP (étape 6d) : `pick_key` (fichier de clé privée choisi,
+  relu par le moteur), section « Clé du serveur SSH » des Propriétés et clés SSH des Options
+  dans la page. Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).
@@ -698,7 +700,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   6a prototype (`experiments/ftp`, 59c6cb9), Rust 1.88 (04cf712), 6b moteur FTP et FTPS
   écrit le 2026-11-17 (13aa7a5) ; 6c moteur SFTP écrit le même jour (décisions : clé
   acceptée relance seule ses tâches, `known_hosts` jamais lu, clé privée dans les identifiants
-  de sites) ; 6d interfaces, 6e essais réels ensuite ;
+  de sites) ; 6d interfaces écrites le même jour (clé acceptée dans les Propriétés, rubrique
+  des clés SSH ; Android : ajout et clé, sans écran d'identifiants) ; 6e essais réels ensuite ;
   7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

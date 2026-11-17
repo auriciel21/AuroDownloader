@@ -343,6 +343,31 @@ async fn pick_pem(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Choix d'un fichier de clé privée SSH (SFTP, SPEC §7.22), en partant de `~/.ssh` s'il
+/// existe ; `None` si l'utilisateur renonce. Le moteur le lit lui-même, l'application jamais.
+#[tauri::command]
+async fn pick_key(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file();
+    if let Some(ssh) = app
+        .path()
+        .home_dir()
+        .ok()
+        .map(|h| h.join(".ssh"))
+        .filter(|d| d.is_dir())
+    {
+        dialog = dialog.set_directory(ssh);
+    }
+    dialog.pick_file(move |file| {
+        let _ = tx.send(file);
+    });
+    rx.await
+        .ok()
+        .flatten()
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Choix d'un fichier de plugin `.wasm` (SPEC §7.20) ; `None` si l'utilisateur renonce.
 #[tauri::command]
 async fn pick_plugin(app: AppHandle) -> Option<String> {
@@ -583,6 +608,7 @@ fn main() {
             notifications_blocked,
             qr_code,
             pick_pem,
+            pick_key,
             pick_plugin,
             read_plugin,
             quit

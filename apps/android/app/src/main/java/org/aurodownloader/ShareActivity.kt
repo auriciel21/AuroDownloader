@@ -47,11 +47,11 @@ class ShareActivity : Activity() {
     }
 
     companion object {
-        private val LINK = Regex("""(?:https?://|magnet:\?)\S+""", RegexOption.IGNORE_CASE)
+        private val LINK = Regex("""(?:(?:https?|ftps?|sftp)://|magnet:\?)\S+""", RegexOption.IGNORE_CASE)
         const val TORRENT_TYPE = "application/x-bittorrent"
 
         /**
-         * Lien reçu : texte partagé (première adresse http(s) ou lien magnet), fichier
+         * Lien reçu : texte partagé (première adresse http(s), ftp(s) ou sftp, ou lien magnet), fichier
          * partagé ou ouvert (`.torrent`), ou lien ouvert. Une adresse http(s) d'un `.torrent`
          * (type annoncé, ou chemin en `.torrent`) est lue comme un torrent, pas téléchargée
          * comme un fichier.
@@ -62,6 +62,7 @@ class ShareActivity : Activity() {
             Intent.ACTION_VIEW -> intent.data?.let { uri ->
                 when (uri.scheme?.lowercase()) {
                     "magnet" -> Received.Link(uri.toString())
+                    "ftp", "ftps", "sftp" -> Received.Link(uri.toString())
                     "http", "https" -> if (isTorrent(intent.type, uri)) Received.TorrentFile(uri) else Received.Link(uri.toString())
                     "content", "file" -> Received.TorrentFile(uri)
                     else -> null

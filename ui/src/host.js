@@ -31,6 +31,8 @@
 // - plugins (étape 4c), facultatifs : pickPlugin() rend le chemin d'un fichier .wasm choisi,
 //   ou null ; readPlugin(path) rend {name, data} (base64). Sans eux, pas de rubrique
 //   « Plugins » (l'ajout par un plugin reste possible).
+// - pickKey() (étape 6d), facultatif : rend le chemin d'un fichier de clé privée SSH choisi,
+//   ou null. Sans lui, le chemin s'écrit à la main.
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -60,6 +62,8 @@ export function tauriHost() {
     // Accès à distance (étape 3d) : QR code d'un appareil, certificat fourni.
     qrCode: (text) => invoke("qr_code", { text }),
     pickPem: () => invoke("pick_pem"),
+    // SFTP (phase 7, étape 6d) : fichier de clé privée choisi, que le moteur lit lui-même.
+    pickKey: () => invoke("pick_key"),
     // Diagnostic (N-12) : archive enregistrée où l'utilisateur la choisit.
     saveDiagnostic: (diagnostic) => invoke("save_diagnostic", { diagnostic }),
     // Plugins d'hébergeurs (étape 4c) : fichier choisi, lu pour le moteur.

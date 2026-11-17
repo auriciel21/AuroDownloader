@@ -10,6 +10,7 @@ import {
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
+  isFileTransferUrl, sshServer, pendingKeyFor, blockedByHostKey,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -749,4 +750,27 @@ test("une erreur du moteur sur une règle nomme son champ sans chemin technique"
   );
   // Message d'une autre forme : tel quel.
   assert.deepEqual(ruleError("moteur injoignable"), { field: null, text: "moteur injoignable" });
+});
+
+test("FTP et SFTP : une source, et le serveur SSH d'une adresse comme le moteur le nomme", () => {
+  assert.ok(isFileTransferUrl("ftp://h/f") && isFileTransferUrl("FTPS://h/f") && isFileTransferUrl(" sftp://h/f"));
+  assert.ok(!isFileTransferUrl("https://h/f") && !isFileTransferUrl(null));
+  assert.deepEqual(parseMirrors("https://m/f", ["ftp://h/f"]), { error: "transfer" });
+  assert.ok(!canAddMirror(task("a", "failed"), "sftp://h/f"));
+  assert.ok(canAddMirror(task("a", "failed"), "https://h/f"));
+
+  assert.deepEqual(sshServer("sftp://Moi:x@SSH.Exemple.org/f.iso"), { host: "ssh.exemple.org", port: 22 });
+  assert.deepEqual(sshServer("sftp://h:2222/~/f"), { host: "h", port: 2222 });
+  assert.deepEqual(sshServer("sftp://[::1]:2222/f"), { host: "::1", port: 2222 });
+  assert.equal(sshServer("ftp://h/f"), null);
+  assert.equal(sshServer("pas une adresse"), null);
+
+  const keys = { items: [], pending: [{ host: "h", port: 2222, algorithm: "ssh-ed25519", fingerprint: "SHA256:a", changed: false }] };
+  assert.equal(pendingKeyFor(keys, "sftp://h:2222/f").fingerprint, "SHA256:a");
+  assert.equal(pendingKeyFor(keys, "sftp://h/f"), null);
+  assert.equal(pendingKeyFor(null, "sftp://h:2222/f"), null);
+
+  assert.ok(blockedByHostKey(task("a", "failed", { errorCode: "HOST_KEY_CHANGED" })));
+  assert.ok(!blockedByHostKey(task("a", "failed", { errorCode: "AUTH_FAILED" })));
+  assert.ok(!blockedByHostKey(task("a", "queued", { errorCode: "HOST_KEY_UNKNOWN" })));
 });

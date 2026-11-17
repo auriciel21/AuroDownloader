@@ -73,6 +73,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -387,6 +388,10 @@ private fun DetailsScreen(
             task.errorDetail?.takeIf { task.state == "failed" }?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
+            // SFTP (SPEC §7.22) : la clé du serveur attend la décision de l'utilisateur.
+            if (task.state == "failed" && task.errorCode in setOf("HOST_KEY_UNKNOWN", "HOST_KEY_CHANGED")) {
+                HostKey(app, task, report)
+            }
             if (task.isTorrent) TorrentFiles(app, task, report)
             Spacer(Modifier.height(8.dp))
             val wide = Modifier.fillMaxWidth()
@@ -429,6 +434,49 @@ private fun DetailsScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Clé du serveur SSH d'une tâche arrêtée par elle (SFTP, SPEC §7.22) : son empreinte, et
+ * « Accepter la clé… » après confirmation ; le moteur relance alors la tâche. Après un
+ * redémarrage du moteur, la clé n'est plus en attente : relancer la tâche la remontre.
+ */
+@Composable
+private fun HostKey(app: AuroApp, task: Task, report: (Throwable?) -> Unit) {
+    var key by remember(task.id) { mutableStateOf<AuroApp.PendingKey?>(null) }
+    var asking by remember(task.id) { mutableStateOf(false) }
+    LaunchedEffect(task.id, task.state, task.errorCode) { app.pendingKey(task.id) { key = it } }
+    val found = key
+    if (found == null) {
+        Text(stringResource(R.string.host_key_gone), style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val fingerprint = "${found.algorithm} ${found.fingerprint}"
+    Text(
+        stringResource(if (found.changed) R.string.host_key_changed_note else R.string.host_key_unknown_note),
+        style = MaterialTheme.typography.bodySmall,
+        color = if (found.changed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(fingerprint, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    Button(onClick = { asking = true }, modifier = Modifier.fillMaxWidth()) {
+        Text(stringResource(R.string.host_key_accept))
+    }
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = { asking = false },
+            title = { Text(stringResource(R.string.host_key_confirm_title)) },
+            text = {
+                Text(stringResource(if (found.changed) R.string.host_key_confirm_changed else R.string.host_key_confirm, fingerprint))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    asking = false
+                    app.acceptKey(found, report)
+                }) { Text(stringResource(R.string.host_key_accept_short)) }
+            },
+            dismissButton = { TextButton(onClick = { asking = false }) { Text(stringResource(R.string.cancel)) } },
+        )
     }
 }
 
@@ -654,7 +702,7 @@ private fun Toggle(label: String, note: String, on: Boolean, change: (Boolean) -
     }
 }
 
-/** Boîte « Ajouter » : une adresse http(s) ou un lien magnet, ou un fichier `.torrent` choisi. */
+/** Boîte « Ajouter » : une adresse http(s), ftp(s) ou sftp, un lien magnet, ou un fichier `.torrent` choisi. */
 @Composable
 private fun AddDialog(dismiss: () -> Unit, confirm: (String) -> Unit, chooseTorrent: () -> Unit) {
     var url by rememberSaveable { mutableStateOf("") }
@@ -691,7 +739,8 @@ private fun AddDialog(dismiss: () -> Unit, confirm: (String) -> Unit, chooseTorr
         confirmButton = {
             TextButton(onClick = {
                 val text = url.trim()
-                val accepted = listOf("http://", "https://", "magnet:?").any { text.startsWith(it, ignoreCase = true) }
+                val accepted = listOf("http://", "https://", "ftp://", "ftps://", "sftp://", "magnet:?")
+                    .any { text.startsWith(it, ignoreCase = true) }
                 if (accepted) confirm(text) else wrong = true
             }) { Text(stringResource(R.string.add)) }
         },

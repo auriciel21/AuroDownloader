@@ -299,8 +299,8 @@ export const EN = {
   "Règle {0} supprimée": "Rule {0} deleted",
   // Identifiants de sites
   "Identifiants de sites": "Site logins",
-  "Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.":
-    "Sent only when a server of the site asks for them (Basic or Digest authentication). Passwords are kept in the system keychain and never shown.",
+  "Envoyés seulement quand un serveur du site les demande (HTTP Basic ou Digest, FTP, SFTP). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.":
+    "Sent only when a server of the site asks for them (HTTP Basic or Digest, FTP, SFTP). Passwords are kept in the system keychain and never shown.",
   "Aucun identifiant enregistré.": "No login saved.",
   "Nouveau…": "New…",
   "Modifier…": "Edit…",
@@ -308,8 +308,40 @@ export const EN = {
   "Site": "Site",
   "Nom d'utilisateur": "User name",
   "Mot de passe": "Password",
-  "exemple.org vaut aussi pour ses sous-domaines ; https://exemple.org/dossier ne vaut que pour ce dossier.":
-    "example.org also covers its subdomains; https://example.org/folder covers that folder only.",
+  "exemple.org vaut aussi pour ses sous-domaines, en HTTP, FTP et SFTP ; https://exemple.org/dossier ne vaut que pour ce dossier, sftp://exemple.org que pour SFTP.":
+    "example.org also covers its subdomains, over HTTP, FTP and SFTP; https://example.org/folder covers that folder only, sftp://example.org SFTP only.",
+  "Clé privée SSH (SFTP, facultative)": "SSH private key (SFTP, optional)",
+  "Choisir le fichier de clé privée": "Choose the private key file",
+  "Avec une clé, le mot de passe est sa phrase de passe (vide si elle n'en a pas). Le fichier reste à sa place : AuroDownloader le relit à chaque connexion.":
+    "With a key, the password is its passphrase (empty if it has none). The file stays where it is: AuroDownloader reads it at each connection.",
+  "FTP : autoriser sans chiffrement": "FTP: allow without encryption",
+  "Seulement pour un serveur FTP sans TLS : le mot de passe y passe alors en clair, lisible par qui écoute le réseau.":
+    "Only for an FTP server without TLS: the password then travels in clear text, readable by anyone listening on the network.",
+  "{0} — {1} (clé privée)": "{0} — {1} (private key)",
+  "Clés des serveurs SSH": "SSH server keys",
+  "Acceptées pour les téléchargements SFTP. Un serveur qui présente une autre clé est bloqué jusqu'à votre décision.":
+    "Accepted for SFTP downloads. A server that presents another key is blocked until you decide.",
+  "Aucune clé acceptée.": "No accepted key.",
+  "Oublier la clé": "Forget the key",
+  "Clé de {0} oubliée": "Key of {0} forgotten",
+  "Clé du serveur SSH": "SSH server key",
+  "Accepter la clé…": "Accept the key…",
+  "Accepter la clé de ce serveur ?": "Accept this server's key?",
+  "Accepter la clé": "Accept the key",
+  "La clé de ce serveur a changé depuis que vous l'avez acceptée. Quelqu'un pourrait se faire passer pour lui : ne l'acceptez que si son administrateur confirme ce changement.":
+    "This server's key has changed since you accepted it. Someone could be impersonating it: accept it only if its administrator confirms the change.",
+  "La clé n'est plus en attente (le moteur a redémarré) : relancer la tâche pour la revoir.":
+    "The key is no longer pending (the engine restarted): retry the download to see it again.",
+  "La clé de ce serveur a changé depuis que vous l'avez acceptée. Quelqu'un pourrait se faire passer pour lui.":
+    "This server's key has changed since you accepted it. Someone could be impersonating it.",
+  "Ce serveur n'est pas encore connu. Vérifiez son empreinte auprès de son administrateur avant de l'accepter.":
+    "This server is not known yet. Check its fingerprint with its administrator before accepting it.",
+  "Serveur {0}. Les téléchargements SFTP de ce serveur ne se feront qu'avec cette clé ; ceux qu'elle bloquait repartiront.":
+    "Server {0}. SFTP downloads from this server will only proceed with this key; those it blocked will start again.",
+  "Clé acceptée ; 1 téléchargement relancé": "Key accepted; 1 download restarted",
+  "Clé acceptée ; {0} téléchargements relancés": "Key accepted; {0} downloads restarted",
+  "clé du serveur SSH inconnue (voir les Propriétés)": "unknown SSH server key (see Properties)",
+  "clé du serveur SSH changée (voir les Propriétés)": "SSH server key changed (see Properties)",
   "Laisser vide pour garder le mot de passe enregistré.": "Leave empty to keep the saved password.",
   "Identifiants de {0} supprimés": "Login for {0} deleted",
   // Accès à distance (étape 3d)
@@ -591,6 +623,7 @@ export const EN = {
   "Écarté : {0} ({1})": "Set aside: {0} ({1})",
   "Un Metalink donne lui-même l'empreinte de chaque fichier.": "A Metalink gives the checksum of each file itself.",
   "Un Metalink donne lui-même les miroirs de chaque fichier.": "A Metalink gives the mirrors of each file itself.",
+  "Une adresse FTP ou SFTP n'a qu'une source : pas de miroir.": "An FTP or SFTP address has a single source: no mirror.",
   "Choisissez les fichiers du Metalink, puis « Démarrer » ou « Télécharger plus tard ».":
     "Choose the files of the Metalink, then “Start” or “Download later”.",
   "aucun fichier choisi dans {0}": "no file chosen in {0}",
@@ -751,6 +784,8 @@ export const ERRORS = {
   SECRET_UNAVAILABLE: "coffre du système indisponible",
   AUTH_REQUIRED: "identifiants demandés par le serveur",
   AUTH_FAILED: "identifiants refusés par le serveur",
+  HOST_KEY_UNKNOWN: "clé du serveur SSH inconnue (voir les Propriétés)",
+  HOST_KEY_CHANGED: "clé du serveur SSH changée (voir les Propriétés)",
 };
 
 /// Cause d'un échec, lisible ; le code lui-même s'il est inconnu.

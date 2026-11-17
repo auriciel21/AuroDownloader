@@ -196,7 +196,7 @@ const isWebUrl = (text) => /^https?:\/\/\S+$/i.test(text);
 /// Miroirs écrits dans la boîte « Ajouter » (SPEC §7.7), un par ligne, pour les adresses de
 /// la première zone : ils ne valent que pour une seule adresse HTTP. Rend `{ mirrors }`
 /// (liste vide sans miroir) ou `{ error }` : `many` (plusieurs adresses ou fichiers),
-/// `torrent`, `metalink` (il donne ses miroirs lui-même), `scheme` (pas une adresse HTTP), `twice` (adresse donnée deux fois), `count`
+/// `torrent`, `metalink` (il donne ses miroirs lui-même), `transfer` (adresse FTP ou SFTP), `scheme` (pas une adresse HTTP), `twice` (adresse donnée deux fois), `count`
 /// (plus de 16 sources) ; `url` est alors l'adresse en cause.
 export function parseMirrors(text, urls, torrents = 0, metalinks = 0) {
   const mirrors = (text ?? "").split(/\s+/).filter(Boolean);
@@ -204,6 +204,7 @@ export function parseMirrors(text, urls, torrents = 0, metalinks = 0) {
   if (urls.length + torrents + metalinks > 1) return { error: "many" };
   if (metalinks > 0 || urls.some(isMetalinkUrl)) return { error: "metalink" };
   if (torrents > 0 || urls.some(isMagnet)) return { error: "torrent" };
+  if (urls.some(isFileTransferUrl)) return { error: "transfer" };
   const bad = mirrors.find((m) => !isWebUrl(m));
   if (bad) return { error: "scheme", url: bad };
   const seen = new Set(urls);
@@ -216,9 +217,40 @@ export function parseMirrors(text, urls, torrents = 0, metalinks = 0) {
 }
 
 /// Miroir à ajouter dans les Propriétés (`task.addSource`) : un fichier HTTP pas encore fini
-/// ni annulé ; une vidéo ou un torrent n'a qu'une source.
-export const canAddMirror = (task) =>
-  (task.kind ?? "http") === "http" && ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+/// ni annulé ; une vidéo ou un torrent n'a qu'une source, une adresse FTP ou SFTP (`url`, celle
+/// de la tâche) aussi (SPEC §7.22).
+export const canAddMirror = (task, url) =>
+  (task.kind ?? "http") === "http" &&
+  !isFileTransferUrl(url) &&
+  ["queued", "active", "paused", "retry_wait", "failed"].includes(task.state);
+
+/// Adresse FTP, FTPS ou SFTP (F-08, SPEC §7.22) : une seule source, sans miroir.
+export const isFileTransferUrl = (url) => /^(ftp|ftps|sftp):\/\//i.test((url ?? "").trim());
+
+/// Serveur SSH d'une adresse `sftp://` : `{host, port}` (22 par défaut), nommé comme le
+/// moteur le nomme (minuscules, IPv6 sans crochets) ; `null` pour une autre adresse.
+export function sshServer(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "sftp:" || !parsed.hostname) return null;
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return { host, port: parsed.port ? Number(parsed.port) : 22 };
+}
+
+/// Clé en attente (`pending` de `hostkey.list`) du serveur de l'adresse `url`, ou `null`.
+export function pendingKeyFor(keys, url) {
+  const server = sshServer(url);
+  if (!server) return null;
+  return (keys?.pending ?? []).find((k) => k.host === server.host && k.port === server.port) ?? null;
+}
+
+/// Une tâche arrêtée par la clé de son serveur SSH, inconnue ou changée.
+export const blockedByHostKey = (task) =>
+  task.state === "failed" && (task.errorCode === "HOST_KEY_UNKNOWN" || task.errorCode === "HOST_KEY_CHANGED");
 
 /// Nom court d'une source : « principale » pour la référence, sinon « miroir N » (son rang).
 /// Rend la clé du texte et son numéro, à traduire par l'appelant.

@@ -591,6 +591,9 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 .sources-section { margin-bottom: 12px; }
 .sources-section h3 { margin: 0 0 6px; font-size: 14px; }
 .sources-section .field { margin-top: 8px; }
+/* Clé d'un serveur SSH (SFTP, étape 6d). */
+.hostkey-section { margin-bottom: 12px; }
+.hostkey-section h3 { margin: 0 0 6px; font-size: 14px; }
 #d-sources { width: 100%; border-collapse: collapse; font-size: 13px; }
 #d-sources th {
   position: sticky;

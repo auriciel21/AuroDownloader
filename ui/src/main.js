@@ -11,6 +11,7 @@ import {
   subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
+  pendingKeyFor, blockedByHostKey,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 import { webHost } from "./web.js";
@@ -1061,6 +1062,7 @@ function renderDetails() {
   renderSegments(task);
   renderSources(task);
   renderTorrentFiles(task);
+  renderHostKey(task);
 }
 
 /// Nom court d'une source, traduit : « Principale » ou « Miroir 2 ».
@@ -1073,7 +1075,7 @@ function sourceText(source) {
 /// d'un refus, débit moyen ; et le champ « Ajouter un miroir » tant qu'il en accepte.
 function renderSources(task) {
   const sources = detailsFull?.sources ?? [];
-  const addable = canAddMirror(task);
+  const addable = canAddMirror(task, detailsFull?.sources?.[0]?.url);
   const section = $("d-sources-section");
   section.hidden = (task.kind ?? "http") !== "http" || !detailsFull || (sources.length < 2 && !addable);
   if (section.hidden) return;
@@ -1263,6 +1265,7 @@ function mirrorsError({ error, url }) {
     case "many": return t("Des miroirs ne valent que pour une seule adresse.");
     case "torrent": return t("Un torrent trouve ses pairs lui-même : pas de miroir à donner.");
     case "metalink": return t("Un Metalink donne lui-même les miroirs de chaque fichier.");
+    case "transfer": return t("Une adresse FTP ou SFTP n'a qu'une source : pas de miroir.");
     case "plugin": return t("Une page d'hébergeur donne ses liens par son plugin : pas de miroir à donner.");
     case "scheme": return t("Un miroir est une adresse http:// ou https:// : {0}", url);
     case "twice": return t("Adresse donnée deux fois : {0}", url);
@@ -1724,6 +1727,7 @@ function renderDest() {
   $("pref-logs-level").disabled = !connected;
   $("diagnostic-export").disabled = !connected;
   syncLoginButtons();
+  syncHostKeyButtons();
   syncRuleButtons();
 }
 
@@ -3203,7 +3207,9 @@ function renderLogins(select) {
   list.replaceChildren(...logins.map((login) => {
     const option = document.createElement("option");
     option.value = login.loginId;
-    option.textContent = `${login.site} — ${login.username}`;
+    option.textContent = login.keyPath
+      ? t("{0} — {1} (clé privée)", login.site, login.username)
+      : `${login.site} — ${login.username}`;
     return option;
   }));
   if (logins.some((login) => login.loginId === keep)) list.value = keep;
@@ -3224,8 +3230,13 @@ function openLogin(login) {
   $("login-site").value = login?.site ?? "";
   $("login-user").value = login?.username ?? "";
   $("login-password").value = "";
-  // Nouveaux identifiants : un mot de passe ; sinon, vide garde celui enregistré.
-  $("login-password").required = !login;
+  $("login-key").value = login?.keyPath ?? "";
+  $("login-plain").checked = login?.allowPlain === true;
+  // Le choix d'un fichier : seulement avec un hôte qui sait le faire (bureau).
+  $("login-key-pick").hidden = typeof host.pickKey !== "function";
+  // Nouveaux identifiants : un mot de passe (une clé peut s'en passer) ; sinon, vide garde
+  // celui enregistré.
+  $("login-password").required = !login && !$("login-key").value.trim();
   $("login-keep-note").hidden = !login;
   $("login-error").hidden = true;
   const dialog = $("login-dialog");
@@ -3239,6 +3250,11 @@ async function saveLogin() {
   if (editingLogin) params.loginId = editingLogin;
   const password = $("login-password").value;
   if (password) params.password = password;
+  // Clé privée (SFTP) : un chemin, ou vide pour la retirer ; « sans chiffrement » (FTP).
+  const key = $("login-key").value.trim();
+  const editing = logins.find((l) => l.loginId === editingLogin);
+  if (key || editing?.keyPath) params.keyPath = key;
+  params.allowPlain = $("login-plain").checked;
   $("login-save").disabled = true;
   try {
     const saved = await host.call("login.set", params);
@@ -3266,6 +3282,137 @@ async function deleteLogin() {
   }
   await loadLogins();
   (logins.length ? $("logins") : $("login-new")).focus();
+}
+
+// ---------- Clés des serveurs SSH (SFTP, SPEC §7.22, étape 6d) ----------
+
+/// Clés lues pour les Propriétés (`hostkey.list`) et la tâche (avec sa révision d'état) pour
+/// laquelle : relues quand la tâche s'arrête de nouveau.
+let detailsKeys = null;
+let detailsKeysFor = null;
+/// Clé en attente proposée dans la boîte « Accepter la clé ».
+let offeredKey = null;
+
+/// Section « Clé du serveur SSH » des Propriétés, pour une tâche arrêtée par une clé inconnue
+/// ou changée : l'empreinte vue par le moteur, et « Accepter la clé… ». Le moteur ne garde
+/// la clé en attente qu'en mémoire : après son redémarrage, relancer la tâche la remontre.
+function renderHostKey(task) {
+  const section = $("d-hostkey");
+  const url = detailsFull?.sources?.[0]?.url;
+  section.hidden = !blockedByHostKey(task) || !url;
+  if (section.hidden) return;
+  const wanted = `${task.taskId}:${task.stateRev ?? ""}`;
+  if (caps.admin && connected && detailsKeysFor !== wanted) {
+    detailsKeysFor = wanted;
+    host.call("hostkey.list").then((keys) => {
+      detailsKeys = keys;
+      if (detailsTask === task.taskId) renderHostKey(task);
+    }).catch(() => {});
+  }
+  const key = pendingKeyFor(detailsKeys, url);
+  const changed = task.errorCode === "HOST_KEY_CHANGED";
+  $("d-hostkey-text").textContent = !key
+    ? t("La clé n'est plus en attente (le moteur a redémarré) : relancer la tâche pour la revoir.")
+    : changed
+      ? t("La clé de ce serveur a changé depuis que vous l'avez acceptée. Quelqu'un pourrait se faire passer pour lui.")
+      : t("Ce serveur n'est pas encore connu. Vérifiez son empreinte auprès de son administrateur avant de l'accepter.");
+  $("d-hostkey-text").classList.toggle("warn", changed);
+  $("d-hostkey-fingerprint").textContent = key ? `${key.algorithm} ${key.fingerprint}` : "";
+  $("d-hostkey-fingerprint").hidden = !key;
+  $("d-hostkey-accept").hidden = !key;
+  $("d-hostkey-accept").disabled = !connected;
+}
+
+/// Boîte de confirmation : serveur, empreinte, et l'avertissement d'une clé changée.
+function offerHostKey() {
+  const task = store.tasks.get(detailsTask);
+  const key = pendingKeyFor(detailsKeys, detailsFull?.sources?.[0]?.url);
+  if (!task || !key) return;
+  offeredKey = key;
+  const server = key.host.includes(":") ? `[${key.host}]:${key.port}` : `${key.host}:${key.port}`;
+  $("hostkey-text").textContent = t(
+    "Serveur {0}. Les téléchargements SFTP de ce serveur ne se feront qu'avec cette clé ; ceux qu'elle bloquait repartiront.",
+    server,
+  );
+  $("hostkey-fingerprint").textContent = `${key.algorithm} ${key.fingerprint}`;
+  $("hostkey-warning").hidden = !key.changed;
+  $("hostkey-error").hidden = true;
+  const dialog = $("hostkey-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  // Le choix sûr d'abord : Annuler.
+  dialog.querySelector('button[value="cancel"]').focus();
+}
+
+async function acceptHostKey(event) {
+  event.preventDefault();
+  const key = offeredKey;
+  if (!key) return;
+  $("hostkey-confirm").disabled = true;
+  try {
+    const done = await host.call("hostkey.accept", {
+      host: key.host,
+      port: key.port,
+      fingerprint: key.fingerprint,
+    });
+    $("hostkey-dialog").close();
+    detailsKeysFor = null;
+    const n = done.resumed?.length ?? 0;
+    announce(n === 1
+      ? t("Clé acceptée ; 1 téléchargement relancé")
+      : t("Clé acceptée ; {0} téléchargements relancés", n));
+    loadHostKeys();
+  } catch (e) {
+    $("hostkey-error").textContent = refused(e);
+    $("hostkey-error").hidden = false;
+  } finally {
+    $("hostkey-confirm").disabled = false;
+  }
+}
+
+/// Clés acceptées, dans la rubrique « Identifiants de sites » des Options.
+let hostKeys = [];
+
+async function loadHostKeys() {
+  $("hostkeys-error").hidden = true;
+  try {
+    hostKeys = (await host.call("hostkey.list")).items ?? [];
+  } catch (e) {
+    hostKeys = [];
+    $("hostkeys-error").textContent = refused(e);
+    $("hostkeys-error").hidden = false;
+  }
+  const list = $("hostkeys");
+  const keep = list.value;
+  list.replaceChildren(...hostKeys.map((key, i) => {
+    const option = document.createElement("option");
+    option.value = String(i);
+    const server = key.host.includes(":") ? `[${key.host}]:${key.port}` : `${key.host}:${key.port}`;
+    option.textContent = `${server} — ${key.algorithm} ${key.fingerprint}`;
+    return option;
+  }));
+  if (keep && Number(keep) < hostKeys.length) list.value = keep;
+  list.hidden = !hostKeys.length;
+  $("hostkeys-empty").hidden = hostKeys.length > 0;
+  syncHostKeyButtons();
+}
+
+function syncHostKeyButtons() {
+  $("hostkey-forget").disabled = !connected || !$("hostkeys").value;
+}
+
+async function forgetHostKey() {
+  const key = hostKeys[Number($("hostkeys").value)];
+  if (!key) return;
+  try {
+    await host.call("hostkey.remove", { host: key.host, port: key.port });
+    announce(t("Clé de {0} oubliée", key.host));
+  } catch (e) {
+    $("hostkeys-error").textContent = refused(e);
+    $("hostkeys-error").hidden = false;
+  }
+  await loadHostKeys();
+  (hostKeys.length ? $("hostkeys") : $("login-new")).focus();
 }
 
 // ---------- Règles de rangement (F-32, F-34, SPEC §7.21, étape 4c) ----------
@@ -3754,6 +3901,16 @@ function openCertDialog() {
   $("cert-file").focus();
 }
 
+/// Fichier de clé privée SSH des identifiants (SFTP) : choisi par l'hôte, le moteur le relit.
+async function pickKey() {
+  const path = await host.pickKey?.().catch(() => null);
+  if (path) {
+    $("login-key").value = path;
+    $("login-password").required = false;
+  }
+  $("login-key").focus();
+}
+
 async function pickPem(field) {
   const path = await host.pickPem().catch(() => null);
   if (path) $(field).value = path;
@@ -4149,6 +4306,7 @@ function wire() {
     selectTab($("tab-general"));
     $("settings").showModal();
     if (connected) loadLogins();
+    if (connected && caps.admin) loadHostKeys();
     if (connected) loadRules();
     if (connected) loadInterfaces();
     if (connected && caps.qr && caps.admin) loadRemote();
@@ -4242,6 +4400,17 @@ function wire() {
     if (login) openLogin(login);
   });
   $("login-delete").addEventListener("click", deleteLogin);
+  $("login-key-pick").addEventListener("click", pickKey);
+  $("login-key").addEventListener("input", () => {
+    $("login-password").required = !editingLogin && !$("login-key").value.trim();
+  });
+  $("hostkeys").addEventListener("change", syncHostKeyButtons);
+  $("hostkey-forget").addEventListener("click", forgetHostKey);
+  $("d-hostkey-accept").addEventListener("click", offerHostKey);
+  $("hostkey-dialog").querySelector("form").addEventListener("submit", (event) => {
+    if (event.submitter?.value === "accept") acceptHostKey(event);
+  });
+  $("hostkey-dialog").addEventListener("close", () => { offeredKey = null; });
   $("login-form").addEventListener("submit", (event) => {
     if (event.submitter?.value !== "save") return;
     // Enregistrés d'abord ; la boîte ne se ferme qu'en cas de succès.

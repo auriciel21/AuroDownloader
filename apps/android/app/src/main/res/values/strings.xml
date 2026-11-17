@@ -10,8 +10,8 @@
     <string name="add">Ajouter</string>
     <string name="add_title">Ajouter un téléchargement</string>
     <string name="address">Adresse</string>
-    <string name="address_hint">https://… ou magnet:?…</string>
-    <string name="address_invalid">Adresse http://, https:// ou lien magnet attendu.</string>
+    <string name="address_hint">https://…, ftp://…, sftp://… ou magnet:?…</string>
+    <string name="address_invalid">Adresse http(s)://, ftp(s)://, sftp:// ou lien magnet attendu.</string>
     <string name="added">Téléchargement ajouté</string>
     <string name="cancel">Annuler</string>
     <string name="close">Fermer</string>
@@ -63,6 +63,16 @@
     <string name="error_INTERNAL">erreur interne du moteur</string>
     <string name="error_AUTH_REQUIRED">identifiants demandés par le serveur</string>
     <string name="error_AUTH_FAILED">identifiants refusés par le serveur</string>
+    <string name="error_HOST_KEY_UNKNOWN">clé du serveur SSH inconnue</string>
+    <string name="error_HOST_KEY_CHANGED">clé du serveur SSH changée</string>
+    <string name="host_key_gone">La clé n\'est plus en attente (le moteur a redémarré) : relancer pour la revoir.</string>
+    <string name="host_key_unknown_note">Serveur inconnu : vérifiez cette empreinte auprès de son administrateur avant d\'accepter sa clé.</string>
+    <string name="host_key_changed_note">La clé de ce serveur a changé depuis que vous l\'avez acceptée : quelqu\'un pourrait se faire passer pour lui.</string>
+    <string name="host_key_accept">Accepter la clé…</string>
+    <string name="host_key_accept_short">Accepter</string>
+    <string name="host_key_confirm_title">Accepter la clé de ce serveur ?</string>
+    <string name="host_key_confirm">Empreinte : %1$s. Les téléchargements SFTP de ce serveur ne se feront qu\'avec cette clé ; ceux qu\'elle bloquait repartiront.</string>
+    <string name="host_key_confirm_changed">Empreinte : %1$s. Attention : la clé a changé. Ne l\'acceptez que si l\'administrateur du serveur confirme ce changement.</string>
 
     <!-- Tailles, débits, durées -->
     <string name="unit_b">o</string>
