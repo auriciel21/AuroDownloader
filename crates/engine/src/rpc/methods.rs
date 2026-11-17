@@ -372,6 +372,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 site: p.required_str("site")?,
                 username: p.required_str("username")?,
                 password: p.str("password")?,
+                allow_plain: p
+                    .get("allowPlain")
+                    .map(|_| p.bool("allowPlain"))
+                    .transpose()?,
             };
             Ok(login_json(&ctx.engine.set_login(change).await?))
         }
@@ -1036,7 +1040,12 @@ fn token_json(t: &crate::store::remote::TokenRow) -> Value {
 }
 
 fn login_json(l: &LoginView) -> Value {
-    json!({"loginId": l.id, "site": l.site, "username": l.username})
+    json!({
+        "loginId": l.id,
+        "site": l.site,
+        "username": l.username,
+        "allowPlain": l.allow_plain,
+    })
 }
 
 /// `task.update` : limite de débit, empreinte (F-11), nouvelle adresse (SPEC §7.13), ou

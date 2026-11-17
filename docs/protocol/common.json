@@ -791,6 +791,10 @@
         },
         "username": {
           "type": "string"
+        },
+        "allowPlain": {
+          "description": "FTP sans chiffrement permis pour ce site (F-08, SPEC 7.22).",
+          "type": "boolean"
         }
       },
       "required": [

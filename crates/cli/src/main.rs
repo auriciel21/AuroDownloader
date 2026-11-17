@@ -59,7 +59,7 @@ fn connections() -> clap::builder::RangedI64ValueParser<u32> {
 enum Command {
     /// Ajoute des téléchargements au moteur, sans attendre
     Add {
-        /// Adresses HTTP ou HTTPS, liens magnet, fichiers .torrent, ou fichiers Metalink
+        /// Adresses HTTP(S) ou FTP(S), liens magnet, fichiers .torrent, ou fichiers Metalink
         /// (.meta4, .metalink : une tâche par fichier décrit)
         #[arg(required = true)]
         urls: Vec<String>,
@@ -105,7 +105,7 @@ enum Command {
     },
     /// Télécharge un fichier et suit l'avancement (Ctrl-C met la tâche en pause)
     Get {
-        /// Adresse HTTP ou HTTPS, lien magnet, fichier .torrent, ou fichier Metalink
+        /// Adresse HTTP(S) ou FTP(S), lien magnet, fichier .torrent, ou fichier Metalink
         url: String,
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
@@ -546,7 +546,8 @@ enum LoginAction {
     /// Enregistre ou modifie les identifiants d'un site. Le mot de passe est demandé sans
     /// écho ; il n'est jamais un argument, qui resterait dans l'historique du terminal
     Set {
-        /// Site : exemple.org (ses sous-domaines compris), ou https://exemple.org/dossier
+        /// Site : exemple.org (ses sous-domaines compris, HTTP et FTP), ou
+        /// https://exemple.org/dossier, ftp://exemple.org
         site: String,
         #[arg(short = 'u', long)]
         username: String,
@@ -556,6 +557,13 @@ enum LoginAction {
         /// Garder le mot de passe déjà enregistré (changer seulement le nom d'utilisateur)
         #[arg(long)]
         keep_password: bool,
+        /// FTP : autoriser ce site sans chiffrement (serveur sans AUTH TLS) ; le mot de passe
+        /// y passe alors en clair
+        #[arg(long, conflicts_with = "require_tls")]
+        allow_plain: bool,
+        /// FTP : exiger de nouveau le chiffrement pour ce site (par défaut)
+        #[arg(long)]
+        require_tls: bool,
     },
     /// Retire les identifiants d'un site
     Remove { site: String },
@@ -1179,6 +1187,8 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         username,
                         password_stdin,
                         keep_password,
+                        allow_plain,
+                        require_tls,
                     } => {
                         let password = match (keep_password, password_stdin) {
                             (true, _) => None,
@@ -1188,7 +1198,12 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                                     .context("lecture du mot de passe")?,
                             ),
                         };
-                        remote::login_set(&mut rpc, &site, &username, password).await
+                        let plain = match (allow_plain, require_tls) {
+                            (true, _) => Some(true),
+                            (_, true) => Some(false),
+                            _ => None,
+                        };
+                        remote::login_set(&mut rpc, &site, &username, password, plain).await
                     }
                     LoginAction::Remove { site } => remote::login_remove(&mut rpc, &site).await,
                 },

@@ -536,7 +536,7 @@ async fn shutdown_keeps_running_tasks_for_the_next_start() {
 async fn bad_requests_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::start(config(dir.path())).unwrap();
-    let ftp = add("ftp://exemple.org/f", dir.path());
+    let ftp = add("gopher://exemple.org/f", dir.path());
     assert!(matches!(engine.add(ftp).await, Err(EngineError::Url(_))));
     let elsewhere = AddTask {
         queue_id: Some("inconnue".into()),
@@ -1883,7 +1883,7 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
 
     let refused = [
         ("127.0.0.1", "moi", None),
-        ("ftp://127.0.0.1", "moi", Some("x")),
+        ("gopher://127.0.0.1", "moi", Some("x")),
         ("127.0.0.1", "a:b", Some("x")),
         ("127.0.0.1", " ", Some("x")),
         ("127.0.0.1", "moi", Some("")),
@@ -1894,6 +1894,7 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
             site: site.into(),
             username: username.into(),
             password: password.map(Into::into),
+            ..LoginChange::default()
         };
         assert!(
             matches!(
@@ -1911,6 +1912,7 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
             site: " HTTP://127.0.0.1/ ".into(),
             username: "moi".into(),
             password: Some("faux".into()),
+            ..LoginChange::default()
         })
         .await
         .unwrap();
@@ -1920,6 +1922,7 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
         site: "http://127.0.0.1".into(),
         username: "autre".into(),
         password: Some("x".into()),
+        ..LoginChange::default()
     };
     assert!(matches!(
         engine.set_login(duplicate).await,
@@ -1939,6 +1942,7 @@ async fn site_logins_answer_protected_servers_and_stay_in_the_vault() {
             site: saved.site.clone(),
             username: "moi".into(),
             password: Some(PASSWORD.into()),
+            ..LoginChange::default()
         })
         .await
         .unwrap();
@@ -2197,4 +2201,83 @@ mod network {
         assert_file(dir.path(), "b.bin", len);
         engine.shutdown().await;
     }
+}
+
+/// FTP (F-08, SPEC §7.22) : une tâche FTP se télécharge par segments, 4 connexions au plus
+/// en automatique ; le mot de passe écrit dans l'adresse va au coffre, jamais en base ; le
+/// site autorisé sans chiffrement y donne accès en clair.
+#[tokio::test]
+async fn ftp_tasks_download_in_segments_and_keep_the_password_in_the_vault() {
+    use crate::testing::ftp::{FtpOptions, FtpSite};
+    const LEN: usize = 8 * SIZE;
+    let dir = tempfile::tempdir().unwrap();
+    let site = FtpSite::start(FtpOptions {
+        login: Some(("moi", "s3cr3t-ftp")),
+        ..FtpOptions::default()
+    })
+    .await;
+    site.put("pub/f.bin", &content(LEN));
+    let mut config = config(dir.path());
+    // Automatique : le plafond FTP s'applique.
+    config.transfer.connections = None;
+    config.transfer.auto_max = 16;
+    let engine = Engine::start(config).unwrap();
+    let mut events = engine.subscribe();
+
+    // Sans autorisation, le mot de passe ne part pas en clair.
+    let url = format!("ftp://moi:s3cr3t-ftp@{}/pub/f.bin", site.addr);
+    let refused = engine.add(add(&url, dir.path())).await.unwrap();
+    wait_state(&mut events, &refused, TaskState::Failed).await;
+    assert_eq!(
+        task(dir.path(), &refused).error_code.as_deref(),
+        Some("AUTH_FAILED")
+    );
+    assert_eq!(site.accepted(), 1, "rien d'envoyé après le refus de TLS");
+    // Le mot de passe est au coffre (en-tête secret), l'adresse gardée sans lui.
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT url FROM sources WHERE task_id = ?1",
+            [&refused],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, format!("ftp://{}/pub/f.bin", site.addr));
+    let headers = store::headers::load(&conn, &refused).unwrap();
+    assert!(
+        headers
+            .iter()
+            .any(|(name, stored)| name.eq_ignore_ascii_case("authorization")
+                && matches!(stored, store::headers::Stored::Secret(_))),
+        "{headers:?}"
+    );
+    drop(conn);
+
+    // Autorisé pour ce site (le serveur de test n'a pas TLS) : les identifiants de
+    // l'adresse passent avant ceux du site.
+    engine
+        .set_login(LoginChange {
+            site: "ftp://127.0.0.1".into(),
+            username: "autre".into(),
+            password: Some("faux".into()),
+            allow_plain: Some(true),
+            ..LoginChange::default()
+        })
+        .await
+        .unwrap();
+    engine.resume(&refused).await.unwrap();
+    wait_state(&mut events, &refused, TaskState::Completed).await;
+    assert_file(dir.path(), "f.bin", LEN);
+    // 4 au plus à la fois ; une connexion qui se ferme peut encore compter un instant.
+    assert!(site.peak() <= 5, "{} connexions ensemble", site.peak());
+    assert_eq!(site.refused(), 0);
+    for file in ["auro.db", "auro.db-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.path().join(file)) {
+            assert!(
+                !bytes.windows(10).any(|w| w == b"s3cr3t-ftp"),
+                "mot de passe dans {file}"
+            );
+        }
+    }
+    engine.shutdown().await;
 }

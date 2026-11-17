@@ -843,7 +843,7 @@ async fn unsupported_or_invalid_additions_are_refused() {
             json!({"sources": [{"url": "http://a/f"}, {"url": "ftp://b/f"}]}),
             "URL_INVALID",
         ),
-        (json!({"sources": [{"url": "ftp://h/f"}]}), "URL_INVALID"),
+        (json!({"sources": [{"url": "gopher://h/f"}]}), "URL_INVALID"),
         (json!({"destDir": "relatif"}), "DEST_NOT_WRITABLE"),
         (json!({"queueId": "inconnue"}), "QUEUE_NOT_FOUND"),
         (json!({"maxConnections": 0}), "INVALID_PARAMS"),
@@ -3285,7 +3285,7 @@ async fn links_of_a_page_are_found_sized_and_added_together() {
             "task.addBatch",
             json!({"items": [
                 {"sources": [{"url": files.url("/pub/a.iso")}], "destDir": dest},
-                {"sources": [{"url": "ftp://x/y.iso"}], "destDir": dest},
+                {"sources": [{"url": "gopher://x/y.iso"}], "destDir": dest},
                 {"sources": [{"url": files.url("/pub/b.zip")}], "destDir": dest},
                 "pas un objet",
             ]}),

@@ -459,8 +459,8 @@ async fn invalid_requests_are_refused_before_any_connection() {
         c.probe("pas une url", &[]).await,
         Err(NetError::InvalidUrl(_))
     ));
-    let err = c.probe("ftp://exemple.org/a", &[]).await.unwrap_err();
-    assert!(matches!(err, NetError::UnsupportedScheme(ref s) if s == "ftp"));
+    let err = c.probe("gopher://exemple.org/a", &[]).await.unwrap_err();
+    assert!(matches!(err, NetError::UnsupportedScheme(ref s) if s == "gopher"));
     assert_eq!(err.error_code(), None);
     let bad = [("Authorization".to_owned(), "Bearer a\nb".to_owned())];
     let err = c.probe("http://127.0.0.1:1/", &bad).await.unwrap_err();

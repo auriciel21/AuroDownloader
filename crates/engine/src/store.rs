@@ -106,6 +106,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "pieces",
         sql: include_str!("../migrations/0012_pieces.sql"),
     },
+    Migration {
+        version: 13,
+        name: "ftp_plain",
+        sql: include_str!("../migrations/0013_ftp_plain.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

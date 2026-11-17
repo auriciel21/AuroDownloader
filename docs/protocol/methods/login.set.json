@@ -18,6 +18,10 @@
         },
         "password": {
           "type": "string"
+        },
+        "allowPlain": {
+          "description": "FTP sans chiffrement permis pour ce site (F-08) ; absent : inchangé, faux pour de nouveaux identifiants.",
+          "type": "boolean"
         }
       },
       "required": [

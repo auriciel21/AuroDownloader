@@ -17,7 +17,7 @@ use reqwest::{Method, Url};
 
 /// Portée d'identifiants : un site, éventuellement restreint à un chemin.
 ///
-/// `exemple.org` vaut pour `http` et `https`, pour `exemple.org` et ses sous-domaines
+/// `exemple.org` vaut pour `http`, `https`, `ftp` et `ftps` (F-08), pour `exemple.org` et ses sous-domaines
 /// (`dl.exemple.org`), sur tous les ports. `https://exemple.org:8443/prive` ne vaut que pour
 /// HTTPS, ce port et ce chemin (et ce qui est dessous).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl Site {
             format!("https://{text}")
         })
         .map_err(|e| format!("site invalide : {e}"))?;
-        if !matches!(url.scheme(), "http" | "https") {
+        if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") {
             return Err(format!("protocole non pris en charge : {}", url.scheme()));
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -94,7 +94,7 @@ impl Site {
         if !exact && !host.ends_with(&format!(".{}", self.host)) {
             return None;
         }
-        let port = url.port_or_known_default()?;
+        let port = super::ftp::default_port(url)?;
         if self.port.is_some_and(|p| p != port) {
             return None;
         }
@@ -293,6 +293,8 @@ pub struct Auth {
     scheme: Mutex<Option<Scheme>>,
     /// Compteur `nc` de Digest, pour le nonce en cours.
     count: AtomicU32,
+    /// FTP sans TLS permis pour ce site (« autoriser sans chiffrement », F-08, SPEC §7.22).
+    allow_plain: bool,
 }
 
 impl Auth {
@@ -301,7 +303,25 @@ impl Auth {
             login,
             scheme: Mutex::new(None),
             count: AtomicU32::new(0),
+            allow_plain: false,
         }
+    }
+
+    /// Les mêmes identifiants, avec l'autorisation de FTP sans chiffrement du site.
+    pub fn allowing_plain(mut self, allow: bool) -> Self {
+        self.allow_plain = allow;
+        self
+    }
+
+    /// Nom et mot de passe à donner à un serveur FTP (F-08), si `url` est du site.
+    pub fn credentials_for(&self, url: &Url) -> Option<(String, String)> {
+        self.login.site.matches(url)?;
+        Some((self.login.username.clone(), self.login.password.clone()))
+    }
+
+    /// FTP en clair permis vers `url` (site autorisé sans chiffrement) ?
+    pub fn allows_plain_for(&self, url: &Url) -> bool {
+        self.allow_plain && self.login.site.matches(url).is_some()
     }
 
     /// En-tête `Authorization` à joindre à une requête vers `url`, si un défi a déjà été
@@ -700,7 +720,7 @@ mod tests {
         let broad = Site::parse("https://exemple.org:8443").unwrap();
         assert!(narrow.matches(&target) > broad.matches(&target));
 
-        for bad in ["", "ftp://h", "https://u:p@h", "h/?a=1", "https://"] {
+        for bad in ["", "gopher://h", "https://u:p@h", "h/?a=1", "https://"] {
             assert!(Site::parse(bad).is_err(), "{bad:?}");
         }
     }

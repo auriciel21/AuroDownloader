@@ -18,9 +18,11 @@ pub struct LoginRow {
     pub site: String,
     pub username: String,
     pub secret_ref: String,
+    /// FTP sans chiffrement permis pour ce site (F-08, SPEC §7.22).
+    pub allow_plain: bool,
 }
 
-const COLUMNS: &str = "id, site, username, secret_ref";
+const COLUMNS: &str = "id, site, username, secret_ref, allow_plain";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<LoginRow> {
     Ok(LoginRow {
@@ -28,6 +30,7 @@ fn row(r: &Row<'_>) -> rusqlite::Result<LoginRow> {
         site: r.get(1)?,
         username: r.get(2)?,
         secret_ref: r.get(3)?,
+        allow_plain: r.get(4)?,
     })
 }
 
@@ -80,32 +83,37 @@ pub fn insert(
     site: &str,
     username: &str,
     secret_ref: &str,
+    allow_plain: bool,
 ) -> Result<String, StoreError> {
     let (id, now) = (new_id(), now_ms());
     conn.execute(
-        "INSERT INTO site_logins (id, site, username, secret_ref, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![id, site, username, secret_ref, now],
+        "INSERT INTO site_logins (id, site, username, secret_ref, allow_plain, created_at,
+                                  updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![id, site, username, secret_ref, allow_plain, now],
     )?;
     Ok(id)
 }
 
 /// Change le site, le nom d'utilisateur et, si `secret_ref` est donné, la référence du mot
-/// de passe. Renvoie l'ancienne référence remplacée, à effacer du coffre ensuite.
+/// de passe, et si `allow_plain` est donné, l'autorisation de FTP sans chiffrement.
+/// Renvoie l'ancienne référence remplacée, à effacer du coffre ensuite.
 pub fn update(
     conn: &Connection,
     id: &str,
     site: &str,
     username: &str,
     secret_ref: Option<&str>,
+    allow_plain: Option<bool>,
 ) -> Result<Option<String>, StoreError> {
     let old = load(conn, id)?
         .ok_or_else(|| StoreError::BadValue(format!("identifiants {id} inconnus")))?;
     conn.execute(
         "UPDATE site_logins SET site = ?2, username = ?3,
-           secret_ref = COALESCE(?4, secret_ref), updated_at = ?5
+           secret_ref = COALESCE(?4, secret_ref), updated_at = ?5,
+           allow_plain = COALESCE(?6, allow_plain)
          WHERE id = ?1",
-        params![id, site, username, secret_ref, now_ms()],
+        params![id, site, username, secret_ref, now_ms(), allow_plain],
     )?;
     Ok(secret_ref
         .filter(|new| *new != old.secret_ref)
@@ -131,8 +139,8 @@ mod tests {
     #[test]
     fn the_most_precise_site_wins() {
         let conn = open_in_memory().unwrap();
-        insert(&conn, "exemple.org", "large", "r1").unwrap();
-        insert(&conn, "https://dl.exemple.org/prive", "precis", "r2").unwrap();
+        insert(&conn, "exemple.org", "large", "r1", false).unwrap();
+        insert(&conn, "https://dl.exemple.org/prive", "precis", "r2", false).unwrap();
         let pick = |url: &str| best_for(&conn, url).unwrap().map(|l| l.username);
         assert_eq!(
             pick("https://dl.exemple.org/prive/f.iso").as_deref(),
@@ -149,23 +157,28 @@ mod tests {
     #[test]
     fn a_replaced_or_removed_password_is_handed_back_for_the_vault() {
         let conn = open_in_memory().unwrap();
-        let id = insert(&conn, "exemple.org", "moi", "r1").unwrap();
+        let id = insert(&conn, "exemple.org", "moi", "r1", false).unwrap();
         assert!(
-            insert(&conn, "exemple.org", "autre", "r9").is_err(),
+            insert(&conn, "exemple.org", "autre", "r9", false).is_err(),
             "un site, une fois"
         );
         // Les mots de passe restent hors du ramassage.
         assert!(all_secret_refs(&conn).unwrap().contains("r1"));
         // Sans nouveau mot de passe, la référence reste.
         assert_eq!(
-            update(&conn, &id, "exemple.org", "moi2", None).unwrap(),
+            update(&conn, &id, "exemple.org", "moi2", None, None).unwrap(),
             None
         );
         assert_eq!(load(&conn, &id).unwrap().unwrap().secret_ref, "r1");
         assert_eq!(
-            update(&conn, &id, "exemple.org", "moi2", Some("r2")).unwrap(),
+            update(&conn, &id, "exemple.org", "moi2", Some("r2"), None).unwrap(),
             Some("r1".into())
         );
+        // FTP sans chiffrement : faux par défaut, changé seulement quand il est donné.
+        assert!(!load(&conn, &id).unwrap().unwrap().allow_plain);
+        update(&conn, &id, "exemple.org", "moi2", None, Some(true)).unwrap();
+        update(&conn, &id, "exemple.org", "moi2", None, None).unwrap();
+        assert!(load(&conn, &id).unwrap().unwrap().allow_plain);
         assert_eq!(
             by_site(&conn, "exemple.org").unwrap().unwrap().username,
             "moi2"

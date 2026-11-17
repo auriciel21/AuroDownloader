@@ -10,13 +10,17 @@
 //! Authentification Basic et Digest avec les identifiants d'un site ([`auth`], F-06,
 //! SPEC §7.14).
 //!
-//! À faire : FTP, proxies (F-07), HTTP/3 (F-05).
+//! FTP et FTPS ([`ftp`], F-08, SPEC §7.22) derrière les mêmes appels ; proxy ([`proxy`], F-07).
+//!
+//! À faire : HTTP/3 (F-05).
 
 pub mod auth;
 pub mod filename;
+pub mod ftp;
 pub mod headers;
 pub mod proxy;
 pub mod reach;
+pub mod socks;
 pub mod sums;
 
 use std::collections::HashMap;
@@ -130,6 +134,37 @@ pub enum NetError {
          si le site la propose"
     )]
     AuthInsecure,
+
+    /// Réponse d'un serveur FTP (F-08) : le code seul, jamais le texte, qui peut citer le
+    /// chemin (SPEC §8.2).
+    #[error("le serveur FTP a répondu {0}{hint}", hint = ftp_hint(*.0))]
+    FtpReply(u16),
+
+    /// Connexion FTP impossible ou coupée (`connect` : à l'ouverture).
+    #[error("serveur injoignable : {text}")]
+    FtpNet { connect: bool, text: String },
+
+    /// TLS d'une connexion FTP refusé : certificat, poignée de main.
+    #[error("connexion TLS refusée : {0}")]
+    FtpTls(String),
+
+    #[error(
+        "le serveur FTP ne propose pas de chiffrement (AUTH TLS) : le mot de passe \
+         partirait en clair ; refusé, sauf « autoriser sans chiffrement » pour ce site \
+         (identifiants de sites)"
+    )]
+    FtpTlsMissing,
+}
+
+/// Sens d'un code FTP courant, pour le message.
+fn ftp_hint(code: u16) -> &'static str {
+    match code {
+        421 => " : service indisponible ou trop de connexions",
+        425 | 426 => " : connexion de données impossible ou interrompue",
+        450 | 550 => " : fichier introuvable ou accès refusé",
+        451 | 452 => " : erreur du serveur",
+        _ => "",
+    }
 }
 
 impl NetError {
@@ -161,15 +196,20 @@ impl NetError {
             NetError::Status { .. }
             | NetError::Redirect(_)
             | NetError::RedirectNotFollowed { .. }
-            | NetError::BadResponse(_) => Some("HTTP_STATUS"),
+            | NetError::BadResponse(_)
+            | NetError::FtpReply(_) => Some("HTTP_STATUS"),
             NetError::Timeout(_) | NetError::ReadTimeout(_) => Some("NET_TIMEOUT"),
-            NetError::InvalidCertificate(_) => Some("TLS_INVALID_CERT"),
+            NetError::InvalidCertificate(_) | NetError::FtpTls(_) => Some("TLS_INVALID_CERT"),
             NetError::TlsUnavailable => Some("TLS_UNAVAILABLE"),
-            NetError::Unreachable(_) | NetError::Proxy(_) => Some("NET_UNREACHABLE"),
+            NetError::Unreachable(_) | NetError::Proxy(_) | NetError::FtpNet { .. } => {
+                Some("NET_UNREACHABLE")
+            }
             NetError::FileChanged => Some("FILE_CHANGED"),
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
             NetError::AuthRequired => Some("AUTH_REQUIRED"),
-            NetError::AuthRefused | NetError::AuthInsecure => Some("AUTH_FAILED"),
+            NetError::AuthRefused | NetError::AuthInsecure | NetError::FtpTlsMissing => {
+                Some("AUTH_FAILED")
+            }
             NetError::AddressForbidden => Some("ADDRESS_FORBIDDEN"),
         }
     }
@@ -181,6 +221,9 @@ impl NetError {
                 matches!(status, 408 | 429) || (500..600).contains(status)
             }
             NetError::Timeout(_) | NetError::ReadTimeout(_) | NetError::Unreachable(_) => true,
+            // Réponses FTP 4xx : refus passager (RFC 959).
+            NetError::FtpReply(code) => (400..500).contains(code),
+            NetError::FtpNet { .. } => true,
             _ => false,
         }
     }
@@ -191,6 +234,8 @@ impl NetError {
         match self {
             NetError::Status { status, .. } => matches!(status, 429 | 503),
             NetError::Unreachable(e) => e.is_connect(),
+            NetError::FtpReply(code) => *code == 421,
+            NetError::FtpNet { connect, .. } => *connect,
             _ => false,
         }
     }
@@ -397,6 +442,9 @@ pub struct Client {
     /// De quoi fabriquer le client restreint au premier besoin, partagé par les copies.
     connect: Duration,
     roots: Arc<Vec<reqwest::Certificate>>,
+    /// FTP et FTPS (F-08) : autorités ajoutées, TLS, connexions de commande au repos ;
+    /// partagés par les copies.
+    ftp: Arc<ftp::Shared>,
 }
 
 /// Clients reqwest d'une génération du proxy.
@@ -415,7 +463,7 @@ impl Client {
 
     /// Client avec des délais choisis (tests, réglages).
     pub fn with_timeouts(connect: Duration, read: Duration) -> Result<Self, NetError> {
-        Self::build(connect, read, Vec::new())
+        Self::build(connect, read, Vec::new(), Vec::new())
     }
 
     /// Client qui ajoute aux racines du système les autorités d'un fichier PEM : serveur
@@ -432,13 +480,19 @@ impl Client {
         if !tls_available() {
             return Err(NetError::TlsUnavailable);
         }
-        Self::build(CONNECT_TIMEOUT, READ_TIMEOUT, roots)
+        // Les mêmes autorités pour FTPS, lues par rustls.
+        use rustls::pki_types::pem::PemObject as _;
+        let der = rustls::pki_types::CertificateDer::pem_slice_iter(pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| NetError::BadRootCertificates("PEM illisible"))?;
+        Self::build(CONNECT_TIMEOUT, READ_TIMEOUT, roots, der)
     }
 
     fn build(
         connect: Duration,
         read: Duration,
         roots: Vec<reqwest::Certificate>,
+        ftp_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
     ) -> Result<Self, NetError> {
         let client = Client {
             built: Arc::default(),
@@ -448,6 +502,7 @@ impl Client {
             public_only: false,
             connect,
             roots: Arc::new(roots),
+            ftp: Arc::new(ftp::Shared::new(ftp_roots)),
         };
         // Fabriqué tout de suite : une erreur se voit au démarrage.
         client.http()?;
@@ -571,6 +626,17 @@ impl Client {
         builder.build().map_err(NetError::from_reqwest)
     }
 
+    /// Contexte des connexions FTP de ce client (F-08).
+    fn ftp(&self) -> ftp::Context<'_> {
+        ftp::Context {
+            connect: self.connect,
+            read: self.read,
+            proxy: self.proxy.get(),
+            public_only: self.public_only,
+            shared: &self.ftp,
+        }
+    }
+
     /// Préparation d'une tâche (SPEC §7.1) : taille, acceptation des plages, validateurs
     /// et nom du fichier.
     ///
@@ -594,7 +660,10 @@ impl Client {
         task_headers: &[(String, String)],
         auth: Option<&Auth>,
     ) -> Result<Probe, NetError> {
-        let url = parse_url(url)?;
+        let url = parse_task_url(url)?;
+        if ftp::is_ftp(&url) {
+            return self.ftp().probe(&url, task_headers, auth).await;
+        }
         let extra = header_map(task_headers)?;
 
         let head = self.send(Method::HEAD, &url, &extra, None, auth).await?;
@@ -692,7 +761,11 @@ impl Client {
         req: &RangeRequest<'_>,
         auth: Option<&Auth>,
     ) -> Result<Body, NetError> {
-        let url = parse_url(url)?;
+        let url = parse_task_url(url)?;
+        if ftp::is_ftp(&url) {
+            let body = self.ftp().get_range(&url, task_headers, req, auth).await?;
+            return Ok(Body(Inner::Ftp(body)));
+        }
         let mut extra = header_map(task_headers)?;
         if let Some(validator) = req.if_range {
             let value = HeaderValue::from_str(validator)
@@ -717,10 +790,7 @@ impl Client {
                 }
                 match (cr.range, cr.total) {
                     (Some((first, last)), Some(_)) if first == req.first && last <= req.last => {
-                        Ok(Body {
-                            response,
-                            read: self.read,
-                        })
+                        Ok(Body::http(response, self.read))
                     }
                     _ => Err(NetError::BadResponse(
                         "plage reçue différente de la demande",
@@ -755,7 +825,14 @@ impl Client {
         expected_total: Option<u64>,
         auth: Option<&Auth>,
     ) -> Result<Body, NetError> {
-        let url = parse_url(url)?;
+        let url = parse_task_url(url)?;
+        if ftp::is_ftp(&url) {
+            let body = self
+                .ftp()
+                .get_all(&url, task_headers, expected_total, auth)
+                .await?;
+            return Ok(Body(Inner::Ftp(body)));
+        }
         let extra = header_map(task_headers)?;
         let response = self.send(Method::GET, &url, &extra, None, auth).await?;
         if response.status() != StatusCode::OK {
@@ -774,10 +851,7 @@ impl Client {
                 return Err(NetError::FileChanged);
             }
         }
-        Ok(Body {
-            response,
-            read: self.read,
-        })
+        Ok(Body::http(response, self.read))
     }
 
     /// Petit fichier (empreinte voisine, F-11) : son contenu si le serveur répond `200` avec
@@ -813,10 +887,7 @@ impl Client {
             return Ok(None);
         }
         let final_url = response.url().clone();
-        let mut body = Body {
-            response,
-            read: self.read,
-        };
+        let mut body = Body::http(response, self.read);
         let mut bytes = Vec::new();
         while let Some(chunk) = body.chunk().await? {
             if bytes.len() + chunk.len() > limit {
@@ -949,22 +1020,32 @@ pub struct RangeRequest<'a> {
     pub if_range: Option<&'a str>,
 }
 
-/// Corps d'une réponse acceptée, lu morceau par morceau.
+/// Corps d'une réponse acceptée, lu morceau par morceau : HTTP(S), ou un `RETR` FTP.
 #[derive(Debug)]
-pub struct Body {
-    response: Response,
-    read: Duration,
+pub struct Body(Inner);
+
+#[derive(Debug)]
+enum Inner {
+    Http { response: Response, read: Duration },
+    Ftp(ftp::FtpBody),
 }
 
 impl Body {
+    fn http(response: Response, read: Duration) -> Self {
+        Body(Inner::Http { response, read })
+    }
+
     /// Morceau suivant ; `None` à la fin du corps. Une coupure avant la fin annoncée par
     /// le serveur est une erreur réseau. Le délai de lecture court à partir de cet appel :
     /// le temps passé entre deux appels (attente de débit) ne compte pas.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, NetError> {
-        tokio::time::timeout(self.read, self.response.chunk())
-            .await
-            .map_err(|_| NetError::ReadTimeout(self.read))?
-            .map_err(NetError::from_reqwest)
+        match &mut self.0 {
+            Inner::Http { response, read } => tokio::time::timeout(*read, response.chunk())
+                .await
+                .map_err(|_| NetError::ReadTimeout(*read))?
+                .map_err(NetError::from_reqwest),
+            Inner::Ftp(body) => body.chunk().await,
+        }
     }
 }
 
@@ -1021,6 +1102,24 @@ pub fn status_in_detail(detail: &str) -> Option<u16> {
         .next()?
         .parse()
         .ok()
+}
+
+/// Vérifie l'adresse d'une tâche de téléchargement direct : HTTP(S), FTP ou FTPS (F-08).
+pub fn check_task_url(url: &str) -> Result<(), NetError> {
+    let parsed = parse_task_url(url)?;
+    if ftp::is_ftp(&parsed) {
+        ftp::file_path(&parsed)?;
+    }
+    Ok(())
+}
+
+/// L'adresse d'une tâche de téléchargement direct, analysée : HTTP(S), FTP ou FTPS.
+pub fn parse_task_url(url: &str) -> Result<Url, NetError> {
+    let parsed = Url::parse(url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
+    match parsed.scheme() {
+        "ftp" | "ftps" => Ok(parsed),
+        _ => parse_url(url),
+    }
 }
 
 /// Vérifie qu'une adresse est utilisable (HTTP ou HTTPS) avant de créer une tâche.

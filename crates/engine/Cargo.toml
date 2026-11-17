@@ -44,6 +44,11 @@ rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "p
 # Expressions des règles de rangement (SPEC §7.21) : temps linéaire, automate borné.
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "socks", "system-proxy"] }
+# FTP et FTPS (F-08, SPEC §7.22, module `net::ftp`) : TLS par rustls et aws-lc, comme le
+# reste du moteur ; `deprecated` : TLS implicite (`ftps://`).
+suppaftp = { version = "13.0.0", default-features = false, features = ["tokio-rustls-aws-lc-rs", "deprecated"] }
+# Certificats des serveurs FTPS vérifiés comme ceux de HTTPS ; déjà tirée par reqwest.
+rustls-platform-verifier = "0.7.1"
 # Certificat refusé dans la chaîne d'erreurs de reqwest ; serveur TLS de l'interface
 # distante (aws-lc, comme le reste du moteur).
 rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
@@ -88,6 +93,11 @@ tempfile = "3.27.0"
 # Contrat du protocole (SPEC §9.1, phase 7) : réponses et notifications validées contre les
 # schémas de `docs/protocol`. Sans résolution par le réseau.
 jsonschema = { version = "0.61.2", default-features = false }
+# Serveur FTP et FTPS de test (F-08, `testing::ftp`).
+libunftp = { version = "0.25.0", default-features = false, features = ["aws_lc_rs"] }
+unftp-sbe-fs = "0.4.1"
+unftp-core = "0.1.1"
+async-trait = "0.1.89"
 # Temps simulé pour les tests des seaux de jetons (`limit`).
 tokio = { version = "1.53.3", features = ["macros", "rt", "test-util", "time"] }
 

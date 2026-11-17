@@ -36,7 +36,7 @@ téléchargement.
   écrire), `io` (`.part`, écriture positionnée, points de contrôle, renommage final,
   espace libre et place occupée, réservation de la place : F-10), `net` (préparation, requêtes de segments avec
   `If-Range`, noms de fichier, classement des erreurs, autorités de certification
-  ajoutées par `--ca-cert` ; FTP, proxies à écrire),
+  ajoutées par `--ca-cert` ; FTP et FTPS : `net::ftp`, voir F-08 plus bas),
   `store::tasks` (tâches, sources, états de la SPEC 5.5, fin de vie), `transfer`
   (exécution d'une tâche : relie `net`, `io` et `store`, redécoupage dynamique ;
   nombre de connexions automatique). Phase 2 : `scheduler` (objet `Engine` : une boucle
@@ -153,6 +153,15 @@ téléchargement.
   `sources.bad_pieces`, `segments.source_id` noté par `transfer::pool` ; boucle de
   `transfer::execute` (`Finish::Redo`) ; tests dans `transfer/piece_tests.rs`, octets faux
   du serveur de test (`FileSite::corrupt`).
+  FTP et FTPS (F-08, SPEC 7.22, phase 7, étape 6b) : `net::ftp` (suppaftp derrière
+  `probe_as`, `get_range_as`, `get_all_as` ; `net::Body` en énumération ; `SIZE`, `MDTM`
+  validateur, `REST`, `ABOR` ; réserve des connexions de commande `ftp::Shared` ; données
+  toujours vers l'hôte de la commande ; TLS implicite ou `AUTH TLS` exigé avec un mot de passe,
+  sauf `site_logins.allow_plain`, migration 13), `net::socks` (client SOCKS5 des connexions
+  FTP), `net::parse_task_url` et `check_task_url` (HTTP(S) et FTP(S) ; `parse_url` reste
+  HTTP(S) : miroirs, analyse de liens, plugins), identifiants de l'adresse rangés au coffre à
+  l'ajout (`ftp::split_credentials`) ; tâches FTP de sorte `http`, une source, 4 connexions
+  au plus en automatique ; serveur de test `testing::ftp` (libunftp, tests seulement).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -677,7 +686,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   6. FTP, FTPS, SFTP (F-08) (décisions du 2026-11-17, SPEC 7.22 : Rust pur, prototype
   d'abord ; segments, 4 connexions au plus ; clé SSH inconnue montrée et acceptée par
   l'utilisateur ; mot de passe FTP seulement sous TLS sauf autorisation par site ; SFTP par
-  mot de passe ou clé privée ; SOCKS5 seulement ; un fichier par adresse ; Android aussi) ; 7. accessibilité (contrôles WCAG et tests
+  mot de passe ou clé privée ; SOCKS5 seulement ; un fichier par adresse ; Android aussi) ;
+  6a prototype (`experiments/ftp`, 59c6cb9), Rust 1.88 (04cf712), 6b moteur FTP et FTPS
+  écrit le 2026-11-17 ; 6c SFTP, 6d interfaces, 6e essais réels ensuite ;
+  7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri

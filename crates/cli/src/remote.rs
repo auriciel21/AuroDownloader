@@ -1561,8 +1561,13 @@ pub async fn logins(rpc: &mut Rpc) -> Result<()> {
         println!("Aucun identifiant de site.");
     }
     for item in items {
+        let plain = if item["allowPlain"] == true {
+            "  (FTP sans chiffrement autorisé)"
+        } else {
+            ""
+        };
         println!(
-            "{:<40} {}",
+            "{:<40} {}{plain}",
             item["site"].as_str().unwrap_or_default(),
             item["username"].as_str().unwrap_or_default()
         );
@@ -1583,12 +1588,13 @@ async fn login_of(rpc: &mut Rpc, site: &str) -> Result<Option<Value>> {
 }
 
 /// Enregistre ou modifie les identifiants d'un site ; `password` absent : celui déjà
-/// enregistré reste.
+/// enregistré reste. `allow_plain` : FTP sans chiffrement permis (F-08) ; absent : inchangé.
 pub async fn login_set(
     rpc: &mut Rpc,
     site: &str,
     username: &str,
     password: Option<String>,
+    allow_plain: Option<bool>,
 ) -> Result<()> {
     let mut params = json!({"site": site, "username": username});
     if let Some(existing) = login_of(rpc, site).await? {
@@ -1597,12 +1603,20 @@ pub async fn login_set(
     if let Some(password) = password {
         params["password"] = json!(password);
     }
+    if let Some(allow) = allow_plain {
+        params["allowPlain"] = json!(allow);
+    }
     let saved = rpc.call("login.set", params).await?;
     println!(
         "Identifiants de {} enregistrés ({}) ; le mot de passe est dans le coffre du système.",
         saved["site"].as_str().unwrap_or(site),
         saved["username"].as_str().unwrap_or(username)
     );
+    if saved["allowPlain"] == true {
+        println!(
+            "FTP sans chiffrement autorisé pour ce site : le mot de passe peut y passer en clair."
+        );
+    }
     Ok(())
 }
 

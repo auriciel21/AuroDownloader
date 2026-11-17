@@ -7,6 +7,8 @@
 //! Compilé pour les tests du moteur et, avec la fonctionnalité `testing`, pour ceux des
 //! autres paquets (banc de reprise de la CLI). Ne fait pas partie de l'API du moteur.
 
+#[cfg(test)]
+pub mod ftp;
 pub mod plugin_files;
 pub mod proxies;
 pub mod swarm;
@@ -153,6 +155,9 @@ fn write_reply(stream: &mut impl Write, reply: &Reply, pace: Option<Pace>) -> st
 pub struct TestTls {
     /// Certificat de l'autorité, en PEM : la racine à ajouter côté client.
     pub ca_pem: String,
+    /// Certificat du serveur et sa clé, en PEM (serveur FTPS de test, `testing::ftp`).
+    pub cert_pem: String,
+    pub key_pem: String,
     config: Arc<rustls::ServerConfig>,
 }
 
@@ -188,6 +193,8 @@ impl TestTls {
         .unwrap();
         TestTls {
             ca_pem,
+            cert_pem: cert.pem(),
+            key_pem: key.serialize_pem(),
             config: Arc::new(config),
         }
     }

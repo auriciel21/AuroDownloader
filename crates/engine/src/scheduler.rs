@@ -627,6 +627,8 @@ pub struct LoginView {
     /// Forme normalisée du site.
     pub site: String,
     pub username: String,
+    /// FTP sans chiffrement permis pour ce site (F-08, SPEC §7.22).
+    pub allow_plain: bool,
 }
 
 impl From<store::logins::LoginRow> for LoginView {
@@ -635,6 +637,7 @@ impl From<store::logins::LoginRow> for LoginView {
             id: row.id,
             site: row.site,
             username: row.username,
+            allow_plain: row.allow_plain,
         }
     }
 }
@@ -663,6 +666,9 @@ pub struct LoginChange {
     pub username: String,
     /// Obligatoire pour de nouveaux identifiants ; `None` garde le mot de passe enregistré.
     pub password: Option<String>,
+    /// FTP sans chiffrement permis pour ce site (F-08) ; `None` : inchangé (faux pour de
+    /// nouveaux identifiants).
+    pub allow_plain: Option<bool>,
 }
 
 /// Longueur maximale d'un nom d'utilisateur, en octets.
@@ -1589,7 +1595,14 @@ impl Engine {
                     break;
                 };
                 let client = self.client.clone();
-                running.spawn(async move { (i, client.probe(&url, &[]).await) });
+                // Analyse de liens : HTTP(S) seulement en v1 (décision du 2026-11-17).
+                running.spawn(async move {
+                    let probed = match net::check_url(&url) {
+                        Ok(()) => client.probe(&url, &[]).await,
+                        Err(e) => Err(e),
+                    };
+                    (i, probed)
+                });
             }
             let Some(done) = running.join_next().await else {
                 break;
@@ -3286,7 +3299,29 @@ impl Scheduler {
             }
             return self.add_media(task);
         }
-        net::check_url(&task.url)?;
+        net::check_task_url(&task.url)?;
+        if net::parse_task_url(&task.url).is_ok_and(|u| net::ftp::is_ftp(&u)) {
+            // FTP (F-08, SPEC §7.22) : une seule source en v1, sans morceaux.
+            if !task.mirrors.is_empty() || task.pieces.is_some() {
+                return Err(EngineError::BadRequest(
+                    "une tâche FTP n'a qu'une source : ni miroir ni morceaux".into(),
+                ));
+            }
+            // Identifiants écrits dans l'adresse : le mot de passe va au coffre par
+            // l'en-tête `Authorization` de la tâche, jamais en base (SPEC §5.1). Un
+            // en-tête déjà donné passe avant.
+            let (clean, found) = net::ftp::split_credentials(&task.url)?;
+            task.url = clean;
+            if let Some((user, pass)) = found
+                && !task
+                    .headers
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+            {
+                let value = net::ftp::basic_header(&user, &pass);
+                task.headers.push(("Authorization".into(), value));
+            }
+        }
         // Miroirs (SPEC §7.7) : des adresses HTTP(S), toutes différentes.
         for mirror in &task.mirrors {
             net::check_url(mirror)?;
@@ -3615,12 +3650,18 @@ impl Scheduler {
                 &site,
                 username,
                 secret.as_deref().expect("vérifié plus haut"),
+                change.allow_plain.unwrap_or(false),
             )
             .map(|id| (id, None)),
-            Some(row) => {
-                store::logins::update(&self.conn, &row.id, &site, username, secret.as_deref())
-                    .map(|old| (row.id.clone(), old))
-            }
+            Some(row) => store::logins::update(
+                &self.conn,
+                &row.id,
+                &site,
+                username,
+                secret.as_deref(),
+                change.allow_plain,
+            )
+            .map(|old| (row.id.clone(), old)),
         };
         let (id, replaced) = match saved {
             Ok(saved) => saved,
@@ -3634,6 +3675,10 @@ impl Scheduler {
             id,
             site,
             username: username.to_owned(),
+            allow_plain: change
+                .allow_plain
+                .or(existing.as_ref().map(|e| e.allow_plain))
+                .unwrap_or(false),
         })
     }
 
@@ -4804,6 +4849,7 @@ async fn reveal_site_login(
             username: login.username,
             password,
         })
+        .allowing_plain(login.allow_plain)
     }))
 }
 
@@ -4867,7 +4913,7 @@ fn unreachable_text(e: &NetError) -> String {
 /// Connexion à jeton : une adresse écrite telle quelle hors du réseau public est refusée
 /// dès l'ajout ; un nom l'est à la connexion, après sa résolution (SPEC §7.19).
 fn check_public_literal(url: &str) -> Result<(), EngineError> {
-    let parsed = net::parse_url(url)?;
+    let parsed = net::parse_task_url(url)?;
     if net::reach::literal_forbidden(&parsed) {
         return Err(EngineError::SourceUnreachable(NetError::AddressForbidden));
     }
