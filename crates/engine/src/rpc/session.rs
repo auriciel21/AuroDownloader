@@ -421,16 +421,18 @@ async fn describe(
         Event::Prepared {
             rev,
             task_id,
+            dest_dir,
             file_name,
             display_name,
             total_bytes,
             found_checksum,
         } if topics.tasks => {
             // Le nom affiché depuis la préparation : celui du fichier, ou le titre d'une
-            // vidéo.
+            // vidéo. Le dossier aussi : une règle le choisit à la préparation (§7.21).
             let mut params = json!({
                 "rev": rev,
                 "taskId": task_id,
+                "destDir": dest_dir,
                 "fileName": file_name,
                 "displayName": display_name,
                 "totalBytes": total_bytes,

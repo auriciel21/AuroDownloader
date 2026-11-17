@@ -2156,19 +2156,26 @@ async fn rules_place_tasks_added_without_a_folder() {
     assert_eq!(rules[2]["actions"]["command"]["timeoutS"], 600);
     assert_eq!(c.result("rules.list", json!({})).await, set);
 
-    // Ajoute, attend la fin, rend l'emplacement du fichier.
     // Ajoute, attend la fin (terminée, ou en échec), rend l'emplacement du fichier et la
-    // tâche.
+    // tâche. La préparation annonce le dossier de la règle avec le nom : l'interface montre
+    // l'emplacement réel sans relire la tâche.
     async fn placed(c: &mut TestClient, params: Value) -> (std::path::PathBuf, Value) {
         let id = c.result("task.add", params).await["taskId"]
             .as_str()
             .unwrap()
             .to_owned();
+        let prepared = c
+            .notification("task.updated", |p| {
+                p["taskId"] == id.as_str() && p.get("fileName").is_some_and(Value::is_string)
+            })
+            .await;
         c.notification("task.stateChanged", |p| {
             p["taskId"] == id.as_str() && (p["to"] == "completed" || p["to"] == "failed")
         })
         .await;
         let task = c.result("task.get", json!({"taskId": id})).await;
+        assert_eq!(prepared["destDir"], task["destDir"], "{prepared}");
+        assert_eq!(prepared["fileName"], task["fileName"], "{prepared}");
         let path =
             Path::new(task["destDir"].as_str().unwrap()).join(task["fileName"].as_str().unwrap());
         (path, task)

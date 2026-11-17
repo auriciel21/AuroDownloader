@@ -220,7 +220,10 @@ class Downloads(private val engine: EngineClient) {
                 )
                 if (to != "active") next = next.copy(bps = 0, etaS = null)
                 if (to != "verifying") next = next.copy(verifiedBytes = null)
-                if (next.isFinished && (next.totalBytes ?: 0) > 0) next = next.copy(doneBytes = next.totalBytes!!)
+                // Transfert fini : le dernier avancement a pu partir avant, et une commande
+                // de fin en échec garde le fichier complet (SPEC §7.21).
+                val transferred = to in setOf("verifying", "post_processing", "seeding", "completed")
+                if (transferred && (next.totalBytes ?: 0) > 0) next = next.copy(doneBytes = next.totalBytes!!)
                 if (to != "seeding") next = next.copy(uploadBps = 0)
                 tasks[task.id] = next
                 // Fichiers à leur nom final : à la fin d'un téléchargement, ou dès le partage

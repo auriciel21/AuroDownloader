@@ -10,7 +10,7 @@ import {
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
   subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
-  ruleFromFields, ruleForSet, ruleSummary, moveRule,
+  ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 import { webHost } from "./web.js";
@@ -3276,7 +3276,8 @@ function ruleText(rule) {
   const { when, then } = ruleSummary(rule);
   const kind = (k) => t(CATEGORY_LABELS[k] ?? k);
   const parts = {
-    type: (v) => t("type {0}", v.map((x) => (CATEGORY_LABELS[x] ? kind(x) : x)).join(", ")),
+    // Une extension se lit avec son point : « type Archives, .bin ».
+    type: (v) => t("type {0}", v.map((x) => (CATEGORY_LABELS[x] ? kind(x) : `.${x}`)).join(", ")),
     domain: (v) => t("site {0}", v.join(", ")),
     url: (v) => t("adresse ~ {0}", v),
     name: (v) => t("nom ~ {0}", v),
@@ -3387,9 +3388,12 @@ async function saveRule() {
     announce(t("Règle enregistrée"));
     $("rules").focus();
   } catch (e) {
-    // Le moteur dit quel champ il refuse (`rules[0] : actions.folder : …`).
-    $("rule-error").textContent = e?.message ?? String(e);
+    // Le moteur dit quel champ il refuse (`rules[0] : actions.folder : …`) : le message
+    // sans ce chemin, et le curseur dans le champ.
+    const { field, text } = ruleError(e?.message ?? String(e));
+    $("rule-error").textContent = text;
     $("rule-error").hidden = false;
+    if (field) $(field).focus();
   } finally {
     $("rule-save").disabled = false;
   }

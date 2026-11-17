@@ -279,6 +279,8 @@ function fresh(task) {
 }
 
 const FINAL = new Set(["completed", "failed", "cancelled"]);
+/// États où le transfert est fini : le fichier a tous ses octets.
+const TRANSFERRED = new Set(["verifying", "post_processing", "seeding", "completed"]);
 
 export class TaskStore {
   constructor() {
@@ -403,7 +405,9 @@ export class TaskStore {
         }
         // Octets lus par la vérification de l'empreinte : seulement pendant celle-ci.
         if (params.to !== "verifying") task.verifiedBytes = null;
-        if (params.to === "completed" && task.totalBytes > 0) task.doneBytes = task.totalBytes;
+        // Tous les octets sont là : le dernier `task.progress` a pu partir avant la fin du
+        // transfert, et une commande de fin en échec garde le fichier complet (§7.21).
+        if (TRANSFERRED.has(params.to) && task.totalBytes > 0) task.doneBytes = task.totalBytes;
         task.finishedAt = FINAL.has(params.to) ? now : null;
         result.changed.add(params.taskId);
         // Change de branche, ou de place dans un tri par état.
@@ -904,6 +908,28 @@ export function ruleSummary(rule) {
   if (a.command) then.push(["command", a.command.program]);
   else if (a.hasCommand) then.push(["hasCommand", true]);
   return { when, then };
+}
+
+/// Champs de la boîte d'une règle, selon le chemin que nomme une erreur du moteur.
+const RULE_FIELDS = {
+  "match.extensions": "rule-extensions",
+  "match.domains": "rule-domains",
+  "match.urlRegex": "rule-url-regex",
+  "match.nameRegex": "rule-name-regex",
+  "actions.folder": "rule-folder",
+  "actions.rename": "rule-rename",
+  "actions.command": "rule-program",
+  "actions.command.program": "rule-program",
+  "actions.command.args": "rule-args",
+  "actions.command.timeoutS": "rule-timeout",
+};
+
+/// Erreur du moteur sur une règle (`rules[0] : actions.folder : …`) : `text`, le message
+/// sans ce chemin technique ; `field`, l'identifiant du champ concerné, ou null.
+export function ruleError(message) {
+  const found = /^rules\[\d+\] : ([\w.]+) : ([\s\S]+)$/.exec(message ?? "");
+  if (!found) return { field: null, text: message ?? "" };
+  return { field: RULE_FIELDS[found[1]] ?? null, text: found[2] };
 }
 
 /// Liste de règles avec celle de rang `index` déplacée de `delta` (−1 : monter, +1 :

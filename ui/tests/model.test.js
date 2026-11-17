@@ -9,7 +9,7 @@ import {
   reclassifyLink,
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
-  splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, moveRule,
+  splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -68,6 +68,21 @@ test("un changement d'état remet à zéro l'avancement et annonce la fin", () =
   assert.equal(a.etaS, null);
   assert.ok(done.list, "passe d'un filtre à l'autre");
   assert.deepEqual(done.finished, [{ taskId: "a", to: "completed" }]);
+});
+
+test("une commande de fin en échec laisse l'avancement complet", () => {
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "active")]));
+  // Dernier avancement envoyé avant la fin du transfert.
+  store.apply("task.progress", { rev: 1, items: [{ taskId: "a", doneBytes: 64 }] });
+  store.apply("task.stateChanged", { rev: 2, taskId: "a", from: "active", to: "post_processing" });
+  assert.equal(store.tasks.get("a").doneBytes, 100);
+  store.apply("task.stateChanged", {
+    rev: 3, taskId: "a", from: "post_processing", to: "failed", errorCode: "POSTPROCESS_FAILED",
+  });
+  const a = store.tasks.get("a");
+  assert.equal(a.doneBytes, 100);
+  assert.equal(a.errorCode, "POSTPROCESS_FAILED");
 
   store.load(snapshot(3, [task("b", "active")]));
   const failed = store.apply("task.stateChanged", { rev: 4, taskId: "b", from: "active", to: "failed", errorCode: "NET_TIMEOUT" });
@@ -706,4 +721,22 @@ test("règles : champs de la boîte, résumé, ordre (SPEC §7.21)", () => {
   assert.deepEqual(moveRule(list, 1, 1), ["a", "c", "b"]);
   assert.equal(moveRule(list, 0, -1), list);
   assert.equal(moveRule(list, 2, 1), list);
+});
+
+test("une erreur du moteur sur une règle nomme son champ sans chemin technique", () => {
+  assert.deepEqual(
+    ruleError("rules[0] : actions.folder : un chemin absolu, ou des noms (\"..\" refusé)"),
+    { field: "rule-folder", text: "un chemin absolu, ou des noms (\"..\" refusé)" },
+  );
+  assert.deepEqual(
+    ruleError("rules[2] : actions.command.args : trop d'arguments"),
+    { field: "rule-args", text: "trop d'arguments" },
+  );
+  // Champ sans case dans la boîte : le message seul.
+  assert.deepEqual(
+    ruleError("rules[1] : match.categories : type inconnu \"x\""),
+    { field: null, text: "type inconnu \"x\"" },
+  );
+  // Message d'une autre forme : tel quel.
+  assert.deepEqual(ruleError("moteur injoignable"), { field: null, text: "moteur injoignable" });
 });

@@ -206,6 +206,8 @@ pub enum Event {
     Prepared {
         rev: u64,
         task_id: String,
+        /// Dossier : celui d'une règle de rangement est choisi à la préparation (SPEC §7.21).
+        dest_dir: String,
         file_name: Option<String>,
         /// Nom affiché : celui du fichier, ou le titre d'une vidéo (SPEC §7.17).
         display_name: String,
@@ -2474,8 +2476,9 @@ impl Scheduler {
         }
     }
 
-    /// Annonce le nom et la taille qu'une exécution vient d'enregistrer. Peut arriver après
-    /// la fin de l'exécution : l'annonce reste due, le nom servant à ouvrir le fichier.
+    /// Annonce le dossier, le nom et la taille qu'une exécution vient d'enregistrer. Peut
+    /// arriver après la fin de l'exécution : l'annonce reste due, le nom servant à ouvrir
+    /// le fichier.
     fn announce_prepared(&self, task_id: &str) {
         let Ok(task) = load_task(&self.conn, task_id) else {
             return;
@@ -2484,6 +2487,7 @@ impl Scheduler {
         self.emit(|rev| Event::Prepared {
             rev,
             task_id: task.id,
+            dest_dir: task.dest_dir,
             file_name: task.file_name,
             display_name: task.display_name,
             total_bytes: task.total_bytes,
