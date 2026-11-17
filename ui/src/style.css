@@ -7,6 +7,7 @@
   --text: #1b1d21;
   --muted: #545a63;
   --border: #c9ced6;
+  --control-border: #7c8591; /* bords des champs, listes et boutons : 3:1 (WCAG 1.4.11) */
   --row-line: #eceef2;
   --hover: #eef2f8;
   --select-bg: #d7e5fb;
@@ -14,7 +15,7 @@
   --accent: #1f5fbf;
   --accent-text: #ffffff;
   --track: #dde2e9;
-  --done: #2e7d32;
+  --done: #256b29;
   --fail: #b3261e;
   --amber: #a15c00;
   --warn-bg: #fff4d6;
@@ -44,6 +45,7 @@
     --text: #e8eaee;
     --muted: #a9b0bb;
     --border: #3a3f48;
+    --control-border: #78818f;
     --row-line: #2a2e36;
     --hover: #2a303a;
     --select-bg: #26406a;
@@ -113,7 +115,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 
 button, select {
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   padding: 3px 10px;
   min-height: 28px;
@@ -215,13 +217,13 @@ button.danger {
 }
 
 #tree ul { list-style: none; margin: 0; padding: 0; }
-#tree .branch > ul { padding-left: 22px; }
+#tree .branch > ul { padding-left: 24px; }
 #tree .branch > ul .view { width: 100%; }
 
 .tree-line { display: flex; align-items: center; }
 
 .twisty {
-  width: 22px;
+  width: 24px; /* cible de 24 px au moins (WCAG 2.5.8) */
   min-height: 24px;
   padding: 0;
   border: none;
@@ -484,7 +486,7 @@ dialog .buttons.end { justify-content: flex-end; }
   resize: vertical;
   min-height: 80px;
   padding: 4px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
 }
@@ -858,7 +860,7 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
   min-width: 38px;
   height: 28px;
   padding: 0 4px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   font-size: 12px;
 }
@@ -871,7 +873,7 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
 .window .time { display: inline-flex; align-items: center; gap: 4px; }
 .window input[type="time"] {
   padding: 2px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
 }

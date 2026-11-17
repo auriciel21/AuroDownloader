@@ -220,7 +220,11 @@ téléchargement.
   l'arborescence, types de fichier, tri des colonnes), `src/i18n.js` (français source,
   anglais), `src/host.js` (services de l'hôte), `src/main.js` (fenêtre principale :
   barre d'outils, arborescence, tableau à sélection multiple, menu contextuel,
-  propriétés, options) ; tests `node --test` dans `tests/`.
+  propriétés, options) ; tests `node --test` dans `tests/`. Accessibilité (étape 7a) :
+  `tests/axe.test.js` (balisage, chaque boîte), `tests/live.test.js` (la vraie page et un
+  faux moteur par `window.__TAURI__`, focus au clavier), `tests/contrast.test.js`
+  (couleurs de `style.css`) ; axe-core et jsdom en dépendances de développement npm
+  (`package-lock.json`, `node_modules` hors du dépôt, jamais livrés).
 - Essais manuels de l'application : `--endpoint`, `--db` et `--prefs` d'essai (elle lance
   `aurod` avec les deux premiers), jamais le moteur ni les préférences réels ; ne pas
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
@@ -411,7 +415,9 @@ cargo fmt ; cargo clippy --all-targets -- -D warnings ; cargo test
 AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai> \
   --db <essai.db> --prefs <essai.json>
 # Page : tests sans navigateur (Node 18 et plus ; installé dans la distribution WSL
-# d'essai Ubuntu-24.04) :
+# d'essai Ubuntu-24.04, avec npm 10.9.2 dans ~/tools/npm, lancé par
+# `node ~/tools/npm/bin/npm-cli.js`) ; dépendances des tests d'accessibilité d'abord :
+cd ui && npm ci --ignore-scripts && cd ..
 node --test ui/tests/
 node --test extension/tests/
 # Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
@@ -707,7 +713,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   par l'utilisateur le même jour) ; 6e essais réels faits le 2026-11-17 (CLI sous Windows,
   SOCKS5 par `real_socks5_rebex`, Android sur la tablette) ; étape 6 terminée ;
   7. accessibilité (contrôles WCAG et tests
-  automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
+  automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur ; décisions du
+  2026-11-18 : axe-core et jsdom pour la page, avec un test des contrastes à part ; tests
+  Compose instrumentés avec l'Accessibility Test Framework pour Android ; audit WCAG 2.2 AA
+  de toutes les interfaces (page, Android, extension) écrit dans `docs/ACCESSIBILITE.md`,
+  défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page faite le
+  2026-11-18, puis 7b extension, 7c Android, 7d rapport et essais réels) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en

@@ -32,3 +32,6 @@
 
 # Prototype FTP : compilation
 /experiments/ftp/target/
+
+# Page : dépendances de développement des tests (npm ci)
+/ui/node_modules/

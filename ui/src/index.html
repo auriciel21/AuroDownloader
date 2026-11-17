@@ -38,6 +38,8 @@
     <symbol id="i-links" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3.6-3.6a4 4 0 0 0-5.7-5.7l-1.4 1.4M14 10a4 4 0 0 0-5.7 0l-3.6 3.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/></symbol>
   </svg>
 
+  <header>
+  <h1 class="visually-hidden">AuroDownloader</h1>
   <div class="toolbar" role="toolbar" data-i18n-label="Actions" aria-label="Actions">
     <button type="button" id="tb-add" data-needs="add" class="tool add" aria-keyshortcuts="Control+N">
       <svg aria-hidden="true"><use href="#i-add"/></svg><span data-i18n="Ajouter">Ajouter</span></button>
@@ -76,6 +78,7 @@
     <button type="button" id="tb-logout" class="tool" data-needs="remote">
       <svg aria-hidden="true"><use href="#i-logout"/></svg><span data-i18n="Se déconnecter">Se déconnecter</span></button>
   </div>
+  </header>
 
   <div id="banner" role="status" hidden></div>
   <div id="end-action" role="alert" hidden>
@@ -472,7 +475,7 @@
 
   <dialog id="details" class="wide" aria-labelledby="details-title">
     <form method="dialog">
-      <h2 id="details-title"></h2>
+      <h2 id="details-title" data-i18n="Propriétés">Propriétés</h2>
       <dl class="facts">
         <div id="f-name"><dt data-i18n="Fichier">Fichier</dt><dd id="d-name" class="path"></dd></div>
         <div id="f-dir"><dt data-i18n="Dossier">Dossier</dt><dd id="d-dir" class="path"></dd></div>
@@ -500,7 +503,7 @@
       </section>
       <section id="d-map-section" class="map-section" aria-labelledby="d-map-title" hidden>
         <h3 id="d-map-title" data-i18n="Segments et connexions">Segments et connexions</h3>
-        <div id="d-map" class="map" role="img"></div>
+        <div id="d-map" class="map" role="img" aria-labelledby="d-map-title"></div>
         <div class="segments-box">
           <table id="d-segments">
             <thead><tr>
@@ -564,7 +567,7 @@
       </div>
       <div class="buttons">
         <span class="row">
-          <button type="button" id="d-toggle" data-needs="control"></button>
+          <button type="button" id="d-toggle" data-needs="control" data-i18n="Pause">Pause</button>
           <button type="button" id="d-cancel" data-needs="control" data-i18n="Annuler le téléchargement">Annuler le téléchargement</button>
           <button type="button" id="d-open" data-needs="files" data-i18n="Ouvrir">Ouvrir</button>
           <button type="button" id="d-reveal" data-needs="files" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
@@ -700,10 +703,10 @@
       <h2 id="diagnostic-title" data-i18n="Diagnostic">Diagnostic</h2>
       <p class="note flush" id="diagnostic-note" data-i18n="Voici tout ce que contiendra l'archive : un résumé de l'état du moteur, et ses journaux nettoyés (ni adresse, ni hôte, ni chemin, ni nom d'utilisateur, ni jeton). Rien n'est envoyé : vous l'enregistrez, puis la joignez vous-même à un signalement.">Voici tout ce que contiendra l'archive : un résumé de l'état du moteur, et ses journaux nettoyés (ni adresse, ni hôte, ni chemin, ni nom d'utilisateur, ni jeton). Rien n'est envoyé : vous l'enregistrez, puis la joignez vous-même à un signalement.</p>
       <h3 id="diag-report-title" data-i18n="Résumé">Résumé</h3>
-      <pre id="diag-report" class="diagnostic" tabindex="0" aria-labelledby="diag-report-title"></pre>
+      <pre id="diag-report" class="diagnostic" role="region" tabindex="0" aria-labelledby="diag-report-title"></pre>
       <h3 id="diag-logs-title" data-i18n="Journaux">Journaux</h3>
       <p id="diag-count" class="note flush"></p>
-      <pre id="diag-logs" class="diagnostic" tabindex="0" aria-labelledby="diag-logs-title"></pre>
+      <pre id="diag-logs" class="diagnostic" role="region" tabindex="0" aria-labelledby="diag-logs-title"></pre>
       <p id="diagnostic-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
