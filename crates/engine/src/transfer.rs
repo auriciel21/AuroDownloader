@@ -586,15 +586,15 @@ async fn execute(
             Err(stop) => return Ok(Err(stop)),
         }
     }
-    let source = primary_source(conn, task_id)?;
+    let mut source = primary_source(conn, task_id)?;
     let stored = stored_headers::load(conn, task_id)?;
-    let task_headers = match request_headers(stored, task_id, &opts.vault).await? {
+    let mut task_headers = match request_headers(stored, task_id, &opts.vault).await? {
         Ok(list) => list,
         Err(stop) => return Ok(Err(stop)),
     };
     // Identifiants du site (SPEC §7.14), sauf si la tâche porte son propre `Authorization`.
     let login = site_login(conn, &source.url, &task_headers)?;
-    let auth = match reveal_login(login, &opts.vault).await? {
+    let mut auth = match reveal_login(login, &opts.vault).await? {
         Ok(auth) => auth.map(Arc::new),
         Err(stop) => return Ok(Err(stop)),
     };
@@ -606,7 +606,19 @@ async fn execute(
             .await
         {
             Ok(probe) => probe,
-            Err(e) => return fail(Failure::Net(e)),
+            // Une référence qui ne répond pas, alors qu'un miroir répond : il la remplace
+            // (SPEC §7.7, depuis le 2026-11-17).
+            Err(e) => match promote_mirror(conn, client, task_id, &source, &task_headers, &e, opts)
+                .await?
+            {
+                Ok(Some(promoted)) => {
+                    (source, task_headers, auth) =
+                        (promoted.source, promoted.headers, promoted.auth);
+                    promoted.probe
+                }
+                Ok(None) => return fail(Failure::Net(e)),
+                Err(stop) => return Ok(Err(stop)),
+            },
         };
         // Empreinte lue dans un fichier voisin (F-11, SPEC §7.9), enregistrée avant la
         // préparation : après un arrêt entre les deux, la recherche n'est pas refaite.
@@ -851,6 +863,69 @@ async fn download(
         on_progress,
     )
     .await
+}
+
+/// Miroirs essayés au plus quand la référence ne répond pas à la préparation.
+const PROMOTE_TRIES: usize = 3;
+
+/// Un miroir devenu la référence : sa préparation, ses en-têtes et ses identifiants.
+struct Promoted {
+    source: SourceRow,
+    headers: Vec<(String, String)>,
+    auth: Option<Arc<Auth>>,
+    probe: crate::net::Probe,
+}
+
+/// La référence ne répond pas à la préparation (`error`) : les miroirs qui ne sont pas
+/// écartés, dans l'ordre, au plus [`PROMOTE_TRIES`], reçoivent la même demande, avec les
+/// seuls en-têtes permis vers eux. Le premier qui répond devient la référence
+/// (`sources::promote`) ; aucun : rien ne change (une coupure du réseau n'écarte personne),
+/// et l'échec de la référence suit son cours (SPEC §7.7, depuis le 2026-11-17).
+async fn promote_mirror(
+    conn: &mut Connection,
+    client: &Client,
+    task_id: &str,
+    reference: &SourceRow,
+    task_headers: &[(String, String)],
+    error: &NetError,
+    opts: &Options,
+) -> Step<Option<Promoted>> {
+    let candidates: Vec<SourceRow> = load_sources(conn, task_id)?
+        .into_iter()
+        .filter(|s| s.id != reference.id && s.state != SourceState::Failed)
+        .take(PROMOTE_TRIES)
+        .collect();
+    for mirror in candidates {
+        let headers = mirrors::headers_for(task_headers, &reference.url, &mirror.url);
+        let login = site_login(conn, &mirror.url, &headers)?;
+        let auth = match reveal_login(login, &opts.vault).await? {
+            Ok(auth) => auth.map(Arc::new),
+            Err(stop) => return Ok(Err(stop)),
+        };
+        let Ok(probe) = client
+            .probe_as(&mirror.url, &headers, auth.as_deref())
+            .await
+        else {
+            continue;
+        };
+        let forget =
+            sources::promote(conn, task_id, &reference.id, &mirror.id, &error.to_string())?;
+        // Les références d'abord (fait), puis les secrets (SPEC §5.1).
+        opts.vault.forget(forget);
+        tracing::warn!(
+            tache = task_id,
+            host = crate::transfer::host_of(&mirror.url).unwrap_or_default(),
+            "référence sans réponse, remplacée par un miroir"
+        );
+        let source = primary_source(conn, task_id)?;
+        return Ok(Ok(Some(Promoted {
+            source,
+            headers,
+            auth,
+            probe,
+        })));
+    }
+    Ok(Ok(None))
 }
 
 /// Miroirs d'une exécution (SPEC §7.7) : ceux déjà validés deviennent des cibles, ceux à

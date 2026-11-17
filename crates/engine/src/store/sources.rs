@@ -148,6 +148,50 @@ pub fn set_unreachable(conn: &Connection, source_id: &str, reason: &str) -> Resu
     Ok(())
 }
 
+/// Référence qui ne répond pas à la préparation, alors qu'un miroir répond (SPEC §7.7,
+/// depuis le 2026-11-17) : le miroir `next` devient la référence (son rang et celui de
+/// l'ancienne s'échangent) ; l'ancienne est écartée, avec la raison. Vers un autre hôte,
+/// la tâche ne garde que son `User-Agent` (ni cookie, ni `Referer`, ni `Authorization` ne
+/// partent ailleurs, comme vers un miroir) : renvoie les références des secrets retirés, à
+/// effacer ensuite du coffre. Une seule transaction.
+pub fn promote(
+    conn: &mut Connection,
+    task_id: &str,
+    old_id: &str,
+    next_id: &str,
+    reason: &str,
+) -> Result<Vec<String>, StoreError> {
+    let tx = conn.transaction()?;
+    let read = |id: &str| -> Result<(i64, String), StoreError> {
+        tx.query_row(
+            "SELECT rank, url FROM sources WHERE id = ?1 AND task_id = ?2",
+            params![id, task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::BadValue(format!("tâche {task_id} : source inconnue")))
+    };
+    let (old_rank, old_url) = read(old_id)?;
+    let (next_rank, next_url) = read(next_id)?;
+    tx.execute(
+        "UPDATE sources SET rank = ?2, state = 'failed', last_error = ?3,
+                fail_count = fail_count + 1
+         WHERE id = ?1",
+        params![old_id, next_rank, reason],
+    )?;
+    tx.execute(
+        "UPDATE sources SET rank = ?2 WHERE id = ?1",
+        params![next_id, old_rank],
+    )?;
+    let forget = if crate::transfer::host_of(&old_url) == crate::transfer::host_of(&next_url) {
+        Vec::new()
+    } else {
+        super::headers::keep_user_agent_in(&tx, task_id)?
+    };
+    tx.commit()?;
+    Ok(forget)
+}
+
 /// Tâche interne d'une vidéo (flux direct, SPEC §7.17) : jamais de miroir pour elle.
 pub fn is_internal(conn: &Connection, task_id: &str) -> Result<bool, StoreError> {
     Ok(conn
@@ -269,5 +313,61 @@ mod tests {
             public_only: false,
         };
         assert!(create_task_with_mirrors(&mut conn, &new, &too_many).is_err());
+    }
+
+    /// Un miroir promu référence (SPEC §7.7) : rangs échangés, ancienne référence écartée ;
+    /// vers un autre hôte, seul le `User-Agent` reste et les secrets sont rendus pour le
+    /// coffre ; vers le même hôte, tout reste.
+    #[test]
+    fn a_promoted_mirror_takes_the_rank_and_other_hosts_lose_secret_headers() {
+        use crate::store::headers::{Stored, load};
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open(&dir.path().join("auro.db")).unwrap();
+        let queue = ensure_queue(&conn, "default").unwrap();
+        let headers = [
+            ("Cookie".to_owned(), Stored::Secret("secret-1".into())),
+            ("User-Agent".to_owned(), Stored::Plain("Essai/1".into())),
+        ];
+        let new = NewTask {
+            queue_id: &queue,
+            url: "https://a.exemple/f.iso",
+            display_name: "f.iso",
+            dest_dir: "/tmp",
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            requested_name: None,
+            checksum: None,
+            headers: &headers,
+            parent_id: None,
+            public_only: false,
+        };
+        let mirrors = [
+            "https://a.exemple/miroir/f.iso".into(),
+            "https://b.exemple/f.iso".into(),
+        ];
+        let (id, reference) = create_task_with_mirrors(&mut conn, &new, &mirrors).unwrap();
+        let sources = load_sources(&conn, &id).unwrap();
+        // Même hôte : les en-têtes restent.
+        let forget = promote(&mut conn, &id, &reference, &sources[1].id, "404").unwrap();
+        assert!(forget.is_empty());
+        assert_eq!(load(&conn, &id).unwrap().len(), 2);
+        let now = load_sources(&conn, &id).unwrap();
+        assert_eq!(now[0].id, sources[1].id);
+        assert_eq!(
+            (now[1].id.as_str(), now[1].state),
+            (reference.as_str(), SourceState::Failed)
+        );
+        assert_eq!(now[1].last_error.as_deref(), Some("404"));
+        // Autre hôte : seul le User-Agent reste, le secret est rendu.
+        let forget = promote(&mut conn, &id, &sources[1].id, &sources[2].id, "404").unwrap();
+        assert_eq!(forget, ["secret-1"]);
+        let kept: Vec<String> = load(&conn, &id)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(kept, ["User-Agent"]);
+        assert_eq!(load_sources(&conn, &id).unwrap()[0].id, sources[2].id);
     }
 }

@@ -349,3 +349,112 @@ fn a_source_rests_after_three_failures_then_longer_each_time() {
     // Un échec définitif l'écarte tout de suite.
     assert_eq!(slot.on_failure(true, now), Some(SlotState::Dropped));
 }
+
+/// Tâche avec un `Referer` et un `User-Agent`, et des miroirs à valider.
+fn case_with_headers(url: &str, mirrors: &[String]) -> Case {
+    use crate::store::headers::Stored;
+    use crate::store::tasks::create_task_with_mirrors;
+    let mut conn = open_in_memory().unwrap();
+    let queue = ensure_queue(&conn, "default").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let headers = [
+        (
+            "Referer".to_owned(),
+            Stored::Plain("https://page.exemple/".into()),
+        ),
+        ("User-Agent".to_owned(), Stored::Plain("Essai/1".into())),
+    ];
+    let (task_id, _) = create_task_with_mirrors(
+        &mut conn,
+        &NewTask {
+            queue_id: &queue,
+            url,
+            display_name: &display_name_for(url),
+            dest_dir: dir.path().to_str().unwrap(),
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            requested_name: None,
+            checksum: None,
+            headers: &headers,
+            parent_id: None,
+            public_only: false,
+        },
+        mirrors,
+    )
+    .unwrap();
+    Case { conn, task_id, dir }
+}
+
+/// Une référence qui ne sert plus le fichier (404) à la préparation : le miroir qui répond
+/// la remplace (SPEC §7.7, depuis le 2026-11-17). Sur un autre hôte, la tâche ne garde que
+/// son `User-Agent`, et le `Referer` ne lui part jamais.
+#[tokio::test]
+async fn a_missing_reference_is_replaced_by_a_mirror_that_answers() {
+    const LEN: u64 = 300_000;
+    let gone = crate::testing::serve(|_| {
+        crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b"")
+    });
+    let (_m, mirror) = server(LEN, None);
+    // Le miroir par `localhost`, la référence par 127.0.0.1 : deux hôtes.
+    let mirror_url = mirror.url("/f.bin").replace("127.0.0.1", "localhost");
+    let mut case = case_with_headers(&gone.url("/f.bin"), std::slice::from_ref(&mirror_url));
+    let outcome = case.run().await;
+    assert_eq!(outcome, Outcome::Completed(case.dir.path().join("f.bin")));
+    assert_eq!(case.file("f.bin"), content(LEN as usize));
+    let sources = case.sources();
+    assert_eq!(sources[0].url, mirror_url, "le miroir est la référence");
+    let old = &sources[1];
+    assert_eq!(old.state, SourceState::Failed, "{old:?}");
+    assert!(
+        old.last_error.as_deref().is_some_and(|e| e.contains("404")),
+        "{old:?}"
+    );
+    let kept: Vec<String> = crate::store::headers::load(&case.conn, &case.task_id)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(kept, ["User-Agent"]);
+    assert!(
+        mirror
+            .requests()
+            .iter()
+            .all(|r| r.header("referer").is_none() && r.header("user-agent") == Some("Essai/1")),
+        "seul le User-Agent part vers l'autre hôte"
+    );
+}
+
+/// Ni la référence ni le miroir ne répondent (coupure du réseau) : personne n'est écarté,
+/// rien ne change, la tâche réessaiera.
+#[tokio::test]
+async fn an_outage_at_preparation_changes_no_source() {
+    let closed = |path: &str| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}{path}")
+    };
+    let mirror_url = closed("/miroir/f.bin");
+    let mut case = case_with_headers(&closed("/f.bin"), std::slice::from_ref(&mirror_url));
+    let before = case.sources();
+    let outcome = case.run().await;
+    assert!(matches!(outcome, Outcome::RetryLater { .. }), "{outcome:?}");
+    let after = case.sources();
+    assert_eq!(
+        after
+            .iter()
+            .map(|s| (&s.id, s.rank, s.state))
+            .collect::<Vec<_>>(),
+        before
+            .iter()
+            .map(|s| (&s.id, s.rank, s.state))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        crate::store::headers::load(&case.conn, &case.task_id)
+            .unwrap()
+            .len(),
+        2
+    );
+}

@@ -99,6 +99,29 @@ pub fn replace(
     Ok(old)
 }
 
+/// Ne garde que le `User-Agent` de la tâche, dans la transaction de l'appelant : sa
+/// référence passe à un autre hôte (SPEC §7.7), à qui ni cookie, ni `Referer`, ni
+/// `Authorization` ne partent. Renvoie les références des secrets retirés, à effacer
+/// ensuite du coffre (SPEC §5.1 : la référence d'abord).
+pub(super) fn keep_user_agent_in(
+    conn: &Connection,
+    task_id: &str,
+) -> Result<Vec<String>, StoreError> {
+    let refs: Vec<String> = {
+        let mut statement = conn.prepare(
+            "SELECT secret_ref FROM task_headers
+             WHERE task_id = ?1 AND secret_ref IS NOT NULL AND lower(name) <> 'user-agent'",
+        )?;
+        let refs = statement.query_map([task_id], |r| r.get(0))?;
+        refs.collect::<Result<_, _>>()?
+    };
+    conn.execute(
+        "DELETE FROM task_headers WHERE task_id = ?1 AND lower(name) <> 'user-agent'",
+        [task_id],
+    )?;
+    Ok(refs)
+}
+
 /// Retire de la base les en-têtes secrets de la tâche ; renvoie leurs références, à
 /// effacer ensuite du coffre (SPEC §5.1 : la référence d'abord).
 pub fn drop_secrets(conn: &Connection, task_id: &str) -> Result<Vec<String>, StoreError> {
