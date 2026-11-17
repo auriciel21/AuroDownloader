@@ -29,3 +29,6 @@
 
 # Plugins d'exemple : compilation
 /plugins/target/
+
+# Prototype FTP : compilation
+/experiments/ftp/target/

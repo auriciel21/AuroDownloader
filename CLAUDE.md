@@ -298,6 +298,10 @@ téléchargement.
   d'essai, `wasm32-unknown-unknown`, exports hostiles), `host` (wasmtime ou wasmi selon
   `--features`, sans eux binaire de référence), espace de travail Cargo à part ; mesures et
   décision (wasmi) dans `README.md`. Ne fait pas partie du produit.
+- `experiments/ftp` : prototype FTP, FTPS et SFTP (phase 7, étape 6a) : `proto` (suppaftp,
+  russh et russh-sftp ; `serve-ftp`, serveur libunftp local), espace de travail Cargo à
+  part ; essais réels (`test.rebex.net`, FTP anonymes) et mesures dans `README.md`. Ne fait
+  pas partie du produit.
 - `plugins` : plugins d'hébergeurs d'exemple (étape 4d), espace de travail Cargo à part
   (`wasm32-unknown-unknown`) : `archive-org` (éléments d'Internet Archive par l'interface
   `archive.org/metadata`), module `auro.rs` recopiable (interface version 1), manifeste rangé

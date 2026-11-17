@@ -1810,7 +1810,8 @@ Décisions de l'utilisateur du 2026-11-17 :
 - **Authentification SFTP** : mot de passe (coffre du système, comme les identifiants de sites, section 7.14), ou fichier de clé privée choisi par l'utilisateur (chemin retenu, phrase de passe au coffre). Pas d'agent SSH en v1.
 - **Proxy** (F-07) : SOCKS5 seulement (commande et données FTP en mode passif, SFTP) ; avec un proxy HTTP, FTP et SFTP vont en direct.
 - **Portée en v1** : un fichier par adresse (`ftp://`, `ftps://`, `sftp://`), ni dossier ni liste ; Windows, Linux et Android. Pas de miroirs FTP des Metalink, ni de liens FTP par l'extension ou l'analyse de liens en v1.
-- Mise en œuvre : à écrire, étape par étape (prototype d'abord).
+- **6a, prototype** (2026-11-17, `experiments/ftp`, mesures dans son `README.md`) : suppaftp 13, russh 0.65 et russh-sftp 3 face à de vrais serveurs (démonstration publique `test.rebex.net` en FTP, FTPS explicite et implicite, SFTP ; FTP anonymes `ftp.gnu.org` et `ftp.acc.umu.se`) et à des serveurs locaux (libunftp, OpenSSH) : fichiers justes partout ; une connexion vaut `curl` (FTP) et le client d'OpenSSH (SFTP) ; 4 connexions : environ 320 Mio/s en FTP et 210 Mio/s en SFTP en local. Enseignements : `EPSV` d'abord (IPv6), puis `PASV` ; `PBSZ 0` et `PROT P` à envoyer en TLS implicite ; refus `421` d'un serveur qui limite les connexions par adresse (3 à Umeå) ; une connexion SSH par segment ; SOCKS5 possible par des connexions ouvertes par le moteur. Licences acceptées. suppaftp 10 et plus demande Rust 1.88 (le projet déclare 1.85).
+- Mise en œuvre du moteur : à écrire (6b FTP, 6c SFTP, 6d interfaces, 6e essais réels).
 
 ## 8. Sécurité, vie privée et cadre légal
 
