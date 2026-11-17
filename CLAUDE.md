@@ -259,6 +259,7 @@ téléchargement.
   `node --test extension/tests/`), `background.js`, `content.js` (clic avec Alt, clic sur un
   lien magnet), `popup.*` et `video.js` (fenêtre de l'icône : vidéo de la page ; qualités
   recopiées de `ui/src/model.js`, comparées par les tests), `options.*`, `_locales` (en, fr).
+  Accessibilité (étape 7b) : `tests/a11y.test.cjs` (axe-core et jsdom pris dans `ui/node_modules`).
   `AURO_ENDPOINT` remplace le point d'accès par défaut (`paths::endpoint`) : un navigateur
   d'essai lancé avec lui fait parler le relais à un moteur d'essai.
 - Essais de l'extension : jamais dans les profils de navigateur de l'utilisateur. Un profil
@@ -717,8 +718,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   2026-11-18 : axe-core et jsdom pour la page, avec un test des contrastes à part ; tests
   Compose instrumentés avec l'Accessibility Test Framework pour Android ; audit WCAG 2.2 AA
   de toutes les interfaces (page, Android, extension) écrit dans `docs/ACCESSIBILITE.md`,
-  défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page faite le
-  2026-11-18, puis 7b extension, 7c Android, 7d rapport et essais réels) ; 8. dépôt
+  défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page et 7b extension
+  faites le 2026-11-18, puis 7c Android, 7d rapport et essais réels) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en

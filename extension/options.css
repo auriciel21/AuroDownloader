@@ -3,6 +3,7 @@
   --text: #1a202c;
   --muted: #5a6475;
   --line: #d5dae1;
+  --control: #7c8591; /* bords des champs et boutons : 3:1 (WCAG 1.4.11) */
   --accent: #2b6cb0;
   color-scheme: light dark;
 }
@@ -12,6 +13,7 @@
     --text: #e6e9ee;
     --muted: #a3acb9;
     --line: #3a414b;
+    --control: #78818f;
     --accent: #6ea8e6;
   }
 }
@@ -32,7 +34,7 @@ textarea { width: 100%; box-sizing: border-box; font: inherit; }
 input, textarea, button {
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control);
   border-radius: 4px;
   padding: 4px 6px;
 }
