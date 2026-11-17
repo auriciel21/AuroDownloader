@@ -206,7 +206,7 @@ async fn pieces_still_bad_after_three_rounds_fail_and_keep_the_part() {
     };
     assert_eq!(*code, "CHECKSUM_MISMATCH");
     assert!(
-        detail.contains("2 morceaux sur 10") && detail.contains("3 tours"),
+        detail.contains("2 morceaux sur 10") && detail.ends_with("après 3 tours de reprise"),
         "{detail}"
     );
     // Le `.part` reste sous son nom provisoire.

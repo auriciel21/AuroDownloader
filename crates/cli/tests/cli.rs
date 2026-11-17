@@ -37,12 +37,17 @@ async fn serve(dir: &Path, name: &str, transfer: Options) -> (Engine, String) {
         let (engine, endpoint) = (engine.clone(), endpoint.clone());
         async move { local::listen(engine, &endpoint).await }
     });
-    for _ in 0..100 {
+    // Jusqu'à 10 s : les tests de ce fichier démarrent chacun un moteur en même temps, et
+    // 2 s n'ont pas toujours suffi sous Linux (2026-11-17).
+    let mut ready = false;
+    for _ in 0..500 {
         if local::connect(&endpoint).await.is_ok() {
+            ready = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(ready, "moteur d'essai injoignable sur {endpoint}");
     (engine, endpoint)
 }
 

@@ -436,6 +436,16 @@ fn report(task: &Value) -> Result<()> {
             ),
             other => bail!("tâche en pause ({})", other.unwrap_or("?")),
         },
+        // Empreintes de morceaux d'un Metalink (F-12) : rien à corriger à la main ; une
+        // relance redonne trois tours aux seuls morceaux faux.
+        "failed" if task["errorCode"] == "CHECKSUM_MISMATCH" && task.get("pieces").is_some() => {
+            bail!(
+                "le fichier reçu ne correspond pas aux empreintes du Metalink ; il reste sous \
+                 son nom provisoire (.part). Pour réessayer les morceaux faux : auro resume \
+                 {id} ; fichier à retélécharger : auro restart {id} --delete-files. {}",
+                detail(task)
+            )
+        }
         "failed" if task["errorCode"] == "CHECKSUM_MISMATCH" => bail!(
             "le fichier reçu n'a pas l'empreinte attendue ; il reste sous son nom provisoire \
              (.part). Empreinte à corriger : auro checksum {id} … puis auro resume {id} ; \

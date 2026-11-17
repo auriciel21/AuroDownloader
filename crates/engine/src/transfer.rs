@@ -358,7 +358,8 @@ impl Failure {
                 count,
                 rounds,
             } => format!(
-                "{bad} morceaux sur {count} encore faux (empreintes {}) après {rounds} tours \n                 de reprise",
+                "{bad} morceaux sur {count} encore faux (empreintes {}) après {rounds} tours \
+                 de reprise",
                 algo.label()
             ),
             Failure::NoSpace { needed, free, keep } => format!(
