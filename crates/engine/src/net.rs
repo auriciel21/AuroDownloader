@@ -152,7 +152,8 @@ pub enum NetError {
 
     /// Clé privée SSH d'identifiants de site illisible (SFTP).
     #[error(
-        "clé privée illisible : fichier absent, format inconnu ou phrase de passe fausse \n         (identifiants de sites)"
+        "clé privée illisible : fichier absent, format inconnu ou phrase de passe fausse \
+         (identifiants de sites)"
     )]
     KeyUnreadable,
 

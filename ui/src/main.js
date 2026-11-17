@@ -3389,6 +3389,8 @@ async function loadHostKeys() {
     option.value = String(i);
     const server = key.host.includes(":") ? `[${key.host}]:${key.port}` : `${key.host}:${key.port}`;
     option.textContent = `${server} — ${key.algorithm} ${key.fingerprint}`;
+    // L'empreinte dépasse souvent la largeur de la liste : entière au survol.
+    option.title = option.textContent;
     return option;
   }));
   if (keep && Number(keep) < hostKeys.length) list.value = keep;

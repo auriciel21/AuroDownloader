@@ -344,19 +344,15 @@ async fn pick_pem(app: AppHandle) -> Option<String> {
 }
 
 /// Choix d'un fichier de clé privée SSH (SFTP, SPEC §7.22), en partant de `~/.ssh` s'il
-/// existe ; `None` si l'utilisateur renonce. Le moteur le lit lui-même, l'application jamais.
+/// existe, sinon du dossier personnel (jamais du dossier courant de l'application) ; `None`
+/// si l'utilisateur renonce. Le moteur le lit lui-même, l'application jamais.
 #[tauri::command]
 async fn pick_key(app: AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut dialog = app.dialog().file();
-    if let Some(ssh) = app
-        .path()
-        .home_dir()
-        .ok()
-        .map(|h| h.join(".ssh"))
-        .filter(|d| d.is_dir())
-    {
-        dialog = dialog.set_directory(ssh);
+    if let Ok(home) = app.path().home_dir() {
+        let ssh = home.join(".ssh");
+        dialog = dialog.set_directory(if ssh.is_dir() { ssh } else { home });
     }
     dialog.pick_file(move |file| {
         let _ = tx.send(file);

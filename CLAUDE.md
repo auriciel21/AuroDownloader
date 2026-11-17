@@ -701,7 +701,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   écrit le 2026-11-17 (13aa7a5) ; 6c moteur SFTP écrit le même jour (décisions : clé
   acceptée relance seule ses tâches, `known_hosts` jamais lu, clé privée dans les identifiants
   de sites) ; 6d interfaces écrites le même jour (clé acceptée dans les Propriétés, rubrique
-  des clés SSH ; Android : ajout et clé, sans écran d'identifiants) ; 6e essais réels ensuite ;
+  des clés SSH ; Android : ajout et clé, sans écran d'identifiants ; essai de l'interface validé
+  par l'utilisateur le même jour) ; 6e essais réels (CLI sous Windows faite le 2026-11-17 ;
+  restent Android et SOCKS5) ;
   7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

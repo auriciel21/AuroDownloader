@@ -273,7 +273,8 @@ fn tools_hint(e: anyhow::Error) -> anyhow::Error {
             e.context("outils de la vidéo absents : auro video tools --install")
         }
         Some(r) if r.code == "PLUGIN_CHOICE" => e.context(
-            "plusieurs liens sur cette page : auro plugin resolve <page>, puis auro plugin add \n             <page> --select <rangs>",
+            "plusieurs liens sur cette page : auro plugin resolve <page>, puis auro plugin add \
+             <page> --select <rangs>",
         ),
         _ => e,
     }
@@ -454,11 +455,14 @@ fn report(task: &Value) -> Result<()> {
         ),
         // SFTP (F-08) : la clé du serveur attend la décision de l'utilisateur.
         "failed" if task["errorCode"] == "HOST_KEY_UNKNOWN" => bail!(
-            "{} ; empreinte à vérifier auprès de l'administrateur du serveur, puis : auro \n             hostkey accept <serveur> <empreinte> (la tâche repartira seule) ; voir auro \n             hostkey list",
+            "{} ; empreinte à vérifier auprès de l'administrateur du serveur, puis : auro \
+             hostkey accept <serveur> <empreinte> (la tâche repartira seule) ; voir auro \
+             hostkey list",
             detail(task)
         ),
         "failed" if task["errorCode"] == "HOST_KEY_CHANGED" => bail!(
-            "{} ; si l'administrateur du serveur confirme ce changement : auro hostkey accept \n             <serveur> <empreinte> (voir auro hostkey list)",
+            "{} ; si l'administrateur du serveur confirme ce changement : auro hostkey accept \
+             <serveur> <empreinte> (voir auro hostkey list)",
             detail(task)
         ),
         "failed" if task["errorCode"] == "TOOLS_MISSING" => {

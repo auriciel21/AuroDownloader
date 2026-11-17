@@ -3990,7 +3990,8 @@ impl Scheduler {
         let keys = self.config.client.host_keys();
         let pending = keys.pending_for(host, port, fingerprint).ok_or_else(|| {
             EngineError::BadRequest(
-                "aucune clé en attente avec cette empreinte pour ce serveur : relancer la \n                 tâche pour la revoir"
+                "aucune clé en attente avec cette empreinte pour ce serveur : relancer la \
+                 tâche pour la revoir"
                     .into(),
             )
         })?;
