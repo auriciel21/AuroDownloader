@@ -668,7 +668,12 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   `post_processing` ; étape 4 terminée) ; 5. segment fautif (F-12) (décisions du
   2026-11-17 : Metalink seulement, contrôle à la fin en `verifying`, morceau redemandé de
   préférence à une autre source, source écartée à 2 morceaux faux, 3 tours puis
-  `CHECKSUM_MISMATCH`, Propriétés ; écrite le même jour, SPEC 7.9) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
+  `CHECKSUM_MISMATCH`, Propriétés ; écrite le même jour, SPEC 7.9 ; essai de l'interface et essai
+  réel validés ; bascule d'une référence muette vers un miroir, décision du même jour) ;
+  6. FTP, FTPS, SFTP (F-08) (décisions du 2026-11-17, SPEC 7.22 : Rust pur, prototype
+  d'abord ; segments, 4 connexions au plus ; clé SSH inconnue montrée et acceptée par
+  l'utilisateur ; mot de passe FTP seulement sous TLS sauf autorisation par site ; SFTP par
+  mot de passe ou clé privée ; SOCKS5 seulement ; un fichier par adresse ; Android aussi) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
