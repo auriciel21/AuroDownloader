@@ -222,6 +222,66 @@ pub fn split_largest(segments: &mut Vec<Segment>, min_size: u64) -> Option<Split
     Some(Split { from, new: new_idx })
 }
 
+/// Morceaux faux (F-12, SPEC §7.9) : dans un découpage dont tous les segments sont
+/// terminés, les plages `ranges` (premier et dernier octet, triées, disjointes) repartent de
+/// zéro en segments `pending` ; le reste garde ses octets, en segments `done`. Un segment
+/// coupé garde son numéro pour sa première partie ; les autres parties prennent des
+/// numéros neufs. `None` si un segment n'est pas terminé.
+///
+/// La couverture est conservée : chaque segment est remplacé par des parties contiguës
+/// qui le couvrent exactement.
+pub fn reopen(segments: &[Segment], ranges: &[(u64, u64)]) -> Option<Vec<Segment>> {
+    if segments
+        .iter()
+        .any(|s| s.state != SegmentState::Done || s.written != s.size())
+    {
+        return None;
+    }
+    let mut next = segments.iter().map(|s| s.idx).max()?.checked_add(1)?;
+    let mut sorted: Vec<&Segment> = segments.iter().collect();
+    sorted.sort_by_key(|s| s.start);
+    let mut out = Vec::with_capacity(segments.len() + 2 * ranges.len());
+    for s in sorted {
+        let mut parts: Vec<(u64, u64, bool)> = Vec::new();
+        let mut cursor = s.start;
+        for &(a, b) in ranges
+            .iter()
+            .filter(|(a, b)| a <= b && *a <= s.end && *b >= s.start)
+        {
+            let (a, b) = (a.max(s.start), b.min(s.end));
+            if a > cursor {
+                parts.push((cursor, a - 1, false));
+            }
+            parts.push((a, b, true));
+            cursor = b + 1;
+        }
+        if cursor <= s.end {
+            parts.push((cursor, s.end, false));
+        }
+        for (i, (start, end, again)) in parts.into_iter().enumerate() {
+            let idx = if i == 0 {
+                s.idx
+            } else {
+                let idx = next;
+                next = next.checked_add(1)?;
+                idx
+            };
+            out.push(Segment {
+                idx,
+                start,
+                end,
+                written: if again { 0 } else { end - start + 1 },
+                state: if again {
+                    SegmentState::Pending
+                } else {
+                    SegmentState::Done
+                },
+            });
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +599,71 @@ mod tests {
             );
             prop_assert!(is_detected);
         }
+
+        /// Morceaux faux (F-12) : après des redécoupages, la réouverture de morceaux pris au
+        /// hasard garde la couverture, remet à zéro exactement leurs octets, garde les
+        /// autres, et ne réutilise aucun numéro.
+        #[test]
+        fn reopening_bad_pieces_keeps_the_coverage(
+            total in 1..(1u64 << 30),
+            connections in 1..=16u32,
+            ops in prop::collection::vec(op(), 0..60),
+            piece in 1..(1u64 << 24),
+            picks in prop::collection::vec(any::<u64>(), 1..12),
+        ) {
+            let mut segments = initial_split(total, connections, MIB);
+            for op in &ops {
+                apply(&mut segments, op, MIB);
+            }
+            for s in &mut segments {
+                s.written = s.size();
+                s.state = SegmentState::Done;
+            }
+            let count = total.div_ceil(piece);
+            let mut bad: Vec<u64> = picks.iter().map(|p| p % count).collect();
+            bad.sort_unstable();
+            bad.dedup();
+            let mut ranges: Vec<(u64, u64)> = Vec::new();
+            for i in bad {
+                let (start, end) = (i * piece, ((i + 1) * piece).min(total) - 1);
+                match ranges.last_mut() {
+                    Some(last) if last.1 + 1 == start => last.1 = end,
+                    _ => ranges.push((start, end)),
+                }
+            }
+            let reopened = reopen(&segments, &ranges).expect("tout est terminé");
+            prop_assert_eq!(check_coverage(total, &reopened), Ok(()));
+            let mut seen = HashSet::new();
+            prop_assert!(reopened.iter().all(|s| seen.insert(s.idx)));
+            for s in &reopened {
+                let inside = ranges.iter().any(|&(a, b)| s.start >= a && s.end <= b);
+                let outside = ranges.iter().all(|&(a, b)| s.end < a || s.start > b);
+                prop_assert!(inside || outside, "segment à cheval : {:?}", s);
+                if inside {
+                    prop_assert_eq!((s.written, s.state), (0, SegmentState::Pending));
+                } else {
+                    prop_assert_eq!((s.written, s.state), (s.size(), SegmentState::Done));
+                }
+            }
+            let pending: u64 = reopened.iter().filter(|s| s.written == 0).map(Segment::size).sum();
+            prop_assert_eq!(pending, ranges.iter().map(|(a, b)| b - a + 1).sum::<u64>());
+        }
+    }
+
+    #[test]
+    fn reopening_needs_a_finished_split() {
+        let done = seg(0, 0, 99, 100, SegmentState::Done);
+        let busy = seg(1, 100, 199, 50, SegmentState::Active);
+        assert_eq!(reopen(&[done.clone(), busy], &[(0, 9)]), None);
+        // Un segment terminé coupé en trois : la première partie garde son numéro.
+        let parts = reopen(&[done], &[(10, 19)]).unwrap();
+        assert_eq!(
+            parts,
+            [
+                seg(0, 0, 9, 10, SegmentState::Done),
+                seg(1, 10, 19, 0, SegmentState::Pending),
+                seg(2, 20, 99, 80, SegmentState::Done),
+            ]
+        );
     }
 }

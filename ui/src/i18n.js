@@ -150,6 +150,11 @@ export const EN = {
   "{0} {1} (vérifiée)": "{0} {1} (verified)",
   "{0} {1} (lue dans {2})": "{0} {1} (read from {2})",
   "{0} {1} (lue dans {2}, vérifiée)": "{0} {1} (read from {2}, verified)",
+  // F-12 : empreintes de morceaux d'un Metalink.
+  "Morceaux": "Pieces",
+  "{0} morceaux de {1} ({2})": "{0} pieces of {1} ({2})",
+  "{0}, 1 retéléchargé": "{0}, 1 downloaded again",
+  "{0}, {1} retéléchargés": "{0}, {1} downloaded again",
   "Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)": "Look for the checksum next to the file (SHA256SUMS, .sha256…)",
   "Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.":
     "When you give none, AuroDownloader looks for the checksum published next to the file, then checks it at the end. A few more small requests to the same server.",

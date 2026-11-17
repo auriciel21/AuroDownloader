@@ -146,6 +146,13 @@ téléchargement.
   `postproc` (`finish` à la place de `complete_task`, commande lancée par l'exécution du
   planificateur, état `post_processing` durable, `POSTPROCESS_FAILED`) ; méthodes
   `rules.list`, `rules.set`.
+  Morceaux faux (F-12, SPEC 7.9, phase 7) : `pieces` (empreintes de morceaux d'un Metalink,
+  plages des morceaux faux), `io::checksum::hash_pieces` (une lecture, fichier entier
+  compris), `segmenter::reopen`, `store::pieces` (table `task_pieces`, migration 12 ;
+  `start_round` : mise en cause des sources, segments rouverts, `verifying` vers `active`),
+  `sources.bad_pieces`, `segments.source_id` noté par `transfer::pool` ; boucle de
+  `transfer::execute` (`Finish::Redo`) ; tests dans `transfer/piece_tests.rs`, octets faux
+  du serveur de test (`FileSite::corrupt`).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -456,7 +463,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
 - Noms de fichier venus du serveur : toujours par `net::filename::sanitize` (SPEC 8.1).
   Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
 - États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
-  vérifient la table de la SPEC 5.5, ou `restart_task` (retéléchargement, hors de la
+  vérifient la table de la SPEC 5.5, `store::pieces::start_round` (tour de reprise des morceaux
+  faux, F-12) ou `restart_task` (retéléchargement, hors de la
   table, SPEC 5.5). Ne jamais écrire `tasks.state` directement.
 - Fichier d'une tâche déplacé (SPEC 7.12) : seulement par `Scheduler::relocate`, journal
   `store::moves` écrit avant de toucher au disque ; la tâche ne prend son nouvel
@@ -657,8 +665,10 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   écrite le 2026-11-17, rubrique « Règles » des Options ; essai de l'interface des
   étapes 2 à 4 validé par l'utilisateur le même jour sur la variante d'essai, deux défauts
   d'affichage corrigés : dossier annoncé à la préparation, avancement complet en
-  `post_processing` ; étape 4 terminée) ; 5. segment fautif
-  (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
+  `post_processing` ; étape 4 terminée) ; 5. segment fautif (F-12) (décisions du
+  2026-11-17 : Metalink seulement, contrôle à la fin en `verifying`, morceau redemandé de
+  préférence à une autre source, source écartée à 2 morceaux faux, 3 tours puis
+  `CHECKSUM_MISMATCH`, Propriétés ; écrite le même jour, SPEC 7.9) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri

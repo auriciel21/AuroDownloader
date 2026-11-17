@@ -1007,6 +1007,19 @@ function renderDetails() {
       ? t(verified ? "{0} {1} (lue dans {2}, vérifiée)" : "{0} {1} (lue dans {2})", label, sum.value, sum.source)
       : t(verified ? "{0} {1} (vérifiée)" : "{0} {1}", label, sum.value));
   $("d-checksum").classList.toggle("warn", task.errorCode === "CHECKSUM_MISMATCH");
+  // F-12 : empreintes de morceaux d'un Metalink, et morceaux téléchargés de nouveau.
+  const pieces = detailsFull?.pieces;
+  const piecesHead = pieces
+    ? t("{0} morceaux de {1} ({2})", pieces.count, bytes(pieces.length, lang, t), ALGO_LABELS[pieces.algo] ?? pieces.algo)
+    : "";
+  set("pieces", !pieces
+    ? ""
+    : pieces.redone === 0
+      ? piecesHead
+      : pieces.redone === 1
+        ? t("{0}, 1 retéléchargé", piecesHead)
+        : t("{0}, {1} retéléchargés", piecesHead, pieces.redone));
+  $("d-pieces").classList.toggle("warn", task.errorCode === "CHECKSUM_MISMATCH");
   $("d-checksum-field").hidden = !canSetChecksum(task);
   $("d-checksum-apply").disabled = !connected;
   set("added", dateText(task.createdAt));

@@ -6,7 +6,9 @@
 //! Décisions de l'utilisateur (2026-11-11) : une tâche par fichier ; adresses triées par la
 //! priorité du fichier, le pays ignoré ; seules les adresses HTTP et HTTPS servent (torrents
 //! des `metaurl` ignorés) ; l'empreinte la plus forte du fichier entier devient celle de la
-//! tâche, les empreintes par morceau et les signatures sont ignorées en v1.
+//! tâche, les empreintes par morceau et les signatures sont ignorées en v1. Depuis le
+//! 2026-11-17 (F-12, SPEC §7.9), les empreintes de morceaux (`pieces`) les plus fortes sont
+//! gardées : seuls les morceaux faux se téléchargent de nouveau.
 //!
 //! Les noms viennent d'un tiers : chaque composante est nettoyée (SPEC §8.1), un chemin
 //! absolu ou qui remonte (`..`) écarte le fichier. Le XML est lu sans DTD ni entité autre
@@ -20,6 +22,7 @@ use quick_xml::{Reader, XmlVersion};
 
 use crate::io::checksum::{Algo, Checksum};
 use crate::net::filename::{NameRules, sanitize};
+use crate::pieces::Pieces;
 use crate::store::sources::MAX_SOURCES;
 
 /// Taille maximale d'un fichier Metalink lu (local ou distant).
@@ -71,6 +74,9 @@ pub struct MetaFile {
     pub size: Option<u64>,
     /// Empreinte la plus forte du fichier entier : SHA-256, sinon SHA-1, sinon MD5.
     pub checksum: Option<Checksum>,
+    /// Empreintes de morceaux (F-12) : les plus fortes qui conviennent à la taille annoncée ;
+    /// des empreintes de morceaux mal formées sont ignorées, pas le fichier.
+    pub pieces: Option<Pieces>,
     /// Adresses HTTP(S), de la meilleure priorité à la moins bonne, 16 au plus : la
     /// première est la référence.
     pub urls: Vec<String>,
@@ -117,6 +123,17 @@ struct RawFile {
     hashes: Vec<(String, String)>,
     /// Adresses et leur rang de tri (plus petit d'abord).
     urls: Vec<(String, u64)>,
+    /// Empreintes de morceaux, une liste par élément `pieces`.
+    pieces: Vec<RawPieces>,
+}
+
+/// Un élément `pieces` : type et longueur annoncés, empreintes avec leur rang (attribut
+/// `piece` du Metalink 3).
+#[derive(Default)]
+struct RawPieces {
+    kind: String,
+    length: Option<String>,
+    hashes: Vec<(Option<String>, String)>,
 }
 
 /// Lit un document Metalink 4 ou 3.
@@ -190,6 +207,7 @@ fn check_file(format: Format, raw: RawFile, taken: &[Vec<String>]) -> Result<Met
         ),
     };
     let checksum = best_checksum(format, &raw.hashes)?;
+    let pieces = best_pieces(&raw.pieces, size);
     // Tri stable : à priorité égale, l'ordre du document.
     let mut urls = raw.urls;
     urls.sort_by_key(|(_, rank)| *rank);
@@ -209,6 +227,7 @@ fn check_file(format: Format, raw: RawFile, taken: &[Vec<String>]) -> Result<Met
         dir,
         size,
         checksum,
+        pieces,
         dropped_urls: total - kept.len(),
         urls: kept,
     };
@@ -260,12 +279,9 @@ fn is_drive(raw: &str) -> bool {
 fn best_checksum(format: Format, hashes: &[(String, String)]) -> Result<Option<Checksum>, String> {
     let mut best: Option<Checksum> = None;
     for (kind, value) in hashes {
-        let algo = match kind.trim().to_ascii_lowercase().replace('-', "").as_str() {
-            "sha256" => Algo::Sha256,
-            "sha1" => Algo::Sha1,
-            "md5" => Algo::Md5,
-            // SHA-512 et les autres : pas encore vérifiés par le moteur.
-            _ => continue,
+        // SHA-512 et les autres : pas encore vérifiés par le moteur.
+        let Some(algo) = algo_of(kind) else {
+            continue;
         };
         let sum = Checksum::new(algo, value.trim()).map_err(|_| {
             format!(
@@ -282,6 +298,70 @@ fn best_checksum(format: Format, hashes: &[(String, String)]) -> Result<Option<C
         }
     }
     Ok(best)
+}
+
+/// Algorithme d'un type d'empreinte du document (`sha-256`, `sha256`, `SHA1`…).
+fn algo_of(kind: &str) -> Option<Algo> {
+    match kind.trim().to_ascii_lowercase().replace('-', "").as_str() {
+        "sha256" => Some(Algo::Sha256),
+        "sha1" => Some(Algo::Sha1),
+        "md5" => Some(Algo::Md5),
+        _ => None,
+    }
+}
+
+/// Les empreintes de morceaux les plus fortes qui se lisent et conviennent à la taille
+/// annoncée (F-12) ; sans taille, celles-ci seront contrôlées face à celle du serveur. Des
+/// empreintes illisibles sont ignorées : le fichier garde son empreinte entière.
+fn best_pieces(raw: &[RawPieces], size: Option<u64>) -> Option<Pieces> {
+    let mut best: Option<Pieces> = None;
+    for list in raw {
+        let Some(algo) = algo_of(&list.kind) else {
+            continue;
+        };
+        let Some(length) = list
+            .length
+            .as_deref()
+            .and_then(|l| l.trim().parse::<u64>().ok())
+        else {
+            continue;
+        };
+        // Metalink 3 : les morceaux portent leur rang ; tous, ou aucun, de 0 à n − 1.
+        let mut hashes: Vec<(Option<u64>, &str)> = list
+            .hashes
+            .iter()
+            .map(|(rank, value)| {
+                (
+                    rank.as_deref().and_then(|r| r.trim().parse().ok()),
+                    value.as_str(),
+                )
+            })
+            .collect();
+        if hashes.iter().any(|(rank, _)| rank.is_some()) {
+            hashes.sort_by_key(|(rank, _)| *rank);
+            let ranked = hashes
+                .iter()
+                .enumerate()
+                .all(|(i, (rank, _))| *rank == Some(i as u64));
+            if !ranked {
+                continue;
+            }
+        }
+        let values = hashes.iter().map(|(_, v)| v.trim().to_owned()).collect();
+        let Ok(pieces) = Pieces::new(algo, length, values) else {
+            continue;
+        };
+        if size.is_some_and(|size| !pieces.fits(size)) {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|b| strength(algo) > strength(b.algo()))
+        {
+            best = Some(pieces);
+        }
+    }
+    best
 }
 
 fn strength(algo: Algo) -> u8 {
@@ -377,6 +457,8 @@ fn read_xml(bytes: &[u8]) -> Result<(Format, Vec<RawFile>), MetalinkError> {
 enum Pending {
     Size,
     Hash(String),
+    /// Empreinte d'un morceau, avec son rang (Metalink 3).
+    PieceHash(Option<String>),
     Url(u64),
 }
 
@@ -448,8 +530,19 @@ fn open(
     };
     match local {
         "size" if parent == Some("file") => *pending = Some(Pending::Size),
-        // Une empreinte de morceau (`pieces`) n'est pas celle du fichier.
-        "hash" if parent != Some("pieces") => {
+        // Empreintes de morceaux (F-12) : sous `file` (version 4) ou `verification`
+        // (version 3).
+        "pieces" if matches!(parent, Some("file" | "verification")) => {
+            file.pieces.push(RawPieces {
+                kind: attr(e, "type")?.unwrap_or_default(),
+                length: attr(e, "length")?,
+                hashes: Vec::new(),
+            });
+        }
+        "hash" if parent == Some("pieces") => {
+            *pending = Some(Pending::PieceHash(attr(e, "piece")?));
+        }
+        "hash" => {
             *pending = Some(Pending::Hash(attr(e, "type")?.unwrap_or_default()));
         }
         // Metalink 3 : `type="bittorrent"` désigne un `.torrent`, servi en HTTP lui aussi.
@@ -498,6 +591,11 @@ fn close(
     match what {
         Pending::Size => file.size = Some(value),
         Pending::Hash(kind) => file.hashes.push((kind, value)),
+        Pending::PieceHash(rank) => {
+            if let Some(list) = file.pieces.last_mut() {
+                list.hashes.push((rank, value));
+            }
+        }
         Pending::Url(rank) => {
             if !value.is_empty() {
                 file.urls.push((value, rank));

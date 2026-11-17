@@ -116,6 +116,11 @@
                   "string",
                   "null"
                 ]
+              },
+              "badPieces": {
+                "description": "Morceaux faux envoyés (F-12) ; depuis le 2026-11-17.",
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": [
@@ -162,6 +167,42 @@
               "doneBytes"
             ]
           }
+        },
+        "pieces": {
+          "description": "Empreintes de morceaux d'un Metalink (F-12) ; depuis le 2026-11-17.",
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "length": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "algo": {
+              "enum": [
+                "sha256",
+                "sha1",
+                "md5"
+              ]
+            },
+            "redone": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "rounds": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "count",
+            "length",
+            "algo",
+            "redone",
+            "rounds"
+          ]
         },
         "plugin": {
           "type": "object",

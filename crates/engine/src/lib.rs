@@ -22,6 +22,7 @@ pub mod mirrors;
 pub mod moves;
 pub mod net;
 pub mod paths;
+pub mod pieces;
 pub mod plugins;
 pub mod postproc;
 pub mod power;

@@ -108,7 +108,8 @@ impl TaskState {
                 | (Paused, Queued | Cancelled)
                 | (RetryWait, Active | Paused | Failed | Cancelled)
                 // `paused` : arrêt pendant le calcul de l'empreinte (depuis le 2026-11-08).
-                | (Verifying, Paused | PostProcessing | Completed | Failed)
+                // `active` : morceaux faux à télécharger de nouveau (F-12, 2026-11-17).
+                | (Verifying, Active | Paused | PostProcessing | Completed | Failed)
                 // `seeding` : torrent dont la commande de fin a réussi (SPEC §7.21).
                 | (PostProcessing, Completed | Failed | Seeding)
                 | (Seeding, Completed | Cancelled)
@@ -200,6 +201,8 @@ pub struct SourceRow {
     pub fail_count: u32,
     /// Raison du dernier échec, ou du refus d'un miroir.
     pub last_error: Option<String>,
+    /// Morceaux faux envoyés (F-12, SPEC §7.9) : à 2, la source est écartée pour sa tâche.
+    pub bad_pieces: u32,
 }
 
 /// État d'une source (SPEC §5.3 et §7.7).
@@ -364,6 +367,17 @@ pub fn create_task_with_mirrors(
     new: &NewTask<'_>,
     mirrors: &[String],
 ) -> Result<(String, String), StoreError> {
+    create_task_with_pieces(conn, new, mirrors, None)
+}
+
+/// [`create_task_with_mirrors`], avec les empreintes de morceaux d'un Metalink (F-12,
+/// SPEC §7.9) enregistrées dans la même transaction.
+pub fn create_task_with_pieces(
+    conn: &mut Connection,
+    new: &NewTask<'_>,
+    mirrors: &[String],
+    pieces: Option<&crate::pieces::Pieces>,
+) -> Result<(String, String), StoreError> {
     if 1 + mirrors.len() > super::sources::MAX_SOURCES {
         return Err(StoreError::BadValue(format!(
             "{} sources au plus par tâche",
@@ -405,6 +419,9 @@ pub fn create_task_with_mirrors(
         super::sources::insert(&tx, &task_id, url, rank as u32 + 1)?;
     }
     headers::insert(&tx, &task_id, new.headers)?;
+    if let Some(pieces) = pieces {
+        super::pieces::save_in(&tx, &task_id, pieces)?;
+    }
     tx.commit()?;
     Ok((task_id, source_id))
 }
@@ -541,7 +558,7 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
 }
 
 const SOURCE_COLUMNS: &str = "id, url, accepts_ranges, etag, last_modified, content_length, \
-     rank, state, avg_bps, fail_count, last_error";
+     rank, state, avg_bps, fail_count, last_error, bad_pieces";
 
 fn raw_source(r: &Row<'_>) -> rusqlite::Result<RawSource> {
     Ok(RawSource {
@@ -556,6 +573,7 @@ fn raw_source(r: &Row<'_>) -> rusqlite::Result<RawSource> {
         avg_bps: r.get(8)?,
         fail_count: r.get(9)?,
         last_error: r.get(10)?,
+        bad_pieces: r.get(11)?,
     })
 }
 
@@ -572,6 +590,7 @@ struct RawSource {
     avg_bps: Option<i64>,
     fail_count: i64,
     last_error: Option<String>,
+    bad_pieces: i64,
 }
 
 fn source_row(raw: RawSource) -> Result<SourceRow, StoreError> {
@@ -588,6 +607,7 @@ fn source_row(raw: RawSource) -> Result<SourceRow, StoreError> {
         avg_bps: to_u64(raw.avg_bps, "débit de la source")?,
         fail_count: u32::try_from(raw.fail_count).unwrap_or(u32::MAX),
         last_error: raw.last_error,
+        bad_pieces: u32::try_from(raw.bad_pieces).unwrap_or(u32::MAX),
     })
 }
 
@@ -878,9 +898,29 @@ pub fn change_state(
         ));
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let from = check_transition(&tx, task_id, change.to)?;
+    let from = change_state_in(&tx, task_id, change)?;
+    tx.commit()?;
+    Ok(from)
+}
+
+/// Corps de [`change_state`], dans la transaction de l'appelant (cause de pause déjà
+/// contrôlée).
+pub(super) fn change_state_in(
+    tx: &Connection,
+    task_id: &str,
+    change: &Change<'_>,
+) -> Result<TaskState, StoreError> {
+    let from = check_transition(tx, task_id, change.to)?;
     let to = change.to;
     let (code, detail) = change.error.unzip();
+    // Une relance manuelle redonne ses tours aux morceaux faux (F-12, SPEC §7.9), comme
+    // ses tentatives à la tâche.
+    if to == TaskState::Queued {
+        tx.execute(
+            "UPDATE task_pieces SET rounds = 0 WHERE task_id = ?1",
+            [task_id],
+        )?;
+    }
     tx.execute(
         "UPDATE tasks SET
            state = ?2, pause_reason = ?3, error_code = ?4, error_detail = ?5,
@@ -901,7 +941,6 @@ pub fn change_state(
             now_ms()
         ],
     )?;
-    tx.commit()?;
     Ok(from)
 }
 
@@ -1031,8 +1070,14 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
     tx.execute("DELETE FROM task_files WHERE task_id = ?1", [task_id])?;
     tx.execute(
         "UPDATE sources SET state = 'unknown', accepts_ranges = NULL, etag = NULL,
-           last_modified = NULL, content_length = NULL, fail_count = 0, last_error = NULL
+           last_modified = NULL, content_length = NULL, fail_count = 0, last_error = NULL,
+           bad_pieces = 0
          WHERE task_id = ?1",
+        [task_id],
+    )?;
+    // Morceaux faux (F-12) : un nouveau téléchargement, ses tours et son compte repartent.
+    tx.execute(
+        "UPDATE task_pieces SET rounds = 0, redone = 0 WHERE task_id = ?1",
         [task_id],
     )?;
     tx.execute(

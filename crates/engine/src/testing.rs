@@ -382,6 +382,12 @@ pub struct FileSite {
     /// Décalage du contenu servi : le même fichier, mais d'autres octets (miroir qui sert
     /// un autre fichier de même taille, SPEC §7.7) ; 0 par défaut.
     pub shift: u64,
+    /// Octets servis faux (morceaux faux, F-12) : chacun est inversé dans les
+    /// `corrupt_responses` prochaines réponses `GET` qui en contiennent un.
+    pub corrupt: Vec<u64>,
+    pub corrupt_responses: usize,
+    /// Plages servies aux requêtes `GET` (premier et dernier octet), dans l'ordre.
+    pub served: Vec<(u64, u64)>,
 }
 
 impl FileSite {
@@ -400,6 +406,9 @@ impl FileSite {
             neighbor_requests: Vec::new(),
             strict_if_range: false,
             shift: 0,
+            corrupt: Vec::new(),
+            corrupt_responses: 0,
+            served: Vec::new(),
         }
     }
 }
@@ -495,6 +504,7 @@ pub fn file_handler(
 ) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
     let cuts_done = AtomicUsize::new(0);
     let busy_done = AtomicUsize::new(0);
+    let corrupt_done = AtomicUsize::new(0);
     move |r: &Request| {
         let mut site = site.lock().unwrap();
         if is_neighbor(&r.path) {
@@ -596,11 +606,33 @@ pub fn file_handler(
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
-        let body = if r.method == "HEAD" {
+        let mut body = if r.method == "HEAD" {
             Body::Bytes(Vec::new())
         } else {
             body
         };
+        // Plages servies, et octets faux (F-12).
+        if let Body::Generated { first, len } = body
+            && len > 0
+        {
+            let start = first - site.shift;
+            let end = start + len - 1;
+            site.served.push((start, end));
+            let hits: Vec<u64> = site
+                .corrupt
+                .iter()
+                .copied()
+                .filter(|b| (start..=end).contains(b))
+                .collect();
+            if !hits.is_empty() && corrupt_done.load(Ordering::SeqCst) < site.corrupt_responses {
+                corrupt_done.fetch_add(1, Ordering::SeqCst);
+                let mut bytes = content_range(first, len as usize);
+                for b in hits {
+                    bytes[(b - start) as usize] ^= 0xFF;
+                }
+                body = Body::Bytes(bytes);
+            }
+        }
         let cut = range.is_some()
             && r.method == "GET"
             && cuts_done.load(Ordering::SeqCst) < site.cut_responses;

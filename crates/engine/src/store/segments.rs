@@ -301,6 +301,72 @@ pub fn reset_segments(
     Ok(())
 }
 
+/// Source qui télécharge le segment `idx` (SPEC §7.7) : notée quand une connexion le
+/// prend ; la dernière l'emporte. Sert à reconnaître la source d'un morceau faux (F-12).
+pub fn set_source(
+    conn: &Connection,
+    task_id: &str,
+    idx: u32,
+    source_id: &str,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE segments SET source_id = ?3 WHERE task_id = ?1 AND idx = ?2",
+        params![task_id, idx, source_id],
+    )?;
+    Ok(())
+}
+
+/// Sources notées des segments qui touchent les octets `start` à `end` (inclus), sans
+/// doublon.
+pub fn sources_over(
+    conn: &Connection,
+    task_id: &str,
+    start: u64,
+    end: u64,
+) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT source_id FROM segments
+         WHERE task_id = ?1 AND source_id IS NOT NULL
+           AND start_offset <= ?3 AND end_offset >= ?2
+         ORDER BY source_id",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            task_id,
+            to_sql_int(start, "début")?,
+            to_sql_int(end, "fin")?
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Morceaux faux (F-12, SPEC §7.9), dans la transaction de l'appelant : les plages
+/// `ranges` d'un découpage terminé repartent de zéro ([`segmenter::reopen`]), couverture
+/// vérifiée. Renvoie le nombre de segments à télécharger.
+pub(super) fn reopen_in(
+    conn: &Connection,
+    task_id: &str,
+    ranges: &[(u64, u64)],
+) -> Result<usize, StoreError> {
+    let segments = load_segments(conn, task_id)?;
+    let reopened = segmenter::reopen(&segments, ranges).ok_or_else(|| {
+        StoreError::BadValue(format!(
+            "tâche {task_id} : morceaux à reprendre dans un découpage inachevé"
+        ))
+    })?;
+    clear(conn, task_id)?;
+    for s in &reopened {
+        insert_segment(conn, task_id, s)?;
+    }
+    check_task_coverage(conn, task_id)?;
+    refresh_done_bytes(conn, task_id)?;
+    Ok(reopened
+        .iter()
+        .filter(|s| s.state == SegmentState::Pending)
+        .count())
+}
+
 /// Retire tous les segments d'une tâche, dans la transaction de l'appelant : fin d'une
 /// tâche (SPEC §5.6, règle 4) ou retéléchargement. La règle 2 ne s'applique plus : la
 /// tâche n'a plus de taille enregistrée, ou elle est finie.

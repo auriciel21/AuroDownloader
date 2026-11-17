@@ -141,11 +141,7 @@ pub fn hash_file(
     mut on_read: impl FnMut(u64) -> bool,
 ) -> io::Result<Option<String>> {
     let mut file = File::open(path)?;
-    let mut hasher: Box<dyn DynHasher> = match algo {
-        Algo::Sha256 => Box::new(Sha256::new()),
-        Algo::Sha1 => Box::new(Sha1::new()),
-        Algo::Md5 => Box::new(Md5::new()),
-    };
+    let mut hasher = hasher(algo);
     let mut buf = vec![0u8; READ_SIZE];
     let mut done = 0u64;
     loop {
@@ -162,6 +158,79 @@ pub fn hash_file(
         }
     }
     Ok(Some(hasher.hex()))
+}
+
+/// Empreintes d'une lecture de [`hash_pieces`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PieceHashes {
+    /// Une par morceau, dans l'ordre, en hexadécimal minuscule.
+    pub pieces: Vec<String>,
+    /// Celle du fichier entier, si elle était demandée.
+    pub whole: Option<String>,
+}
+
+fn hasher(algo: Algo) -> Box<dyn DynHasher> {
+    match algo {
+        Algo::Sha256 => Box::new(Sha256::new()),
+        Algo::Sha1 => Box::new(Sha1::new()),
+        Algo::Md5 => Box::new(Md5::new()),
+    }
+}
+
+/// Empreintes `piece_algo` des morceaux de `piece_len` octets du fichier `path` (F-12,
+/// SPEC §7.9), et celle du fichier entier par `whole`, en une seule lecture. `on_read`
+/// comme pour [`hash_file`] ; arrêté, le résultat est `Ok(None)`.
+pub fn hash_pieces(
+    path: &Path,
+    piece_algo: Algo,
+    piece_len: u64,
+    whole: Option<Algo>,
+    mut on_read: impl FnMut(u64) -> bool,
+) -> io::Result<Option<PieceHashes>> {
+    assert!(piece_len > 0, "longueur de morceau nulle");
+    let mut file = File::open(path)?;
+    let mut whole = whole.map(hasher);
+    let mut piece = hasher(piece_algo);
+    // Octets du morceau en cours déjà lus.
+    let mut in_piece = 0u64;
+    let mut pieces = Vec::new();
+    let mut buf = vec![0u8; READ_SIZE];
+    let mut done = 0u64;
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if let Some(h) = whole.as_mut() {
+            h.feed(&buf[..n]);
+        }
+        let mut rest = &buf[..n];
+        while !rest.is_empty() {
+            let room = usize::try_from(piece_len - in_piece).unwrap_or(usize::MAX);
+            let take = room.min(rest.len());
+            piece.feed(&rest[..take]);
+            in_piece += take as u64;
+            rest = &rest[take..];
+            if in_piece == piece_len {
+                pieces.push(std::mem::replace(&mut piece, hasher(piece_algo)).hex());
+                in_piece = 0;
+            }
+        }
+        done += n as u64;
+        if !on_read(done) {
+            return Ok(None);
+        }
+    }
+    // Le dernier morceau, plus court.
+    if in_piece > 0 {
+        pieces.push(piece.hex());
+    }
+    Ok(Some(PieceHashes {
+        pieces,
+        whole: whole.map(|h| h.hex()),
+    }))
 }
 
 /// Les trois algorithmes derrière une même interface.
@@ -271,5 +340,41 @@ mod tests {
         assert_eq!(full, expected);
         // Arrêt demandé après la première lecture.
         assert_eq!(hash_file(&path, Algo::Sha256, |_| false).unwrap(), None);
+    }
+
+    /// Morceaux à cheval sur les lectures, plus courts ou plus longs qu'elles, et dernier
+    /// morceau plus court : chacun a l'empreinte de ses octets, le fichier la sienne.
+    #[test]
+    fn pieces_are_hashed_in_one_read_with_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pieces");
+        let data: Vec<u8> = (0..2 * READ_SIZE + 1000).map(|i| (i % 253) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let sha1 = |bytes: &[u8]| -> String {
+            Sha1::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        for len in [1000u64, 300_000, READ_SIZE as u64, 3 * READ_SIZE as u64] {
+            let got = hash_pieces(&path, Algo::Sha1, len, Some(Algo::Md5), |_| true)
+                .unwrap()
+                .unwrap();
+            let expected: Vec<String> = data.chunks(len as usize).map(sha1).collect();
+            assert_eq!(got.pieces, expected, "morceaux de {len} octets");
+            let md5: String = Md5::digest(&data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(got.whole, Some(md5));
+        }
+        let alone = hash_pieces(&path, Algo::Sha1, 1000, None, |_| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(alone.whole, None);
+        assert_eq!(
+            hash_pieces(&path, Algo::Sha1, 1000, None, |_| false).unwrap(),
+            None
+        );
     }
 }

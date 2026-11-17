@@ -3359,6 +3359,15 @@ async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
     let reference = site(LEN);
     let mirror = site(LEN);
     let sum = crate::testing::content_sha256(LEN);
+    // Empreintes MD5 de morceaux de 100 000 octets (F-12) pour le second fichier.
+    let pieces: String = (0..3u64)
+        .map(|i| {
+            use md5::Digest as _;
+            let digest = md5::Md5::digest(crate::testing::content_range(i * 100_000, 100_000));
+            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            format!("<hash>{hex}</hash>")
+        })
+        .collect();
     // Deux fichiers (le second dans un sous-dossier), un troisième écarté (il remonte).
     let doc = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3369,7 +3378,10 @@ async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
     <url priority="2">{}</url>
     <url priority="1">{}</url>
   </file>
-  <file name="sous/b.bin"><url>{}</url></file>
+  <file name="sous/b.bin">
+    <pieces type="md5" length="100000">{pieces}</pieces>
+    <url>{}</url>
+  </file>
   <file name="../c.bin"><url>{}</url></file>
 </metalink>"#,
         mirror.url("/miroir/a.bin"),
@@ -3473,6 +3485,15 @@ async fn a_metalink_gives_one_task_per_file_with_its_mirrors_and_checksum() {
             &json!(reference.url("/a.bin")),
             &json!(mirror.url("/miroir/a.bin"))
         ]
+    );
+    assert!(first.get("pieces").is_none(), "{first}");
+    assert_eq!(first["sources"][1]["badPieces"], 0, "{first}");
+    // Le second fichier garde ses empreintes de morceaux, toutes justes (F-12).
+    let second = c.result("task.get", json!({"taskId": ids[1]})).await;
+    assert_eq!(
+        second["pieces"],
+        json!({"count": 3, "length": 100_000, "algo": "md5", "redone": 0, "rounds": 0}),
+        "{second}"
     );
     // Même clé : les mêmes tâches, rien de nouveau.
     let again = c.result("metalink.add", add).await;

@@ -1188,6 +1188,8 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             headers: p.string_map("headers")?,
             file_name: p.str("fileName")?,
             checksum: p.checksum("checksum")?.flatten(),
+            // Seulement d.un Metalink (`metalink.add`, F-12).
+            pieces: None,
             torrent,
             media,
             mirrors,
@@ -1433,6 +1435,7 @@ async fn metalink_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             file_name: Some(file.name.clone()),
             sub_dir: prefix.iter().chain(&file.dir).cloned().collect(),
             checksum: file.checksum.clone(),
+            pieces: file.pieces.clone(),
             // Une clé par fichier : un ajout répété rend les mêmes tâches.
             idempotency_key: idempotency_key.as_ref().map(|k| format!("{k}#{index}")),
             ..base.clone()
@@ -1665,9 +1668,22 @@ fn details_json(d: &TaskDetails) -> Value {
                     "avgBps": s.avg_bps,
                     "failCount": s.fail_count,
                     "lastError": s.last_error,
+                    // Morceaux faux envoyés (F-12, depuis le 2026-11-17).
+                    "badPieces": s.bad_pieces,
                 })
             })
             .collect();
+    }
+    // Empreintes de morceaux d'un Metalink (F-12, SPEC §7.9, depuis le 2026-11-17) :
+    // nombre, longueur, algorithme, morceaux retéléchargés et tours depuis la relance.
+    if let Some(p) = &d.pieces {
+        task["pieces"] = json!({
+            "count": p.pieces.count(),
+            "length": p.pieces.length(),
+            "algo": p.pieces.algo().as_sql(),
+            "redone": p.redone,
+            "rounds": p.rounds,
+        });
     }
     // Fichiers d'un torrent (SPEC §7.16) ; `doneBytes` n'est qu'une indication.
     if let Some(files) = &d.files {

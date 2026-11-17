@@ -65,6 +65,83 @@ fn metalink_4_sources_by_priority_with_the_strongest_checksum() {
     assert_eq!(f.dropped_urls, 1);
 }
 
+/// Empreintes de morceaux (F-12, SPEC §7.9) : les plus fortes qui se lisent et conviennent
+/// à la taille ; rangs du Metalink 3 remis dans l'ordre ; rien d'illisible ne fait écarter
+/// le fichier.
+#[test]
+fn piece_checksums_are_kept_when_they_fit_the_file() {
+    let p = |c: char, n: usize| std::iter::repeat_n(c, n).collect::<String>();
+    let doc = v4(&format!(
+        r#"<file name="a.bin">
+    <size>2500</size>
+    <pieces length="1000" type="md5"><hash>{a}</hash><hash>{b}</hash><hash>{c}</hash></pieces>
+    <pieces length="1000" type="sha-1"><hash>{d}</hash><hash>{e}</hash><hash>{f}</hash></pieces>
+    <pieces length="1000" type="sha-256"><hash>{g}</hash><hash>{g}</hash></pieces>
+    <url>https://a.example/a.bin</url>
+  </file>
+  <file name="b.bin">
+    <size>2500</size>
+    <hash type="sha-256">{SHA256}</hash>
+    <pieces length="1000" type="sha-1"><hash>pas une empreinte</hash><hash>{d}</hash><hash>{d}</hash></pieces>
+    <url>https://a.example/b.bin</url>
+  </file>
+  <file name="c.bin">
+    <pieces length="7" type="sha-512"><hash>{h}</hash></pieces>
+    <pieces length="7" type="md5"><hash>{a}</hash><hash>{b}</hash></pieces>
+    <url>https://a.example/c.bin</url>
+  </file>"#,
+        a = p('a', 32),
+        b = p('b', 32),
+        c = p('c', 32),
+        d = p('d', 40),
+        e = p('e', 40),
+        f = p('f', 40),
+        g = p('0', 64),
+        h = p('1', 128),
+    ));
+    let m = parse(doc.as_bytes()).unwrap();
+    assert_eq!(names(&m), ["a.bin", "b.bin", "c.bin"]);
+    // SHA-256 n'a que deux morceaux pour 2500 octets : SHA-1, la plus forte qui convient.
+    let a = m.files[0].pieces.as_ref().unwrap();
+    assert_eq!((a.algo(), a.length(), a.count()), (Algo::Sha1, 1000, 3));
+    assert_eq!(a.hashes()[1], p('e', 40));
+    // Une empreinte illisible : morceaux ignorés, le fichier et son empreinte restent.
+    assert_eq!(m.files[1].pieces, None);
+    assert!(m.files[1].checksum.is_some());
+    // Sans taille annoncée : gardées (la taille du serveur décidera) ; SHA-512 inconnue.
+    let c = m.files[2].pieces.as_ref().unwrap();
+    assert_eq!((c.algo(), c.count()), (Algo::Md5, 2));
+
+    let v3 = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<metalink version="3.0" xmlns="http://www.metalinker.org/">
+ <files>
+  <file name="ordre.iso">
+   <size>20</size>
+   <verification>
+    <pieces length="10" type="sha1"><hash piece="1">{e}</hash><hash piece="0">{d}</hash></pieces>
+   </verification>
+   <resources><url type="http">http://a.example/ordre.iso</url></resources>
+  </file>
+  <file name="trou.iso">
+   <size>20</size>
+   <verification>
+    <pieces length="10" type="sha1"><hash piece="0">{d}</hash><hash piece="2">{e}</hash></pieces>
+   </verification>
+   <resources><url type="http">http://a.example/trou.iso</url></resources>
+  </file>
+ </files>
+</metalink>"#,
+        d = p('d', 40),
+        e = p('e', 40),
+    );
+    let m = parse(v3.as_bytes()).unwrap();
+    let ordered = m.files[0].pieces.as_ref().unwrap();
+    assert_eq!(ordered.hashes(), [p('d', 40), p('e', 40)]);
+    // Un rang manquant : ignorées.
+    assert_eq!(m.files[1].pieces, None);
+}
+
 #[test]
 fn metalink_3_by_preference_without_torrent_addresses() {
     let doc = format!(
@@ -104,6 +181,8 @@ fn metalink_3_by_preference_without_torrent_addresses() {
     );
     // Le `.torrent` et FTP sont écartés par leur `type`, avant d'être comptés.
     assert_eq!(f.dropped_urls, 0);
+    // Un seul morceau de 1024 octets pour 4096 : ne convient pas, ignoré (F-12).
+    assert_eq!(f.pieces, None);
     // Version 3 sans espace de noms : reconnue par l'attribut.
     let bare = doc.replace(r#" xmlns="http://www.metalinker.org/""#, "");
     assert_eq!(parse(bare.as_bytes()).unwrap().format, Format::V3);

@@ -623,6 +623,20 @@ ALTER TABLE rules ADD COLUMN name TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN rule_base TEXT;
 ALTER TABLE tasks ADD COLUMN rule_id TEXT;
 
+-- Migration 0012 (2026-11-17, section 7.9, F-12) : empreintes de morceaux d'un Metalink,
+-- mises bout à bout en hexadécimal ; tours de reprise depuis la dernière relance (3 au
+-- plus) et morceaux retéléchargés en tout ; morceaux faux envoyés par une source (à 2,
+-- elle est écartée pour sa tâche).
+CREATE TABLE task_pieces (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  algo    TEXT NOT NULL CHECK (algo IN ('sha256', 'sha1', 'md5')),
+  length  INTEGER NOT NULL CHECK (length > 0),
+  hashes  TEXT NOT NULL,
+  rounds  INTEGER NOT NULL DEFAULT 0,
+  redone  INTEGER NOT NULL DEFAULT 0
+);
+ALTER TABLE sources ADD COLUMN bad_pieces INTEGER NOT NULL DEFAULT 0;
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -638,7 +652,7 @@ CREATE INDEX idx_event_log_task    ON event_log (task_id, ts);
 | `active` | Des connexions transfèrent des données | `paused`, `retry_wait`, `verifying`, `seeding`, `post_processing` (fusion des flux d'une vidéo, depuis le 2026-11-09, section 7.17), `failed`, `cancelled` |
 | `paused` | Arrêtée, avec une cause dans `pause_reason` | `queued`, `cancelled` |
 | `retry_wait` | Échec temporaire, nouvelle tentative à `next_retry_at` | `active`, `paused`, `failed`, `cancelled` |
-| `verifying` | Vérification de l'empreinte du fichier complet | `paused`, `post_processing`, `completed`, `failed` |
+| `verifying` | Vérification de l'empreinte du fichier complet | `active` (morceaux faux à télécharger de nouveau, section 7.9, depuis le 2026-11-17), `paused`, `post_processing`, `completed`, `failed` |
 | `post_processing` | Rangement, renommage, extraction, commande externe | `completed`, `failed`, `seeding` (torrent dont la commande de fin a réussi, section 7.21, depuis le 2026-11-16) |
 
 Une tâche `post_processing` interrompue par un arrêt du moteur reprend au démarrage : sa fusion recommence (section 7.17), ou sa commande de fin (section 7.21). Pause et annulation n'y font rien : le fichier est fait, la fusion ou la commande va jusqu'au bout (ou jusqu'à son délai).
@@ -722,7 +736,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `engine.shutdown` | `graceful` | Arrêt après sauvegarde de l'état |
 | `task.add` | `sources[]`, `queueId`, `destDir`, `subDir`, `fileName`, `maxConnections`, `speedLimitBps`, `checksum`, `headers`, `startPaused`, `idempotencyKey`, `plugin` (faux : l'adresse telle quelle même pour un site d'un plugin, section 7.20) | `taskId` |
 | `task.addBatch` | `items[]` de paramètres `task.add` (1 000 au plus) | `tasks[]` (`index`, `taskId`), `errors[]` (`index`, `code`, `message`) |
-| `task.get` | `taskId`, `include` (`segments`, `sources`, `files`) | Tâche complète ; pour une tâche venue d'un plugin, `plugin` : `page`, `pluginId`, `name` (null si le plugin a été retiré) (section 7.20, depuis le 2026-11-12) |
+| `task.get` | `taskId`, `include` (`segments`, `sources`, `files`) | Tâche complète ; pour une tâche venue d'un plugin, `plugin` : `page`, `pluginId`, `name` (null si le plugin a été retiré) (section 7.20, depuis le 2026-11-12) ; pour une tâche aux empreintes de morceaux, `pieces` : `count`, `length`, `algo`, `redone` (morceaux retéléchargés), `rounds` (tours depuis la dernière relance) ; chaque source a `badPieces` (section 7.9, depuis le 2026-11-17) |
 | `task.list` | `queueId`, `states[]`, `limit`, `cursor` | `items[]`, `nextCursor`, `rev` |
 | `task.pause` / `task.resume` | `taskIds[]` | Liste des tâches modifiées |
 | `task.cancel` | `taskIds[]`, `deleteFiles` | Liste des tâches modifiées |
@@ -1210,7 +1224,19 @@ Déroulement (F-11, depuis le 2026-11-08) :
   - Choix du 2026-11-08, confirmés par l'utilisateur le même jour : réglage activé par défaut ; requêtes sans cookies ni identifiants ; fichiers cherchés à côté de l'adresse de la tâche seulement ; empreinte voisine oubliée au retéléchargement.
 - **Pas encore** : la vérification d'un fichier déjà terminé ; d'autres noms de listes (`sha256sum.txt`, `CHECKSUMS`) et SHA-512.
 
-Si des empreintes par segment existent (torrent, Metalink), chaque segment est contrôlé dès qu'il est terminé et seul le segment fautif est téléchargé de nouveau (F-12).
+Si des empreintes par segment existent (torrent, Metalink), seul le segment fautif est téléchargé de nouveau (F-12). Les torrents le font déjà, morceau par morceau (section 7.16). Pour un Metalink qui publie des empreintes de morceaux (`pieces`), décisions de l'utilisateur du 2026-11-17 :
+- **Moment** : à la fin, pendant `verifying`, en une seule lecture du `.part` (pas pendant le téléchargement).
+- **Morceau faux** : seuls ses octets sont retéléchargés, de préférence depuis une autre source que celle qui l'a envoyé, puis le fichier est revérifié. Une source qui a envoyé 2 morceaux faux est écartée pour cette tâche, comme un miroir refusé (section 7.7).
+- **Limite** : 3 tours « retéléchargement des morceaux faux, puis vérification » ; ensuite, échec `CHECKSUM_MISMATCH`, le `.part` gardé sous son nom provisoire, comme une empreinte du fichier différente.
+- **Portée** : les empreintes de morceaux viennent seulement d'un Metalink, rien de nouveau dans `task.add` ni dans « Ajouter ». Les Propriétés montrent le nombre de morceaux, et combien ont été retéléchargés.
+- **Mise en œuvre** (étape 5 de la phase 7, 2026-11-17) :
+  - Lecture : `pieces` sous `file` (Metalink 4) ou `verification` (Metalink 3, rangs `piece` remis dans l'ordre, tous de 0 à n − 1). Les plus fortes (SHA-256, SHA-1, MD5) qui se lisent et dont le nombre convient à la taille annoncée ; sinon ignorées, sans écarter le fichier ni son empreinte entière. Enregistrées avec la tâche, dans la même transaction (table `task_pieces`, migration 12, section 5.2). Seulement par `metalink.add`.
+  - Vérification : une seule lecture du `.part` donne l'empreinte de chaque morceau et, si la tâche en a une, celle du fichier. Des empreintes dont le nombre ne convient pas à la taille reçue sont ignorées (l'empreinte entière seule).
+  - Tour de reprise, en une transaction : compte des tours et des morceaux, sources mises en cause, segments rouverts sur les morceaux faux (les octets autour restent, section 5.6, règle 2), passage de `verifying` à `active` (section 5.5). Le téléchargement reprend aussitôt, dans la même exécution, puis le fichier se vérifie de nouveau. Un arrêt avant ce tour laisse la tâche en `verifying` (la vérification se refait) ; après, en `active` avec ses morceaux à télécharger.
+  - Source mise en cause : le moteur note la source de chaque segment quand une connexion le prend (`segments.source_id`). Un morceau faux compte contre la source qui l'a envoyé seule (`sources.bad_pieces`) ; un morceau venu de plusieurs sources ne met aucune d'elles en cause. Une nouvelle connexion va de préférence à une source qui a envoyé le moins de morceaux faux ; à 2, la source passe `failed` (« 2 morceaux faux envoyés : source écartée ») et ne sert plus tant qu'une autre le peut.
+  - Échec : après 3 tours, ou sans plages pour redemander un morceau (serveur sans `Range`, taille inconnue), `CHECKSUM_MISMATCH` avec le nombre de morceaux faux ; le `.part` reste sous son nom provisoire. Une relance manuelle (passage à `queued`) redonne 3 tours, et ne télécharge que les morceaux faux. Un retéléchargement remet les comptes à zéro.
+  - Affichage : `task.get` (section 6.5) ; les Propriétés montrent « 10 morceaux de 64 Kio (SHA-1), 3 retéléchargés ».
+  - Tests : lecture (formats 4 et 3, choix, rejets), réouverture des segments (couverture conservée, proptest), tour en base (mise en cause, écart, remise à zéro), téléchargements face à un serveur qui envoie des octets faux (seul le morceau faux redemandé, trois tours puis l'échec et la relance, miroir fautif écarté au profit de la référence, arrêt pendant la vérification, arrêt après un tour, empreinte entière lue dans la même lecture, serveur sans plages), protocole.
 
 ### 7.10 Paramètres par défaut
 

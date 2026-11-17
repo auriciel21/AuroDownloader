@@ -37,6 +37,7 @@ use crate::limit::Throttle;
 use crate::mirrors;
 use crate::net::auth::{Auth, Login, Site};
 use crate::net::{Client, NetError, RangeRequest, headers, sums};
+use crate::pieces;
 use crate::secrets::{Vault, VaultError};
 use crate::segmenter::{
     DEFAULT_MIN_SEGMENT_SIZE, Segment, SegmentState, initial_split, split_largest,
@@ -47,11 +48,11 @@ use crate::store::logins::{self, LoginRow};
 use crate::store::segments::{
     check_task_coverage, load_segments, reset_segments, save_progress, save_split,
 };
-use crate::store::sources;
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, SourceState, TaskRow, TaskState, change_state,
     load_sources, load_task, primary_source, reserved_names, save_preparation_placed, set_checksum,
 };
+use crate::store::{self, sources};
 use crate::store::{StoreError, now_ms};
 
 /// Nombre de connexions automatique (SPEC §7.3) : départ, plafond, et gain de débit
@@ -273,6 +274,14 @@ enum Failure {
         expected: String,
         got: String,
     },
+    /// Des morceaux encore faux après les tours permis, ou sans plages pour les redemander
+    /// (F-12, SPEC §7.9) ; le `.part` reste.
+    Pieces {
+        algo: Algo,
+        bad: usize,
+        count: usize,
+        rounds: u32,
+    },
 }
 
 impl Failure {
@@ -288,7 +297,7 @@ impl Failure {
             Failure::Truncated => "NET_UNREACHABLE",
             Failure::NoSpace { .. } => "DISK_FULL",
             Failure::Vault(_) => "SECRET_UNAVAILABLE",
-            Failure::Checksum { .. } => "CHECKSUM_MISMATCH",
+            Failure::Checksum { .. } | Failure::Pieces { .. } => "CHECKSUM_MISMATCH",
         }
     }
 
@@ -310,7 +319,10 @@ impl Failure {
     fn retryable(&self) -> bool {
         match self {
             Failure::Net(e) => e.retryable(),
-            Failure::Io(_) | Failure::NoSpace { .. } | Failure::Checksum { .. } => false,
+            Failure::Io(_)
+            | Failure::NoSpace { .. }
+            | Failure::Checksum { .. }
+            | Failure::Pieces { .. } => false,
             Failure::Truncated => true,
             Failure::Vault(_) => true,
         }
@@ -338,6 +350,15 @@ impl Failure {
                 got,
             } => format!(
                 "empreinte {} du fichier : {got}, attendue : {expected}",
+                algo.label()
+            ),
+            Failure::Pieces {
+                algo,
+                bad,
+                count,
+                rounds,
+            } => format!(
+                "{bad} morceaux sur {count} encore faux (empreintes {}) après {rounds} tours \n                 de reprise",
                 algo.label()
             ),
             Failure::NoSpace { needed, free, keep } => format!(
@@ -557,7 +578,12 @@ async fn execute(
 ) -> Step<PathBuf> {
     let mut task = load_task(conn, task_id)?;
     if task.state == TaskState::Verifying {
-        return resume_verifying(conn, &task, stop, on_progress).await;
+        match resume_verifying(conn, &task, stop, on_progress).await? {
+            Ok(Finish::Done(path)) => return Ok(Ok(path)),
+            // Des morceaux faux (F-12) : la suite les télécharge de nouveau.
+            Ok(Finish::Redo) => task = load_task(conn, task_id)?,
+            Err(stop) => return Ok(Err(stop)),
+        }
     }
     let source = primary_source(conn, task_id)?;
     let stored = stored_headers::load(conn, task_id)?;
@@ -664,8 +690,44 @@ async fn execute(
         };
         let placed = crate::store::rules::Placed::of(&placement, &dest_dir);
         save_preparation_placed(conn, task_id, &prep, &segments, &placed)?;
-        task = load_task(conn, task_id)?;
     }
+    // Un tour de plus quand la vérification trouve des morceaux faux (F-12, SPEC §7.9) :
+    // leurs segments rouverts se téléchargent, puis le fichier se vérifie de nouveau.
+    loop {
+        let task = load_task(conn, task_id)?;
+        match download(
+            conn,
+            client,
+            &task,
+            &task_headers,
+            &auth,
+            opts,
+            stop,
+            on_progress,
+        )
+        .await?
+        {
+            Ok(Finish::Done(path)) => return Ok(Ok(path)),
+            Ok(Finish::Redo) => continue,
+            Err(stop) => return Ok(Err(stop)),
+        }
+    }
+}
+
+/// Un téléchargement préparé, de la reprise du `.part` à sa fin : connexions, puis
+/// vérification et nom final.
+#[allow(clippy::too_many_arguments)]
+async fn download(
+    conn: &mut Connection,
+    client: &Client,
+    task: &TaskRow,
+    task_headers: &[(String, String)],
+    auth: &Option<Arc<Auth>>,
+    opts: &Options,
+    stop: &mut watch::Receiver<bool>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Step<Finish> {
+    let task_id = task.id.as_str();
     let source = primary_source(conn, task_id)?;
     let file_name = task
         .file_name
@@ -678,7 +740,7 @@ async fn execute(
             Resume::Part(part, todo) => (part, todo, Some(total)),
             Resume::AlreadyRenamed => {
                 crate::postproc::finish(conn, task_id, &dest, total)?;
-                return Ok(Ok(dest));
+                return Ok(Ok(Finish::Done(dest)));
             }
             Resume::Failed(f) => return fail(f),
         },
@@ -696,7 +758,7 @@ async fn execute(
             Ok(None) => {
                 let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                 crate::postproc::finish(conn, task_id, &dest, len)?;
-                return Ok(Ok(dest));
+                return Ok(Ok(Finish::Done(dest)));
             }
             Err(e) => return fail(Failure::Io(e)),
         },
@@ -722,16 +784,20 @@ async fn execute(
         total => Fetch::Whole { total },
     };
     let plan = if ranged {
-        plan_for(client, &source.url, &task, opts)
+        plan_for(client, &source.url, task, opts)
     } else {
         Plan::Fixed(1)
     };
     let (targets, checks) =
-        match mirror_targets(conn, task_id, &source, &task_headers, &fetch, opts).await? {
+        match mirror_targets(conn, task_id, &source, task_headers, &fetch, opts).await? {
             Ok(found) => found,
             Err(stop) => return Ok(Err(stop)),
         };
-    let mut all = vec![Arc::new(Target::of(&source, task_headers, auth))];
+    let mut all = vec![Arc::new(Target::of(
+        &source,
+        task_headers.to_vec(),
+        auth.clone(),
+    ))];
     all.extend(targets);
     part.checkpoint_after(opts.checkpoint_bytes);
     let part = Arc::new(part);
@@ -832,10 +898,24 @@ async fn mirror_targets(
     Ok(Ok((targets, checks)))
 }
 
+/// Issue de la fin d'un téléchargement.
+enum Finish {
+    /// Le fichier a son nom final.
+    Done(PathBuf),
+    /// Des morceaux faux (F-12, SPEC §7.9) : leurs segments sont rouverts, la tâche est
+    /// repassée à `active`.
+    Redo,
+}
+
 /// Fin d'une tâche dont le `.part` est complet et vidé sur disque : son empreinte, s'il
 /// en a une, est vérifiée en `verifying` (F-11, SPEC §7.9) ; puis le `.part` prend son
 /// nom et la tâche se termine. Une empreinte différente laisse le `.part` à sa place,
 /// sous son nom provisoire, et la tâche en échec `CHECKSUM_MISMATCH`.
+///
+/// Avec des empreintes de morceaux (F-12), une seule lecture donne celle de chaque morceau
+/// et celle du fichier. Des morceaux faux : un tour de reprise s'enregistre
+/// ([`store::pieces::start_round`]) et l'appelant les télécharge de nouveau ; après
+/// [`pieces::MAX_ROUNDS`] tours, ou sans plages pour les redemander, l'échec.
 async fn finish_part(
     conn: &mut Connection,
     task_id: &str,
@@ -843,21 +923,85 @@ async fn finish_part(
     total: u64,
     stop: &mut watch::Receiver<bool>,
     on_progress: &mut (dyn FnMut(Progress) + Send),
-) -> Step<PathBuf> {
+) -> Step<Finish> {
     // Relue ici : l'empreinte a pu changer pendant le téléchargement (`task.update`).
     let task = load_task(conn, task_id)?;
-    if let Some(expected) = task.checksum {
+    // Des morceaux qui conviennent à la taille reçue ; sinon, l'empreinte entière seule.
+    let pieces = store::pieces::load(conn, task_id)?.filter(|p| p.pieces.fits(total));
+    if task.checksum.is_some() || pieces.is_some() {
         // Les octets sont déjà vidés (`seal`) : `verifying` décrit un `.part` complet.
         if task.state != TaskState::Verifying {
             change_state(conn, task_id, &Change::to(TaskState::Verifying))?;
         }
-        let got = match verify(sealed.path(), &expected, total, stop, on_progress).await? {
+    }
+    if let Some(found) = pieces {
+        let (algo, length) = (found.pieces.algo(), found.pieces.length());
+        let whole = task.checksum.as_ref().map(Checksum::algo);
+        let got = match read_part(
+            sealed.path(),
+            total,
+            stop,
+            on_progress,
+            move |path, read| checksum::hash_pieces(path, algo, length, whole, read),
+        )
+        .await?
+        {
+            Ok(got) => got,
+            Err(stop) => return Ok(Err(stop)),
+        };
+        let bad = found.pieces.bad(&got.pieces);
+        if !bad.is_empty() {
+            // Les morceaux se redemandent par plages, à une tâche segmentée.
+            let ranged = primary_source(conn, task_id)?.accepts_ranges == Some(true)
+                && !load_segments(conn, task_id)?.is_empty();
+            if found.rounds >= pieces::MAX_ROUNDS || !ranged {
+                return fail(Failure::Pieces {
+                    algo,
+                    bad: bad.len(),
+                    count: found.pieces.count(),
+                    rounds: found.rounds,
+                });
+            }
+            // Le `.part` est fermé : la reprise le rouvre pour les morceaux.
+            drop(sealed);
+            let each: Vec<(u64, u64)> = bad.iter().map(|&i| found.pieces.range(i, total)).collect();
+            let merged = found.pieces.ranges(&bad, total);
+            let set_aside = store::pieces::start_round(conn, task_id, &each, &merged)?;
+            tracing::warn!(
+                tache = task_id,
+                morceaux = bad.len(),
+                tour = found.rounds + 1,
+                sources_ecartees = set_aside.len(),
+                "morceaux faux, téléchargés de nouveau"
+            );
+            return Ok(Ok(Finish::Redo));
+        }
+        if let (Some(expected), Some(got)) = (&task.checksum, got.whole)
+            && got != expected.value()
+        {
+            return fail(Failure::Checksum {
+                algo: expected.algo(),
+                expected: expected.value().to_owned(),
+                got,
+            });
+        }
+    } else if let Some(expected) = task.checksum {
+        let algo = expected.algo();
+        let got = match read_part(
+            sealed.path(),
+            total,
+            stop,
+            on_progress,
+            move |path, read| checksum::hash_file(path, algo, read),
+        )
+        .await?
+        {
             Ok(got) => got,
             Err(stop) => return Ok(Err(stop)),
         };
         if got != expected.value() {
             return fail(Failure::Checksum {
-                algo: expected.algo(),
+                algo,
                 expected: expected.value().to_owned(),
                 got,
             });
@@ -868,7 +1012,7 @@ async fn finish_part(
         Err(e) => return fail(Failure::Io(e)),
     };
     crate::postproc::finish(conn, task_id, &path, total)?;
-    Ok(Ok(path))
+    Ok(Ok(Finish::Done(path)))
 }
 
 /// Reprise d'une tâche restée en `verifying` (arrêt brutal pendant le calcul) : le
@@ -880,7 +1024,7 @@ async fn resume_verifying(
     task: &TaskRow,
     stop: &mut watch::Receiver<bool>,
     on_progress: &mut (dyn FnMut(Progress) + Send),
-) -> Step<PathBuf> {
+) -> Step<Finish> {
     let file_name = task
         .file_name
         .as_deref()
@@ -896,7 +1040,7 @@ async fn resume_verifying(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match len(&dest) {
             Ok(total) => {
                 crate::postproc::finish(conn, &task.id, &dest, total)?;
-                Ok(Ok(dest))
+                Ok(Ok(Finish::Done(dest)))
             }
             Err(_) => fail(Failure::Io(IoError::File {
                 path: part,
@@ -907,16 +1051,17 @@ async fn resume_verifying(
     }
 }
 
-/// Calcule l'empreinte du `.part` complet (`total` octets), hors de la boucle
-/// asynchrone ; l'avancement s'annonce toutes les demi-secondes, et `stop` interrompt le
-/// calcul (la tâche passe alors en pause et recommencera la lecture à la reprise).
-async fn verify(
+/// Lit le `.part` complet (`total` octets) par `work` (calcul d'empreintes), hors de la
+/// boucle asynchrone ; l'avancement s'annonce toutes les demi-secondes, et `stop`
+/// interrompt la lecture (la tâche passe alors en pause et la recommencera à la reprise).
+/// `work` reçoit le chemin et la fonction à rappeler après chaque lecture.
+async fn read_part<T: Send + 'static>(
     path: &Path,
-    expected: &Checksum,
     total: u64,
     stop: &mut watch::Receiver<bool>,
     on_progress: &mut (dyn FnMut(Progress) + Send),
-) -> Step<String> {
+    work: impl FnOnce(&Path, &mut dyn FnMut(u64) -> bool) -> std::io::Result<Option<T>> + Send + 'static,
+) -> Step<T> {
     let report = |read: u64| Progress {
         received: total,
         total: Some(total),
@@ -934,10 +1079,10 @@ async fn verify(
     let mut stopped = *stop.borrow();
     let halt = Arc::new(AtomicBool::new(stopped));
     let mut job = {
-        let (path, algo) = (path.to_owned(), expected.algo());
+        let path = path.to_owned();
         let (read, halt) = (Arc::clone(&read), Arc::clone(&halt));
         tokio::task::spawn_blocking(move || {
-            checksum::hash_file(&path, algo, |n| {
+            work(&path, &mut |n| {
                 read.store(n, Ordering::Relaxed);
                 !halt.load(Ordering::Relaxed)
             })
@@ -1203,6 +1348,9 @@ struct Target {
     peak: AtomicUsize,
     /// Octets reçus de cette source pendant l'exécution, pour son débit (SPEC §7.7).
     received: AtomicU64,
+    /// Morceaux faux déjà envoyés (F-12, SPEC §7.9) : une source qui en a moins passe
+    /// avant elle.
+    bad_pieces: u32,
 }
 
 impl Target {
@@ -1222,6 +1370,7 @@ impl Target {
             open: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             received: AtomicU64::new(0),
+            bad_pieces: 0,
         }
     }
 
@@ -1230,13 +1379,16 @@ impl Target {
     fn of(source: &SourceRow, headers: Vec<(String, String)>, auth: Option<Arc<Auth>>) -> Self {
         let if_range =
             headers::if_range_validator(source.etag.as_deref(), source.last_modified.as_deref());
-        Target::new(
-            source.id.clone(),
-            source.url.clone(),
-            headers,
-            auth,
-            if_range,
-        )
+        Target {
+            bad_pieces: source.bad_pieces,
+            ..Target::new(
+                source.id.clone(),
+                source.url.clone(),
+                headers,
+                auth,
+                if_range,
+            )
+        }
     }
 
     /// Le serveur a accepté une requête : compte la connexion jusqu'à la fin du garde.
@@ -1404,6 +1556,10 @@ impl Slot {
 /// Source à qui confier une nouvelle connexion : parmi celles qui reçoivent des segments
 /// et ont moins de `width` connexions ouvertes, celle dont le débit par connexion ouverte serait le meilleur ; une source pas encore
 /// mesurée compte pour la médiane des autres, et, à égalité, la référence passe avant.
+///
+/// Morceaux faux (F-12, SPEC §7.9) : seules les sources qui en ont envoyé le moins sont
+/// choisies, parmi celles qui reçoivent des segments ; les autres servent quand celles-ci
+/// ne le peuvent plus (écartées, au repos).
 fn pick_slot(slots: &[Slot], width: usize) -> Option<usize> {
     let measured: Vec<f64> = slots
         .iter()
@@ -1411,10 +1567,17 @@ fn pick_slot(slots: &[Slot], width: usize) -> Option<usize> {
         .map(|s| s.rate)
         .collect();
     let fallback = median(&measured).unwrap_or(1.0).max(1.0);
+    let fewest = slots
+        .iter()
+        .filter(|s| s.state == SlotState::Usable)
+        .map(|s| s.target.bad_pieces)
+        .min()?;
     slots
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.state == SlotState::Usable && s.connections < width)
+        .filter(|(_, s)| {
+            s.state == SlotState::Usable && s.connections < width && s.target.bad_pieces == fewest
+        })
         .map(|(i, s)| {
             let rate = if s.measures > 0 {
                 s.rate.max(1.0)
@@ -1596,6 +1759,16 @@ async fn pool(
                 }
                 None => break,
             };
+            // La source de chaque segment est notée : celle d'un morceau faux est mise en
+            // cause (F-12, SPEC §7.9).
+            if ctx.persist {
+                store::segments::set_source(
+                    conn,
+                    task_id,
+                    segment.idx,
+                    &slots[pick].target.source_id,
+                )?;
+            }
             let writer = ctx.part.writer(&segment, ctx.opts.buffer);
             handles.insert(segment.idx, writer.progress());
             owners.insert(segment.idx, Arc::clone(&slots[pick].target.source_id));
@@ -2088,5 +2261,7 @@ pub fn requeue(conn: &mut Connection, task_id: &str) -> Result<(), TransferError
 
 #[cfg(test)]
 mod mirror_tests;
+#[cfg(test)]
+mod piece_tests;
 #[cfg(test)]
 mod tests;

@@ -348,6 +348,8 @@ pub struct TaskDetails {
     pub sources: Option<Vec<SourceRow>>,
     /// Fichiers d'un torrent ; vide pour une tâche HTTP, ou avant la préparation.
     pub files: Option<Vec<store::torrents::TorrentFile>>,
+    /// Empreintes de morceaux d'un Metalink et leurs tours (F-12, SPEC §7.9), si elle en a.
+    pub pieces: Option<store::pieces::TaskPieces>,
 }
 
 /// État complet du moteur à une révision donnée (`sync.snapshot`, SPEC §6.10).
@@ -511,6 +513,9 @@ pub struct AddTask {
     pub file_name: Option<String>,
     /// Empreinte attendue du fichier (F-11), vérifiée avant son renommage.
     pub checksum: Option<Checksum>,
+    /// Empreintes de morceaux d.un Metalink (F-12, SPEC §7.9) : seuls les morceaux faux se
+    /// téléchargent de nouveau. Pas dans `task.add`. Tâche HTTP seulement.
+    pub pieces: Option<crate::pieces::Pieces>,
     /// Contenu d'un fichier `.torrent` (SPEC §7.16) ; `url` est alors ignorée. Un lien
     /// `magnet:` dans `url` fait aussi une tâche torrent.
     pub torrent: Option<Vec<u8>>,
@@ -2206,6 +2211,9 @@ enum RunNote {
     Prepared(String),
     /// Passage à `verifying` enregistré (F-11).
     Verifying(String),
+    /// Retour de `verifying` à `active` enregistré : des morceaux faux se téléchargent de
+    /// nouveau (F-12, SPEC §7.9).
+    Redownloading(String),
     /// Passage d'un torrent à `seeding` enregistré (SPEC §7.16).
     Seeding(String),
     /// Passage d'une vidéo à `post_processing` (fusion) enregistré (SPEC §7.17).
@@ -2450,6 +2458,15 @@ impl Scheduler {
                 if run.shown == TaskState::Active {
                     run.shown = TaskState::Verifying;
                     self.changed(&task_id, TaskState::Active, TaskState::Verifying);
+                }
+            }
+            RunNote::Redownloading(task_id) => {
+                let Some(run) = self.running.get_mut(&task_id) else {
+                    return;
+                };
+                if run.shown == TaskState::Verifying {
+                    run.shown = TaskState::Active;
+                    self.changed(&task_id, TaskState::Verifying, TaskState::Active);
                 }
             }
             RunNote::Seeding(task_id) => {
@@ -3246,6 +3263,13 @@ impl Scheduler {
             task.dest_dir = Some(self.resolve_sub_dir(&task)?);
             task.sub_dir.clear();
         }
+        if task.pieces.is_some()
+            && (task.torrent.is_some() || is_magnet(&task.url) || task.media.is_some())
+        {
+            return Err(EngineError::BadRequest(
+                "empreintes de morceaux : téléchargement HTTP seulement".into(),
+            ));
+        }
         if task.torrent.is_some() || is_magnet(&task.url) {
             if !task.mirrors.is_empty() {
                 return Err(EngineError::BadRequest(
@@ -3301,7 +3325,7 @@ impl Scheduler {
         // Les secrets d'abord, leurs références ensuite (SPEC §5.1) ; si la tâche n'est
         // pas créée, ils sont effacés.
         let stored = self.store_secrets(task.headers)?;
-        let created = tasks::create_task_with_mirrors(
+        let created = tasks::create_task_with_pieces(
             &mut self.conn,
             &NewTask {
                 queue_id: &queue_id,
@@ -3318,6 +3342,7 @@ impl Scheduler {
                 public_only: task.public_only,
             },
             &task.mirrors,
+            task.pieces.as_ref(),
         );
         let (task_id, _) = match created {
             Ok(created) => created,
@@ -3904,6 +3929,7 @@ impl Scheduler {
             segments,
             sources,
             files,
+            pieces: store::pieces::load(&self.conn, task_id)?,
         })
     }
 
@@ -4935,6 +4961,15 @@ async fn execute(
         }
         if progress.verified.is_some() && !std::mem::replace(&mut verifying, true) {
             let _ = prepared.send(RunNote::Verifying(task_id.to_owned()));
+        }
+        // Un téléchargement après la vérification : des morceaux faux (F-12). La
+        // vérification suivante sera annoncée de nouveau.
+        if progress.verified.is_none()
+            && !progress.seeding
+            && !progress.merging
+            && std::mem::take(&mut verifying)
+        {
+            let _ = prepared.send(RunNote::Redownloading(task_id.to_owned()));
         }
         // Un torrent passe au partage (SPEC §7.16) : annoncé comme `verifying`.
         if progress.seeding && !std::mem::replace(&mut seeding, true) {
