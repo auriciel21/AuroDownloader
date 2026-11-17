@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/hostkey.accept.json",
+  "title": "hostkey.accept",
+  "description": "Accepte la clé en attente d'un serveur SSH, si c'est bien cette empreinte ; relance les tâches que sa clé inconnue ou changée avait arrêtées.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "port",
+        "fingerprint"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "resumed": {
+          "description": "Tâches relancées.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "resumed"
+      ]
+    }
+  }
+}

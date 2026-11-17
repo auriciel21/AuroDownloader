@@ -344,11 +344,17 @@ enum Command {
         #[command(subcommand)]
         action: QueueAction,
     },
-    /// Identifiants de sites (Basic, Digest) : envoyés quand un serveur du site les demande ;
-    /// le mot de passe va au coffre du système
+    /// Identifiants de sites (Basic, Digest, FTP, SFTP) : envoyés quand un serveur du site les
+    /// demande ; le mot de passe va au coffre du système
     Login {
         #[command(subcommand)]
         action: LoginAction,
+    },
+    /// Clés des serveurs SSH (SFTP) : acceptées, en attente ; accepter une clé relance les
+    /// tâches qu'elle bloquait
+    Hostkey {
+        #[command(subcommand)]
+        action: Option<HostkeyAction>,
     },
     /// Interface web distante : état, ouverture, adresse d'écoute
     Remote {
@@ -546,8 +552,8 @@ enum LoginAction {
     /// Enregistre ou modifie les identifiants d'un site. Le mot de passe est demandé sans
     /// écho ; il n'est jamais un argument, qui resterait dans l'historique du terminal
     Set {
-        /// Site : exemple.org (ses sous-domaines compris, HTTP et FTP), ou
-        /// https://exemple.org/dossier, ftp://exemple.org
+        /// Site : exemple.org (ses sous-domaines compris, HTTP, FTP et SFTP), ou
+        /// https://exemple.org/dossier, ftp://exemple.org, sftp://exemple.org
         site: String,
         #[arg(short = 'u', long)]
         username: String,
@@ -564,9 +570,35 @@ enum LoginAction {
         /// FTP : exiger de nouveau le chiffrement pour ce site (par défaut)
         #[arg(long)]
         require_tls: bool,
+        /// SFTP : s'identifier par ce fichier de clé privée (OpenSSH, PEM, PuTTY) ; la phrase
+        /// de passe est alors demandée à la place du mot de passe (vide si elle n'en a pas)
+        #[arg(long, value_name = "FICHIER", conflicts_with = "no_key")]
+        key: Option<PathBuf>,
+        /// SFTP : ne plus utiliser de clé privée (un mot de passe est alors demandé)
+        #[arg(long)]
+        no_key: bool,
     },
     /// Retire les identifiants d'un site
     Remove { site: String },
+}
+
+#[derive(Subcommand)]
+enum HostkeyAction {
+    /// Clés acceptées et clés vues en attente d'une décision (par défaut)
+    List,
+    /// Accepte la clé en attente d'un serveur, après avoir vérifié son empreinte auprès de
+    /// son administrateur ; les tâches qu'elle bloquait repartent
+    Accept {
+        /// Serveur : hôte ou hôte:port (22 par défaut)
+        server: String,
+        /// Empreinte montrée par `auro hostkey list` (SHA256:…)
+        fingerprint: String,
+    },
+    /// Oublie la clé acceptée d'un serveur
+    Remove {
+        /// Serveur : hôte ou hôte:port (22 par défaut)
+        server: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1189,13 +1221,19 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         keep_password,
                         allow_plain,
                         require_tls,
+                        key,
+                        no_key,
                     } => {
                         let password = match (keep_password, password_stdin) {
                             (true, _) => None,
                             (false, true) => Some(display::read_line_stdin()?),
                             (false, false) => Some(
-                                rpassword::prompt_password("Mot de passe : ")
-                                    .context("lecture du mot de passe")?,
+                                rpassword::prompt_password(if key.is_some() {
+                                    "Phrase de passe de la clé (vide si elle n'en a pas) : "
+                                } else {
+                                    "Mot de passe : "
+                                })
+                                .context("lecture du mot de passe")?,
                             ),
                         };
                         let plain = match (allow_plain, require_tls) {
@@ -1203,9 +1241,34 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                             (_, true) => Some(false),
                             _ => None,
                         };
-                        remote::login_set(&mut rpc, &site, &username, password, plain).await
+                        let key_path = match (key, no_key) {
+                            (Some(path), _) => Some(
+                                std::path::absolute(&path)?
+                                    .to_str()
+                                    .context("chemin de la clé hors UTF-8")?
+                                    .to_owned(),
+                            ),
+                            (None, true) => Some(String::new()),
+                            (None, false) => None,
+                        };
+                        let change = remote::LoginChange {
+                            password,
+                            allow_plain: plain,
+                            key_path,
+                        };
+                        remote::login_set(&mut rpc, &site, &username, change).await
                     }
                     LoginAction::Remove { site } => remote::login_remove(&mut rpc, &site).await,
+                },
+                Command::Hostkey { action } => match action.unwrap_or(HostkeyAction::List) {
+                    HostkeyAction::List => remote::host_keys(&mut rpc).await,
+                    HostkeyAction::Accept {
+                        server,
+                        fingerprint,
+                    } => remote::host_key_accept(&mut rpc, &server, &fingerprint).await,
+                    HostkeyAction::Remove { server } => {
+                        remote::host_key_remove(&mut rpc, &server).await
+                    }
                 },
                 Command::Remote { action } => match action.unwrap_or(RemoteAction::Status) {
                     RemoteAction::Status => remote::remote_status(&mut rpc).await,

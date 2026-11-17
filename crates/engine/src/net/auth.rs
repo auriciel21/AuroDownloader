@@ -17,7 +17,7 @@ use reqwest::{Method, Url};
 
 /// Portée d'identifiants : un site, éventuellement restreint à un chemin.
 ///
-/// `exemple.org` vaut pour `http`, `https`, `ftp` et `ftps` (F-08), pour `exemple.org` et ses sous-domaines
+/// `exemple.org` vaut pour `http`, `https`, `ftp`, `ftps` et `sftp` (F-08), pour `exemple.org` et ses sous-domaines
 /// (`dl.exemple.org`), sur tous les ports. `https://exemple.org:8443/prive` ne vaut que pour
 /// HTTPS, ce port et ce chemin (et ce qui est dessous).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl Site {
             format!("https://{text}")
         })
         .map_err(|e| format!("site invalide : {e}"))?;
-        if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") {
+        if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "sftp") {
             return Err(format!("protocole non pris en charge : {}", url.scheme()));
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -285,6 +285,12 @@ pub enum Answer {
     Insecure,
 }
 
+/// Secret d'identifiants de site pour SFTP.
+pub enum Secret {
+    Password(String),
+    Key { path: String, passphrase: String },
+}
+
 /// Identification d'une tâche : ses identifiants et le dernier défi reçu, partagés par
 /// toutes ses connexions.
 #[derive(Debug)]
@@ -295,6 +301,9 @@ pub struct Auth {
     count: AtomicU32,
     /// FTP sans TLS permis pour ce site (« autoriser sans chiffrement », F-08, SPEC §7.22).
     allow_plain: bool,
+    /// SFTP (F-08) : fichier de clé privée ; le mot de passe est alors sa phrase de passe, et
+    /// ces identifiants ne servent ni à HTTP ni à FTP.
+    key_path: Option<String>,
 }
 
 impl Auth {
@@ -304,6 +313,7 @@ impl Auth {
             scheme: Mutex::new(None),
             count: AtomicU32::new(0),
             allow_plain: false,
+            key_path: None,
         }
     }
 
@@ -313,8 +323,31 @@ impl Auth {
         self
     }
 
+    /// Les mêmes identifiants, avec un fichier de clé privée (SFTP).
+    pub fn with_key(mut self, key_path: Option<String>) -> Self {
+        self.key_path = key_path;
+        self
+    }
+
+    /// Le secret à donner à un serveur SFTP (F-08), si `url` est du site : le nom, et le mot
+    /// de passe ou la clé privée et sa phrase de passe.
+    pub fn secret_for(&self, url: &Url) -> Option<(String, Secret)> {
+        self.login.site.matches(url)?;
+        let secret = match &self.key_path {
+            Some(path) => Secret::Key {
+                path: path.clone(),
+                passphrase: self.login.password.clone(),
+            },
+            None => Secret::Password(self.login.password.clone()),
+        };
+        Some((self.login.username.clone(), secret))
+    }
+
     /// Nom et mot de passe à donner à un serveur FTP (F-08), si `url` est du site.
     pub fn credentials_for(&self, url: &Url) -> Option<(String, String)> {
+        if self.key_path.is_some() {
+            return None;
+        }
         self.login.site.matches(url)?;
         Some((self.login.username.clone(), self.login.password.clone()))
     }
@@ -327,6 +360,9 @@ impl Auth {
     /// En-tête `Authorization` à joindre à une requête vers `url`, si un défi a déjà été
     /// reçu et que `url` est du site. `None` avant le premier défi.
     pub fn authorization(&self, method: &Method, url: &Url) -> Option<HeaderValue> {
+        if self.key_path.is_some() {
+            return None;
+        }
         self.login.site.matches(url)?;
         let scheme = self
             .scheme
@@ -393,7 +429,7 @@ impl Auth {
     /// refusée portait déjà une identification ; un nouveau refus n'est alors repris que
     /// si le serveur dit son nonce périmé (`stale=true`).
     pub fn on_challenge(&self, url: &Url, headers: &HeaderMap, sent: bool) -> Answer {
-        if self.login.site.matches(url).is_none() {
+        if self.key_path.is_some() || self.login.site.matches(url).is_none() {
             return Answer::Unanswered;
         }
         let challenges = parse_challenges(

@@ -629,6 +629,8 @@ pub struct LoginView {
     pub username: String,
     /// FTP sans chiffrement permis pour ce site (F-08, SPEC §7.22).
     pub allow_plain: bool,
+    /// SFTP : fichier de clé privée (chemin choisi par l'utilisateur).
+    pub key_path: Option<String>,
 }
 
 impl From<store::logins::LoginRow> for LoginView {
@@ -638,6 +640,7 @@ impl From<store::logins::LoginRow> for LoginView {
             site: row.site,
             username: row.username,
             allow_plain: row.allow_plain,
+            key_path: row.key_path,
         }
     }
 }
@@ -669,6 +672,9 @@ pub struct LoginChange {
     /// FTP sans chiffrement permis pour ce site (F-08) ; `None` : inchangé (faux pour de
     /// nouveaux identifiants).
     pub allow_plain: Option<bool>,
+    /// SFTP : fichier de clé privée (chemin absolu) ; `Some("")` la retire, `None` : inchangée.
+    /// Avec une clé, `password` est sa phrase de passe.
+    pub key_path: Option<String>,
 }
 
 /// Longueur maximale d'un nom d'utilisateur, en octets.
@@ -828,6 +834,20 @@ enum Command {
     Logins(Reply<Vec<LoginView>>),
     SetLogin(LoginChange, Reply<LoginView>),
     DeleteLogin(String, Reply<()>),
+    /// Clés SSH acceptées (SFTP).
+    HostKeys(Reply<Vec<store::host_keys::HostKeyRow>>),
+    /// Accepte la clé en attente d'un serveur, et relance ses tâches bloquées.
+    AcceptHostKey {
+        host: String,
+        port: u16,
+        fingerprint: String,
+        reply: Reply<Vec<String>>,
+    },
+    RemoveHostKey {
+        host: String,
+        port: u16,
+        reply: Reply<bool>,
+    },
     /// Jetons et sessions de l'interface distante (SPEC §7.19).
     Tokens(crate::remote::TokenOp, Reply<crate::remote::TokenAnswer>),
     /// Plugins installés (SPEC §7.20).
@@ -909,6 +929,12 @@ impl Engine {
         if let Err(e) = config.client.set_proxy(proxy) {
             tracing::warn!(erreur = %e, "réglages du proxy refusés : proxy du système");
         }
+        // Clés des serveurs SSH acceptées par l'utilisateur (SFTP, SPEC §7.22).
+        config.client.host_keys().set_accepted(
+            store::host_keys::list(&conn)?
+                .into_iter()
+                .map(|k| (k.host, k.port, k.fingerprint)),
+        );
         let config_proxy = config.client.proxy_shared();
         let (commands, inbox) = mpsc::channel(64);
         let (events, _) = broadcast::channel(EVENT_BUFFER);
@@ -1740,6 +1766,47 @@ impl Engine {
     pub async fn delete_login(&self, id: &str) -> Result<(), EngineError> {
         let id = id.to_owned();
         self.ask(|reply| Command::DeleteLogin(id, reply)).await
+    }
+
+    /// Clés des serveurs SSH (SFTP, SPEC §7.22) : acceptées, et vues en attente d'une
+    /// décision de l'utilisateur (gardées en mémoire, jusqu'à l'arrêt du moteur).
+    pub async fn host_keys(
+        &self,
+    ) -> Result<
+        (
+            Vec<store::host_keys::HostKeyRow>,
+            Vec<net::sftp::PendingKey>,
+        ),
+        EngineError,
+    > {
+        let accepted = self.ask(Command::HostKeys).await?;
+        Ok((accepted, self.client.host_keys().pending()))
+    }
+
+    /// Accepte la clé en attente de `host:port`, si c'est bien `fingerprint` ; les tâches
+    /// arrêtées par une clé inconnue ou changée de ce serveur repartent. Rend leurs
+    /// identifiants.
+    pub async fn accept_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<Vec<String>, EngineError> {
+        let (host, fingerprint) = (host.to_owned(), fingerprint.to_owned());
+        self.ask(|reply| Command::AcceptHostKey {
+            host,
+            port,
+            fingerprint,
+            reply,
+        })
+        .await
+    }
+
+    /// Oublie la clé acceptée de `host:port` ; `false` s'il n'y en avait pas.
+    pub async fn remove_host_key(&self, host: &str, port: u16) -> Result<bool, EngineError> {
+        let host = host.to_owned();
+        self.ask(|reply| Command::RemoveHostKey { host, port, reply })
+            .await
     }
 
     async fn token_op(
@@ -2822,6 +2889,20 @@ impl Scheduler {
             Command::DeleteLogin(id, reply) => {
                 let _ = reply.send(self.delete_login(&id));
             }
+            Command::HostKeys(reply) => {
+                let _ = reply.send(store::host_keys::list(&self.conn).map_err(Into::into));
+            }
+            Command::AcceptHostKey {
+                host,
+                port,
+                fingerprint,
+                reply,
+            } => {
+                let _ = reply.send(self.accept_host_key(&host, port, &fingerprint));
+            }
+            Command::RemoveHostKey { host, port, reply } => {
+                let _ = reply.send(self.remove_host_key(&host, port));
+            }
             Command::Tokens(op, reply) => {
                 let _ = reply.send(self.tokens(op));
             }
@@ -3300,11 +3381,11 @@ impl Scheduler {
             return self.add_media(task);
         }
         net::check_task_url(&task.url)?;
-        if net::parse_task_url(&task.url).is_ok_and(|u| net::ftp::is_ftp(&u)) {
-            // FTP (F-08, SPEC §7.22) : une seule source en v1, sans morceaux.
+        if net::is_file_transfer(&task.url) {
+            // FTP et SFTP (F-08, SPEC §7.22) : une seule source en v1, sans morceaux.
             if !task.mirrors.is_empty() || task.pieces.is_some() {
                 return Err(EngineError::BadRequest(
-                    "une tâche FTP n'a qu'une source : ni miroir ni morceaux".into(),
+                    "une tâche FTP ou SFTP n'a qu'une source : ni miroir ni morceaux".into(),
                 ));
             }
             // Identifiants écrits dans l'adresse : le mot de passe va au coffre par
@@ -3612,15 +3693,6 @@ impl Scheduler {
                  de contrôle"
             )));
         }
-        if change
-            .password
-            .as_ref()
-            .is_some_and(|p| p.is_empty() || p.chars().any(char::is_control))
-        {
-            return Err(EngineError::BadRequest(
-                "mot de passe vide, ou avec un caractère de contrôle".into(),
-            ));
-        }
         let existing = match &change.id {
             Some(id) => Some(
                 store::logins::load(&self.conn, id)?
@@ -3628,6 +3700,40 @@ impl Scheduler {
             ),
             None => None,
         };
+        // Clé privée (SFTP, SPEC §7.22) : `Some("")` la retire ; le mot de passe devient
+        // sa phrase de passe, vide permise.
+        let key_change: Option<Option<String>> = match change.key_path.as_deref() {
+            None => None,
+            Some("") => Some(None),
+            Some(path) => {
+                let file = Path::new(path);
+                if !file.is_absolute() || !file.is_file() {
+                    return Err(EngineError::BadRequest(format!(
+                        "clé privée : chemin absolu d'un fichier attendu : {path}"
+                    )));
+                }
+                Some(Some(path.to_owned()))
+            }
+        };
+        let key_path = match &key_change {
+            Some(new) => new.clone(),
+            None => existing.as_ref().and_then(|e| e.key_path.clone()),
+        };
+        let switched = existing
+            .as_ref()
+            .is_some_and(|e| e.key_path.is_some() != key_path.is_some());
+        let password = match (&change.password, &key_path) {
+            // Clé sans phrase de passe : secret vide, au coffre comme les autres.
+            (None, Some(_)) if existing.is_none() || switched => Some(String::new()),
+            (password, _) => password.clone(),
+        };
+        if password.as_ref().is_some_and(|p| {
+            (p.is_empty() && key_path.is_none()) || p.chars().any(char::is_control)
+        }) {
+            return Err(EngineError::BadRequest(
+                "mot de passe vide, ou avec un caractère de contrôle".into(),
+            ));
+        }
         if let Some(other) = store::logins::by_site(&self.conn, &site)?
             && existing.as_ref().is_none_or(|e| e.id != other.id)
         {
@@ -3635,12 +3741,12 @@ impl Scheduler {
                 "des identifiants sont déjà enregistrés pour {site} : les modifier"
             )));
         }
-        if existing.is_none() && change.password.is_none() {
+        if password.is_none() && (existing.is_none() || switched) {
             return Err(EngineError::BadRequest(
                 "mot de passe manquant pour de nouveaux identifiants".into(),
             ));
         }
-        let secret = match &change.password {
+        let secret = match &password {
             Some(password) => Some(self.vault().put(password)?),
             None => None,
         };
@@ -3651,6 +3757,7 @@ impl Scheduler {
                 username,
                 secret.as_deref().expect("vérifié plus haut"),
                 change.allow_plain.unwrap_or(false),
+                key_path.as_deref(),
             )
             .map(|id| (id, None)),
             Some(row) => store::logins::update(
@@ -3660,6 +3767,7 @@ impl Scheduler {
                 username,
                 secret.as_deref(),
                 change.allow_plain,
+                key_change.as_ref().map(Option::as_deref),
             )
             .map(|old| (row.id.clone(), old)),
         };
@@ -3679,6 +3787,7 @@ impl Scheduler {
                 .allow_plain
                 .or(existing.as_ref().map(|e| e.allow_plain))
                 .unwrap_or(false),
+            key_path,
         })
     }
 
@@ -3869,6 +3978,53 @@ impl Scheduler {
         self.drop_secrets(task_id);
         self.changed(task_id, TaskState::Seeding, TaskState::Completed);
         Ok(())
+    }
+
+    /// Voir [`Engine::accept_host_key`].
+    fn accept_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<Vec<String>, EngineError> {
+        let keys = self.config.client.host_keys();
+        let pending = keys.pending_for(host, port, fingerprint).ok_or_else(|| {
+            EngineError::BadRequest(
+                "aucune clé en attente avec cette empreinte pour ce serveur : relancer la \n                 tâche pour la revoir"
+                    .into(),
+            )
+        })?;
+        store::host_keys::accept(
+            &self.conn,
+            &pending.host,
+            port,
+            &pending.algorithm,
+            fingerprint,
+        )?;
+        keys.accept(&pending.host, port, fingerprint);
+        let blocked = store::host_keys::blocked_tasks(&self.conn)?;
+        let mut resumed = Vec::new();
+        for (id, url) in blocked {
+            let same = net::parse_task_url(&url).is_ok_and(|u| {
+                u.host_str().is_some_and(|h| {
+                    h.trim_matches(['[', ']'])
+                        .eq_ignore_ascii_case(&pending.host)
+                }) && net::ftp::default_port(&u) == Some(port)
+            });
+            if same && !resumed.contains(&id) {
+                self.resume(&id)?;
+                resumed.push(id);
+            }
+        }
+        Ok(resumed)
+    }
+
+    /// Voir [`Engine::remove_host_key`].
+    fn remove_host_key(&mut self, host: &str, port: u16) -> Result<bool, EngineError> {
+        let host = host.to_ascii_lowercase();
+        let removed = store::host_keys::remove(&self.conn, &host, port)?;
+        self.config.client.host_keys().forget(&host, port);
+        Ok(removed)
     }
 
     fn resume(&mut self, task_id: &str) -> Result<(), EngineError> {
@@ -4850,6 +5006,7 @@ async fn reveal_site_login(
             password,
         })
         .allowing_plain(login.allow_plain)
+        .with_key(login.key_path)
     }))
 }
 

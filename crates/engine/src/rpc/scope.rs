@@ -95,6 +95,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
         // Identifiants de sites (SPEC §7.14) : même la liste (noms d'utilisateur).
         "login.list" | "login.set" | "login.delete" => Scope::Admin,
+        // Clés des serveurs SSH (SFTP, SPEC §7.22) : accepter une clé décide de la confiance.
+        "hostkey.list" | "hostkey.accept" | "hostkey.remove" => Scope::Admin,
         // Télécharge et installe des programmes (SPEC §7.17).
         "media.installTools" => Scope::Admin,
         // Interfaces réseau de la machine, pour régler `torrent.interface` (SPEC §7.16).

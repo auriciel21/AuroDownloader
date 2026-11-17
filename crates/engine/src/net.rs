@@ -15,11 +15,13 @@
 //! À faire : HTTP/3 (F-05).
 
 pub mod auth;
+pub(crate) mod dial;
 pub mod filename;
 pub mod ftp;
 pub mod headers;
 pub mod proxy;
 pub mod reach;
+pub mod sftp;
 pub mod socks;
 pub mod sums;
 
@@ -140,9 +142,44 @@ pub enum NetError {
     #[error("le serveur FTP a répondu {0}{hint}", hint = ftp_hint(*.0))]
     FtpReply(u16),
 
-    /// Connexion FTP impossible ou coupée (`connect` : à l'ouverture).
+    /// Connexion FTP ou SFTP impossible ou coupée (`connect` : à l'ouverture).
     #[error("serveur injoignable : {text}")]
-    FtpNet { connect: bool, text: String },
+    Socket { connect: bool, text: String },
+
+    /// Réponse d'erreur d'un serveur SFTP (F-08) : son code `SSH_FX_*` seul.
+    #[error("le serveur SFTP a répondu {0}{hint}", hint = sftp_hint(*.0))]
+    SftpStatus(u32),
+
+    /// Clé privée SSH d'identifiants de site illisible (SFTP).
+    #[error(
+        "clé privée illisible : fichier absent, format inconnu ou phrase de passe fausse \n         (identifiants de sites)"
+    )]
+    KeyUnreadable,
+
+    /// Clé d'un serveur SSH inconnue (SPEC §7.22) : la tâche attend que l'utilisateur
+    /// l'accepte (`hostkey.accept`).
+    #[error(
+        "clé du serveur SSH inconnue : {algorithm} {fingerprint} ; à vérifier, puis accepter \
+         pour ce serveur"
+    )]
+    HostKeyUnknown {
+        host: String,
+        port: u16,
+        algorithm: String,
+        fingerprint: String,
+    },
+
+    /// Clé d'un serveur SSH différente de celle acceptée : attaque possible.
+    #[error(
+        "la clé du serveur SSH a changé ({algorithm} {fingerprint}) : quelqu'un pourrait se \
+         faire passer pour lui ; téléchargement bloqué jusqu'à une nouvelle décision"
+    )]
+    HostKeyChanged {
+        host: String,
+        port: u16,
+        algorithm: String,
+        fingerprint: String,
+    },
 
     /// TLS d'une connexion FTP refusé : certificat, poignée de main.
     #[error("connexion TLS refusée : {0}")]
@@ -163,6 +200,18 @@ fn ftp_hint(code: u16) -> &'static str {
         425 | 426 => " : connexion de données impossible ou interrompue",
         450 | 550 => " : fichier introuvable ou accès refusé",
         451 | 452 => " : erreur du serveur",
+        _ => "",
+    }
+}
+
+/// Sens d'un code SFTP (`SSH_FX_*`), pour le message.
+fn sftp_hint(code: u32) -> &'static str {
+    match code {
+        1 => " : fin de fichier inattendue",
+        2 => " : fichier introuvable",
+        3 => " : accès refusé",
+        4 => " : erreur du serveur",
+        8 => " : opération non prise en charge",
         _ => "",
     }
 }
@@ -197,19 +246,23 @@ impl NetError {
             | NetError::Redirect(_)
             | NetError::RedirectNotFollowed { .. }
             | NetError::BadResponse(_)
-            | NetError::FtpReply(_) => Some("HTTP_STATUS"),
+            | NetError::FtpReply(_)
+            | NetError::SftpStatus(_) => Some("HTTP_STATUS"),
+            NetError::HostKeyUnknown { .. } => Some("HOST_KEY_UNKNOWN"),
+            NetError::HostKeyChanged { .. } => Some("HOST_KEY_CHANGED"),
             NetError::Timeout(_) | NetError::ReadTimeout(_) => Some("NET_TIMEOUT"),
             NetError::InvalidCertificate(_) | NetError::FtpTls(_) => Some("TLS_INVALID_CERT"),
             NetError::TlsUnavailable => Some("TLS_UNAVAILABLE"),
-            NetError::Unreachable(_) | NetError::Proxy(_) | NetError::FtpNet { .. } => {
+            NetError::Unreachable(_) | NetError::Proxy(_) | NetError::Socket { .. } => {
                 Some("NET_UNREACHABLE")
             }
             NetError::FileChanged => Some("FILE_CHANGED"),
             NetError::RangeIgnored => Some("RANGE_UNSUPPORTED"),
             NetError::AuthRequired => Some("AUTH_REQUIRED"),
-            NetError::AuthRefused | NetError::AuthInsecure | NetError::FtpTlsMissing => {
-                Some("AUTH_FAILED")
-            }
+            NetError::AuthRefused
+            | NetError::AuthInsecure
+            | NetError::FtpTlsMissing
+            | NetError::KeyUnreadable => Some("AUTH_FAILED"),
             NetError::AddressForbidden => Some("ADDRESS_FORBIDDEN"),
         }
     }
@@ -223,7 +276,9 @@ impl NetError {
             NetError::Timeout(_) | NetError::ReadTimeout(_) | NetError::Unreachable(_) => true,
             // Réponses FTP 4xx : refus passager (RFC 959).
             NetError::FtpReply(code) => (400..500).contains(code),
-            NetError::FtpNet { .. } => true,
+            NetError::Socket { .. } => true,
+            // SSH_FX_FAILURE, SSH_FX_NO_CONNECTION, SSH_FX_CONNECTION_LOST.
+            NetError::SftpStatus(code) => matches!(code, 4 | 6 | 7),
             _ => false,
         }
     }
@@ -235,7 +290,7 @@ impl NetError {
             NetError::Status { status, .. } => matches!(status, 429 | 503),
             NetError::Unreachable(e) => e.is_connect(),
             NetError::FtpReply(code) => *code == 421,
-            NetError::FtpNet { connect, .. } => *connect,
+            NetError::Socket { connect, .. } => *connect,
             _ => false,
         }
     }
@@ -445,6 +500,8 @@ pub struct Client {
     /// FTP et FTPS (F-08) : autorités ajoutées, TLS, connexions de commande au repos ;
     /// partagés par les copies.
     ftp: Arc<ftp::Shared>,
+    /// SFTP (F-08) : clés des serveurs, connexions au repos ; partagés par les copies.
+    sftp: Arc<sftp::Shared>,
 }
 
 /// Clients reqwest d'une génération du proxy.
@@ -503,6 +560,7 @@ impl Client {
             connect,
             roots: Arc::new(roots),
             ftp: Arc::new(ftp::Shared::new(ftp_roots)),
+            sftp: Arc::default(),
         };
         // Fabriqué tout de suite : une erreur se voit au démarrage.
         client.http()?;
@@ -626,6 +684,22 @@ impl Client {
         builder.build().map_err(NetError::from_reqwest)
     }
 
+    /// Clés des serveurs SSH (SFTP, F-08) : acceptées, et vues en attente d'une décision.
+    pub fn host_keys(&self) -> &sftp::HostKeys {
+        &self.sftp.keys
+    }
+
+    /// Contexte des connexions SFTP de ce client (F-08).
+    fn sftp(&self) -> sftp::Context<'_> {
+        sftp::Context {
+            connect: self.connect,
+            read: self.read,
+            proxy: self.proxy.get(),
+            public_only: self.public_only,
+            shared: &self.sftp,
+        }
+    }
+
     /// Contexte des connexions FTP de ce client (F-08).
     fn ftp(&self) -> ftp::Context<'_> {
         ftp::Context {
@@ -663,6 +737,9 @@ impl Client {
         let url = parse_task_url(url)?;
         if ftp::is_ftp(&url) {
             return self.ftp().probe(&url, task_headers, auth).await;
+        }
+        if sftp::is_sftp(&url) {
+            return self.sftp().probe(&url, task_headers, auth).await;
         }
         let extra = header_map(task_headers)?;
 
@@ -764,7 +841,11 @@ impl Client {
         let url = parse_task_url(url)?;
         if ftp::is_ftp(&url) {
             let body = self.ftp().get_range(&url, task_headers, req, auth).await?;
-            return Ok(Body(Inner::Ftp(body)));
+            return Ok(Body(Inner::Ftp(Box::new(body))));
+        }
+        if sftp::is_sftp(&url) {
+            let body = self.sftp().get_range(&url, task_headers, req, auth).await?;
+            return Ok(Body(Inner::Sftp(Box::new(body))));
         }
         let mut extra = header_map(task_headers)?;
         if let Some(validator) = req.if_range {
@@ -831,7 +912,14 @@ impl Client {
                 .ftp()
                 .get_all(&url, task_headers, expected_total, auth)
                 .await?;
-            return Ok(Body(Inner::Ftp(body)));
+            return Ok(Body(Inner::Ftp(Box::new(body))));
+        }
+        if sftp::is_sftp(&url) {
+            let body = self
+                .sftp()
+                .get_all(&url, task_headers, expected_total, auth)
+                .await?;
+            return Ok(Body(Inner::Sftp(Box::new(body))));
         }
         let extra = header_map(task_headers)?;
         let response = self.send(Method::GET, &url, &extra, None, auth).await?;
@@ -1027,7 +1115,8 @@ pub struct Body(Inner);
 #[derive(Debug)]
 enum Inner {
     Http { response: Response, read: Duration },
-    Ftp(ftp::FtpBody),
+    Ftp(Box<ftp::FtpBody>),
+    Sftp(Box<sftp::SftpBody>),
 }
 
 impl Body {
@@ -1045,6 +1134,7 @@ impl Body {
                 .map_err(|_| NetError::ReadTimeout(*read))?
                 .map_err(NetError::from_reqwest),
             Inner::Ftp(body) => body.chunk().await,
+            Inner::Sftp(body) => body.chunk().await,
         }
     }
 }
@@ -1104,20 +1194,28 @@ pub fn status_in_detail(detail: &str) -> Option<u16> {
         .ok()
 }
 
-/// Vérifie l'adresse d'une tâche de téléchargement direct : HTTP(S), FTP ou FTPS (F-08).
+/// Vérifie l'adresse d'une tâche de téléchargement direct : HTTP(S), FTP(S) ou SFTP (F-08).
 pub fn check_task_url(url: &str) -> Result<(), NetError> {
     let parsed = parse_task_url(url)?;
     if ftp::is_ftp(&parsed) {
         ftp::file_path(&parsed)?;
     }
+    if sftp::is_sftp(&parsed) {
+        sftp::file_path(&parsed)?;
+    }
     Ok(())
 }
 
-/// L'adresse d'une tâche de téléchargement direct, analysée : HTTP(S), FTP ou FTPS.
+/// Adresse FTP, FTPS ou SFTP (F-08) : une seule source, 4 connexions au plus en automatique.
+pub fn is_file_transfer(url: &str) -> bool {
+    parse_task_url(url).is_ok_and(|u| ftp::is_ftp(&u) || sftp::is_sftp(&u))
+}
+
+/// L'adresse d'une tâche de téléchargement direct, analysée : HTTP(S), FTP(S) ou SFTP.
 pub fn parse_task_url(url: &str) -> Result<Url, NetError> {
     let parsed = Url::parse(url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
     match parsed.scheme() {
-        "ftp" | "ftps" => Ok(parsed),
+        "ftp" | "ftps" | "sftp" => Ok(parsed),
         _ => parse_url(url),
     }
 }

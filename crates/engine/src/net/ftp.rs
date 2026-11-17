@@ -28,7 +28,7 @@
 //! peut le contenir : seulement le code (SPEC §8.2).
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -42,10 +42,9 @@ use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream, AsyncRustlsStr
 use suppaftp::types::FileType;
 use suppaftp::{FtpError, Mode};
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
 
 use super::auth::Auth;
-use super::socks::{self, Target as SocksTarget};
+use super::dial::{Route, dial, net_error, resolve, route_for, route_public};
 use super::{NetError, Probe, RangeRequest, filename, proxy, reach};
 
 type Stream = suppaftp::tokio::TransferStream<AsyncRustlsStream>;
@@ -143,7 +142,8 @@ impl std::fmt::Debug for Creds {
     }
 }
 
-fn from_header(task_headers: &[(String, String)]) -> Option<(String, String)> {
+/// Nom et mot de passe de l'en-tête `Authorization` (Basic) d'une tâche (FTP, SFTP).
+pub(crate) fn basic_credentials(task_headers: &[(String, String)]) -> Option<(String, String)> {
     let value = task_headers
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("authorization"))
@@ -161,7 +161,7 @@ fn from_header(task_headers: &[(String, String)]) -> Option<(String, String)> {
 }
 
 fn credentials(url: &Url, task_headers: &[(String, String)], auth: Option<&Auth>) -> Creds {
-    let found = from_header(task_headers)
+    let found = basic_credentials(task_headers)
         .or_else(|| {
             (!url.username().is_empty()).then(|| {
                 let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
@@ -249,211 +249,6 @@ impl Server {
             "{}|{}|{:?}|{}|{:x}|{:?}",
             self.host, self.port, self.security, self.creds.user, pass, route
         )
-    }
-}
-
-/// Chemin réseau des connexions vers un serveur.
-#[derive(Clone, PartialEq, Eq)]
-enum Route {
-    Direct {
-        /// Réseau public seulement : adresses résolues et vérifiées ici.
-        public_only: bool,
-    },
-    Socks {
-        proxy: String,
-        login: Option<(String, String)>,
-        /// Résolution locale (`socks5://`) ; sinon le proxy résout (`socks5h://`).
-        local: bool,
-        public_only: bool,
-    },
-}
-
-impl std::fmt::Debug for Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Route::Direct { public_only } => write!(f, "direct:{public_only}"),
-            Route::Socks {
-                proxy,
-                login,
-                local,
-                public_only,
-            } => write!(
-                f,
-                "socks:{proxy}:{}:{local}:{public_only}",
-                login.as_ref().map_or("", |(u, _)| u.as_str())
-            ),
-        }
-    }
-}
-
-/// L'hôte est-il une exception du proxy manuel (joint en direct) ? `*`, un nom (et ses
-/// sous-domaines), `.domaine`, une adresse ou un réseau `adresse/longueur`.
-fn excepted(host: &str, exceptions: &[String]) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let ip: Option<IpAddr> = host.parse().ok();
-    exceptions.iter().any(|e| {
-        let e = e.trim().trim_end_matches('.').to_ascii_lowercase();
-        if e == "*" {
-            return true;
-        }
-        if let Some((net, bits)) = e.split_once('/') {
-            let (Ok(net), Ok(bits), Some(ip)) = (net.parse::<IpAddr>(), bits.parse::<u32>(), ip)
-            else {
-                return false;
-            };
-            return in_network(ip, net, bits);
-        }
-        let bare = e.trim_start_matches('.');
-        host == bare || host.ends_with(&format!(".{bare}"))
-    })
-}
-
-fn in_network(ip: IpAddr, net: IpAddr, bits: u32) -> bool {
-    match (ip, net) {
-        (IpAddr::V4(a), IpAddr::V4(n)) if bits <= 32 => {
-            let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
-            u32::from(a) & mask == u32::from(n) & mask
-        }
-        (IpAddr::V6(a), IpAddr::V6(n)) if bits <= 128 => {
-            let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
-            u128::from(a) & mask == u128::from(n) & mask
-        }
-        _ => false,
-    }
-}
-
-/// Le chemin des connexions FTP vers `host` : SOCKS5 du proxy manuel, sinon en direct
-/// (proxy HTTP ou du système : décision de l'utilisateur du 2026-11-17).
-fn route_for(effective: &proxy::Effective, public_only: bool, host: &str) -> Route {
-    let direct = Route::Direct { public_only };
-    if proxy::route(effective, public_only) != proxy::Route::Manual {
-        return direct;
-    }
-    let Some(url) = effective
-        .settings
-        .url
-        .as_deref()
-        .and_then(|u| Url::parse(u).ok())
-    else {
-        return direct;
-    };
-    if !matches!(url.scheme(), "socks5" | "socks5h")
-        || excepted(host, &effective.settings.exceptions)
-    {
-        return direct;
-    }
-    let (Some(proxy_host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
-        return direct;
-    };
-    Route::Socks {
-        proxy: format!(
-            "{}:{port}",
-            proxy_host.trim_start_matches('[').trim_end_matches(']')
-        ),
-        login: effective
-            .settings
-            .username
-            .clone()
-            .map(|u| (u, effective.password.clone().unwrap_or_default())),
-        local: public_only || url.scheme() == "socks5",
-        public_only,
-    }
-}
-
-fn net_error(error: std::io::Error, connect: bool) -> NetError {
-    if error.kind() == std::io::ErrorKind::TimedOut {
-        return NetError::FtpNet {
-            connect,
-            text: "délai dépassé".into(),
-        };
-    }
-    NetError::FtpNet {
-        connect,
-        text: error.to_string(),
-    }
-}
-
-/// Adresses de `host` ; avec `public_only`, celles du réseau public seulement.
-async fn resolve(host: &str, port: u16, public_only: bool) -> Result<Vec<SocketAddr>, NetError> {
-    let found: Vec<SocketAddr> = match host.parse::<IpAddr>() {
-        Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| net_error(e, true))?
-            .collect(),
-    };
-    if public_only {
-        let name = host.trim_end_matches('.').to_ascii_lowercase();
-        if name == "localhost" || name.ends_with(".localhost") {
-            return Err(NetError::AddressForbidden);
-        }
-        let public: Vec<_> = found
-            .into_iter()
-            .filter(|a| reach::is_public(a.ip()))
-            .collect();
-        if public.is_empty() {
-            return Err(NetError::AddressForbidden);
-        }
-        return Ok(public);
-    }
-    if found.is_empty() {
-        return Err(NetError::BadResponse("nom d'hôte introuvable"));
-    }
-    Ok(found)
-}
-
-async fn connect_any(addrs: &[SocketAddr]) -> Result<TcpStream, NetError> {
-    let mut last = None;
-    for addr in addrs {
-        match TcpStream::connect(addr).await {
-            Ok(stream) => return Ok(stream),
-            Err(e) => last = Some(e),
-        }
-    }
-    Err(net_error(
-        last.unwrap_or_else(|| std::io::Error::other("aucune adresse")),
-        true,
-    ))
-}
-
-/// Ouvre une connexion TCP vers `host:port` par `route`. `peer` : adresse déjà joignable
-/// (connexion de données en direct, celle de la connexion de commande).
-async fn dial(
-    route: &Route,
-    host: &str,
-    port: u16,
-    peer: Option<SocketAddr>,
-) -> Result<TcpStream, NetError> {
-    match route {
-        Route::Direct { public_only } => match peer {
-            Some(addr) => {
-                if *public_only && !reach::is_public(addr.ip()) {
-                    return Err(NetError::AddressForbidden);
-                }
-                connect_any(&[addr]).await
-            }
-            None => connect_any(&resolve(host, port, *public_only).await?).await,
-        },
-        Route::Socks {
-            proxy,
-            login,
-            local,
-            public_only,
-        } => {
-            let target = if *local {
-                let addrs = resolve(host, port, *public_only).await?;
-                SocksTarget::Addr(addrs[0])
-            } else {
-                SocksTarget::Name(host.to_owned(), port)
-            };
-            let stream = TcpStream::connect(proxy.as_str())
-                .await
-                .map_err(|e| NetError::Proxy(format!("proxy SOCKS5 injoignable : {e}")))?;
-            let login = login.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
-            socks::handshake(stream, &target, login)
-                .await
-                .map_err(|e| net_error(e, true))
-        }
     }
 }
 
@@ -974,12 +769,6 @@ impl Context<'_> {
     }
 }
 
-fn route_public(route: &Route) -> bool {
-    match route {
-        Route::Direct { public_only } | Route::Socks { public_only, .. } => *public_only,
-    }
-}
-
 /// Octets d'un `RETR` : au plus ceux de la plage, puis `ABOR` (ou la réponse de fin à la
 /// fin du fichier) et la connexion de commande rendue à la réserve.
 pub struct FtpBody {
@@ -1045,7 +834,7 @@ impl FtpBody {
             if self.remaining.is_some() {
                 self.stream = None;
                 self.session = None;
-                return Err(NetError::FtpNet {
+                return Err(NetError::Socket {
                     connect: false,
                     text: "connexion de données fermée avant la fin".into(),
                 });

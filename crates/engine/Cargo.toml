@@ -47,6 +47,10 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 # FTP et FTPS (F-08, SPEC §7.22, module `net::ftp`) : TLS par rustls et aws-lc, comme le
 # reste du moteur ; `deprecated` : TLS implicite (`ftps://`).
 suppaftp = { version = "13.0.0", default-features = false, features = ["tokio-rustls-aws-lc-rs", "deprecated"] }
+# SFTP (F-08, SPEC §7.22, module `net::sftp`) : SSH en Rust pur, aws-lc comme le reste du
+# moteur ; `rsa` : clés privées RSA des utilisateurs.
+russh = { version = "0.65.2", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh-sftp = "3.0.1"
 # Certificats des serveurs FTPS vérifiés comme ceux de HTTPS ; déjà tirée par reqwest.
 rustls-platform-verifier = "0.7.1"
 # Certificat refusé dans la chaîne d'erreurs de reqwest ; serveur TLS de l'interface
@@ -98,6 +102,8 @@ libunftp = { version = "0.25.0", default-features = false, features = ["aws_lc_r
 unftp-sbe-fs = "0.4.1"
 unftp-core = "0.1.1"
 async-trait = "0.1.89"
+# Clés SSH fabriquées par les tests SFTP (`testing::sftp`) ; déjà tirée par russh.
+rand = { version = "0.10", features = ["thread_rng"] }
 # Temps simulé pour les tests des seaux de jetons (`limit`).
 tokio = { version = "1.53.3", features = ["macros", "rt", "test-util", "time"] }
 

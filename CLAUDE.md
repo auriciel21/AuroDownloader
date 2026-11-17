@@ -162,6 +162,14 @@ téléchargement.
   HTTP(S) : miroirs, analyse de liens, plugins), identifiants de l'adresse rangés au coffre à
   l'ajout (`ftp::split_credentials`) ; tâches FTP de sorte `http`, une source, 4 connexions
   au plus en automatique ; serveur de test `testing::ftp` (libunftp, tests seulement).
+  SFTP (F-08, SPEC 7.22, étape 6c) : `net::sftp` (russh et russh-sftp ; clé du serveur
+  comparée à `HostKeys`, chargées de `ssh_host_keys` au démarrage, migration 14 ; clé inconnue
+  ou changée gardée en attente en mémoire, `HOST_KEY_UNKNOWN` / `HOST_KEY_CHANGED` ; une
+  connexion SSH par segment, réserve `sftp::Shared` ; identifiants à clé privée
+  `site_logins.key_path`, `Auth::with_key`), `net::dial` (connexions TCP communes à FTP et
+  SFTP : SOCKS5, réseau public), `store::host_keys` ; méthodes `hostkey.list`,
+  `hostkey.accept` (relance les tâches bloquées), `hostkey.remove` ; CLI `auro hostkey`,
+  `auro login set --key` ; serveur de test `testing::sftp` (russh, tests seulement).
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -688,7 +696,9 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   l'utilisateur ; mot de passe FTP seulement sous TLS sauf autorisation par site ; SFTP par
   mot de passe ou clé privée ; SOCKS5 seulement ; un fichier par adresse ; Android aussi) ;
   6a prototype (`experiments/ftp`, 59c6cb9), Rust 1.88 (04cf712), 6b moteur FTP et FTPS
-  écrit le 2026-11-17 ; 6c SFTP, 6d interfaces, 6e essais réels ensuite ;
+  écrit le 2026-11-17 (13aa7a5) ; 6c moteur SFTP écrit le même jour (décisions : clé
+  acceptée relance seule ses tâches, `known_hosts` jamais lu, clé privée dans les identifiants
+  de sites) ; 6d interfaces, 6e essais réels ensuite ;
   7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

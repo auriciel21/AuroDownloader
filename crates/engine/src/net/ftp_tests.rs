@@ -65,7 +65,10 @@ fn credentials_leave_the_address() {
     assert_eq!((same.as_str(), none), ("ftp://h/f.iso", None));
     let header = basic_header("moi", "s@cret");
     let headers = vec![("Authorization".to_owned(), header)];
-    assert_eq!(from_header(&headers), Some(("moi".into(), "s@cret".into())));
+    assert_eq!(
+        basic_credentials(&headers),
+        Some(("moi".into(), "s@cret".into()))
+    );
 }
 
 #[test]

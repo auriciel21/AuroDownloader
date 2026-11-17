@@ -11,6 +11,8 @@
 pub mod ftp;
 pub mod plugin_files;
 pub mod proxies;
+#[cfg(test)]
+pub mod sftp;
 pub mod swarm;
 pub mod tools;
 

@@ -376,12 +376,48 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     .get("allowPlain")
                     .map(|_| p.bool("allowPlain"))
                     .transpose()?,
+                key_path: p.str("keyPath")?,
             };
             Ok(login_json(&ctx.engine.set_login(change).await?))
         }
         "login.delete" => {
             ctx.engine.delete_login(&p.required_str("loginId")?).await?;
             Ok(json!({}))
+        }
+        // Clés des serveurs SSH (SFTP, SPEC §7.22).
+        "hostkey.list" => {
+            let (accepted, pending) = ctx.engine.host_keys().await?;
+            Ok(json!({
+                "items": accepted.iter().map(|k| json!({
+                    "host": k.host,
+                    "port": k.port,
+                    "algorithm": k.algorithm,
+                    "fingerprint": k.fingerprint,
+                    "acceptedAt": k.accepted_at,
+                })).collect::<Vec<_>>(),
+                "pending": pending.iter().map(|k| json!({
+                    "host": k.host,
+                    "port": k.port,
+                    "algorithm": k.algorithm,
+                    "fingerprint": k.fingerprint,
+                    "changed": k.changed,
+                    "seenAt": k.seen_at,
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        "hostkey.accept" => {
+            let (host, port) = host_and_port(&p)?;
+            let fingerprint = p.required_str("fingerprint")?;
+            let resumed = ctx
+                .engine
+                .accept_host_key(&host, port, &fingerprint)
+                .await?;
+            Ok(json!({"resumed": resumed}))
+        }
+        "hostkey.remove" => {
+            let (host, port) = host_and_port(&p)?;
+            let removed = ctx.engine.remove_host_key(&host, port).await?;
+            Ok(json!({"removed": removed}))
         }
         // Jetons de l'interface distante (SPEC §7.19) ; le jeton n'est rendu qu'ici.
         "token.create" => {
@@ -1039,12 +1075,24 @@ fn token_json(t: &crate::store::remote::TokenRow) -> Value {
     })
 }
 
+/// `host` et `port` (1 à 65535) d'une clé SSH.
+fn host_and_port(p: &Params) -> Result<(String, u16), RpcError> {
+    let host = p.required_str("host")?;
+    let port = p
+        .u32("port")?
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| Params::wrong("port", "port de 1 à 65535"))?;
+    Ok((host, port))
+}
+
 fn login_json(l: &LoginView) -> Value {
     json!({
         "loginId": l.id,
         "site": l.site,
         "username": l.username,
         "allowPlain": l.allow_plain,
+        "keyPath": l.key_path,
     })
 }
 

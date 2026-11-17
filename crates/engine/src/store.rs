@@ -16,6 +16,7 @@ use crate::segmenter::CoverageError;
 pub mod claims;
 pub mod headers;
 pub mod history;
+pub mod host_keys;
 pub mod logins;
 pub mod media;
 pub mod moves;
@@ -110,6 +111,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "ftp_plain",
         sql: include_str!("../migrations/0013_ftp_plain.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "sftp",
+        sql: include_str!("../migrations/0014_sftp.sql"),
     },
 ];
 
@@ -319,7 +325,7 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 22] = [
+    const EXPECTED_TABLES: [&str; 23] = [
         "event_log",
         "file_moves",
         "history",
@@ -337,6 +343,7 @@ mod tests {
         "settings",
         "site_logins",
         "sources",
+        "ssh_host_keys",
         "task_files",
         "task_headers",
         "task_pieces",
@@ -386,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_22_tables_of_the_spec() {
+    fn migrations_create_the_23_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());

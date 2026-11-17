@@ -529,16 +529,15 @@ async fn request_headers(
 }
 
 /// Identifiants enregistrés pour le site de `url` (SPEC §7.14). Aucun si la tâche porte
-/// son propre en-tête `Authorization` : il passe avant. En FTP (F-08), ceux du site viennent
-/// toujours, pour son autorisation « sans chiffrement » ; l'en-tête de la tâche y passe quand
-/// même avant eux (`net::ftp`).
+/// son propre en-tête `Authorization` : il passe avant. En FTP et SFTP (F-08), ceux du site
+/// viennent toujours (autorisation « sans chiffrement », clé privée) ; l'en-tête de la tâche
+/// y passe quand même avant eux (`net::ftp`, `net::sftp`).
 fn site_login(
     conn: &Connection,
     url: &str,
     task_headers: &[(String, String)],
 ) -> Result<Option<LoginRow>, TransferError> {
-    let ftp = crate::net::parse_task_url(url).is_ok_and(|u| crate::net::ftp::is_ftp(&u));
-    if !ftp
+    if !crate::net::is_file_transfer(url)
         && task_headers
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
@@ -566,7 +565,8 @@ async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Aut
                 username: login.username,
                 password,
             })
-            .allowing_plain(login.allow_plain),
+            .allowing_plain(login.allow_plain)
+            .with_key(login.key_path),
         ))),
         Ok(None) => {
             tracing::warn!(host = %login.site, "mot de passe absent du coffre, non envoyé");
@@ -1390,9 +1390,9 @@ fn auto_cap(client: &Client, url: &str, opts: &Options) -> u32 {
     let cap = host_of(url)
         .and_then(|h| client.host_cap(&h))
         .map_or(opts.auto_max, |c| c.min(opts.auto_max));
-    // FTP (F-08, SPEC §7.22) : 4 au plus, beaucoup de serveurs limitant les connexions
-    // par adresse.
-    if crate::net::parse_task_url(url).is_ok_and(|u| crate::net::ftp::is_ftp(&u)) {
+    // FTP et SFTP (F-08, SPEC §7.22) : 4 au plus, beaucoup de serveurs limitant les
+    // connexions par adresse.
+    if crate::net::is_file_transfer(url) {
         cap.min(crate::net::ftp::MAX_AUTO_CONNECTIONS)
     } else {
         cap

@@ -452,6 +452,15 @@ fn report(task: &Value) -> Result<()> {
              fichier à retélécharger : auro restart {id} --delete-files. {}",
             detail(task)
         ),
+        // SFTP (F-08) : la clé du serveur attend la décision de l'utilisateur.
+        "failed" if task["errorCode"] == "HOST_KEY_UNKNOWN" => bail!(
+            "{} ; empreinte à vérifier auprès de l'administrateur du serveur, puis : auro \n             hostkey accept <serveur> <empreinte> (la tâche repartira seule) ; voir auro \n             hostkey list",
+            detail(task)
+        ),
+        "failed" if task["errorCode"] == "HOST_KEY_CHANGED" => bail!(
+            "{} ; si l'administrateur du serveur confirme ce changement : auro hostkey accept \n             <serveur> <empreinte> (voir auro hostkey list)",
+            detail(task)
+        ),
         "failed" if task["errorCode"] == "TOOLS_MISSING" => {
             bail!("outils de la vidéo absents : auro video tools --install, puis auro resume {id}")
         }
@@ -1566,8 +1575,12 @@ pub async fn logins(rpc: &mut Rpc) -> Result<()> {
         } else {
             ""
         };
+        let key = item["keyPath"]
+            .as_str()
+            .map(|k| format!("  (clé privée {k})"))
+            .unwrap_or_default();
         println!(
-            "{:<40} {}{plain}",
+            "{:<40} {}{key}{plain}",
             item["site"].as_str().unwrap_or_default(),
             item["username"].as_str().unwrap_or_default()
         );
@@ -1589,34 +1602,157 @@ async fn login_of(rpc: &mut Rpc, site: &str) -> Result<Option<Value>> {
 
 /// Enregistre ou modifie les identifiants d'un site ; `password` absent : celui déjà
 /// enregistré reste. `allow_plain` : FTP sans chiffrement permis (F-08) ; absent : inchangé.
+/// Ce que `auro login set` change, en plus du site et du nom.
+pub struct LoginChange {
+    /// `None` : celui déjà enregistré reste.
+    pub password: Option<String>,
+    /// FTP sans chiffrement permis (F-08) ; `None` : inchangé.
+    pub allow_plain: Option<bool>,
+    /// SFTP : fichier de clé privée ; `Some("")` la retire ; `None` : inchangée.
+    pub key_path: Option<String>,
+}
+
 pub async fn login_set(
     rpc: &mut Rpc,
     site: &str,
     username: &str,
-    password: Option<String>,
-    allow_plain: Option<bool>,
+    change: LoginChange,
 ) -> Result<()> {
     let mut params = json!({"site": site, "username": username});
     if let Some(existing) = login_of(rpc, site).await? {
         params["loginId"] = existing["loginId"].clone();
     }
-    if let Some(password) = password {
+    if let Some(password) = change.password {
         params["password"] = json!(password);
     }
-    if let Some(allow) = allow_plain {
+    if let Some(allow) = change.allow_plain {
         params["allowPlain"] = json!(allow);
     }
+    if let Some(key) = change.key_path {
+        params["keyPath"] = json!(key);
+    }
     let saved = rpc.call("login.set", params).await?;
-    println!(
-        "Identifiants de {} enregistrés ({}) ; le mot de passe est dans le coffre du système.",
+    let (site, username) = (
         saved["site"].as_str().unwrap_or(site),
-        saved["username"].as_str().unwrap_or(username)
+        saved["username"].as_str().unwrap_or(username),
     );
+    match saved["keyPath"].as_str() {
+        Some(key) => println!(
+            "Identifiants de {site} enregistrés ({username}, clé privée {key}) ; la phrase de \
+             passe est dans le coffre du système."
+        ),
+        None => println!(
+            "Identifiants de {site} enregistrés ({username}) ; le mot de passe est dans le \
+             coffre du système."
+        ),
+    }
     if saved["allowPlain"] == true {
         println!(
             "FTP sans chiffrement autorisé pour ce site : le mot de passe peut y passer en clair."
         );
     }
+    Ok(())
+}
+
+/// `hôte` ou `hôte:port` (22 par défaut), `[adresse IPv6]:port` compris.
+fn server_of(text: &str) -> Result<(String, u16)> {
+    let text = text.trim();
+    let (host, port) = if let Some(rest) = text.strip_prefix('[') {
+        let (host, after) = rest
+            .split_once(']')
+            .with_context(|| format!("serveur illisible : {text}"))?;
+        (host, after.strip_prefix(':'))
+    } else if text.matches(':').count() == 1 {
+        let (host, port) = text.split_once(':').expect("un deux-points");
+        (host, Some(port))
+    } else {
+        (text, None)
+    };
+    let port = match port {
+        Some(p) => p
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0)
+            .with_context(|| format!("port illisible : {p}"))?,
+        None => 22,
+    };
+    if host.is_empty() {
+        bail!("serveur illisible : {text}");
+    }
+    Ok((host.to_ascii_lowercase(), port))
+}
+
+/// Clés des serveurs SSH : acceptées, puis en attente d'une décision.
+pub async fn host_keys(rpc: &mut Rpc) -> Result<()> {
+    let keys = rpc.call("hostkey.list", json!({})).await?;
+    let items = keys["items"].as_array().cloned().unwrap_or_default();
+    let pending = keys["pending"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() && pending.is_empty() {
+        println!("Aucune clé de serveur SSH.");
+    }
+    let server = |k: &Value| {
+        let host = k["host"].as_str().unwrap_or_default();
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        format!("{host}:{}", k["port"])
+    };
+    for k in &items {
+        println!(
+            "{:<32} {} {}",
+            server(k),
+            k["algorithm"].as_str().unwrap_or_default(),
+            k["fingerprint"].as_str().unwrap_or_default()
+        );
+    }
+    for k in &pending {
+        let why = if k["changed"] == true {
+            "CLÉ CHANGÉE (attaque possible)"
+        } else {
+            "inconnue"
+        };
+        println!(
+            "{:<32} {} {}  en attente : {why}",
+            server(k),
+            k["algorithm"].as_str().unwrap_or_default(),
+            k["fingerprint"].as_str().unwrap_or_default()
+        );
+    }
+    if !pending.is_empty() {
+        println!(
+            "Vérifier l'empreinte auprès de l'administrateur du serveur, puis : auro hostkey \
+             accept <serveur> <empreinte>"
+        );
+    }
+    Ok(())
+}
+
+/// Accepte la clé en attente d'un serveur ; les tâches qu'elle bloquait repartent.
+pub async fn host_key_accept(rpc: &mut Rpc, server: &str, fingerprint: &str) -> Result<()> {
+    let (host, port) = server_of(server)?;
+    let done = rpc
+        .call(
+            "hostkey.accept",
+            json!({"host": host, "port": port, "fingerprint": fingerprint.trim()}),
+        )
+        .await?;
+    let resumed = done["resumed"].as_array().map_or(0, Vec::len);
+    println!("Clé de {host}:{port} acceptée ; {resumed} tâche(s) relancée(s).");
+    Ok(())
+}
+
+/// Oublie la clé acceptée d'un serveur.
+pub async fn host_key_remove(rpc: &mut Rpc, server: &str) -> Result<()> {
+    let (host, port) = server_of(server)?;
+    let done = rpc
+        .call("hostkey.remove", json!({"host": host, "port": port}))
+        .await?;
+    if done["removed"] != true {
+        bail!("aucune clé acceptée pour {host}:{port}");
+    }
+    println!("Clé de {host}:{port} oubliée : la prochaine connexion la montrera de nouveau.");
     Ok(())
 }
 

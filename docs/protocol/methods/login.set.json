@@ -22,6 +22,10 @@
         "allowPlain": {
           "description": "FTP sans chiffrement permis pour ce site (F-08) ; absent : inchangé, faux pour de nouveaux identifiants.",
           "type": "boolean"
+        },
+        "keyPath": {
+          "description": "SFTP : chemin absolu d'un fichier de clé privée (le mot de passe devient sa phrase de passe, vide permise) ; chaîne vide : retirée ; absent : inchangé.",
+          "type": "string"
         }
       },
       "required": [

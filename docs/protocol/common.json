@@ -795,6 +795,10 @@
         "allowPlain": {
           "description": "FTP sans chiffrement permis pour ce site (F-08, SPEC 7.22).",
           "type": "boolean"
+        },
+        "keyPath": {
+          "description": "SFTP : fichier de clé privée ; le mot de passe est alors sa phrase de passe.",
+          "type": ["string", "null"]
         }
       },
       "required": [

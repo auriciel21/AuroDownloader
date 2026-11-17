@@ -4525,3 +4525,107 @@ async fn a_refused_fresh_link_leaves_no_cookie_on_the_old_address() {
     );
     crate::testing::stop(&engine).await;
 }
+
+/// SFTP (F-08, SPEC §7.22) : une clé de serveur inconnue arrête la tâche ; `hostkey.list`
+/// la montre, `hostkey.accept` l'enregistre et relance la tâche, qui finit ; une clé qui
+/// change ensuite bloque de nouveau. Les identifiants de l'adresse vont au coffre.
+#[tokio::test]
+async fn an_sftp_host_key_is_accepted_then_the_task_resumes() {
+    use crate::testing::sftp::{SftpOptions, SftpSite};
+    const LEN: usize = 600_000;
+    let dir = tempfile::tempdir().unwrap();
+    let site = SftpSite::start(SftpOptions {
+        password: Some(("moi", "s3cr3t-ssh")),
+        ..SftpOptions::default()
+    })
+    .await;
+    site.put("pub/f.bin", &crate::testing::content(LEN));
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let url = format!("sftp://moi:s3cr3t-ssh@{}/pub/f.bin", site.addr);
+    let added = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": url}], "destDir": dir_text(dir.path())}),
+        )
+        .await;
+    let id = added["taskId"].as_str().unwrap().to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "failed"
+    })
+    .await;
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["errorCode"], "HOST_KEY_UNKNOWN", "{task}");
+    assert!(!task.to_string().contains("s3cr3t"), "{task}");
+
+    let keys = c.result("hostkey.list", json!({})).await;
+    assert_eq!(keys["items"], json!([]));
+    let pending = &keys["pending"][0];
+    assert_eq!(pending["fingerprint"], site.fingerprint().as_str());
+    assert_eq!(pending["changed"], false);
+    let (host, port) = (pending["host"].clone(), pending["port"].clone());
+    assert_eq!(
+        c.error_code(
+            "hostkey.accept",
+            json!({"host": host, "port": port, "fingerprint": "SHA256:autre"}),
+        )
+        .await,
+        "INVALID_PARAMS"
+    );
+    let accepted = c
+        .result(
+            "hostkey.accept",
+            json!({"host": host, "port": port, "fingerprint": site.fingerprint()}),
+        )
+        .await;
+    assert_eq!(accepted["resumed"], json!([id]));
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "completed"
+    })
+    .await;
+    assert_eq!(
+        std::fs::read(dir.path().join("f.bin")).unwrap(),
+        crate::testing::content(LEN)
+    );
+    let keys = c.result("hostkey.list", json!({})).await;
+    assert_eq!(keys["items"][0]["fingerprint"], site.fingerprint().as_str());
+    assert_eq!(keys["pending"], json!([]));
+
+    // Clé changée, après un redémarrage (la clé acceptée est relue de la base ; une
+    // connexion déjà ouverte, elle, a été vérifiée à son ouverture) : la tâche suivante est
+    // bloquée, la nouvelle empreinte en attente.
+    crate::testing::stop(&engine).await;
+    site.replace_host_key();
+    let engine = self::engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    let again = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": url}], "destDir": dir_text(dir.path()), "fileName": "g.bin"}),
+        )
+        .await;
+    let again = again["taskId"].as_str().unwrap().to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == again.as_str() && p["to"] == "failed"
+    })
+    .await;
+    let task = c.result("task.get", json!({"taskId": again})).await;
+    assert_eq!(task["errorCode"], "HOST_KEY_CHANGED", "{task}");
+    let keys = c.result("hostkey.list", json!({})).await;
+    assert_eq!(keys["pending"][0]["changed"], true);
+    let removed = c
+        .result("hostkey.remove", json!({"host": host, "port": port}))
+        .await;
+    assert_eq!(removed["removed"], true);
+    assert_eq!(
+        c.result("hostkey.list", json!({})).await["items"],
+        json!([])
+    );
+    crate::testing::stop(&engine).await;
+}

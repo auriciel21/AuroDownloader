@@ -2281,3 +2281,55 @@ async fn ftp_tasks_download_in_segments_and_keep_the_password_in_the_vault() {
     }
     engine.shutdown().await;
 }
+
+/// Identifiants à clé privée (SFTP, SPEC §7.22) : un fichier existant, une phrase de passe
+/// vide permise ; repasser au mot de passe demande de le redonner.
+#[tokio::test]
+async fn site_logins_take_a_private_key_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("id_ed25519");
+    std::fs::write(&key, "clé").unwrap();
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let key_text = key.to_string_lossy().into_owned();
+    let missing = LoginChange {
+        site: "sftp://ssh.exemple.org".into(),
+        username: "moi".into(),
+        key_path: Some(dir.path().join("absente").to_string_lossy().into_owned()),
+        ..LoginChange::default()
+    };
+    assert!(matches!(
+        engine.set_login(missing).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    let saved = engine
+        .set_login(LoginChange {
+            site: "sftp://ssh.exemple.org".into(),
+            username: "moi".into(),
+            key_path: Some(key_text.clone()),
+            ..LoginChange::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved.key_path.as_deref(), Some(key_text.as_str()));
+    let back = LoginChange {
+        id: Some(saved.id.clone()),
+        site: saved.site.clone(),
+        username: "moi".into(),
+        key_path: Some(String::new()),
+        ..LoginChange::default()
+    };
+    assert!(matches!(
+        engine.set_login(back.clone()).await,
+        Err(EngineError::BadRequest(_))
+    ));
+    let plain = engine
+        .set_login(LoginChange {
+            password: Some("mot".into()),
+            ..back
+        })
+        .await
+        .unwrap();
+    assert_eq!(plain.key_path, None);
+    assert_eq!(engine.logins().await.unwrap(), vec![plain]);
+    engine.shutdown().await;
+}

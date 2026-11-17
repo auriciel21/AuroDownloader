@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/hostkey.list.json",
+  "title": "hostkey.list",
+  "description": "Clés des serveurs SSH (SFTP, SPEC 7.22) : acceptées par l'utilisateur, et vues en attente de sa décision (inconnues ou changées).",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "key": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "algorithm": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "description": "Empreinte SHA-256, comme l'affiche OpenSSH (SHA256:…).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "port",
+        "algorithm",
+        "fingerprint"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/key"
+              },
+              {
+                "properties": {
+                  "acceptedAt": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "acceptedAt"
+                ]
+              }
+            ]
+          }
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/key"
+              },
+              {
+                "properties": {
+                  "changed": {
+                    "description": "Une autre clé était acceptée pour ce serveur.",
+                    "type": "boolean"
+                  },
+                  "seenAt": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "seenAt"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "items",
+        "pending"
+      ]
+    }
+  }
+}
