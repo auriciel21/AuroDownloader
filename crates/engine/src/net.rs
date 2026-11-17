@@ -251,18 +251,17 @@ fn has_cause<T: std::error::Error + 'static>(error: &(dyn std::error::Error + 's
 fn is_certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(e) = current {
-        if let Some(tls) = e.downcast_ref::<rustls::Error>() {
-            if matches!(tls, rustls::Error::InvalidCertificate(_)) {
-                return true;
-            }
+        if let Some(tls) = e.downcast_ref::<rustls::Error>()
+            && matches!(tls, rustls::Error::InvalidCertificate(_))
+        {
+            return true;
         }
         if let Some(inner) = e
             .downcast_ref::<std::io::Error>()
             .and_then(std::io::Error::get_ref)
+            && is_certificate_error(inner)
         {
-            if is_certificate_error(inner) {
-                return true;
-            }
+            return true;
         }
         current = e.source();
     }

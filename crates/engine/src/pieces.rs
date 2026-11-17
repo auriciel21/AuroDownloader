@@ -79,7 +79,7 @@ impl Pieces {
     /// Relit la colonne `task_pieces.hashes`.
     pub fn from_sql(algo: Algo, length: u64, text: &str) -> Result<Self, String> {
         let width = algo.hex_len();
-        if text.is_empty() || text.len() % width != 0 || !text.is_ascii() {
+        if text.is_empty() || !text.len().is_multiple_of(width) || !text.is_ascii() {
             return Err("empreintes de morceaux mal enregistrées".into());
         }
         let hashes = (0..text.len() / width)

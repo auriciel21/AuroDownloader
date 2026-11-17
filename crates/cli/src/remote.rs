@@ -1003,10 +1003,10 @@ impl Follow {
                 interrupted = true;
                 let ids: Vec<&String> = self.targets.iter().collect();
                 eprintln!("\nMise en pause… (Ctrl-C de nouveau pour quitter sans attendre)");
-                if let Err(e) = rpc.call("task.pause", json!({"taskIds": ids})).await {
-                    if e.downcast_ref::<EngineRefused>().is_none() {
-                        return Err(e);
-                    }
+                if let Err(e) = rpc.call("task.pause", json!({"taskIds": ids})).await
+                    && e.downcast_ref::<EngineRefused>().is_none()
+                {
+                    return Err(e);
                 }
                 continue;
             };

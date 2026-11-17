@@ -99,10 +99,10 @@ async fn added_tasks_run_and_complete() {
     let mut left: HashSet<String> = ids.iter().cloned().collect();
     timeout(WAIT, async {
         while !left.is_empty() {
-            if let Ok(Event::StateChanged { task_id, to, .. }) = events.recv().await {
-                if to == TaskState::Completed {
-                    left.remove(&task_id);
-                }
+            if let Ok(Event::StateChanged { task_id, to, .. }) = events.recv().await
+                && to == TaskState::Completed
+            {
+                left.remove(&task_id);
             }
         }
     })
@@ -633,10 +633,9 @@ async fn state_changes_carry_the_pause_reason() {
                 pause_reason,
                 ..
             }) = events.recv().await
+                && task_id == id
             {
-                if task_id == id {
-                    return pause_reason;
-                }
+                return pause_reason;
             }
         }
     })
@@ -791,10 +790,9 @@ async fn task_and_queue_limits_change_on_the_fly() {
             if let Ok(Event::TaskUpdated {
                 task_id, update, ..
             }) = events.recv().await
+                && task_id == id
             {
-                if task_id == id {
-                    return update;
-                }
+                return update;
             }
         }
     })

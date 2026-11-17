@@ -498,27 +498,27 @@ mod tests {
         let pick = |i: usize| (len > 0).then(|| i % len);
         match *op {
             Op::Activate(i) => {
-                if let Some(s) = pick(i).map(|k| &mut segments[k]) {
-                    if matches!(s.state, SegmentState::Pending | SegmentState::Failed) {
-                        s.state = SegmentState::Active;
-                    }
+                if let Some(s) = pick(i).map(|k| &mut segments[k])
+                    && matches!(s.state, SegmentState::Pending | SegmentState::Failed)
+                {
+                    s.state = SegmentState::Active;
                 }
             }
             Op::Write(i, n) => {
-                if let Some(s) = pick(i).map(|k| &mut segments[k]) {
-                    if s.state == SegmentState::Active {
-                        s.written += n.min(s.remaining());
-                        if s.remaining() == 0 {
-                            s.state = SegmentState::Done;
-                        }
+                if let Some(s) = pick(i).map(|k| &mut segments[k])
+                    && s.state == SegmentState::Active
+                {
+                    s.written += n.min(s.remaining());
+                    if s.remaining() == 0 {
+                        s.state = SegmentState::Done;
                     }
                 }
             }
             Op::Fail(i) => {
-                if let Some(s) = pick(i).map(|k| &mut segments[k]) {
-                    if s.state == SegmentState::Active {
-                        s.state = SegmentState::Failed;
-                    }
+                if let Some(s) = pick(i).map(|k| &mut segments[k])
+                    && s.state == SegmentState::Active
+                {
+                    s.state = SegmentState::Failed;
                 }
             }
             Op::Split => {

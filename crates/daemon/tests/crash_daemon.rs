@@ -180,7 +180,7 @@ impl Bench {
             let mut params = json!({"sources": [{"url": url}], "destDir": dest});
             // Deux tâches sur trois ont un miroir, validé pendant le téléchargement puis
             // utilisé : des arrêts tombent pendant sa validation et pendant la répartition.
-            if self.added % 3 != 0 {
+            if !self.added.is_multiple_of(3) {
                 let mirror = format!("{}/miroir/f{}.bin", self.mirror_url, self.added);
                 params["sources"]
                     .as_array_mut()
@@ -190,7 +190,7 @@ impl Bench {
             }
             // Une tâche sur deux a son empreinte (F-11) : des arrêts tombent pendant son
             // calcul.
-            if self.added % 2 == 0 {
+            if self.added.is_multiple_of(2) {
                 params["checksum"] = json!({"algo": "sha256", "value": self.sha256});
             }
             if let Some(n) = CONNECTION_CHOICES[rng.below(CONNECTION_CHOICES.len() as u64) as usize]
