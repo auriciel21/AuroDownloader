@@ -996,7 +996,15 @@ mod planning {
         // La plage s'ouvre : elle part.
         WINDOW_CLOCK.store(monday(13, 0), Ordering::SeqCst);
         wait_state(&mut events, &id, TaskState::Active).await;
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Des octets enregistrés avant la fermeture : attendus, pas supposés au bout d'un
+        // délai fixe (toute la suite en parallèle retarde le premier point de contrôle).
+        timeout(Duration::from_secs(10), async {
+            while engine.get(&id).await.unwrap().done_bytes == 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("des octets enregistrés pendant la plage");
 
         // La plage se ferme : elle retourne en file ; ce qu'elle a reçu reste.
         WINDOW_CLOCK.store(monday(14, 0), Ordering::SeqCst);

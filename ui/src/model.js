@@ -108,9 +108,13 @@ export const canCancel = (state) =>
 export const canRemove = (state) => ["completed", "failed", "cancelled"].includes(state);
 /// Détail d'une tâche (`task.get` avec segments) à relire : sauf s'il a été lu une fois la
 /// tâche finie. Un détail lu pendant le téléchargement montre encore des segments en
-/// réception, même si la tâche s'est terminée depuis.
-export const detailsOutdated = (details, taskId) =>
-  details?.taskId !== taskId || !["completed", "failed", "cancelled"].includes(details.state);
+/// réception, même si la tâche s'est terminée depuis. `stateRev` : révision du dernier
+/// changement d'état connu de la tâche ; un détail lu à une autre se relit (tâche relancée
+/// qui a fini de nouveau entre deux lectures).
+export const detailsOutdated = (details, taskId, stateRev = null) =>
+  details?.taskId !== taskId
+  || (details.stateRev ?? null) !== (stateRev ?? null)
+  || !["completed", "failed", "cancelled"].includes(details.state);
 // Retéléchargement depuis le début (`task.restart`) : tout ce qui ne tourne pas ni n'attend
 // son tour.
 export const canRestart = (state) => ["completed", "failed", "cancelled", "paused", "retry_wait"].includes(state);
@@ -396,6 +400,8 @@ export class TaskStore {
           break;
         }
         task.state = params.to;
+        // Révision de ce changement : le détail lu avant se relit (`detailsOutdated`).
+        task.stateRev = params.rev;
         task.pauseReason = params.pauseReason ?? null;
         task.errorCode = params.errorCode ?? null;
         if (params.to !== "active") {

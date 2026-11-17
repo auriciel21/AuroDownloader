@@ -395,6 +395,16 @@ test("le détail d'une tâche lu pendant le téléchargement se relit une fois l
   for (const state of ["completed", "failed", "cancelled"]) {
     assert.ok(!detailsOutdated({ taskId: "a", state }, "a"), state);
   }
+  // Relancée puis de nouveau en échec entre deux lectures (F-12) : l'état est le même,
+  // mais il a changé depuis la lecture.
+  const store = new TaskStore();
+  store.load(snapshot(1, [task("a", "failed")]));
+  const read = { taskId: "a", state: "failed", stateRev: store.tasks.get("a").stateRev ?? null };
+  assert.ok(!detailsOutdated(read, "a", store.tasks.get("a").stateRev));
+  store.apply("task.stateChanged", { rev: 2, taskId: "a", from: "failed", to: "queued" });
+  store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "verifying", to: "failed" });
+  assert.ok(detailsOutdated(read, "a", store.tasks.get("a").stateRev), "relu après la relance");
+  assert.ok(!detailsOutdated({ ...read, stateRev: 3 }, "a", store.tasks.get("a").stateRev));
 });
 
 test("l'annonce du réseau (Android) avance la révision sans recharger", () => {

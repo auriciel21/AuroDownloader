@@ -919,8 +919,10 @@ let detailsTimer = 0;
 async function refreshDetails() {
   const id = detailsTask;
   if (!id || !connected) return;
-  // Une tâche finie ne change plus : une seule lecture suffit, faite après la fin.
-  if (!detailsOutdated(detailsFull, id)) return;
+  // Une tâche finie ne change plus : une seule lecture suffit, faite après la fin — sauf
+  // si son état a changé depuis (relancée, retéléchargée).
+  const stateRev = store.tasks.get(id)?.stateRev ?? null;
+  if (!detailsOutdated(detailsFull, id, stateRev)) return;
   let full;
   // Un torrent : ses fichiers (SPEC §6.5) ; il n'a pas de segments.
   const include = store.tasks.get(id)?.kind === "torrent" ? ["sources", "files"] : ["segments", "sources"];
@@ -930,6 +932,8 @@ async function refreshDetails() {
     return; // Tâche retirée ou moteur perdu : la notification suivra.
   }
   if (detailsTask !== id) return;
+  // Révision lue avant la demande : un changement pendant celle-ci fera relire.
+  full.stateRev = stateRev;
   detailsFull = full;
   renderDetails();
 }

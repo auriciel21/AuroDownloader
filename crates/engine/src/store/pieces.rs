@@ -126,7 +126,7 @@ pub fn start_round(
                 "UPDATE sources SET state = 'failed', last_error = ?2 WHERE id = ?1",
                 params![
                     source_id,
-                    format!("{SET_ASIDE_AFTER} morceaux faux envoyés : source écartée")
+                    format!("{SET_ASIDE_AFTER} morceaux faux envoyés")
                 ],
             )?;
             set_aside.push(source_id.clone());
