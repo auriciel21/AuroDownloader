@@ -9,6 +9,7 @@ import {
   reclassifyLink,
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
+  splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, moveRule,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -668,4 +669,41 @@ test("plugins : pages candidates et noms des liens rendus", () => {
   assert.equal(pluginLinkName({ url: "https://cdn.exemple/x/f.iso?jeton=1", name: "Debian.iso" }), "Debian.iso");
   assert.equal(pluginLinkName({ url: "https://cdn.exemple/x/f.iso?jeton=1#a", name: null }), "f.iso");
   assert.equal(pluginLinkName({ url: "https://cdn.exemple/", name: "" }), "https://cdn.exemple/");
+});
+
+test("règles : champs de la boîte, résumé, ordre (SPEC §7.21)", () => {
+  assert.deepEqual(splitList(" .ISO, iso;pdf  zip ", { extensions: true }), ["iso", "pdf", "zip"]);
+  assert.deepEqual(splitList("Debian.org,\nubuntu.com"), ["debian.org", "ubuntu.com"]);
+  assert.deepEqual(splitList(""), []);
+  assert.deepEqual(splitArgs("--scan\n\n{chemin}\r\nun argument\n"), ["--scan", "{chemin}", "un argument"]);
+
+  const rule = ruleFromFields({
+    name: " Images ", enabled: true, categories: ["images"], extensions: ".iso", domains: "",
+    urlRegex: "", nameRegex: " ^photo", folder: " Rangées/Images ", rename: "",
+    program: "", args: "ignoré", timeout: "",
+  });
+  assert.deepEqual(rule, {
+    name: "Images", enabled: true,
+    match: { categories: ["images"], extensions: ["iso"], domains: [], urlRegex: null, nameRegex: " ^photo" },
+    actions: { folder: "Rangées/Images", rename: null, command: null },
+  });
+  const withCommand = ruleFromFields({ ruleId: "r1", enabled: false, program: "/usr/bin/clamscan", args: "{chemin}", timeout: "30" });
+  assert.equal(withCommand.ruleId, "r1");
+  assert.equal(withCommand.enabled, false);
+  assert.deepEqual(withCommand.actions.command, { program: "/usr/bin/clamscan", args: ["{chemin}"], timeoutS: 30 });
+  assert.equal(ruleFromFields({ program: "/bin/x", timeout: "" }).actions.command.timeoutS, undefined);
+
+  const listed = { ruleId: "r1", name: "N", enabled: true, match: rule.match, actions: { folder: "F", rename: null, hasCommand: true } };
+  assert.deepEqual(ruleForSet(listed).actions, { folder: "F", rename: null });
+  assert.deepEqual(ruleSummary(listed), {
+    when: [["type", ["images", "iso"]], ["name", " ^photo"]],
+    then: [["folder", "F"], ["hasCommand", true]],
+  });
+  assert.deepEqual(ruleSummary({ match: {}, actions: {} }), { when: [], then: [] });
+
+  const list = ["a", "b", "c"];
+  assert.deepEqual(moveRule(list, 1, -1), ["b", "a", "c"]);
+  assert.deepEqual(moveRule(list, 1, 1), ["a", "c", "b"]);
+  assert.equal(moveRule(list, 0, -1), list);
+  assert.equal(moveRule(list, 2, 1), list);
 });

@@ -592,6 +592,79 @@
     </form>
   </dialog>
 
+  <dialog id="rule-dialog" class="wide" aria-labelledby="rule-title">
+    <form method="dialog" id="rule-form">
+      <h2 id="rule-title" data-i18n="Règle de rangement">Règle de rangement</h2>
+      <label class="field">
+        <span data-i18n="Nom">Nom</span>
+        <input id="rule-name" type="text" maxlength="100" autocomplete="off">
+      </label>
+      <label class="check"><input type="checkbox" id="rule-enabled" checked>
+        <span data-i18n="Activée">Activée</span></label>
+      <fieldset>
+        <legend data-i18n="Si (tous les critères remplis ; vides : toute tâche)">Si (tous les critères remplis ; vides : toute tâche)</legend>
+        <fieldset class="plain" id="rule-types" aria-describedby="rule-types-note">
+          <legend data-i18n="Types de fichier">Types de fichier</legend>
+          <div class="checks" id="rule-categories"></div>
+        </fieldset>
+        <label class="field">
+          <span data-i18n="ou extensions">ou extensions</span>
+          <input id="rule-extensions" type="text" spellcheck="false" autocomplete="off" aria-describedby="rule-types-note">
+        </label>
+        <p class="note flush" id="rule-types-note" data-i18n="Un type coché ou une extension listée suffit : iso, pdf, séparées par des virgules.">Un type coché ou une extension listée suffit : iso, pdf, séparées par des virgules.</p>
+        <label class="field">
+          <span data-i18n="Domaines du site">Domaines du site</span>
+          <input id="rule-domains" type="text" spellcheck="false" autocomplete="off" aria-describedby="rule-domains-note">
+        </label>
+        <p class="note flush" id="rule-domains-note" data-i18n="debian.org vaut aussi pour cdimage.debian.org. Les torrents n'ont pas de domaine.">debian.org vaut aussi pour cdimage.debian.org. Les torrents n'ont pas de domaine.</p>
+        <label class="field">
+          <span data-i18n="Adresse (expression régulière)">Adresse (expression régulière)</span>
+          <input id="rule-url-regex" type="text" spellcheck="false" autocomplete="off">
+        </label>
+        <label class="field">
+          <span data-i18n="Nom du fichier (expression régulière)">Nom du fichier (expression régulière)</span>
+          <input id="rule-name-regex" type="text" spellcheck="false" autocomplete="off" aria-describedby="rule-regex-note">
+        </label>
+        <p class="note flush" id="rule-regex-note" data-i18n="(?i) au début pour ignorer les majuscules.">(?i) au début pour ignorer les majuscules.</p>
+      </fieldset>
+      <fieldset>
+        <legend data-i18n="Alors">Alors</legend>
+        <div class="field">
+          <label for="rule-folder" data-i18n="Dossier">Dossier</label>
+          <span class="row"><input id="rule-folder" type="text" spellcheck="false" autocomplete="off" aria-describedby="rule-folder-note">
+            <button type="button" id="rule-folder-pick" data-needs="folders" data-i18n="Parcourir…" data-i18n-label="Choisir le dossier de la règle">Parcourir…</button></span>
+        </div>
+        <p class="note flush" id="rule-folder-note" data-i18n="Un chemin complet, ou un sous-dossier du dossier des téléchargements (Vidéos/Séries). Vide : le dossier des téléchargements.">Un chemin complet, ou un sous-dossier du dossier des téléchargements (Vidéos/Séries). Vide : le dossier des téléchargements.</p>
+        <label class="field">
+          <span data-i18n="Nom du fichier">Nom du fichier</span>
+          <input id="rule-rename" type="text" spellcheck="false" autocomplete="off" aria-describedby="rule-rename-note">
+        </label>
+        <p class="note flush" id="rule-rename-note" data-i18n="Vide : le nom d'origine. Sinon un modèle : {nom} (sans l'extension), {ext}, {hôte}, {date} ; par exemple {date} {nom}.{ext}. Pas pour un torrent.">Vide : le nom d'origine. Sinon un modèle : {nom} (sans l'extension), {ext}, {hôte}, {date} ; par exemple {date} {nom}.{ext}. Pas pour un torrent.</p>
+        <fieldset class="plain" data-needs="app">
+          <legend data-i18n="Commande à la fin du téléchargement">Commande à la fin du téléchargement</legend>
+          <label class="field">
+            <span data-i18n="Programme (chemin complet)">Programme (chemin complet)</span>
+            <input id="rule-program" type="text" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field">
+            <span data-i18n="Arguments, un par ligne">Arguments, un par ligne</span>
+            <textarea id="rule-args" rows="3" spellcheck="false" aria-describedby="rule-args-note"></textarea>
+          </label>
+          <p class="note flush" id="rule-args-note" data-i18n="Lancé sans shell, une fois le fichier à son nom. Variables : {chemin}, {dossier}, {nom}, {taille}, {sha256}, {id}. Un échec ou un délai dépassé met le téléchargement en échec, fichier gardé ; le reprendre relance la commande.">Lancé sans shell, une fois le fichier à son nom. Variables : {chemin}, {dossier}, {nom}, {taille}, {sha256}, {id}. Un échec ou un délai dépassé met le téléchargement en échec, fichier gardé ; le reprendre relance la commande.</p>
+          <label class="field">
+            <span data-i18n="Délai (secondes)">Délai (secondes)</span>
+            <input id="rule-timeout" type="number" min="1" max="86400" step="1" placeholder="600">
+          </label>
+        </fieldset>
+      </fieldset>
+      <p id="rule-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
+        <button value="save" id="rule-save" class="primary" data-i18n="Enregistrer">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="diagnostic-dialog" class="wide" aria-labelledby="diagnostic-title" aria-describedby="diagnostic-note">
     <form method="dialog" id="diagnostic-form">
       <h2 id="diagnostic-title" data-i18n="Diagnostic">Diagnostic</h2>
@@ -704,6 +777,7 @@
       <div class="tabs" role="tablist" data-i18n-label="Rubriques" aria-label="Rubriques">
         <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true" data-i18n="Général">Général</button>
         <button type="button" role="tab" id="tab-save" data-needs="admin" aria-controls="panel-save" aria-selected="false" tabindex="-1" data-i18n="Enregistrement">Enregistrement</button>
+        <button type="button" role="tab" id="tab-rules" aria-controls="panel-rules" aria-selected="false" tabindex="-1" data-i18n="Règles">Règles</button>
         <button type="button" role="tab" id="tab-connection" data-needs="control" aria-controls="panel-connection" aria-selected="false" tabindex="-1" data-i18n="Connexion">Connexion</button>
         <button type="button" role="tab" id="tab-torrent" data-needs="admin" aria-controls="panel-torrent" aria-selected="false" tabindex="-1" data-i18n="BitTorrent">BitTorrent</button>
         <button type="button" role="tab" id="tab-media" data-needs="admin" aria-controls="panel-media" aria-selected="false" tabindex="-1" data-i18n="Vidéo">Vidéo</button>
@@ -748,6 +822,22 @@
         <label class="check"><input type="checkbox" id="pref-neighbor" aria-describedby="pref-neighbor-note">
           <span data-i18n="Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)">Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)</span></label>
         <p class="note" id="pref-neighbor-note" data-i18n="Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.">Quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, puis la vérifie à la fin. Quelques petites requêtes de plus au même serveur.</p>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="panel-rules" aria-labelledby="tab-rules" hidden>
+        <p class="note flush" id="rules-note" data-i18n="Une règle range les fichiers ajoutés sans dossier choisi (extension, « Ajouter ») : dossier et nom donnés dès le départ. Elle peut aussi lancer une commande quand le téléchargement est terminé. La première règle activée qui correspond l'emporte.">Une règle range les fichiers ajoutés sans dossier choisi (extension, « Ajouter ») : dossier et nom donnés dès le départ. Elle peut aussi lancer une commande quand le téléchargement est terminé. La première règle activée qui correspond l'emporte.</p>
+        <select id="rules" size="6" class="logins" aria-labelledby="tab-rules" aria-describedby="rules-note"></select>
+        <p id="rules-empty" class="note" data-i18n="Aucune règle : chaque fichier va dans le dossier des téléchargements, sous son propre nom.">Aucune règle : chaque fichier va dans le dossier des téléchargements, sous son propre nom.</p>
+        <p id="rule-summary" class="note" aria-live="polite"></p>
+        <div class="row" data-needs="admin">
+          <button type="button" id="rule-new" data-i18n="Nouvelle…">Nouvelle…</button>
+          <button type="button" id="rule-edit" data-i18n="Modifier…">Modifier…</button>
+          <button type="button" id="rule-up" data-i18n="Monter">Monter</button>
+          <button type="button" id="rule-down" data-i18n="Descendre">Descendre</button>
+          <button type="button" id="rule-toggle" data-i18n="Désactiver">Désactiver</button>
+          <button type="button" id="rule-delete" data-i18n="Supprimer">Supprimer</button>
+        </div>
+        <p class="note" data-needs="remote" data-i18n="Les règles ne se modifient que dans l'application, sur l'ordinateur.">Les règles ne se modifient que dans l'application, sur l'ordinateur.</p>
+        <p id="rules-error" class="form-error" role="alert" hidden></p>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-connection" aria-labelledby="tab-connection" hidden>
         <label class="field">

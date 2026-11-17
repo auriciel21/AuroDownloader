@@ -238,6 +238,60 @@ export const EN = {
   "coffre du système indisponible": "system keychain unavailable",
   "identifiants demandés par le serveur": "the server asks for a user name and password",
   "identifiants refusés par le serveur": "the server refused the user name or password",
+  "commande de fin en échec": "end command failed",
+  // Règles de rangement (SPEC 7.21)
+  "Règles": "Rules",
+  "Une règle range les fichiers ajoutés sans dossier choisi (extension, « Ajouter ») : dossier et nom donnés dès le départ. Elle peut aussi lancer une commande quand le téléchargement est terminé. La première règle activée qui correspond l'emporte.":
+    "A rule files downloads added without a chosen folder (extension, “Add”): folder and name are set from the start. It can also run a command when the download is finished. The first enabled rule that matches wins.",
+  "Aucune règle : chaque fichier va dans le dossier des téléchargements, sous son propre nom.":
+    "No rules: every file goes to the downloads folder, under its own name.",
+  "Nouvelle…": "New…",
+  "Monter": "Move up",
+  "Descendre": "Move down",
+  "Les règles ne se modifient que dans l'application, sur l'ordinateur.":
+    "Rules can only be changed in the application, on the computer.",
+  "Règle de rangement": "Filing rule",
+  "Activée": "Enabled",
+  "Si (tous les critères remplis ; vides : toute tâche)": "If (all criteria met; none: every download)",
+  "Types de fichier": "File types",
+  "ou extensions": "or extensions",
+  "Un type coché ou une extension listée suffit : iso, pdf, séparées par des virgules.":
+    "One ticked type or one listed extension is enough: iso, pdf, separated by commas.",
+  "Domaines du site": "Site domains",
+  "debian.org vaut aussi pour cdimage.debian.org. Les torrents n'ont pas de domaine.":
+    "debian.org also covers cdimage.debian.org. Torrents have no domain.",
+  "Adresse (expression régulière)": "Address (regular expression)",
+  "Nom du fichier (expression régulière)": "File name (regular expression)",
+  "(?i) au début pour ignorer les majuscules.": "(?i) at the start to ignore case.",
+  "Alors": "Then",
+  "Choisir le dossier de la règle": "Choose the rule's folder",
+  "Un chemin complet, ou un sous-dossier du dossier des téléchargements (Vidéos/Séries). Vide : le dossier des téléchargements.":
+    "A full path, or a subfolder of the downloads folder (Videos/Series). Empty: the downloads folder.",
+  "Vide : le nom d'origine. Sinon un modèle : {nom} (sans l'extension), {ext}, {hôte}, {date} ; par exemple {date} {nom}.{ext}. Pas pour un torrent.":
+    "Empty: the original name. Otherwise a pattern: {name} (without the extension), {ext}, {host}, {date}; for example {date} {name}.{ext}. Not for a torrent.",
+  "Commande à la fin du téléchargement": "Command when the download ends",
+  "Programme (chemin complet)": "Program (full path)",
+  "Arguments, un par ligne": "Arguments, one per line",
+  "Lancé sans shell, une fois le fichier à son nom. Variables : {chemin}, {dossier}, {nom}, {taille}, {sha256}, {id}. Un échec ou un délai dépassé met le téléchargement en échec, fichier gardé ; le reprendre relance la commande.":
+    "Run without a shell, once the file has its name. Variables: {path}, {dir}, {name}, {size}, {sha256}, {id}. A failure or a timeout fails the download, keeping the file; resuming it runs the command again.",
+  "Délai (secondes)": "Time limit (seconds)",
+  "type {0}": "type {0}",
+  "site {0}": "site {0}",
+  "adresse ~ {0}": "address ~ {0}",
+  "nom ~ {0}": "name ~ {0}",
+  "dossier {0}": "folder {0}",
+  "nom {0}": "name {0}",
+  "commande {0}": "command {0}",
+  "une commande de fin": "an end command",
+  "toute tâche": "every download",
+  "rien": "nothing",
+  "Si {0}, alors {1}.": "If {0}, then {1}.",
+  "{0}. {1} (désactivée)": "{0}. {1} (disabled)",
+  "Règle enregistrée": "Rule saved",
+  "Règle déplacée au rang {0}": "Rule moved to position {0}",
+  "Règle activée": "Rule enabled",
+  "Règle désactivée": "Rule disabled",
+  "Règle {0} supprimée": "Rule {0} deleted",
   // Identifiants de sites
   "Identifiants de sites": "Site logins",
   "Envoyés seulement quand un serveur du site les demande (authentification Basic ou Digest). Les mots de passe sont rangés dans le coffre du système et ne sont jamais affichés.":
@@ -688,6 +742,7 @@ export const ERRORS = {
   EXTRACTOR_FAILED: "page vidéo non reconnue",
   TOOLS_MISSING: "yt-dlp ou ffmpeg absent (Options, Vidéo)",
   MERGE_FAILED: "assemblage de la vidéo impossible",
+  POSTPROCESS_FAILED: "commande de fin en échec",
   SECRET_UNAVAILABLE: "coffre du système indisponible",
   AUTH_REQUIRED: "identifiants demandés par le serveur",
   AUTH_FAILED: "identifiants refusés par le serveur",

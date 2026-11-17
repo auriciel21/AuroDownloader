@@ -653,7 +653,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   (dossier seul pour un torrent), commande action d'une règle, programme et arguments sans
   shell, attendue en `post_processing`, échec `POSTPROCESS_FAILED` relançable ; règles
   écrites par le canal local seulement ; CLI : dossier courant sans `-o`, `--auto` pour
-  les règles ; 4a et 4b écrites le 2026-11-16 : moteur, protocole, CLI ; 4c bureau et page
+  les règles ; 4a et 4b le 2026-11-16 : moteur, protocole, CLI, commit 54b8c46 ; 4c bureau et page
+  écrite le 2026-11-17, rubrique « Règles » des Options ; essai de l'interface
   à faire) ; 5. segment fautif
   (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt

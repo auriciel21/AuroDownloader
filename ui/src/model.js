@@ -834,3 +834,85 @@ export function remoteSettled(status, settings) {
   const settled = wanted ? status.listening === true || typeof status.error === "string" : !status.listening;
   return applied && settled;
 }
+
+// ---------- Règles de rangement (F-32, F-34, SPEC §7.21) ----------
+
+/// Valeurs d'un champ de liste (extensions, domaines) : séparées par des virgules ou des
+/// espaces, sans doublon ; les extensions perdent leur point.
+export function splitList(text, { extensions = false } = {}) {
+  const items = (text ?? "")
+    .split(/[\s,;]+/)
+    .map((s) => s.trim())
+    .map((s) => (extensions ? s.replace(/^\.+/, "").toLowerCase() : s.toLowerCase()))
+    .filter(Boolean);
+  return [...new Set(items)];
+}
+
+/// Arguments d'une commande : un par ligne, lignes vides ignorées (un argument garde ses
+/// espaces intérieurs).
+export const splitArgs = (text) => (text ?? "").split(/\r?\n/).filter((line) => line.trim() !== "");
+
+/// Règle à envoyer à `rules.set`, depuis les champs de la boîte (textes bruts). `command`
+/// vaut null sans programme.
+export function ruleFromFields(f) {
+  const text = (v) => (v ?? "").trim() || null;
+  const program = text(f.program);
+  const timeout = Number.parseInt(f.timeout, 10);
+  return {
+    ...(f.ruleId ? { ruleId: f.ruleId } : {}),
+    name: (f.name ?? "").trim(),
+    enabled: f.enabled !== false,
+    match: {
+      categories: [...(f.categories ?? [])],
+      extensions: splitList(f.extensions, { extensions: true }),
+      domains: splitList(f.domains),
+      // Une expression garde ses espaces : ils comptent.
+      urlRegex: f.urlRegex ? f.urlRegex : null,
+      nameRegex: f.nameRegex ? f.nameRegex : null,
+    },
+    actions: {
+      folder: text(f.folder),
+      rename: text(f.rename),
+      command: program
+        ? { program, args: splitArgs(f.args), ...(Number.isFinite(timeout) ? { timeoutS: timeout } : {}) }
+        : null,
+    },
+  };
+}
+
+/// Règle telle que le moteur la rend, remise à la forme de `rules.set` (sans `hasCommand`).
+export function ruleForSet(rule) {
+  const { hasCommand: _, ...actions } = rule.actions ?? {};
+  return { ruleId: rule.ruleId, name: rule.name, enabled: rule.enabled, match: rule.match, actions };
+}
+
+/// Résumé d'une règle pour la liste : `{when, then}`, des listes de morceaux
+/// `[clé, valeur]` que la page traduit (`type`, `domain`, `url`, `name` ; `folder`,
+/// `rename`, `command`, `hasCommand`). `when` vide : toute tâche.
+export function ruleSummary(rule) {
+  const m = rule.match ?? {};
+  const a = rule.actions ?? {};
+  const when = [];
+  const types = [...(m.categories ?? []), ...(m.extensions ?? [])];
+  if (types.length) when.push(["type", types]);
+  if (m.domains?.length) when.push(["domain", m.domains]);
+  if (m.urlRegex) when.push(["url", m.urlRegex]);
+  if (m.nameRegex) when.push(["name", m.nameRegex]);
+  const then = [];
+  if (a.folder) then.push(["folder", a.folder]);
+  if (a.rename) then.push(["rename", a.rename]);
+  if (a.command) then.push(["command", a.command.program]);
+  else if (a.hasCommand) then.push(["hasCommand", true]);
+  return { when, then };
+}
+
+/// Liste de règles avec celle de rang `index` déplacée de `delta` (−1 : monter, +1 :
+/// descendre) ; inchangée au bord.
+export function moveRule(rules, index, delta) {
+  const to = index + delta;
+  if (index < 0 || index >= rules.length || to < 0 || to >= rules.length) return rules;
+  const list = [...rules];
+  const [rule] = list.splice(index, 1);
+  list.splice(to, 0, rule);
+  return list;
+}

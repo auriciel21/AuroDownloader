@@ -10,6 +10,7 @@ import {
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
   subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
+  ruleFromFields, ruleForSet, ruleSummary, moveRule,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 import { webHost } from "./web.js";
@@ -1706,6 +1707,7 @@ function renderDest() {
   $("pref-logs-level").disabled = !connected;
   $("diagnostic-export").disabled = !connected;
   syncLoginButtons();
+  syncRuleButtons();
 }
 
 /// Niveau des journaux du moteur (N-12), appliqué sans redémarrer.
@@ -3249,6 +3251,201 @@ async function deleteLogin() {
   (logins.length ? $("logins") : $("login-new")).focus();
 }
 
+// ---------- Règles de rangement (F-32, F-34, SPEC §7.21, étape 4c) ----------
+
+/// Règles du moteur (`rules.list`), dans leur ordre. Une connexion à jeton les lit sans
+/// leurs commandes et ne les écrit pas : ses boutons sont cachés (`data-needs="admin"`).
+let rules = [];
+/// Règle en cours de modification ; `null` : nouvelle.
+let editingRule = null;
+
+async function loadRules(select) {
+  $("rules-error").hidden = true;
+  try {
+    rules = (await host.call("rules.list")).rules ?? [];
+  } catch (e) {
+    rules = [];
+    $("rules-error").textContent = refused(e);
+    $("rules-error").hidden = false;
+  }
+  renderRules(select);
+}
+
+/// Une ligne du résumé « si… alors… » d'une règle.
+function ruleText(rule) {
+  const { when, then } = ruleSummary(rule);
+  const kind = (k) => t(CATEGORY_LABELS[k] ?? k);
+  const parts = {
+    type: (v) => t("type {0}", v.map((x) => (CATEGORY_LABELS[x] ? kind(x) : x)).join(", ")),
+    domain: (v) => t("site {0}", v.join(", ")),
+    url: (v) => t("adresse ~ {0}", v),
+    name: (v) => t("nom ~ {0}", v),
+    folder: (v) => t("dossier {0}", v),
+    rename: (v) => t("nom {0}", v),
+    command: (v) => t("commande {0}", v),
+    hasCommand: () => t("une commande de fin"),
+  };
+  const say = (list) => list.map(([k, v]) => parts[k](v)).join(" ; ");
+  const ifPart = when.length ? say(when) : t("toute tâche");
+  const thenPart = then.length ? say(then) : t("rien");
+  return t("Si {0}, alors {1}.", ifPart, thenPart);
+}
+
+function renderRules(select) {
+  const list = $("rules");
+  const keep = select ?? list.value;
+  list.replaceChildren(...rules.map((rule, i) => {
+    const option = document.createElement("option");
+    option.value = rule.ruleId;
+    const name = rule.name || t("(sans nom)");
+    option.textContent = rule.enabled
+      ? `${i + 1}. ${name}`
+      : t("{0}. {1} (désactivée)", i + 1, name);
+    return option;
+  }));
+  if (rules.some((r) => r.ruleId === keep)) list.value = keep;
+  else if (rules.length) list.selectedIndex = 0;
+  list.hidden = !rules.length;
+  $("rules-empty").hidden = rules.length > 0;
+  syncRuleButtons();
+}
+
+function chosenRuleIndex() {
+  return rules.findIndex((r) => r.ruleId === $("rules").value);
+}
+
+function syncRuleButtons() {
+  const i = chosenRuleIndex();
+  const rule = rules[i];
+  $("rule-summary").textContent = rule ? ruleText(rule) : "";
+  $("rule-new").disabled = !connected;
+  for (const id of ["rule-edit", "rule-delete", "rule-toggle"]) $(id).disabled = !connected || !rule;
+  $("rule-up").disabled = !connected || i <= 0;
+  $("rule-down").disabled = !connected || i < 0 || i >= rules.length - 1;
+  $("rule-toggle").textContent = rule && !rule.enabled ? t("Activer") : t("Désactiver");
+}
+
+/// Enregistre toute la liste (`rules.set`), puis la relit ; `select` : la règle à garder
+/// choisie (ou le rang d'une règle nouvelle).
+async function saveRules(list, select) {
+  const saved = (await host.call("rules.set", { rules: list.map(ruleForSet) })).rules ?? [];
+  rules = saved;
+  const id = typeof select === "number" ? saved[select]?.ruleId : select;
+  renderRules(id);
+}
+
+function openRule(rule) {
+  editingRule = rule?.ruleId ?? null;
+  const m = rule?.match ?? {};
+  const a = rule?.actions ?? {};
+  $("rule-name").value = rule?.name ?? "";
+  $("rule-enabled").checked = rule?.enabled ?? true;
+  // Refaites à chaque ouverture : la langue a pu changer.
+  renderRuleCategories();
+  for (const box of $("rule-categories").querySelectorAll("input")) {
+    box.checked = (m.categories ?? []).includes(box.value);
+  }
+  $("rule-extensions").value = (m.extensions ?? []).join(", ");
+  $("rule-domains").value = (m.domains ?? []).join(", ");
+  $("rule-url-regex").value = m.urlRegex ?? "";
+  $("rule-name-regex").value = m.nameRegex ?? "";
+  $("rule-folder").value = a.folder ?? "";
+  $("rule-rename").value = a.rename ?? "";
+  $("rule-program").value = a.command?.program ?? "";
+  $("rule-args").value = (a.command?.args ?? []).join("\n");
+  $("rule-timeout").value = a.command?.timeoutS ?? "";
+  $("rule-error").hidden = true;
+  const dialog = $("rule-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  $("rule-name").focus();
+}
+
+async function saveRule() {
+  const fields = {
+    ruleId: editingRule,
+    name: $("rule-name").value,
+    enabled: $("rule-enabled").checked,
+    categories: [...$("rule-categories").querySelectorAll("input:checked")].map((b) => b.value),
+    extensions: $("rule-extensions").value,
+    domains: $("rule-domains").value,
+    urlRegex: $("rule-url-regex").value,
+    nameRegex: $("rule-name-regex").value,
+    folder: $("rule-folder").value,
+    rename: $("rule-rename").value,
+    program: $("rule-program").value,
+    args: $("rule-args").value,
+    timeout: $("rule-timeout").value,
+  };
+  const rule = ruleFromFields(fields);
+  const at = rules.findIndex((r) => r.ruleId === editingRule);
+  const list = at >= 0 ? rules.map((r, i) => (i === at ? rule : r)) : [...rules, rule];
+  $("rule-save").disabled = true;
+  try {
+    await saveRules(list, at >= 0 ? editingRule : list.length - 1);
+    $("rule-dialog").close();
+    announce(t("Règle enregistrée"));
+    $("rules").focus();
+  } catch (e) {
+    // Le moteur dit quel champ il refuse (`rules[0] : actions.folder : …`).
+    $("rule-error").textContent = e?.message ?? String(e);
+    $("rule-error").hidden = false;
+  } finally {
+    $("rule-save").disabled = false;
+  }
+}
+
+/// Change la liste (ordre, activation, retrait) et l'enregistre ; un refus la relit.
+async function changeRules(list, select, message) {
+  $("rules-error").hidden = true;
+  try {
+    await saveRules(list, select);
+    if (message) announce(message);
+  } catch (e) {
+    $("rules-error").textContent = refused(e);
+    $("rules-error").hidden = false;
+    await loadRules();
+  }
+}
+
+async function moveChosenRule(delta) {
+  const i = chosenRuleIndex();
+  if (i < 0) return;
+  const id = rules[i].ruleId;
+  await changeRules(moveRule(rules, i, delta), id, t("Règle déplacée au rang {0}", i + delta + 1));
+  $("rules").focus();
+}
+
+async function toggleChosenRule() {
+  const i = chosenRuleIndex();
+  if (i < 0) return;
+  const on = !rules[i].enabled;
+  const list = rules.map((r, j) => (j === i ? { ...r, enabled: on } : r));
+  await changeRules(list, rules[i].ruleId, on ? t("Règle activée") : t("Règle désactivée"));
+}
+
+async function deleteChosenRule() {
+  const i = chosenRuleIndex();
+  if (i < 0) return;
+  const name = rules[i].name || t("(sans nom)");
+  const list = rules.filter((_, j) => j !== i);
+  await changeRules(list, list[Math.min(i, list.length - 1)]?.ruleId, t("Règle {0} supprimée", name));
+  (rules.length ? $("rules") : $("rule-new")).focus();
+}
+
+/// Cases des types de fichier de la boîte d'une règle, dans l'ordre de l'arborescence.
+function renderRuleCategories() {
+  $("rule-categories").replaceChildren(...CATEGORIES.map((cat) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = cat;
+    label.append(box, " ", t(CATEGORY_LABELS[cat]));
+    return label;
+  }));
+}
+
 // ---------- Plugins d'hébergeurs (SPEC §7.20, étape 4c) ----------
 
 /// Plugins installés (`plugin.list`), lus à l'ouverture des Options et après chaque changement.
@@ -3931,6 +4128,7 @@ function wire() {
     selectTab($("tab-general"));
     $("settings").showModal();
     if (connected) loadLogins();
+    if (connected) loadRules();
     if (connected) loadInterfaces();
     if (connected && caps.qr && caps.admin) loadRemote();
     if (connected && caps.plugins && caps.admin) loadPlugins();
@@ -3986,6 +4184,32 @@ function wire() {
   });
   // Le fichier lu ne reste pas dans la page ; la boîte rend elle-même le focus au bouton.
   $("plugin-dialog").addEventListener("close", () => { pendingPlugin = null; });
+  // Règles de rangement (SPEC §7.21).
+  $("rules").addEventListener("change", syncRuleButtons);
+  $("rules").addEventListener("dblclick", () => {
+    const rule = rules[chosenRuleIndex()];
+    if (rule && caps.admin) openRule(rule);
+  });
+  $("rule-new").addEventListener("click", () => openRule(null));
+  $("rule-edit").addEventListener("click", () => {
+    const rule = rules[chosenRuleIndex()];
+    if (rule) openRule(rule);
+  });
+  $("rule-up").addEventListener("click", () => moveChosenRule(-1));
+  $("rule-down").addEventListener("click", () => moveChosenRule(1));
+  $("rule-toggle").addEventListener("click", toggleChosenRule);
+  $("rule-delete").addEventListener("click", deleteChosenRule);
+  $("rule-folder-pick").addEventListener("click", async () => {
+    const folder = await host.pickFolder($("rule-folder").value || undefined).catch(() => null);
+    if (folder) $("rule-folder").value = folder;
+  });
+  $("rule-form").addEventListener("submit", (event) => {
+    if (event.submitter?.value !== "save") return;
+    // Enregistrée d'abord ; la boîte ne se ferme qu'en cas de succès.
+    event.preventDefault();
+    saveRule();
+  });
+  $("rule-dialog").addEventListener("close", () => { editingRule = null; });
   $("logins").addEventListener("change", syncLoginButtons);
   $("logins").addEventListener("dblclick", () => {
     const login = logins.find((l) => l.loginId === $("logins").value);

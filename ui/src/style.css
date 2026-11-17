@@ -906,3 +906,12 @@ input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monosp
 /* Sans le trait des icônes (règle svg ci-dessus) : il épaissirait chaque module. */
 .qr svg { width: 240px; height: 240px; background: #fff; border-radius: 4px; stroke: none; }
 #panel-remote h3 { margin: 14px 0 0; font-size: 1em; }
+
+/* Règles de rangement (SPEC 7.21) : « Si » et « Alors » encadrés, types en cases à cocher. */
+#rule-form fieldset { border: 1px solid var(--row-line); border-radius: 4px; margin: 8px 0 0; padding: 4px 10px 8px; }
+#rule-form legend { padding: 0 4px; font-weight: 600; }
+#rule-form fieldset.plain { border: none; padding: 0; margin: 6px 0 0; }
+#rule-form fieldset.plain legend { padding: 0; }
+#rule-form .checks { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+#rule-form .row input[type="text"] { flex: 1; min-width: 0; }
+#rule-form textarea { width: 100%; font-family: var(--mono, monospace); }
