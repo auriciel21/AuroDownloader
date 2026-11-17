@@ -159,7 +159,8 @@ pub fn forget(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
 /// Nouvel emplacement d'une tâche : son dossier, et son nom s'il est donné. Le nom devient
 /// celui que l'utilisateur a choisi (il survit au retéléchargement) et le nom affiché ; le
 /// nom du fichier ne change que s'il est déjà fixé (tâche préparée). Pour une tâche
-/// terminée, l'historique suit. Ne touche pas au disque.
+/// terminée, l'historique suit. Un dossier changé n'est plus rangé par les règles
+/// (SPEC §7.21). Ne touche pas au disque.
 pub fn set_location(
     conn: &Connection,
     task_id: &str,
@@ -168,6 +169,7 @@ pub fn set_location(
 ) -> Result<(), StoreError> {
     let updated = conn.execute(
         "UPDATE tasks SET dest_dir = ?2,
+           rule_base = CASE WHEN dest_dir = ?2 THEN rule_base ELSE NULL END,
            requested_name = COALESCE(?3, requested_name),
            display_name = COALESCE(?3, display_name),
            file_name = CASE WHEN file_name IS NULL THEN NULL ELSE COALESCE(?3, file_name) END,

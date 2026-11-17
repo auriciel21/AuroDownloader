@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::store::open_in_memory;
+use crate::store::tasks::save_preparation;
 use crate::store::tasks::{NewTask, create_task, ensure_queue};
 use crate::testing::{FileSite, Server, content, serve_file};
 

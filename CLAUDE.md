@@ -139,6 +139,13 @@ téléchargement.
   refait quand le proxy change (génération partagée par ses copies), réglages `proxy.*`
   (`store::settings::proxy`, mot de passe au coffre, compté par `all_secret_refs`) ;
   méthodes `proxy.get`, `proxy.set` ; proxys de test HTTP et SOCKS5 : `testing::proxies`.
+  Règles de rangement et commande de fin (F-32, F-34, SPEC 7.21, phase 7) : `rules`
+  (critères, modèle de nom, dossier, validation ; types recopiés de `ui/src/model.js`,
+  comparés par un test), `store::rules` (table `rules`, `tasks.rule_base` et
+  `tasks.rule_id`, migration 11 ; `place_task` à la préparation de chaque sorte de tâche),
+  `postproc` (`finish` à la place de `complete_task`, commande lancée par l'exécution du
+  planificateur, état `post_processing` durable, `POSTPROCESS_FAILED`) ; méthodes
+  `rules.list`, `rules.set`.
 - `third_party` : copies corrigées de `librqbit` et `librqbit-dualstack-sockets` (liaison à une
   interface sous Windows), branchées par `[patch.crates-io]` dans les deux espaces de
   travail, hors de l'espace de travail ; modifications et mise à jour dans
@@ -331,6 +338,8 @@ cargo run -p auro-cli -- add fichier.torrent ; files <id> --select 0,2-4 ; limit
 cargo run -p auro-cli -- config ; config torrent.ratioLimit 1.5 ; config media.autoUpdate false
 cargo run -p auro-cli -- config logs.level debug ; diagnostic ; diagnostic --save diag.zip
 cargo run -p auro-cli -- proxy ; proxy manual socks5://hôte:1080 --except localhost -u moi ; proxy none ; proxy system
+cargo run -p auro-cli -- rules ; rules add --type video --folder Vidéos --rename "{date} {nom}.{ext}" ; rules remove 1
+cargo run -p auro-cli -- rules add --exec /usr/bin/clamscan --arg {chemin} --timeout 600 ; get <url> --auto
 cargo run -p auro-cli -- video tools --install ; video info <page> ; video get <page> --subs fr,en
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
@@ -407,6 +416,14 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   connexion limitée au réseau public ne suit qu'un SOCKS5 en résolution locale
   (`proxy::route`), jamais un proxy HTTP. Les torrents ne passent jamais par le proxy.
   Programmes externes : le proxy par leur environnement, jamais en argument.
+- Règles et commande de fin (SPEC 7.21) : une tâche ne finit que par `postproc::finish`
+  (jamais `complete_task` directement à la fin d'un téléchargement), qui passe par
+  `post_processing` quand sa règle a une commande. Le rangement s'enregistre dans la
+  transaction qui enregistre le nom pris (`store::rules::save_placement`). Les règles ne
+  s'écrivent que par le canal local (`rules.set`, portée `admin`) ; un jeton ne voit pas
+  les commandes. Une commande : programme et arguments, jamais de shell, rien de ses
+  arguments ni de ses sorties dans les journaux ; les flux internes d'une vidéo n'ont
+  jamais de règle.
 - Licence GPL-3.0 ou ultérieure (N-11). Toute dépendance ajoutée ou mise à jour passe
   `cargo deny check licenses` (et sa variante du bureau) ; une licence nouvelle ne s'ajoute
   à `deny.toml` qu'après vérification de sa compatibilité, notée dans la SPEC 8.3. Les
@@ -630,7 +647,14 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   archive nettoyée montrée avant l'enregistrement, jamais d'adresse ; fait le même jour) ; 3. proxy
   (F-07) (décisions du 2026-11-12 : HTTP, HTTPS et SOCKS5, système par défaut ou
   manuel, tout le HTTP sauf les torrents, réseau public par SOCKS5 seulement, sinon en
-  direct ; fait le même jour) ; 4. règles de rangement et commande de fin (F-32, F-34) ; 5. segment fautif
+  direct ; fait le même jour) ; 4. règles de rangement et commande de fin (F-32, F-34)
+  (décisions du 2026-11-12 : rangement à la préparation, tâches sans dossier choisi
+  seulement, type, domaine et expression, première règle seule, dossier et modèle de nom
+  (dossier seul pour un torrent), commande action d'une règle, programme et arguments sans
+  shell, attendue en `post_processing`, échec `POSTPROCESS_FAILED` relançable ; règles
+  écrites par le canal local seulement ; CLI : dossier courant sans `-o`, `--auto` pour
+  les règles ; 4a et 4b écrites le 2026-11-16 : moteur, protocole, CLI ; 4c bureau et page
+  à faire) ; 5. segment fautif
   (F-12) ; 6. FTP, FTPS, SFTP (F-08) ; 7. accessibilité (contrôles WCAG et tests
   automatiques ; essais réels NVDA, Orca, TalkBack faits par l'utilisateur) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et

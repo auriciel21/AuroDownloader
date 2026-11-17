@@ -169,9 +169,12 @@ pub fn save_preparation(
     display_name: &str,
     total_bytes: u64,
     files: &[TorrentFile],
+    placed: &super::rules::Placed<'_>,
 ) -> Result<(), StoreError> {
     let to_i64 = |v: u64| i64::try_from(v).map_err(|_| StoreError::BadValue("taille".into()));
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Rangement des règles (SPEC §7.21), avec le nom pris dans ce dossier.
+    super::rules::save_placement(&tx, task_id, placed)?;
     tx.execute(
         "UPDATE tasks SET file_name = ?2, display_name = ?3, total_bytes = ?4, updated_at = ?5
          WHERE id = ?1",
@@ -393,13 +396,31 @@ mod tests {
                 done_bytes: 0,
             },
         ];
-        save_preparation(&mut conn, &id, "Dossier", "Dossier", 10, &files).unwrap();
+        save_preparation(
+            &mut conn,
+            &id,
+            "Dossier",
+            "Dossier",
+            10,
+            &files,
+            &Default::default(),
+        )
+        .unwrap();
         let task = load_task(&conn, &id).unwrap();
         assert_eq!(task.file_name.as_deref(), Some("Dossier"));
         assert_eq!(task.total_bytes, Some(10));
         assert_eq!(load_files(&conn, &id).unwrap(), files);
         // Une seconde préparation remplace la liste.
-        save_preparation(&mut conn, &id, "Dossier", "Dossier", 10, &files[..1]).unwrap();
+        save_preparation(
+            &mut conn,
+            &id,
+            "Dossier",
+            "Dossier",
+            10,
+            &files[..1],
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(load_files(&conn, &id).unwrap().len(), 1);
         save_progress(&conn, &id, 7).unwrap();
         assert_eq!(load_task(&conn, &id).unwrap().done_bytes, 7);

@@ -793,6 +793,8 @@ enum Command {
     LogsLevel(Reply<crate::logs::Level>),
     Proxy(Reply<ProxyView>),
     SetProxy(ProxyChange, Reply<ProxyView>),
+    Rules(Reply<Vec<crate::rules::Rule>>),
+    SetRules(Vec<crate::rules::Rule>, Reply<Vec<crate::rules::Rule>>),
     SetLogsLevel(crate::logs::Level, Reply<()>),
     RemoteListen(Reply<std::net::SocketAddr>),
     SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
@@ -1269,6 +1271,22 @@ impl Engine {
     /// connexions ; les téléchargements en cours finissent par l'ancien chemin.
     pub async fn set_proxy(&self, change: ProxyChange) -> Result<ProxyView, EngineError> {
         self.ask(|reply| Command::SetProxy(change, reply)).await
+    }
+
+    /// Règles de rangement, dans leur ordre (SPEC §7.21).
+    pub async fn rules(&self) -> Result<Vec<crate::rules::Rule>, EngineError> {
+        self.ask(Command::Rules).await
+    }
+
+    /// Remplace toutes les règles de rangement, dans l'ordre donné (vérifiées par
+    /// `Rule::from_json`) ; rend la liste enregistrée, chaque règle avec son identifiant.
+    /// Les tâches déjà préparées gardent leur rangement.
+    pub async fn set_rules(
+        &self,
+        rules: Vec<crate::rules::Rule>,
+    ) -> Result<Vec<crate::rules::Rule>, EngineError> {
+        crate::rules::check_list(&rules).map_err(EngineError::BadRequest)?;
+        self.ask(|reply| Command::SetRules(rules, reply)).await
     }
 
     /// Niveau des journaux (réglage `logs.level`, N-12).
@@ -2436,18 +2454,21 @@ impl Scheduler {
                 let Some(run) = self.running.get_mut(&task_id) else {
                     return;
                 };
-                if run.shown == TaskState::Active {
-                    run.shown = TaskState::Seeding;
-                    self.changed(&task_id, TaskState::Active, TaskState::Seeding);
+                // Après la commande de fin d'un torrent aussi (SPEC §7.21).
+                if matches!(run.shown, TaskState::Active | TaskState::PostProcessing) {
+                    let from = std::mem::replace(&mut run.shown, TaskState::Seeding);
+                    self.changed(&task_id, from, TaskState::Seeding);
                 }
             }
+            // Fusion d'une vidéo, ou commande de fin (SPEC §7.21) : depuis `active`, ou
+            // `verifying` après une empreinte juste.
             RunNote::PostProcessing(task_id) => {
                 let Some(run) = self.running.get_mut(&task_id) else {
                     return;
                 };
-                if run.shown == TaskState::Active {
-                    run.shown = TaskState::PostProcessing;
-                    self.changed(&task_id, TaskState::Active, TaskState::PostProcessing);
+                if matches!(run.shown, TaskState::Active | TaskState::Verifying) {
+                    let from = std::mem::replace(&mut run.shown, TaskState::PostProcessing);
+                    self.changed(&task_id, from, TaskState::PostProcessing);
                 }
             }
         }
@@ -2866,6 +2887,13 @@ impl Scheduler {
             Command::SetProxy(change, reply) => {
                 let _ = reply.send(self.set_proxy(change));
             }
+            Command::Rules(reply) => {
+                let _ = reply.send(store::rules::list(&self.conn).map_err(Into::into));
+            }
+            Command::SetRules(rules, reply) => {
+                let _ = reply
+                    .send(store::rules::replace_all(&mut self.conn, &rules).map_err(Into::into));
+            }
             Command::LogsLevel(reply) => {
                 let _ = reply.send(settings::logs_level(&self.conn).map_err(Into::into));
             }
@@ -3198,6 +3226,17 @@ impl Scheduler {
         {
             return Ok(existing);
         }
+        // Sans dossier choisi : les règles pourront la ranger à sa préparation
+        // (SPEC §7.21). Elle ne part qu'à un prochain passage de la boucle, après.
+        let ruled = task.dest_dir.is_none() && task.sub_dir.is_empty();
+        let task_id = self.add_new(task)?;
+        if ruled {
+            store::rules::set_rule_base(&self.conn, &task_id)?;
+        }
+        Ok(task_id)
+    }
+
+    fn add_new(&mut self, task: AddTask) -> Result<String, EngineError> {
         let mut task = task;
         if !task.sub_dir.is_empty() {
             task.dest_dir = Some(self.resolve_sub_dir(&task)?);
@@ -3724,6 +3763,11 @@ impl Scheduler {
 
     fn pause(&mut self, task_id: &str) -> Result<(), EngineError> {
         if let Some(run) = self.running.get_mut(task_id) {
+            // Fusion ou commande de fin (SPEC §7.21) : le fichier est fait, elle va jusqu'au
+            // bout (ou jusqu'à son délai).
+            if run.shown == TaskState::PostProcessing {
+                return Ok(());
+            }
             // Pause d'un partage : il s'arrête, et la tâche est terminée (SPEC §7.16).
             run.then = if run.shown == TaskState::Seeding {
                 Then::Complete
@@ -3783,6 +3827,11 @@ impl Scheduler {
 
     fn cancel(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
         if let Some(run) = self.running.get_mut(task_id) {
+            // Commande de fin ou fusion : le fichier est fait, elle va jusqu'au bout (une
+            // fusion l'a toujours fait : elle n'écoute pas l'arrêt).
+            if run.shown == TaskState::PostProcessing {
+                return Ok(());
+            }
             run.then = Then::Cancel { delete_files };
             let _ = run.stop.send(true);
             return Ok(());
@@ -4545,6 +4594,7 @@ impl Scheduler {
             let stops = !usable || (metered && run.shown == TaskState::Seeding);
             if stops
                 && run.shown != TaskState::Verifying
+                && run.shown != TaskState::PostProcessing
                 && run.then == Then::Keep
                 && !*run.stop.borrow()
             {
@@ -4904,28 +4954,61 @@ async fn execute(
         .client
         .reaching(task.public_only)
         .map_err(TransferError::RestrictedClient)?;
-    match task.kind {
-        TaskKind::Torrent => {
-            return torrent::run(&mut conn, torrents, task_id, stop, &mut on_progress).await;
+    let mut command_stop = stop.clone();
+    // Commande de fin arrêtée avec le moteur (SPEC §7.21) : relancée telle quelle. Une
+    // vidéo en `post_processing` peut aussi être en fusion : `media::run` le démêle.
+    let mut outcome = if task.state == TaskState::PostProcessing && task.kind != TaskKind::Media {
+        Outcome::Completed(crate::postproc::final_path(&conn, task_id)?)
+    } else {
+        match task.kind {
+            TaskKind::Torrent => {
+                torrent::run(&mut conn, torrents, task_id, stop.clone(), &mut on_progress).await?
+            }
+            // Vidéo (SPEC §7.17) : ses flux directs passent par `transfer::run`.
+            TaskKind::Media => {
+                let ctx = media::run::Context {
+                    client: &client,
+                    opts: &config.transfer,
+                    tools,
+                };
+                media::run::run(&mut conn, &ctx, task_id, stop.clone(), &mut on_progress).await?
+            }
+            TaskKind::Http => {
+                transfer::run(
+                    &mut conn,
+                    &client,
+                    task_id,
+                    &config.transfer,
+                    stop.clone(),
+                    &mut on_progress,
+                )
+                .await?
+            }
         }
-        // Vidéo (SPEC §7.17) : ses flux directs passent par `transfer::run`.
-        TaskKind::Media => {
-            let ctx = media::run::Context {
-                client: &client,
-                opts: &config.transfer,
-                tools,
-            };
-            return media::run::run(&mut conn, &ctx, task_id, stop, &mut on_progress).await;
+    };
+    // Fichier à son nom, commande de fin en attente (`postproc::finish`) : lancée ici.
+    loop {
+        let Outcome::Completed(path) = &outcome else {
+            return Ok(outcome);
+        };
+        if load_task(&conn, task_id)?.state != TaskState::PostProcessing {
+            return Ok(outcome);
         }
-        TaskKind::Http => {}
+        let path = path.clone();
+        let _ = prepared.send(RunNote::PostProcessing(task_id.to_owned()));
+        match crate::postproc::run(&mut conn, task_id, &mut command_stop).await? {
+            crate::postproc::Ran::Failed(failed) => return Ok(failed),
+            crate::postproc::Ran::Stopped => return Ok(Outcome::PostProcessing),
+            // Torrent : le partage suit la commande, si son ratio le demande.
+            crate::postproc::Ran::Done if task.kind == TaskKind::Torrent => {
+                if !torrent::after_command(&mut conn, task_id)? {
+                    return Ok(Outcome::Completed(path));
+                }
+                outcome =
+                    torrent::run(&mut conn, torrents, task_id, stop.clone(), &mut on_progress)
+                        .await?;
+            }
+            crate::postproc::Ran::Done => return crate::postproc::complete(&mut conn, task_id),
+        }
     }
-    transfer::run(
-        &mut conn,
-        &client,
-        task_id,
-        &config.transfer,
-        stop,
-        &mut on_progress,
-    )
-    .await
 }

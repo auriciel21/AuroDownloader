@@ -106,6 +106,11 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "engine.diagnostic" => Scope::Admin,
         // Proxy (F-07) : réglage du moteur, mot de passe au coffre.
         "proxy.get" | "proxy.set" => Scope::Admin,
+        // Règles de rangement (SPEC §7.21) : lues par tous (sans les commandes pour un
+        // jeton) ; écrites par le canal local seulement : un dossier ou une commande de
+        // règle vaut une exécution de programme sur la machine.
+        "rules.list" => Scope::Read,
+        "rules.set" => Scope::Admin,
         // Installer, voir les permissions, activer, retirer (SPEC §7.20).
         "plugin.inspect" | "plugin.install" | "plugin.list" | "plugin.remove"
         | "plugin.enable" => Scope::Admin,

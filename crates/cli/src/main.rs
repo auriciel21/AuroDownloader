@@ -66,6 +66,10 @@ enum Command {
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
         dir: PathBuf,
+        /// Dossier des téléchargements du moteur au lieu de -o : les règles de rangement
+        /// y choisissent le dossier et le nom (auro rules)
+        #[arg(long, conflicts_with = "dir")]
+        auto: bool,
         /// Nombre de connexions (1 à 32 ; automatique sinon)
         #[arg(short = 'c', long, value_parser = connections())]
         connections: Option<u32>,
@@ -106,6 +110,10 @@ enum Command {
         /// Dossier de destination
         #[arg(short = 'o', long, default_value = ".")]
         dir: PathBuf,
+        /// Dossier des téléchargements du moteur au lieu de -o : les règles de rangement
+        /// y choisissent le dossier et le nom (auro rules)
+        #[arg(long, conflicts_with = "dir")]
+        auto: bool,
         /// Nombre de connexions (1 à 32 ; automatique sinon)
         #[arg(short = 'c', long, value_parser = connections())]
         connections: Option<u32>,
@@ -306,6 +314,13 @@ enum Command {
         #[command(subcommand)]
         action: Option<ProxyAction>,
     },
+    /// Règles de rangement : dossier, nom et commande de fin des tâches ajoutées sans
+    /// dossier (--auto, extension, page) ; la première règle activée qui correspond
+    /// l'emporte. Sans argument, les montre
+    Rules {
+        #[command(subcommand)]
+        action: Option<RulesAction>,
+    },
     /// Diagnostic du moteur, sans adresses ni identifiants : état résumé et journaux
     /// nettoyés, montrés ; avec --save, enregistrés dans une archive .zip à joindre à un
     /// signalement
@@ -386,6 +401,10 @@ struct VideoArgs {
     /// Dossier de destination
     #[arg(short = 'o', long, default_value = ".")]
     dir: PathBuf,
+    /// Dossier des téléchargements du moteur au lieu de -o : les règles de rangement
+    /// y choisissent le dossier et le nom (auro rules)
+    #[arg(long, conflicts_with = "dir")]
+    auto: bool,
     /// Format à télécharger (identifiants de auro video info, ou sélecteur de yt-dlp :
     /// « 137+140 », « bv*[height<=720]+ba/b ») ; par défaut la meilleure image et le
     /// meilleur son
@@ -408,7 +427,7 @@ struct VideoArgs {
 impl VideoArgs {
     fn options(&self, paused: bool) -> remote::VideoOptions<'_> {
         remote::VideoOptions {
-            dir: &self.dir,
+            dir: (!self.auto).then_some(self.dir.as_path()),
             format: self.format.as_deref(),
             container: self.container.as_deref(),
             subtitles: &self.subtitles,
@@ -568,6 +587,73 @@ enum ProxyAction {
         #[arg(long, requires = "user")]
         keep_password: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RulesAction {
+    /// Les règles, dans leur ordre (par défaut)
+    Show,
+    /// Ajoute une règle (à la fin, ou au rang --at). Critères facultatifs, tous requis ;
+    /// sans critère, la règle prend toute tâche
+    Add(Box<RuleArgs>),
+    /// Retire une règle (rang, identifiant ou nom)
+    Remove { rule: String },
+    /// Active une règle
+    Enable { rule: String },
+    /// Désactive une règle
+    Disable { rule: String },
+    /// Change le rang d'une règle (1 : la première)
+    Move { rule: String, rank: usize },
+}
+
+/// Une règle à ajouter (`auro rules add`).
+#[derive(clap::Args)]
+struct RuleArgs {
+    /// Nom de la règle
+    #[arg(long)]
+    name: Option<String>,
+    /// Types de fichier : compressed, documents, images, music, programs, video,
+    /// other, ou extensions (iso,pdf), séparés par des virgules
+    #[arg(long = "type", value_delimiter = ',', value_name = "TYPES")]
+    types: Vec<String>,
+    /// Domaines du site (sous-domaines compris), séparés par des virgules
+    #[arg(long = "domain", value_delimiter = ',', value_name = "DOMAINES")]
+    domains: Vec<String>,
+    /// Expression régulière sur l'adresse ((?i) pour ignorer la casse)
+    #[arg(long, value_name = "EXPRESSION")]
+    url_regex: Option<String>,
+    /// Expression régulière sur le nom du fichier
+    #[arg(long, value_name = "EXPRESSION")]
+    name_regex: Option<String>,
+    /// Dossier : absolu, ou relatif au dossier des téléchargements (Vidéos/Séries)
+    #[arg(short = 'o', long, value_name = "DOSSIER")]
+    folder: Option<String>,
+    /// Modèle de nom : {nom}, {ext}, {hôte}, {date} (ou {name}, {host}) ; pas pour un
+    /// torrent
+    #[arg(long, value_name = "MODÈLE")]
+    rename: Option<String>,
+    /// Commande de fin : un programme en chemin absolu, lancé sans shell quand la tâche
+    /// est terminée (Windows et Linux)
+    #[arg(long, value_name = "PROGRAMME")]
+    exec: Option<String>,
+    /// Argument de la commande, à répéter : {chemin}, {dossier}, {nom}, {taille},
+    /// {sha256}, {id}
+    #[arg(
+        long = "arg",
+        value_name = "ARGUMENT",
+        requires = "exec",
+        allow_hyphen_values = true
+    )]
+    args: Vec<String>,
+    /// Délai de la commande en secondes (600 par défaut) : au-delà, la tâche échoue
+    #[arg(long, value_name = "SECONDES", requires = "exec")]
+    timeout: Option<u32>,
+    /// Rang de la nouvelle règle (1 : la première)
+    #[arg(long)]
+    at: Option<usize>,
+    /// Ajoutée désactivée
+    #[arg(long)]
+    disabled: bool,
 }
 
 #[derive(Subcommand)]
@@ -814,6 +900,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
         Command::Get {
             url,
             dir,
+            auto,
             connections,
             queue,
             limit,
@@ -823,7 +910,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             select,
         } => {
             let opts = AddOptions {
-                dir: &dir,
+                dir: (!auto).then_some(dir.as_path()),
                 connections,
                 queue: queue.as_deref(),
                 limit: limit.and_then(|l| l.0),
@@ -849,6 +936,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Add {
                     urls,
                     dir,
+                    auto,
                     connections,
                     queue,
                     limit,
@@ -866,7 +954,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         bail!("--mirror : une seule adresse, les miroirs sont ceux d'un fichier");
                     }
                     let opts = AddOptions {
-                        dir: &dir,
+                        dir: (!auto).then_some(dir.as_path()),
                         connections,
                         queue: queue.as_deref(),
                         limit: limit.and_then(|l| l.0),
@@ -999,6 +1087,60 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     false => remote::history(&mut rpc, query.as_deref(), csv).await,
                 },
                 Command::Diagnostic { save } => remote::diagnostic(&mut rpc, save.as_deref()).await,
+                Command::Rules { action } => match action.unwrap_or(RulesAction::Show) {
+                    RulesAction::Show => remote::rules_show(&mut rpc).await,
+                    RulesAction::Add(rule) => {
+                        let RuleArgs {
+                            name,
+                            types,
+                            domains,
+                            url_regex,
+                            name_regex,
+                            folder,
+                            rename,
+                            exec,
+                            args,
+                            timeout,
+                            at,
+                            disabled,
+                        } = *rule;
+                        let (categories, extensions): (Vec<String>, Vec<String>) = types
+                            .into_iter()
+                            .partition(|t| remote::RULE_CATEGORIES.contains(&t.as_str()));
+                        let command = exec.map(|program| {
+                            let mut c = json!({"program": program, "args": args});
+                            if let Some(t) = timeout {
+                                c["timeoutS"] = json!(t);
+                            }
+                            c
+                        });
+                        let rule = json!({
+                            "name": name,
+                            "enabled": !disabled,
+                            "match": {
+                                "categories": categories,
+                                "extensions": extensions,
+                                "domains": domains,
+                                "urlRegex": url_regex,
+                                "nameRegex": name_regex,
+                            },
+                            "actions": {"folder": folder, "rename": rename, "command": command},
+                        });
+                        remote::rules_add(&mut rpc, rule, at).await
+                    }
+                    RulesAction::Remove { rule } => {
+                        remote::rules_edit(&mut rpc, &rule, remote::RuleEdit::Remove).await
+                    }
+                    RulesAction::Enable { rule } => {
+                        remote::rules_edit(&mut rpc, &rule, remote::RuleEdit::Enable(true)).await
+                    }
+                    RulesAction::Disable { rule } => {
+                        remote::rules_edit(&mut rpc, &rule, remote::RuleEdit::Enable(false)).await
+                    }
+                    RulesAction::Move { rule, rank } => {
+                        remote::rules_edit(&mut rpc, &rule, remote::RuleEdit::MoveTo(rank)).await
+                    }
+                },
                 Command::Proxy { action } => match action.unwrap_or(ProxyAction::Show) {
                     ProxyAction::Show => remote::proxy_show(&mut rpc).await,
                     ProxyAction::System => {

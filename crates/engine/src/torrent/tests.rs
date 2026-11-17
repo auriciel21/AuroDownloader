@@ -212,6 +212,52 @@ async fn a_single_file_torrent_ends_under_its_own_name() {
     crate::testing::stop(&engine).await;
 }
 
+/// Règles de rangement (SPEC §7.21) : un torrent ajouté sans dossier va dans celui de la
+/// règle, sous son propre nom (jamais renommé).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rule_places_a_torrent_folder_without_renaming_it() {
+    let seed = seeder(
+        "Album",
+        &[("piste.flac", 40 * 1024), ("pochette.jpg", 9)],
+        None,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir(&downloads).unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    engine
+        .set_download_dir(Some(downloads.to_str().unwrap().to_owned()))
+        .await
+        .unwrap();
+    let rule = crate::rules::Rule::from_json(&serde_json::json!({
+        "match": {"nameRegex": "^Album$"},
+        "actions": {"folder": "Torrents/Musique", "rename": "{date}-{nom}"}
+    }))
+    .unwrap();
+    engine.set_rules(vec![rule]).await.unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(AddTask {
+            torrent: Some(seed.metainfo.clone()),
+            ..AddTask::default()
+        })
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+
+    let task = engine.get(&id).await.unwrap();
+    let placed = downloads.join("Torrents").join("Musique");
+    assert_eq!(Path::new(&task.dest_dir), placed);
+    assert_eq!(task.file_name.as_deref(), Some("Album"));
+    assert_eq!(
+        std::fs::read(placed.join("Album").join("piste.flac")).unwrap(),
+        data(0, 40 * 1024)
+    );
+    no_part_left(dir.path());
+    crate::testing::stop(&engine).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_multi_file_torrent_keeps_its_folder_and_paths() {
     let files = [
@@ -496,6 +542,43 @@ async fn sharing_goes_on_until_the_ratio_then_ends() {
     let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
     let row = crate::store::torrents::load_torrent(&conn, &id).unwrap();
     assert!(row.uploaded_bytes >= LEN as u64, "{}", row.uploaded_bytes);
+}
+
+/// Commande de fin (F-34, SPEC §7.21) : lancée quand les fichiers sont à leur nom, avant
+/// le partage, qui suit jusqu'au ratio.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_end_command_runs_before_sharing() {
+    const LEN: usize = 100 * 1024;
+    let seed = seeder("commande.bin", &[("", LEN)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_addr();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], listen);
+    let marker = dir.path().join("vu.txt");
+    let marker_text = marker.to_str().unwrap();
+    let command = if cfg!(windows) {
+        serde_json::json!({"program": r"C:\Windows\System32\cmd.exe",
+                           "args": ["/c", "echo", "{nom}", "{taille}>", marker_text]})
+    } else {
+        serde_json::json!({"program": "/bin/sh",
+                           "args": ["-c", r#"echo "$1 $2" > "$3""#, "sh", "{nom}", "{taille}", marker_text]})
+    };
+    let rule = crate::rules::Rule::from_json(&serde_json::json!({"actions": {"command": command}}))
+        .unwrap();
+    engine.set_rules(vec![rule]).await.unwrap();
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    wait_state(&mut events, &id, TaskState::PostProcessing).await;
+    wait_state(&mut events, &id, TaskState::Seeding).await;
+    let seen = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(
+        seen.split_whitespace().collect::<Vec<_>>(),
+        ["commande.bin", &LEN.to_string()]
+    );
+
+    let (peer, _peer_dir) = leecher(&seed.metainfo, listen).await;
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(leeched(&peer), LEN as u64);
+    crate::testing::stop(&engine).await;
 }
 
 /// Une pause pendant le partage l'arrête : la tâche est terminée, son fichier en place.

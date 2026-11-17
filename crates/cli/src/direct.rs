@@ -128,6 +128,7 @@ fn execute(
         Outcome::Failed { code, detail } => bail!("{detail} [{code}]"),
         // Le mode direct ne passe que par `transfer::run` : jamais de torrent.
         Outcome::Seeding => bail!("partage d'un torrent interrompu"),
+        Outcome::PostProcessing => bail!("commande de fin interrompue"),
     }
     Ok(())
 }

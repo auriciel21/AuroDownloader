@@ -683,6 +683,120 @@ async fn the_proxy_is_shown_set_and_removed() {
     auro_engine::testing::stop(&engine).await;
 }
 
+/// `auro rules` (F-32, SPEC §7.21) : ajoutées, montrées, déplacées, désactivées, retirées ;
+/// `auro get --auto` passe par le dossier des téléchargements et les règles, `-o` non.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rules_are_managed_and_auto_follows_them() {
+    use std::sync::{Arc, Mutex};
+
+    use auro_engine::testing::{FileSite, content, serve_file};
+    let site = serve_file(Arc::new(Mutex::new(FileSite::new(5000))));
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, ep) = serve(dir.path(), "rules", Options::default()).await;
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(&downloads).unwrap();
+    ok(&ep, &["dir", downloads.to_str().unwrap()]).await;
+    assert!(ok(&ep, &["rules"]).await.contains("Aucune règle"));
+
+    let added = ok(
+        &ep,
+        &[
+            "rules",
+            "add",
+            "--name",
+            "Images",
+            "--type",
+            "images,iso",
+            "--folder",
+            "Rangées/Images",
+            "--rename",
+            "{date}-{nom}.{ext}",
+        ],
+    )
+    .await;
+    assert!(
+        added.contains("1. Images") && added.contains("type images, iso"),
+        "{added}"
+    );
+    #[cfg(windows)]
+    let program = r"C:\Outils\analyse.exe";
+    #[cfg(not(windows))]
+    let program = "/usr/bin/analyse";
+    let added = ok(
+        &ep,
+        &[
+            "rules",
+            "add",
+            "--name",
+            "Tout",
+            "--exec",
+            program,
+            "--arg",
+            "--scan",
+            "--arg",
+            "{chemin}",
+            "--timeout",
+            "30",
+            "--disabled",
+        ],
+    )
+    .await;
+    assert!(
+        added.contains("2. Tout  [désactivée]") && added.contains("--scan {chemin} (délai 30 s)"),
+        "{added}"
+    );
+    // Refusées : rien ne change.
+    for bad in [
+        &["rules", "add", "--folder", "../haut"][..],
+        &["rules", "add", "--rename", "{inconnue}"],
+        &["rules", "add", "--url-regex", "("],
+        &["rules", "remove", "9"],
+        &["rules", "enable", "inconnue"],
+    ] {
+        assert!(!auro(&ep, bad).await.status.success(), "{bad:?}");
+    }
+    let moved = ok(&ep, &["rules", "move", "Tout", "1"]).await;
+    assert!(
+        moved.contains("1. Tout") && moved.contains("2. Images"),
+        "{moved}"
+    );
+    ok(&ep, &["rules", "enable", "1"]).await;
+    let removed = ok(&ep, &["rules", "remove", "Tout"]).await;
+    assert!(
+        !removed.contains("Tout") && removed.contains("1. Images"),
+        "{removed}"
+    );
+
+    // --auto : rangé par la règle ; -o : là où on le dit, sous le nom du serveur.
+    let auto = ok(&ep, &["get", &site.url("/photo.png"), "--auto"]).await;
+    let placed = downloads.join("Rangées").join("Images");
+    let names: Vec<String> = std::fs::read_dir(&placed)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?} ; {auto}");
+    assert!(names[0].ends_with("-photo.png"), "{names:?}");
+    assert_eq!(
+        std::fs::read(placed.join(&names[0])).unwrap(),
+        content(5000)
+    );
+    let here = dir.path().join("ici");
+    std::fs::create_dir_all(&here).unwrap();
+    ok(
+        &ep,
+        &["get", &site.url("/photo.png"), "-o", here.to_str().unwrap()],
+    )
+    .await;
+    assert!(here.join("photo.png").is_file());
+    assert!(
+        !auro(&ep, &["get", &site.url("/x.png"), "--auto", "-o", "."])
+            .await
+            .status
+            .success()
+    );
+    auro_engine::testing::stop(&engine).await;
+}
+
 /// `auro diagnostic` (N-12) : le rapport et les journaux nettoyés, montrés ; enregistrés
 /// en archive avec --save, jamais par-dessus un fichier. `auro config logs.level`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -167,8 +167,11 @@ pub fn save_resolution(
     final_name: &str,
     container: &str,
     streams: &[StreamRow],
+    placed: &super::rules::Placed<'_>,
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Rangement des règles (SPEC §7.21), avec le nom pris dans ce dossier.
+    super::rules::save_placement(&tx, task_id, placed)?;
     // Les sous-titres, petits et de taille souvent inconnue, ne comptent pas.
     let total: Option<u64> = streams
         .iter()

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/rules.list.json",
+  "title": "rules.list",
+  "description": "Règles de rangement et commandes de fin (F-32, F-34, SPEC 7.21), dans leur ordre : la première règle activée qui correspond l'emporte. Une connexion à jeton les lit sans leurs commandes (hasCommand seulement). Portée read. Depuis le 2026-11-16.",
+  "$defs": {
+    "params": {"type": "object", "properties": {}},
+    "result": {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ruleList"}
+  }
+}

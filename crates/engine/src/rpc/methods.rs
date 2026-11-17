@@ -712,6 +712,27 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             };
             Ok(proxy_json(&ctx.engine.set_proxy(change).await?))
         }
+        // Règles de rangement et commande de fin (F-32, F-34, SPEC §7.21) : une connexion à
+        // jeton les lit sans leurs commandes, et ne les écrit jamais (portée `admin`).
+        "rules.list" => {
+            let commands = !ctx.engine.is_restricted();
+            Ok(rules_json(&ctx.engine.rules().await?, commands))
+        }
+        "rules.set" => {
+            let list = match p.get("rules") {
+                Some(Value::Array(list)) => list,
+                _ => return Err(Params::wrong("rules", "liste de règles")),
+            };
+            let rules = list
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    crate::rules::Rule::from_json(r)
+                        .map_err(|e| RpcError::invalid_params(format!("rules[{i}] : {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rules_json(&ctx.engine.set_rules(rules).await?, true))
+        }
         // Diagnostic (N-12, phase 7) : état sans adresses ni identifiants, journaux nettoyés.
         "engine.diagnostic" => diagnostic(ctx, &p).await,
         "engine.cancelEndAction" => {
@@ -734,6 +755,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
 }
 
 /// Le proxy tel que le protocole le montre : jamais le mot de passe.
+/// Règles de rangement (`rules.list`, `rules.set`) ; `commands` : faux pour une connexion à
+/// jeton, qui ne voit que la présence d'une commande.
+fn rules_json(rules: &[crate::rules::Rule], commands: bool) -> Value {
+    json!({"rules": rules.iter().map(|r| r.to_json(commands)).collect::<Vec<_>>()})
+}
+
 fn proxy_json(view: &crate::scheduler::ProxyView) -> Value {
     json!({
         "mode": view.settings.mode.as_str(),

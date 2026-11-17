@@ -21,6 +21,7 @@ pub mod media;
 pub mod moves;
 pub mod plugins;
 pub mod remote;
+pub mod rules;
 pub mod schedules;
 pub mod segments;
 pub mod settings;
@@ -93,6 +94,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "plugins",
         sql: include_str!("../migrations/0010_plugins.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "rules",
+        sql: include_str!("../migrations/0011_rules.sql"),
     },
 ];
 

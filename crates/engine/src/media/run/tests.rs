@@ -587,6 +587,47 @@ async fn two_direct_streams_become_one_video() {
     crate::testing::stop(&s.engine).await;
 }
 
+/// Règles de rangement (SPEC §7.21) : une vidéo ajoutée sans dossier va dans celui de la
+/// règle (domaine de la page), sous le nom du modèle ; ses flux la suivent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rule_places_and_renames_a_video() {
+    let server = site(None);
+    let answer = resolution(&server, "", false);
+    let s = setup(&[&answer], true);
+    s.engine
+        .set_download_dir(Some(s.dest.to_string_lossy().into_owned()))
+        .await
+        .unwrap();
+    let rule = crate::rules::Rule::from_json(&serde_json::json!({
+        "match": {"domains": ["exemple.org"], "categories": ["video"]},
+        "actions": {"folder": "Vidéos/Exemple", "rename": "{hôte} - {nom}.{ext}"}
+    }))
+    .unwrap();
+    s.engine.set_rules(vec![rule]).await.unwrap();
+    let mut events = s.engine.subscribe();
+    let mut request = add_video(&s, "https://www.exemple.org/page");
+    request.dest_dir = None;
+    let id = s.engine.add(request).await.unwrap();
+    assert_eq!(wait_end(&mut events, &id).await, TaskState::Completed);
+
+    let task = s.engine.get(&id).await.unwrap();
+    let placed = s.dest.join("Vidéos").join("Exemple");
+    assert_eq!(Path::new(&task.dest_dir), placed);
+    let name = task.file_name.clone().unwrap();
+    assert!(name.starts_with("www.exemple.org - Essai"), "{name}");
+    assert!(name.ends_with(".mp4"), "{name}");
+    let mut expected = video_bytes();
+    expected.extend(audio_bytes());
+    assert_eq!(std::fs::read(placed.join(&name)).unwrap(), expected);
+    // Rien d'autre que la vidéo dans le dossier de la règle : les flux sont partis.
+    let left: Vec<_> = std::fs::read_dir(&placed)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    crate::testing::stop(&s.engine).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_paused_video_resumes_its_streams_without_loss() {
     let server = site(Some(crate::testing::Pace {

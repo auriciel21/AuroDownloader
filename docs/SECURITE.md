@@ -172,6 +172,34 @@ machine à plusieurs comptes.
   - Test : `downloads_follow_the_proxy_and_its_password_stays_in_the_vault` (il n'apparaît
     ni dans la base ni dans son journal WAL).
 
+## Complément du 2026-11-16 : règles de rangement et commande de fin (F-32, F-34)
+
+- **Écriture des règles.** Une règle choisit un dossier (absolu) et un nom, et peut lancer
+  un programme : écrite à distance, elle vaudrait une exécution de code sur la machine
+  (un fichier `.bat` rangé dans le dossier de démarrage de Windows, ou une commande).
+  - `rules.set` a la portée `admin`, qu'aucun jeton n'a : seul le canal local (bureau,
+    CLI) écrit les règles (décision de l'utilisateur).
+  - `rules.list` est permise à toute portée, mais une connexion à jeton n'y voit pas les
+    commandes, seulement qu'il y en a une (leurs arguments peuvent porter un secret).
+  - Les règles écrites localement valent pour toutes les tâches, y compris celles qu'un
+    jeton ajoute : une tâche distante peut donc finir hors du dossier des téléchargements,
+    là où l'utilisateur l'a voulu. Le jeton ne choisit toujours pas le dossier.
+  - Test : `rules_place_tasks_added_without_a_folder`.
+- **Noms venus du serveur.** Le modèle de nom contient le nom du serveur : le résultat
+  passe par `net::filename::sanitize`, et un modèle ne peut pas contenir de séparateur de
+  dossier. Un dossier relatif n'a ni `.` ni `..`.
+- **Expressions régulières.** Crate `regex` : temps linéaire, sans retour arrière ;
+  automate borné à 1 Mio, une expression plus grosse est refusée à l'écriture
+  (test `bad_rules_are_refused`).
+- **Commande de fin.**
+  - Programme en chemin absolu et arguments, jamais de shell : un nom de fichier venu du
+    serveur ne peut rien injecter, chaque variable reste un seul argument.
+  - Entrée fermée, sorties jetées ; ni ses arguments ni ses sorties ne vont aux journaux
+    (seulement son issue et l'identifiant de la tâche).
+  - Délai propre à chaque règle ; à son terme, ou à l'arrêt du moteur, tout l'arbre de
+    processus est tué (Job Object sous Windows, groupe sous Linux).
+  - Pas de commande sous Android.
+
 ## 5. Vérifications
 
 - Campagne de la porte, sous Windows et sous Linux :

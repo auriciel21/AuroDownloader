@@ -717,6 +717,23 @@ pub async fn run(
     }
 }
 
+/// Suite d'un torrent dont la commande de fin a réussi (SPEC §7.21) : terminé si son
+/// ratio ne demande aucun envoi, sinon passé au partage (rend vrai : à relancer).
+pub fn after_command(conn: &mut Connection, task_id: &str) -> Result<bool, TransferError> {
+    let task = load_task(conn, task_id)?;
+    let ratio = match load_torrent(conn, task_id)?.ratio_limit {
+        Some(r) => Some(r),
+        None => settings::torrent_ratio(conn)?,
+    };
+    let total = task.total_bytes.unwrap_or(task.done_bytes);
+    if ratio.map(|r| target_bytes(r, total)) == Some(0) {
+        crate::postproc::complete(conn, task_id)?;
+        return Ok(false);
+    }
+    change_state(conn, task_id, &Change::to(TaskState::Seeding))?;
+    Ok(true)
+}
+
 /// Termine une tâche dont le partage s'arrête : ses fichiers sont en place.
 pub fn finish_sharing(conn: &mut Connection, task_id: &str) -> Result<Outcome, TransferError> {
     let task = load_task(conn, task_id)?;
@@ -889,6 +906,12 @@ async fn drive(
             .unwrap_or(counters.total);
         counters.done = counters.total;
         counters.target = ratio.map(|r| target_bytes(r, counters.total));
+        // Commande de fin (F-34, SPEC §7.21) : fichiers à leur nom, avant le partage.
+        // L'exécution la lance, puis partage ou termine (`after_command`).
+        if crate::postproc::pending(conn, task_id)?.is_some() {
+            crate::postproc::enter(conn, task_id, counters.total)?;
+            return Ok(End::Completed(Path::new(&task.dest_dir).join(&top)));
+        }
         if counters.target == Some(0) {
             return complete(conn, task_id, &task.dest_dir, &top, counters.total);
         }
@@ -1221,12 +1244,28 @@ impl From<crate::store::StoreError> for PrepareError {
 /// le `.part` de son fichier), comme `io::claim_name` : deux tâches ne peuvent pas finir
 /// au même endroit. Puis enregistre les fichiers.
 fn prepare(conn: &mut Connection, task: &TaskRow, layout: &Layout) -> Result<(), PrepareError> {
-    let dir = Path::new(&task.dest_dir);
     let wanted = task
         .requested_name
         .clone()
         .unwrap_or_else(|| layout.top.clone());
-    let reserved = reserved_names(conn, &task.dest_dir, &task.id)?;
+    // Règles de rangement (SPEC §7.21) : le dossier seulement, jamais le nom ; le lien
+    // magnet n'a pas d'hôte.
+    let magnet = crate::store::tasks::primary_source(conn, &task.id)?.url;
+    let subject = crate::rules::Subject {
+        url: &magnet,
+        host: None,
+        name: &wanted,
+    };
+    let placement = crate::store::rules::place_task(conn, task, &subject, false)?;
+    let dest_dir = match &placement.dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(PrepareError::Disk)?;
+            dir.to_string_lossy().into_owned()
+        }
+        None => task.dest_dir.clone(),
+    };
+    let dir = Path::new(&dest_dir);
+    let reserved = reserved_names(conn, &dest_dir, &task.id)?;
     // Réservation notée d'abord, effacée par `save_preparation` (SPEC §5.6, règle 7).
     let kind = if layout.multi {
         ClaimKind::Dir
@@ -1245,6 +1284,7 @@ fn prepare(conn: &mut Connection, task: &TaskRow, layout: &Layout) -> Result<(),
         &name,
         layout.total(),
         &layout.task_files(&name),
+        &crate::store::rules::Placed::of(&placement, &dest_dir),
     )?;
     Ok(())
 }

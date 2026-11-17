@@ -29,8 +29,7 @@ use crate::store::headers::{Stored, StoredHeader};
 use crate::store::media::{self, StreamRow};
 use crate::store::now_ms;
 use crate::store::tasks::{
-    self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, complete_task, load_task,
-    reserved_names,
+    self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, load_task, reserved_names,
 };
 use crate::transfer::{self, MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
 
@@ -283,12 +282,32 @@ async fn download(
     }
     if streams.is_empty() {
         let container = container_for(job.container.as_deref(), &resolution.streams);
-        let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
         let stem = sanitize(&resolution.title, NameRules::native());
-        let wanted = format!("{stem}.{container}");
+        let titled = format!("{stem}.{container}");
+        // Règles de rangement (SPEC §7.21) : comparées à la page et au nom tiré du titre.
+        let host = crate::net::parse_url(&job.page_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let subject = crate::rules::Subject {
+            url: &job.page_url,
+            host: host.as_deref(),
+            name: &titled,
+        };
+        let placement = crate::store::rules::place_task(conn, &task, &subject, true)?;
+        let dest_dir = match &placement.dir {
+            Some(dir) => {
+                if let Err(e) = std::fs::create_dir_all(dir) {
+                    return Ok(failed("DISK_IO", e.to_string()));
+                }
+                dir.to_string_lossy().into_owned()
+            }
+            None => task.dest_dir.clone(),
+        };
+        let wanted = placement.name.clone().unwrap_or(titled);
+        let reserved = reserved_names(conn, &dest_dir, task_id)?;
         // Le nom final est pris sur le disque (`.part`), comme pour une tâche HTTP ; la
         // réservation, notée d'abord, part avec `save_resolution` (SPEC §5.6, règle 7).
-        let dir = Path::new(&task.dest_dir);
+        let dir = Path::new(&dest_dir);
         let final_name =
             match claims::claim(conn, dir, &wanted, &reserved, ClaimKind::Part, task_id) {
                 Ok(name) => name,
@@ -348,6 +367,7 @@ async fn download(
             &final_name,
             &container,
             &rows,
+            &crate::store::rules::Placed::of(&placement, &dest_dir),
         )?;
         streams = media::load_streams(conn, task_id)?;
         task = load_task(conn, task_id)?;
@@ -805,7 +825,9 @@ async fn direct(
                 ..
             } => Step::Refresh,
             Outcome::Failed { code, detail } => Step::End(End::Failed { code, detail }),
-            Outcome::Seeding => Step::End(failed("INTERNAL", "issue de torrent pour une vidéo")),
+            Outcome::Seeding | Outcome::PostProcessing => {
+                Step::End(failed("INTERNAL", "issue inattendue pour un flux de vidéo"))
+            }
         });
     }
 }
@@ -1008,7 +1030,7 @@ async fn finish(
         for input in &inputs {
             let _ = std::fs::remove_file(input);
         }
-        complete_task(conn, task_id, &final_path.to_string_lossy(), size)?;
+        crate::postproc::finish(conn, task_id, &final_path, size)?;
         return Ok(End::Completed(final_path));
     }
     let single_as_is = matches!(&streams[..], [one] if one.ext == container);
@@ -1043,7 +1065,7 @@ async fn finish(
             let _ = std::fs::remove_file(input);
         }
     }
-    complete_task(conn, task_id, &final_path.to_string_lossy(), size)?;
+    crate::postproc::finish(conn, task_id, &final_path, size)?;
     Ok(End::Completed(final_path))
 }
 

@@ -551,6 +551,104 @@
       },
       "required": ["mode", "url", "exceptions", "username", "hasPassword"]
     },
+    "ruleMatch": {
+      "description": "Critères d'une règle de rangement (SPEC 7.21) : chacun facultatif, tous doivent correspondre ; le type est une catégorie ou une extension.",
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {"enum": ["compressed", "documents", "images", "music", "programs", "video", "other"]}
+        },
+        "extensions": {"type": "array", "maxItems": 50, "items": {"type": "string"}},
+        "domains": {"type": "array", "maxItems": 50, "items": {"type": "string"}},
+        "urlRegex": {"type": ["string", "null"]},
+        "nameRegex": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "ruleCommand": {
+      "description": "Commande de fin (F-34) : un programme en chemin absolu et ses arguments, sans shell ; variables {chemin} {dossier} {nom} {taille} {sha256} {id} (ou path, dir, name, size).",
+      "type": "object",
+      "properties": {
+        "program": {"type": "string"},
+        "args": {"type": "array", "maxItems": 64, "items": {"type": "string"}},
+        "timeoutS": {"type": "integer", "minimum": 1, "maximum": 86400}
+      },
+      "required": ["program"],
+      "additionalProperties": false
+    },
+    "ruleIn": {
+      "description": "Règle donnée à rules.set ; sans ruleId, le moteur en donne un.",
+      "type": "object",
+      "properties": {
+        "ruleId": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "enabled": {"type": ["boolean", "null"]},
+        "match": {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ruleMatch"},
+        "actions": {
+          "type": "object",
+          "properties": {
+            "folder": {"type": ["string", "null"]},
+            "rename": {"type": ["string", "null"]},
+            "command": {
+              "oneOf": [
+                {"type": "null"},
+                {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ruleCommand"}
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "rule": {
+      "description": "Règle de rangement telle que le moteur la rend. Une connexion à jeton ne voit pas la commande (command absent), seulement hasCommand.",
+      "type": "object",
+      "properties": {
+        "ruleId": {"type": "string"},
+        "name": {"type": "string"},
+        "enabled": {"type": "boolean"},
+        "match": {
+          "type": "object",
+          "properties": {
+            "categories": {"type": "array", "items": {"type": "string"}},
+            "extensions": {"type": "array", "items": {"type": "string"}},
+            "domains": {"type": "array", "items": {"type": "string"}},
+            "urlRegex": {"type": ["string", "null"]},
+            "nameRegex": {"type": ["string", "null"]}
+          },
+          "required": ["categories", "extensions", "domains", "urlRegex", "nameRegex"]
+        },
+        "actions": {
+          "type": "object",
+          "properties": {
+            "folder": {"type": ["string", "null"]},
+            "rename": {"type": ["string", "null"]},
+            "command": {
+              "oneOf": [
+                {"type": "null"},
+                {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/ruleCommand"}
+              ]
+            },
+            "hasCommand": {"type": "boolean"}
+          },
+          "required": ["folder", "rename"]
+        }
+      },
+      "required": ["ruleId", "name", "enabled", "match", "actions"]
+    },
+    "ruleList": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {"$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rule"}
+        }
+      },
+      "required": ["rules"]
+    },
     "limits": {
       "type": "object",
       "properties": {

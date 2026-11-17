@@ -424,6 +424,7 @@ dependencies = [
  "proptest",
  "quick-xml",
  "rcgen",
+ "regex",
  "reqwest",
  "rusqlite",
  "rustls",

@@ -2105,6 +2105,172 @@ async fn downloads_follow_the_proxy_and_its_password_stays_in_the_vault() {
     crate::testing::stop(&engine).await;
 }
 
+/// Règles de rangement (F-32, SPEC §7.21) : une tâche ajoutée sans dossier naît dans le
+/// dossier et sous le nom de la première règle qui la prend ; un dossier choisi l'emporte ;
+/// un jeton lit les règles sans leurs commandes et ne les écrit pas.
+#[tokio::test]
+async fn rules_place_tasks_added_without_a_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let server = site(4096);
+    let downloads = dir.path().join("dl");
+    let elsewhere = dir.path().join("ailleurs").join("binaires");
+    std::fs::create_dir(&downloads).unwrap();
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    c.result(
+        "settings.set",
+        json!({"values": {"downloads.dir": dir_text(&downloads)}}),
+    )
+    .await;
+    assert_eq!(
+        c.result("rules.list", json!({})).await,
+        json!({"rules": []})
+    );
+    #[cfg(windows)]
+    let program = r"C:\Outils\analyse.exe";
+    #[cfg(not(windows))]
+    let program = "/usr/bin/analyse";
+    let set = c
+        .result(
+            "rules.set",
+            json!({"rules": [
+                {"name": "Éteinte", "enabled": false, "actions": {"folder": "Jamais"}},
+                {"name": "Images", "match": {"categories": ["images"], "urlRegex": "^http://127\\.0\\.0\\.1:"},
+                 "actions": {"folder": "Images/Sites", "rename": "{hôte}-{nom}.{ext}"}},
+                {"name": "Binaires", "match": {"extensions": ["bin"], "urlRegex": "/b/"},
+                 "actions": {"folder": dir_text(&elsewhere),
+                             "command": {"program": program, "args": ["{chemin}"]}}}
+            ]}),
+        )
+        .await;
+    let rules = set["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 3);
+    assert!(
+        rules
+            .iter()
+            .all(|r| r["ruleId"].as_str().is_some_and(|id| !id.is_empty()))
+    );
+    assert_eq!(rules[2]["actions"]["command"]["timeoutS"], 600);
+    assert_eq!(c.result("rules.list", json!({})).await, set);
+
+    // Ajoute, attend la fin, rend l'emplacement du fichier.
+    // Ajoute, attend la fin (terminée, ou en échec), rend l'emplacement du fichier et la
+    // tâche.
+    async fn placed(c: &mut TestClient, params: Value) -> (std::path::PathBuf, Value) {
+        let id = c.result("task.add", params).await["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        c.notification("task.stateChanged", |p| {
+            p["taskId"] == id.as_str() && (p["to"] == "completed" || p["to"] == "failed")
+        })
+        .await;
+        let task = c.result("task.get", json!({"taskId": id})).await;
+        let path =
+            Path::new(task["destDir"].as_str().unwrap()).join(task["fileName"].as_str().unwrap());
+        (path, task)
+    }
+    async fn place(c: &mut TestClient, params: Value) -> std::path::PathBuf {
+        let (path, task) = placed(c, params).await;
+        assert_eq!(task["state"], "completed", "{task}");
+        path
+    }
+    let auto = |path: &str| json!({"sources": [{"url": server.url(path)}]});
+    let image = place(&mut c, auto("/photo.png")).await;
+    assert_eq!(
+        image,
+        downloads
+            .join("Images")
+            .join("Sites")
+            .join("127.0.0.1-photo.png")
+    );
+    assert!(image.is_file());
+    // Un retéléchargement est rangé de la même façon (pas de dossier emboîté).
+    let id = c.result("task.list", json!({})).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["fileName"] == "127.0.0.1-photo.png")
+        .unwrap()["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.result(
+        "task.restart",
+        json!({"taskIds": [id], "deleteFiles": true}),
+    )
+    .await;
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "completed"
+    })
+    .await;
+    let again = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(
+        Path::new(again["destDir"].as_str().unwrap()).join(again["fileName"].as_str().unwrap()),
+        image
+    );
+    assert!(image.is_file());
+    // Sa commande de fin (F-34) vise un programme absent : la tâche échoue, son fichier
+    // reste en place.
+    let (binary, task) = placed(&mut c, auto("/b/outil.bin")).await;
+    assert_eq!(binary, elsewhere.join("outil.bin"));
+    assert!(binary.is_file());
+    assert_eq!(task["state"], "failed", "{task}");
+    assert_eq!(task["errorCode"], "POSTPROCESS_FAILED", "{task}");
+    // Aucune règle ne la prend : le dossier des téléchargements.
+    assert_eq!(
+        place(&mut c, auto("/a/outil.bin")).await,
+        downloads.join("outil.bin")
+    );
+    // Un dossier choisi l'emporte, et le nom du serveur reste.
+    let chosen =
+        json!({"sources": [{"url": server.url("/choisie.png")}], "destDir": dir_text(&downloads)});
+    assert_eq!(place(&mut c, chosen).await, downloads.join("choisie.png"));
+    // Un nom choisi l'emporte sur le modèle, pas sur le dossier.
+    let named = json!({"sources": [{"url": server.url("/x.png")}], "fileName": "mien.png"});
+    assert_eq!(
+        place(&mut c, named).await,
+        downloads.join("Images").join("Sites").join("mien.png")
+    );
+
+    // Une liste refusée ne change rien.
+    for bad in [
+        json!({}),
+        json!({"rules": {}}),
+        json!({"rules": [{"match": {"urlRegex": "("}}]}),
+        json!({"rules": [{"actions": {"folder": "../haut"}}]}),
+        json!({"rules": [{"ruleId": "a"}, {"ruleId": "a"}]}),
+    ] {
+        assert_eq!(
+            c.error_code("rules.set", bad.clone()).await,
+            "INVALID_PARAMS",
+            "{bad}"
+        );
+    }
+    assert_eq!(c.result("rules.list", json!({})).await, set);
+
+    // Un jeton : les règles sans commandes, et pas d'écriture.
+    let token = c
+        .result("token.create", json!({"name": "tél", "scope": "control"}))
+        .await;
+    let peer = super::Peer::token(token["id"].as_str().unwrap(), super::Scope::Control);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    remote.result("engine.hello", hello()).await;
+    let seen = remote.result("rules.list", json!({})).await;
+    assert!(!seen.to_string().contains("analyse"), "{seen}");
+    assert_eq!(seen["rules"][2]["actions"]["hasCommand"], true);
+    assert_eq!(seen["rules"][1]["actions"]["hasCommand"], false);
+    assert_eq!(
+        remote.error_code("rules.set", json!({"rules": []})).await,
+        "UNAUTHORIZED"
+    );
+    assert_eq!(c.result("rules.list", json!({})).await, set);
+    crate::testing::stop(&engine).await;
+}
+
 /// Journaux et diagnostic (N-12) : le niveau se lit et se change ; le diagnostic ne porte ni
 /// adresse, ni hôte, ni nom de fichier, ni chemin, même quand le journal en contient.
 #[tokio::test]

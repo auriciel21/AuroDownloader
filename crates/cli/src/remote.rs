@@ -22,6 +22,15 @@ pub(crate) fn dest_dir(dir: &Path) -> Result<String> {
         .to_owned())
 }
 
+/// `destDir` d'un ajout : le dossier donné ; aucun avec `--auto`, et le moteur prend son
+/// dossier des téléchargements, où les règles de rangement s'appliquent (SPEC §7.21).
+fn set_dest(params: &mut Value, dir: Option<&Path>) -> Result<()> {
+    if let Some(dir) = dir {
+        params["destDir"] = json!(dest_dir(dir)?);
+    }
+    Ok(())
+}
+
 /// Une file, par son nom ou son identifiant ; sans `queue`, la file principale.
 async fn find_queue(rpc: &mut Rpc, queue: Option<&str>) -> Result<Value> {
     let list = rpc.call("queue.list", json!({})).await?;
@@ -47,7 +56,9 @@ async fn queue_id(rpc: &mut Rpc, queue: &str) -> Result<String> {
 }
 
 pub struct AddOptions<'a> {
-    pub dir: &'a Path,
+    /// Dossier de destination ; `None` (`--auto`) : celui des téléchargements du moteur,
+    /// où les règles de rangement s'appliquent (SPEC §7.21).
+    pub dir: Option<&'a Path>,
     pub connections: Option<u32>,
     pub queue: Option<&'a str>,
     /// Limite de débit de la tâche, en octets par seconde.
@@ -108,7 +119,7 @@ async fn add_metalink(
              les adresses et l'empreinte de chaque fichier"
         );
     }
-    params["destDir"] = json!(dest_dir(opts.dir)?);
+    set_dest(&mut params, opts.dir)?;
     params["startPaused"] = json!(opts.paused);
     if let Some(select) = opts.select {
         params["select"] = json!(select);
@@ -213,9 +224,9 @@ fn source_of(arg: &str) -> Result<Value> {
 async fn add_one(rpc: &mut Rpc, url: &str, opts: &AddOptions<'_>) -> Result<String> {
     let mut params = json!({
         "sources": [source_of(url)?],
-        "destDir": dest_dir(opts.dir)?,
         "startPaused": opts.paused,
     });
+    set_dest(&mut params, opts.dir)?;
     if !opts.mirrors.is_empty() {
         let sources = params["sources"].as_array_mut().expect("liste");
         sources.extend(opts.mirrors.iter().map(|m| json!({"url": m})));
@@ -288,7 +299,8 @@ pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Resul
 
 /// Une vidéo à ajouter (`auro video add`, `auro video get` ; SPEC §7.17).
 pub struct VideoOptions<'a> {
-    pub dir: &'a Path,
+    /// `None` (`--auto`) : le dossier des téléchargements du moteur, rangé par les règles.
+    pub dir: Option<&'a Path>,
     /// Sélecteur de formats de yt-dlp ; celui du moteur par défaut.
     pub format: Option<&'a str>,
     pub container: Option<&'a str>,
@@ -312,9 +324,9 @@ async fn add_video(rpc: &mut Rpc, page: &str, opts: &VideoOptions<'_>) -> Result
     }
     let mut params = json!({
         "media": media,
-        "destDir": dest_dir(opts.dir)?,
         "startPaused": opts.paused,
     });
+    set_dest(&mut params, opts.dir)?;
     if let Some(l) = opts.limit {
         params["speedLimitBps"] = json!(l);
     }
@@ -1288,6 +1300,171 @@ pub async fn proxy_show(rpc: &mut Rpc) -> Result<()> {
 /// `auro proxy system|none|manual` : change le proxy, puis l'affiche.
 pub async fn proxy_set(rpc: &mut Rpc, params: Value) -> Result<()> {
     print_proxy(&rpc.call("proxy.set", params).await?);
+    Ok(())
+}
+
+/// Types de fichier des règles (ceux de la page) ; une autre valeur de `--type` est une
+/// extension.
+pub const RULE_CATEGORIES: [&str; 7] = [
+    "compressed",
+    "documents",
+    "images",
+    "music",
+    "programs",
+    "video",
+    "other",
+];
+
+/// Ce qu'on change d'une règle existante.
+pub enum RuleEdit {
+    Remove,
+    Enable(bool),
+    /// Nouveau rang, à partir de 1.
+    MoveTo(usize),
+}
+
+fn texts(value: &Value) -> Vec<&str> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+fn print_rules(rules: &Value) {
+    let list = rules["rules"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if list.is_empty() {
+        println!("Aucune règle de rangement.");
+        return;
+    }
+    for (i, rule) in list.iter().enumerate() {
+        let name = rule["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("(sans nom)");
+        let state = if rule["enabled"] == true {
+            ""
+        } else {
+            "  [désactivée]"
+        };
+        let id = rule["ruleId"].as_str().unwrap_or_default();
+        println!("{}. {name}{state}  ({id})", i + 1);
+        let m = &rule["match"];
+        let mut when = Vec::new();
+        let types: Vec<&str> = texts(&m["categories"])
+            .into_iter()
+            .chain(texts(&m["extensions"]))
+            .collect();
+        if !types.is_empty() {
+            when.push(format!("type {}", types.join(", ")));
+        }
+        let domains = texts(&m["domains"]);
+        if !domains.is_empty() {
+            when.push(format!("domaine {}", domains.join(", ")));
+        }
+        if let Some(r) = m["urlRegex"].as_str() {
+            when.push(format!("adresse ~ {r}"));
+        }
+        if let Some(r) = m["nameRegex"].as_str() {
+            when.push(format!("nom ~ {r}"));
+        }
+        if when.is_empty() {
+            println!("   si : toute tâche");
+        } else {
+            println!("   si : {}", when.join(" ; "));
+        }
+        let a = &rule["actions"];
+        let mut then = Vec::new();
+        if let Some(f) = a["folder"].as_str() {
+            then.push(format!("dossier {f}"));
+        }
+        if let Some(r) = a["rename"].as_str() {
+            then.push(format!("nom {r}"));
+        }
+        if let Some(c) = a["command"].as_object() {
+            let args = texts(c.get("args").unwrap_or(&Value::Null));
+            let timeout = c
+                .get("timeoutS")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let mut line = format!("commande {}", c["program"].as_str().unwrap_or("?"));
+            for arg in args {
+                line.push(' ');
+                line.push_str(arg);
+            }
+            then.push(format!("{line} (délai {timeout} s)"));
+        } else if a["hasCommand"] == true {
+            then.push("une commande de fin".into());
+        }
+        if then.is_empty() {
+            println!("   alors : rien (la première règle qui correspond l'emporte)");
+        } else {
+            println!("   alors : {}", then.join(" ; "));
+        }
+    }
+}
+
+/// `auro rules` : les règles de rangement, dans leur ordre.
+pub async fn rules_show(rpc: &mut Rpc) -> Result<()> {
+    print_rules(&rpc.call("rules.list", json!({})).await?);
+    Ok(())
+}
+
+/// Règles telles que `rules.set` les reprend.
+async fn current_rules(rpc: &mut Rpc) -> Result<Vec<Value>> {
+    let listed = rpc.call("rules.list", json!({})).await?;
+    Ok(listed["rules"].as_array().cloned().unwrap_or_default())
+}
+
+/// `auro rules add` : ajoute une règle, à la fin ou au rang `at` (à partir de 1).
+pub async fn rules_add(rpc: &mut Rpc, rule: Value, at: Option<usize>) -> Result<()> {
+    let mut rules = current_rules(rpc).await?;
+    let at = at.map_or(rules.len(), |at| at.saturating_sub(1).min(rules.len()));
+    rules.insert(at, rule);
+    print_rules(&rpc.call("rules.set", json!({"rules": rules})).await?);
+    Ok(())
+}
+
+/// Une règle désignée par son rang (à partir de 1), son identifiant ou son nom.
+fn find_rule(rules: &[Value], key: &str) -> Result<usize> {
+    if let Ok(rank) = key.parse::<usize>()
+        && (1..=rules.len()).contains(&rank)
+    {
+        return Ok(rank - 1);
+    }
+    let found: Vec<usize> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r["ruleId"] == key || r["name"] == key)
+        .map(|(i, _)| i)
+        .collect();
+    match found.as_slice() {
+        [i] => Ok(*i),
+        [] => bail!("aucune règle {key:?} (rang, identifiant ou nom ; voir auro rules)"),
+        _ => bail!("plusieurs règles s'appellent {key:?} : donnez son rang ou son identifiant"),
+    }
+}
+
+/// `auro rules remove|enable|disable|move` : change une règle, puis les affiche.
+pub async fn rules_edit(rpc: &mut Rpc, key: &str, edit: RuleEdit) -> Result<()> {
+    let mut rules = current_rules(rpc).await?;
+    let i = find_rule(&rules, key)?;
+    match edit {
+        RuleEdit::Remove => {
+            rules.remove(i);
+        }
+        RuleEdit::Enable(on) => rules[i]["enabled"] = json!(on),
+        RuleEdit::MoveTo(rank) => {
+            let rule = rules.remove(i);
+            let at = rank.saturating_sub(1).min(rules.len());
+            rules.insert(at, rule);
+        }
+    }
+    print_rules(&rpc.call("rules.set", json!({"rules": rules})).await?);
     Ok(())
 }
 

@@ -50,8 +50,7 @@ use crate::store::segments::{
 use crate::store::sources;
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, SourceState, TaskRow, TaskState, change_state,
-    complete_task, load_sources, load_task, primary_source, reserved_names, save_preparation,
-    set_checksum,
+    load_sources, load_task, primary_source, reserved_names, save_preparation_placed, set_checksum,
 };
 use crate::store::{StoreError, now_ms};
 
@@ -222,6 +221,9 @@ pub enum Outcome {
     /// Torrent dont le partage s'arrête avant son terme (arrêt du moteur, réseau) ; tâche
     /// toujours `seeding`, qui reprendra (SPEC §7.16).
     Seeding,
+    /// Commande de fin arrêtée avec le moteur ; tâche toujours `post_processing`, qui la
+    /// relancera (SPEC §7.21).
+    PostProcessing,
 }
 
 /// Erreurs qui empêchent d'exécuter ou d'enregistrer : base illisible, état incohérent.
@@ -602,13 +604,36 @@ async fn execute(
                 set_checksum(conn, task_id, Some(&checksum), Some(&origin))?;
             }
         }
+        // Le nom choisi par l'utilisateur passe avant celui du serveur (SPEC §7.12).
+        let named = task.requested_name.as_deref().unwrap_or(&probe.file_name);
+        // Règles de rangement (SPEC §7.21) : dossier et nom, avant de prendre le nom.
+        let host = crate::net::parse_url(&source.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let subject = crate::rules::Subject {
+            url: &source.url,
+            host: host.as_deref(),
+            name: named,
+        };
+        let placement = crate::store::rules::place_task(conn, &task, &subject, true)?;
+        let dest_dir = match &placement.dir {
+            Some(dir) => {
+                if let Err(source) = std::fs::create_dir_all(dir) {
+                    return fail(Failure::Io(io::IoError::File {
+                        path: dir.clone(),
+                        source,
+                    }));
+                }
+                dir.to_string_lossy().into_owned()
+            }
+            None => task.dest_dir.clone(),
+        };
+        let wanted = placement.name.as_deref().unwrap_or(named);
         // Le nom est pris sur le disque (`.part` créé) avant d'être enregistré : aucune
         // autre tâche ne peut plus le choisir, ni ouvrir ce `.part` comme le sien.
-        let reserved = reserved_names(conn, &task.dest_dir, task_id)?;
-        // Le nom choisi par l'utilisateur passe avant celui du serveur (SPEC §7.12).
-        let wanted = task.requested_name.as_deref().unwrap_or(&probe.file_name);
+        let reserved = reserved_names(conn, &dest_dir, task_id)?;
         // Réservation notée d'abord, effacée par `save_preparation` (SPEC §5.6, règle 7).
-        let dir = Path::new(&task.dest_dir);
+        let dir = Path::new(&dest_dir);
         let claimed = crate::claims::claim(conn, dir, wanted, &reserved, ClaimKind::Part, task_id);
         let name = match claimed {
             Ok(name) => name,
@@ -637,7 +662,8 @@ async fn execute(
             total_bytes: probe.total_bytes,
             file_name: &name,
         };
-        save_preparation(conn, task_id, &prep, &segments)?;
+        let placed = crate::store::rules::Placed::of(&placement, &dest_dir);
+        save_preparation_placed(conn, task_id, &prep, &segments, &placed)?;
         task = load_task(conn, task_id)?;
     }
     let source = primary_source(conn, task_id)?;
@@ -651,7 +677,7 @@ async fn execute(
         Some(total) => match resume_part(conn, task_id, &source, &dest, total)? {
             Resume::Part(part, todo) => (part, todo, Some(total)),
             Resume::AlreadyRenamed => {
-                complete_task(conn, task_id, &dest.to_string_lossy(), total)?;
+                crate::postproc::finish(conn, task_id, &dest, total)?;
                 return Ok(Ok(dest));
             }
             Resume::Failed(f) => return fail(f),
@@ -669,7 +695,7 @@ async fn execute(
             }
             Ok(None) => {
                 let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                complete_task(conn, task_id, &dest.to_string_lossy(), len)?;
+                crate::postproc::finish(conn, task_id, &dest, len)?;
                 return Ok(Ok(dest));
             }
             Err(e) => return fail(Failure::Io(e)),
@@ -841,7 +867,7 @@ async fn finish_part(
         Ok(path) => path,
         Err(e) => return fail(Failure::Io(e)),
     };
-    complete_task(conn, task_id, &path.to_string_lossy(), total)?;
+    crate::postproc::finish(conn, task_id, &path, total)?;
     Ok(Ok(path))
 }
 
@@ -869,7 +895,7 @@ async fn resume_verifying(
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match len(&dest) {
             Ok(total) => {
-                complete_task(conn, &task.id, &dest.to_string_lossy(), total)?;
+                crate::postproc::finish(conn, &task.id, &dest, total)?;
                 Ok(Ok(dest))
             }
             Err(_) => fail(Failure::Io(IoError::File {

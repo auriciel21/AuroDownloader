@@ -109,7 +109,8 @@ impl TaskState {
                 | (RetryWait, Active | Paused | Failed | Cancelled)
                 // `paused` : arrêt pendant le calcul de l'empreinte (depuis le 2026-11-08).
                 | (Verifying, Paused | PostProcessing | Completed | Failed)
-                | (PostProcessing, Completed | Failed)
+                // `seeding` : torrent dont la commande de fin a réussi (SPEC §7.21).
+                | (PostProcessing, Completed | Failed | Seeding)
                 | (Seeding, Completed | Cancelled)
                 | (Failed, Queued)
         )
@@ -657,7 +658,20 @@ pub fn save_preparation(
     prep: &Preparation<'_>,
     segments: &[Segment],
 ) -> Result<(), StoreError> {
+    save_preparation_placed(conn, task_id, prep, segments, &Default::default())
+}
+
+/// [`save_preparation`], avec le rangement des règles (SPEC §7.21) dans la même
+/// transaction : le dossier où le nom a été pris ne s'enregistre qu'avec lui.
+pub fn save_preparation_placed(
+    conn: &mut Connection,
+    task_id: &str,
+    prep: &Preparation<'_>,
+    segments: &[Segment],
+    placed: &super::rules::Placed<'_>,
+) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    super::rules::save_placement(&tx, task_id, placed)?;
     let length = prep.total_bytes.map(|t| to_i64(t, "taille")).transpose()?;
     let updated = tx.execute(
         "UPDATE sources SET accepts_ranges = ?3, etag = ?4, last_modified = ?5,
@@ -898,6 +912,17 @@ pub fn change_state(
 ///
 /// Sans empreinte à contrôler, `verifying` est traversé dans cette transaction ; avec une
 /// empreinte (F-11), la tâche y est déjà, pendant le calcul.
+/// Taille d'une tâche dont le fichier est complet (commande de fin en attente,
+/// SPEC §7.21) : tous ses octets sont là.
+pub fn set_finished_size(conn: &Connection, task_id: &str, total: u64) -> Result<(), StoreError> {
+    let total = to_i64(total, "taille")?;
+    conn.execute(
+        "UPDATE tasks SET total_bytes = ?2, done_bytes = ?2, updated_at = ?3 WHERE id = ?1",
+        params![task_id, total, now_ms()],
+    )?;
+    Ok(())
+}
+
 pub fn complete_task(
     conn: &mut Connection,
     task_id: &str,
