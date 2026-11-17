@@ -22,6 +22,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        // Tests instrumentés (accessibilité, étape 7c) : androidTest/.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // Le moteur n'est compilé que pour arm64 pour l'instant.
             abiFilters += "arm64-v8a"
@@ -130,4 +132,14 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Accessibilité (étape 7c, SPEC 9.1) : tests Compose sur l'appareil, contrôles de
+    // l'Accessibility Test Framework de Google (enableAccessibilityChecks).
+    androidTestImplementation(platform("androidx.compose:compose-bom:2025.05.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4-accessibility")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

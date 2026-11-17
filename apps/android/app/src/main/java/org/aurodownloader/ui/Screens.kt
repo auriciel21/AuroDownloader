@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -583,17 +584,7 @@ private fun SettingsScreen(app: AuroApp, snackbar: SnackbarHostState, back: () -
                 val current = app.downloads.downloadLimit.value
                 for (limit in LIMITS) {
                     val label = limit?.let { context.rate(it) } ?: stringResource(R.string.no_limit)
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .selectable(selected = current == limit, role = Role.RadioButton) { app.setLimit(limit, report) }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = current == limit, onClick = null)
-                        Spacer(Modifier.width(12.dp))
-                        Text(label)
-                    }
+                    Choice(label, selected = current == limit) { app.setLimit(limit, report) }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -674,6 +665,8 @@ private fun Choice(label: String, selected: Boolean, choose: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
+            // Cible de 48 dp au moins (contrôles d'accessibilité, étape 7c).
+            .heightIn(min = 48.dp)
             .selectable(selected = selected, role = Role.RadioButton, onClick = choose)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,

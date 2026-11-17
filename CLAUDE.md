@@ -428,6 +428,13 @@ apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.
 cd apps/android && ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
+# Accessibilité (étape 7c) : tests instrumentés sur un appareil, sans connectedAndroidTest
+# (qui désinstalle l'application) ; l'application réelle tourne : effacer ses données après.
+./gradlew assembleDebug assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -r org.aurodownloader.test/androidx.test.runner.AndroidJUnitRunner
+adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
 ```
 
 ## Règles du projet
@@ -718,8 +725,8 @@ adb shell am start -n org.aurodownloader/.MainActivity --es url <adresse>
   2026-11-18 : axe-core et jsdom pour la page, avec un test des contrastes à part ; tests
   Compose instrumentés avec l'Accessibility Test Framework pour Android ; audit WCAG 2.2 AA
   de toutes les interfaces (page, Android, extension) écrit dans `docs/ACCESSIBILITE.md`,
-  défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page et 7b extension
-  faites le 2026-11-18, puis 7c Android, 7d rapport et essais réels) ; 8. dépôt
+  défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page, 7b extension et
+  7c Android faites le 2026-11-18, puis 7d rapport et essais réels) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en
