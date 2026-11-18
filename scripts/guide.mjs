@@ -104,15 +104,17 @@ export function check() {
 
 // ---------- Conversion en HTML, pour l'application ----------
 
-function inline(text, ctx) {
+export function inline(text, ctx) {
   let out = "";
-  const re = /`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)]+)\)/g;
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*|!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)/g;
   let last = 0;
   for (const m of text.matchAll(re)) {
     out += escape(text.slice(last, m.index));
     if (m[1] !== undefined) out += `<code>${escape(m[1])}</code>`;
     else if (m[2] !== undefined) out += `<strong>${inline(m[2], ctx)}</strong>`;
-    else out += link(m[3], m[4], ctx);
+    // Image (capture d'écran) : son texte alternatif seul, l'application reste légère.
+    else if (m[3] !== undefined) out += `<em class="guide-image">${escape(m[3])}</em>`;
+    else out += link(m[5], m[6], ctx);
     last = m.index + m[0].length;
   }
   return out + escape(text.slice(last));

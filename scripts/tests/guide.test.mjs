@@ -2,7 +2,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
-import { check, render, output, slug, LANGS, files, headings } from "../guide.mjs";
+import { check, render, output, slug, inline, LANGS, files, headings } from "../guide.mjs";
+
+test("copie de l'application : une capture devient son texte alternatif, le texte est échappé", () => {
+  const ctx = { lang: "fr", file: "02-premiers-pas.md", prefix: (f) => `guide-${f.replace(/\.md$/, "")}` };
+  assert.equal(inline("![La fenêtre <principale>](../images/fr/01-fenetre.png)", ctx),
+    '<em class="guide-image">La fenêtre &lt;principale&gt;</em>');
+  assert.equal(inline("voir [Options](08-options.md#général)", ctx),
+    'voir <a href="#guide-08-options-général">Options</a>');
+  assert.equal(inline("<script>x</script> **gras** `a<b`", ctx),
+    "&lt;script&gt;x&lt;/script&gt; <strong>gras</strong> <code>a&lt;b</code>");
+});
 
 test("liens internes et ancres du guide justes, langues de même structure", () => {
   assert.deepEqual(check(), []);
