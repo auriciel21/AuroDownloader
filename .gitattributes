@@ -13,5 +13,7 @@ Cargo.lock  text eol=lf
 *.mjs       text eol=lf
 # Pages de manuel : comparées octet par octet par leur test (étape 9a).
 *.1         text eol=lf
+# Copie du guide dans l'application : comparée à la sortie de scripts/guide.mjs (étape 9d).
+ui/src/guide/*.html text eol=lf
 # Jeu d'essai signé (SPEC 7.17) : octets exacts, sans conversion des fins de ligne.
 crates/engine/src/media/testdata/** -text
