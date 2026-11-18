@@ -1,0 +1,250 @@
+<!-- Fait par scripts/guide.mjs depuis docs/guide/fr : ne pas modifier à la main. -->
+<section aria-labelledby="guide-readme">
+<h2 id="guide-readme" tabindex="-1">Guide de l'utilisateur d'AuroDownloader</h2>
+<p>AuroDownloader est un gestionnaire de téléchargement libre et gratuit pour Windows, Linux et Android. Il télécharge vite, en plusieurs morceaux à la fois, et reprend là où il s'était arrêté après une coupure, sans perdre ni abîmer de données.</p>
+<p>Un seul moteur fait tous les téléchargements ; l'application de bureau, l'application Android, l'extension de navigateur, l'interface web et la ligne de commande ne font que le piloter. Fermer la fenêtre n'arrête donc pas les téléchargements.</p>
+<p>English version (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/guide/en/README.md</span>)</p>
+<h3 id="guide-readme-sommaire" tabindex="-1">Sommaire</h3>
+<ol><li><a href="#guide-01-installation">Installation</a> : Windows, Linux, Android, extension, désinstallation.</li><li><a href="#guide-02-premiers-pas">Premiers pas</a> : la fenêtre, un premier téléchargement.</li><li><a href="#guide-03-telechargements">Téléchargements</a> : ajouter, suivre, Propriétés, empreinte, miroirs, Metalink, FTP et SFTP, déplacer, retélécharger.</li><li><a href="#guide-04-torrents">Torrents</a> : liens magnet, fichiers <code>.torrent</code>, partage.</li><li><a href="#guide-05-video">Vidéos</a> : la vidéo d'une page, qualité, sous-titres.</li><li><a href="#guide-06-liens">Analyse de liens</a> : tous les fichiers d'une page ou d'une liste, liens copiés.</li><li><a href="#guide-07-organisation">Organisation</a> : files, limites de débit, plages horaires, règles de rangement, historique.</li><li><a href="#guide-08-options">Options</a> : chaque rubrique, dont les mises à jour et le proxy.</li><li><a href="#guide-09-extension">Extension de navigateur</a> : Firefox, Chrome, Edge.</li><li><a href="#guide-10-android">Android</a>.</li><li><a href="#guide-11-acces-distant">Accès à distance</a> : piloter depuis un autre appareil.</li><li><a href="#guide-12-ligne-de-commande">Ligne de commande</a> : <code>auro</code>.</li><li><a href="#guide-13-accessibilite">Accessibilité</a> : clavier et lecteurs d'écran.</li><li><a href="#guide-14-depannage">Dépannage</a> : problèmes fréquents, diagnostic, vie privée.</li></ol>
+</section>
+<section aria-labelledby="guide-01-installation">
+<h2 id="guide-01-installation" tabindex="-1">Installation</h2>
+<p>Les paquets sont sur la page des publications (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/releases</span>) du projet. Chaque publication donne aussi <code>SHA256SUMS</code>, l'empreinte de chaque fichier, pour vérifier un téléchargement.</p>
+<h3 id="guide-01-installation-windows-10-et-11" tabindex="-1">Windows 10 et 11</h3>
+<ol><li>Téléchargez <code>AuroDownloader_&lt;version&gt;_x64-setup.exe</code> (la plupart des ordinateurs) ou <code>_arm64-setup.exe</code> (ordinateurs à processeur ARM).</li><li>Lancez-le. L'installation se fait pour votre seul compte, sans droits d'administrateur, dans <code>%LOCALAPPDATA%\AuroDownloader</code>. Si WebView2 manque (rare sous Windows 11), l'installateur le télécharge.</li><li>Si Windows affiche « Windows a protégé votre ordinateur » et « éditeur inconnu » : l'installateur n'est pas signé. Choisissez « Informations complémentaires », puis « Exécuter quand même », si vous l'avez bien pris sur la page des publications.</li></ol>
+<p>L'installateur déclare aussi le relais de l'<a href="#guide-09-extension">extension</a> aux navigateurs.</p>
+<h3 id="guide-01-installation-linux" tabindex="-1">Linux</h3>
+<p>Il faut WebKitGTK 4.1 : Ubuntu 22.04, Debian 12 ou plus récents.</p>
+<ul><li><strong>Paquet <code>.deb</code></strong> (Debian, Ubuntu et dérivées) :</li></ul>
+<pre><code>sudo apt install ./AuroDownloader_&lt;version&gt;_amd64.deb</code></pre>
+<p>(<code>_arm64.deb</code> sur un ordinateur ARM). Il déclare le relais de l'extension aux navigateurs et installe les pages de manuel (<code>man auro</code>).</p>
+<ul><li><strong>AppImage</strong> : rendez le fichier exécutable (<code>chmod +x AuroDownloader_&lt;version&gt;_amd64.AppImage</code>) et lancez-le. L'AppImage se met à jour elle-même, sur accord ; elle ne déclare pas le relais de l'extension.</li></ul>
+<h3 id="guide-01-installation-android-8-et-plus" tabindex="-1">Android 8 et plus</h3>
+<p>Téléchargez <code>AuroDownloader_&lt;version&gt;_arm64.apk</code> sur l'appareil et ouvrez-le. Android demande d'autoriser l'installation depuis cette source (le navigateur ou le gestionnaire de fichiers). Voir <a href="#guide-10-android">Android</a>.</p>
+<h3 id="guide-01-installation-extension-de-navigateur" tabindex="-1">Extension de navigateur</h3>
+<p>Voir <a href="#guide-09-extension">Extension de navigateur</a>.</p>
+<h3 id="guide-01-installation-mises-à-jour" tabindex="-1">Mises à jour</h3>
+<p>L'application de bureau cherche ses mises à jour au plus une fois par jour, et propose une version nouvelle ; rien ne s'installe sans votre accord (Options, Général, « Mises à jour »). Le paquet <code>.deb</code> ne fait que prévenir, avec le lien de la page de la version : installez le nouveau paquet comme le premier. Sous Android, installez le nouvel APK par-dessus l'ancien.</p>
+<h3 id="guide-01-installation-désinstallation" tabindex="-1">Désinstallation</h3>
+<ul><li><strong>Windows</strong> : Paramètres, Applications, AuroDownloader, Désinstaller. Vos téléchargements ne sont jamais touchés. La liste des téléchargements, l'historique et les préférences sont gardés, sauf si vous cochez « supprimer les données ».</li><li><strong>Linux</strong> : <code>sudo apt remove auro-downloader</code> pour le <code>.deb</code> ; supprimez simplement le fichier AppImage.</li><li><strong>Android</strong> : comme toute application. Les fichiers déjà téléchargés restent dans <code>Download/AuroDownloader</code>.</li></ul>
+</section>
+<section aria-labelledby="guide-02-premiers-pas">
+<h2 id="guide-02-premiers-pas" tabindex="-1">Premiers pas</h2>
+<h3 id="guide-02-premiers-pas-la-fenêtre" tabindex="-1">La fenêtre</h3>
+<ul><li><strong>Barre d'outils</strong>, en haut : Ajouter, Vidéo, Liens, Reprendre, Arrêter, Tout reprendre, Tout arrêter, Supprimer, Retirer les finis, Propriétés, Planification, Historique, Options.</li><li><strong>Catégories</strong>, à gauche : Tous les téléchargements, Incomplets, Terminés, chacun avec ses types de fichier (Archives, Documents, Images, Musique, Programmes, Vidéos, Autres), puis les files d'attente. Le nombre de téléchargements est à côté de chaque catégorie.</li><li><strong>Tableau</strong>, au centre : Nom du fichier, Taille, Avancement, Statut, Temps restant, Débit, Ajouté le. Un clic sur un titre de colonne trie le tableau.</li><li><strong>Barre d'état</strong>, en bas : ce qui se passe, et la limite de débit globale.</li></ul>
+<p>Au premier lancement, AuroDownloader vous dit qu'il cherche ses mises à jour une fois par jour au plus ; « Ne pas rechercher » coupe cette recherche.</p>
+<h3 id="guide-02-premiers-pas-un-premier-téléchargement" tabindex="-1">Un premier téléchargement</h3>
+<ol><li>Copiez l'adresse d'un fichier, par exemple <code>https://deb.debian.org/debian/README</code>.</li><li>« Ajouter » (ou Ctrl+N), collez l'adresse dans « Adresses ou liens magnet, un par ligne ».</li><li>« Enregistrer dans » montre le dossier : par défaut, votre dossier Téléchargements ; « Parcourir… » en choisit un autre.</li><li>« Démarrer ». Le téléchargement apparaît dans le tableau, avec son avancement.</li></ol>
+<p>« Télécharger plus tard » l'ajoute en pause : « Reprendre » le lancera.</p>
+<h3 id="guide-02-premiers-pas-ce-que-lon-peut-faire-dun-téléchargement" tabindex="-1">Ce que l'on peut faire d'un téléchargement</h3>
+<p>Sélectionnez une ligne (plusieurs avec Ctrl ou Maj), puis la barre d'outils, ou un clic droit pour le menu : Ouvrir, Afficher dans le dossier, Retélécharger…, Déplacer/Renommer…, Actualiser l'adresse…, Reprendre, Arrêter, Limiter le débit…, Supprimer…, Propriétés.</p>
+<ul><li><strong>Arrêter</strong> met en pause ; <strong>Reprendre</strong> repart là où il s'était arrêté.</li><li><strong>Supprimer…</strong> retire de la liste ; pour un téléchargement terminé, la case « Supprimer aussi les fichiers terminés du disque » efface aussi le fichier.</li><li><strong>Retirer les finis</strong> retire de la liste les téléchargements terminés et annulés ; leurs fichiers restent sur le disque, et l'<a href="#guide-07-organisation-historique">historique</a> les garde.</li><li>Un double clic, ou Entrée, ouvre les <strong>Propriétés</strong>.</li></ul>
+<p>Un fichier terminé s'ouvre avec le programme du système ; par sécurité, AuroDownloader n'ouvre jamais un programme ni un paquet d'installation : « Afficher dans le dossier » le montre.</p>
+<h3 id="guide-02-premiers-pas-fermer-la-fenêtre" tabindex="-1">Fermer la fenêtre</h3>
+<p>Fermer la fenêtre la replie dans la zone de notification (à côté de l'horloge) : les téléchargements continuent. L'icône de la zone de notification rouvre la fenêtre, ou quitte : « Quitter (les téléchargements continuent) » ou « Quitter et arrêter les téléchargements ». Ce comportement se règle dans les <a href="#guide-08-options-général">Options</a>.</p>
+<p>Au redémarrage de l'ordinateur, les téléchargements inachevés reprennent quand AuroDownloader se relance ; « Démarrer avec la session » le fait de lui-même.</p>
+</section>
+<section aria-labelledby="guide-03-telechargements">
+<h2 id="guide-03-telechargements" tabindex="-1">Téléchargements</h2>
+<h3 id="guide-03-telechargements-ajouter" tabindex="-1">Ajouter</h3>
+<p>La boîte « Ajouter des téléchargements » prend :</p>
+<ul><li>des <strong>adresses</strong> <code>http://</code>, <code>https://</code>, <code>ftp://</code>, <code>ftps://</code> ou <code>sftp://</code>, une par ligne (plusieurs à la fois) ;</li><li>des <strong>liens magnet</strong> (voir <a href="#guide-04-torrents">Torrents</a>) ;</li><li>des <strong>fichiers <code>.torrent</code> ou Metalink</strong> (« Choisir des fichiers .torrent ou Metalink… », ou glissés sur la fenêtre).</li></ul>
+<p>Champs facultatifs :</p>
+<ul><li><strong>Miroirs</strong>, un par ligne : d'autres adresses du même fichier. Chacun est vérifié (même taille, mêmes octets) avant de servir, et le téléchargement se répartit entre eux selon leur débit ; un miroir en panne est écarté.</li><li><strong>Empreinte attendue</strong> : SHA-256, SHA-1 ou MD5 (<code>sha256:…</code> ou la valeur seule). Le fichier ne prend son nom qu'une fois vérifié ; sinon, le téléchargement échoue avec « empreinte différente de celle attendue » et le fichier reste sous son nom provisoire.</li><li><strong>Enregistrer dans</strong> : le dossier.</li></ul>
+<p>Si l'adresse est refusée, la boîte reste ouverte et dit pourquoi, le curseur dans le champ en cause.</p>
+<p>Une page d'un hébergeur de fichiers pris en charge par un <a href="#guide-08-options-plugins">plugin</a> est lue par lui ; « Ajouter ces pages telles quelles, sans plugin » l'évite.</p>
+<h3 id="guide-03-telechargements-statuts" tabindex="-1">Statuts</h3>
+<p>En attente (file pleine, ou plage horaire fermée), En cours, En pause, Nouvel essai bientôt (coupure du réseau ou du serveur : AuroDownloader réessaie de lui-même), Vérification de l'empreinte, Finition (la commande d'une <a href="#guide-07-organisation-règles-de-rangement">règle</a> tourne), Terminé, Échec (la raison est dite), Annulé, Partage (torrent).</p>
+<p>Un disque plein met le téléchargement en pause (« disque plein ») : il repart seul quand la place revient.</p>
+<h3 id="guide-03-telechargements-propriétés" tabindex="-1">Propriétés</h3>
+<p>Double clic sur une ligne, Entrée, ou « Propriétés » :</p>
+<ul><li>fichier, dossier, adresse, page d'origine, statut, taille, téléchargé, débit, temps restant ;</li><li><strong>Connexions</strong> : le nombre de connexions de ce téléchargement (automatique par défaut) ;</li><li><strong>Reprise possible</strong> : si le serveur permet de reprendre ;</li><li><strong>Empreinte</strong> : celle attendue, ou celle trouvée à côté du fichier, et si elle est vérifiée ; elle se donne, change ou s'efface ici tant que le téléchargement n'est pas terminé ;</li><li><strong>Miroirs</strong> : chaque source, son état et son débit ; « Ajouter un miroir » ;</li><li>une <strong>carte des segments</strong> : ce qui est reçu, morceau par morceau ;</li><li>la <strong>limite de débit</strong> de ce téléchargement.</li></ul>
+<h3 id="guide-03-telechargements-ftp-ftps-et-sftp" tabindex="-1">FTP, FTPS et SFTP</h3>
+<ul><li>FTP sans chiffrement n'envoie jamais de mot de passe, sauf si vous l'autorisez pour ce site (« FTP : autoriser sans chiffrement », dans les <a href="#guide-08-options-identifiants-de-sites">identifiants de sites</a>).</li><li>SFTP : au premier contact, AuroDownloader montre l'<strong>empreinte de la clé du serveur</strong>, dans les Propriétés (« Clé du serveur SSH », « Accepter la clé… »). Vérifiez-la auprès de l'administrateur du serveur avant de l'accepter ; les téléchargements de ce serveur reprennent ensuite. Une clé qui change bloque les téléchargements : c'est peut-être une attaque.</li><li>Identifiants : nom et mot de passe, ou clé privée SSH, dans les identifiants de sites. Une adresse comme <code>ftp://nom:motdepasse@serveur/fichier</code> marche aussi : le mot de passe est rangé dans le coffre du système et retiré de l'adresse.</li></ul>
+<h3 id="guide-03-telechargements-sites-qui-demandent-un-compte" tabindex="-1">Sites qui demandent un compte</h3>
+<p>Les identifiants d'un site (Basic ou Digest) se règlent dans les <a href="#guide-08-options-identifiants-de-sites">identifiants de sites</a>. Les mots de passe sont gardés dans le coffre du système (Gestionnaire d'identification de Windows, trousseau de Linux), jamais dans la base d'AuroDownloader. Pour un site où l'on se connecte par une page, passez par l'<a href="#guide-09-extension">extension</a>, qui transmet les cookies.</p>
+<h3 id="guide-03-telechargements-metalink" tabindex="-1">Metalink</h3>
+<p>Un fichier <code>.meta4</code> ou <code>.metalink</code>, ou son adresse, donne pour chaque fichier ses adresses et son empreinte. S'il contient plusieurs fichiers, la boîte vous les fait cocher. Chaque morceau faux est téléchargé de nouveau, de préférence depuis une autre source ; une source qui en donne deux est écartée.</p>
+<h3 id="guide-03-telechargements-déplacer-renommer-actualiser-retélécharger" tabindex="-1">Déplacer, renommer, actualiser, retélécharger</h3>
+<ul><li><strong>Déplacer/Renommer…</strong> : un autre nom ou un autre dossier, même sur un autre disque ; possible pour un téléchargement qui ne tourne pas, terminé ou non.</li><li><strong>Actualiser l'adresse…</strong> : remplace un lien expiré. Pour un téléchargement commencé, la nouvelle adresse doit donner le même fichier ; ce qui est reçu est gardé.</li><li><strong>Retélécharger…</strong> : recommence depuis le début. « Remplacer le fichier déjà téléchargé » l'écrase ; sinon le nouveau prend un autre nom.</li></ul>
+<h3 id="guide-03-telechargements-où-vont-les-fichiers" tabindex="-1">Où vont les fichiers</h3>
+<p>Pendant le téléchargement, le fichier porte un nom provisoire en <code>.part</code> ; il prend son nom à la fin. Un nom déjà pris reçoit un suffixe (<code>fichier (1).iso</code>). Les <a href="#guide-07-organisation-règles-de-rangement">règles de rangement</a> peuvent choisir le dossier et le nom.</p>
+</section>
+<section aria-labelledby="guide-04-torrents">
+<h2 id="guide-04-torrents" tabindex="-1">Torrents</h2>
+<h3 id="guide-04-torrents-ajouter-un-torrent" tabindex="-1">Ajouter un torrent</h3>
+<ul><li>Collez un <strong>lien magnet</strong> (<code>magnet:?…</code>) dans « Ajouter » ;</li><li>ou choisissez un <strong>fichier <code>.torrent</code></strong> (« Choisir des fichiers .torrent ou Metalink… »), ou glissez-le sur la fenêtre ;</li><li>ou ouvrez-le avec AuroDownloader depuis le navigateur ou l'explorateur de fichiers : il préremplit la boîte « Ajouter », que vous confirmez. L'association des liens magnet et des <code>.torrent</code> à AuroDownloader est une option, désactivée par défaut (Options, BitTorrent).</li></ul>
+<p>Un torrent n'a pas d'empreinte à donner : il vérifie ses morceaux lui-même.</p>
+<h3 id="guide-04-torrents-choisir-les-fichiers" tabindex="-1">Choisir les fichiers</h3>
+<p>Les Propriétés d'un torrent montrent ses fichiers : décochez ceux que vous ne voulez pas, puis validez. Les autres ne sont pas téléchargés.</p>
+<h3 id="guide-04-torrents-partage" tabindex="-1">Partage</h3>
+<p>Un torrent terminé reste en <strong>Partage</strong> : il envoie aux autres pairs ce qu'il a reçu, jusqu'à la limite choisie (Options, BitTorrent, « Après le téléchargement, partager ») :</p>
+<ul><li>Ne pas partager ;</li><li>Jusqu'à avoir envoyé autant que reçu (ratio 1), par défaut ;</li><li>jusqu'à un autre ratio ;</li><li>Sans limite, jusqu'à ce que je l'arrête.</li></ul>
+<p>Le partage ne prend pas de place dans la file : d'autres téléchargements démarrent pendant ce temps. Sur un réseau facturé au volume (Android), rien n'est partagé.</p>
+<h3 id="guide-04-torrents-réglages-options-bittorrent" tabindex="-1">Réglages (Options, BitTorrent)</h3>
+<ul><li><strong>Limite d'envoi</strong> : le débit d'envoi aux autres pairs.</li><li><strong>Interface réseau des torrents (VPN)</strong> : les torrents ne passent que par cette interface ; si elle disparaît (VPN coupé), ils s'arrêtent et attendent qu'elle revienne. Les autres téléchargements ne sont pas concernés.</li><li><strong>Ouvrir le port d'écoute sur le routeur (UPnP)</strong> : plus de pairs joignables, désactivé par défaut.</li></ul>
+<p>Les torrents ne passent jamais par le proxy.</p>
+<h3 id="guide-04-torrents-à-la-reprise" tabindex="-1">À la reprise</h3>
+<p>Après un redémarrage, AuroDownloader revérifie les morceaux déjà reçus avant de reprendre : c'est plus long qu'une reprise instantanée, mais rien de faux n'est gardé.</p>
+</section>
+<section aria-labelledby="guide-05-video">
+<h2 id="guide-05-video" tabindex="-1">Vidéos</h2>
+<p>Sous Windows et Linux, AuroDownloader télécharge la vidéo d'une page web, par deux programmes libres : <strong>yt-dlp</strong> (qui lit la page) et <strong>ffmpeg</strong> (qui assemble l'image et le son). Il ne télécharge pas les vidéos protégées (DRM).</p>
+<h3 id="guide-05-video-installer-les-outils" tabindex="-1">Installer les outils</h3>
+<p>La première fois, la boîte « Ajouter une vidéo » (bouton « Vidéo ») propose « Installer yt-dlp et ffmpeg » : ils sont téléchargés depuis leurs publications officielles, leur empreinte ou leur signature est vérifiée, et ils occupent près de 400 Mo. Rien n'est installé sans ce clic.</p>
+<p>yt-dlp se met à jour lui-même, au plus une fois par jour (Options, Vidéo, « Mettre à jour yt-dlp de lui-même »), car les sites changent souvent.</p>
+<h3 id="guide-05-video-télécharger-une-vidéo" tabindex="-1">Télécharger une vidéo</h3>
+<ol><li>« Vidéo », collez l'adresse de la page, « Analyser ».</li><li>AuroDownloader montre le titre, la durée, le site et les qualités disponibles, avec leur taille. Choisissez la <strong>qualité</strong> (ou « Tous les formats » pour un choix précis) et le <strong>conteneur</strong> (automatique par défaut).</li><li><strong>Sous-titres</strong> : cochez les langues voulues ; ils sont gardés à côté de la vidéo, au format du site. Une langue manquante est signalée à la fin.</li><li>« Démarrer » ou « Télécharger plus tard ».</li></ol>
+<p>La vidéo passe par les mêmes files, limites de débit et plages horaires que les autres téléchargements, et reprend de même après une coupure.</p>
+<p>Depuis le navigateur, l'<a href="#guide-09-extension">extension</a> fait la même chose en un clic.</p>
+</section>
+<section aria-labelledby="guide-06-liens">
+<h2 id="guide-06-liens" tabindex="-1">Analyse de liens</h2>
+<h3 id="guide-06-liens-tous-les-fichiers-dune-page" tabindex="-1">Tous les fichiers d'une page</h3>
+<ol><li>« Liens » ouvre « Analyser des liens ».</li><li>Collez l'adresse d'une page web, ou un texte qui contient des adresses, puis « Analyser » ; ou « Importer une liste (texte, CSV)… ».</li><li>AuroDownloader lit la page (sans exécuter de JavaScript) et liste les liens de fichiers, avec leur nom, leur taille et leur adresse. Les tailles se lisent auprès des serveurs, quatre à la fois.</li><li><strong>Filtres</strong> : extensions (<code>iso, zip</code>), taille minimale et maximale, expression régulière sur l'adresse. « Montrer aussi les pages et les liens sans extension » montre le reste.</li><li>Cochez (« Tout cocher », « Tout décocher »), choisissez le dossier, puis « Télécharger ».</li></ol>
+<p>Chaque lien devient un téléchargement ; un lien refusé n'empêche pas les autres.</p>
+<h3 id="guide-06-liens-liens-copiés" tabindex="-1">Liens copiés</h3>
+<p>Option « Proposer d'ajouter les liens copiés » (Options, Général, désactivée par défaut) : quand vous copiez l'adresse d'un fichier ou un lien magnet, une notification du système le propose ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé. Si les notifications d'AuroDownloader sont coupées dans le système, les Options le disent.</p>
+</section>
+<section aria-labelledby="guide-07-organisation">
+<h2 id="guide-07-organisation" tabindex="-1">Organisation</h2>
+<h3 id="guide-07-organisation-files-dattente" tabindex="-1">Files d'attente</h3>
+<p>Chaque téléchargement est dans une file. La « File principale » existe d'office ; elle fait 3 téléchargements à la fois, les autres attendent (« En attente »). D'autres files se créent par la ligne de commande, avec leur nombre de téléchargements simultanés et leur propre limite de débit :</p>
+<pre><code>auro queue create Nuit --max-active 2 --limit 2M
+auro add &lt;adresse&gt; --queue Nuit</code></pre>
+<p>Les files apparaissent sous « Files d'attente », dans les catégories.</p>
+<h3 id="guide-07-organisation-limites-de-débit" tabindex="-1">Limites de débit</h3>
+<ul><li><strong>Globale</strong> : en bas de la fenêtre, « Limite de débit globale », ou Options, Connexion.</li><li><strong>D'un téléchargement</strong> : menu « Limiter le débit… », ou ses Propriétés.</li><li><strong>D'une file</strong> : par la ligne de commande (<code>auro limit 1M --queue Nuit</code>).</li></ul>
+<p>Une limite changée vaut aussitôt, pour les téléchargements en cours aussi.</p>
+<h3 id="guide-07-organisation-planification" tabindex="-1">Planification</h3>
+<p>« Planification » règle, pour une file :</p>
+<ul><li><strong>Ne télécharger que pendant ces plages horaires</strong> : des jours et des heures (« Ajouter une plage »), par exemple du lundi au vendredi de 23:00 à 07:00. Hors des plages, la file attend (« En pause (plage horaire) ») et repart seule à l'ouverture.</li><li><strong>Quand la file n'a plus rien à télécharger</strong> : Ne rien faire, Mettre l'ordinateur en veille ou Éteindre l'ordinateur. L'action est annoncée une minute avant, avec un bouton pour l'annuler.</li></ul>
+<h3 id="guide-07-organisation-règles-de-rangement" tabindex="-1">Règles de rangement</h3>
+<p>Options, Règles. Une règle range les téléchargements ajoutés <strong>sans dossier choisi</strong> (par l'extension, les liens copiés, l'interface distante) :</p>
+<ul><li><strong>Si</strong> : types de fichier ou extensions, domaines du site, expression régulière sur l'adresse ou le nom du fichier (tous les critères remplis ; vides : toute tâche).</li><li><strong>Alors</strong> :<ul><li>un <strong>dossier</strong> : chemin complet, ou relatif au dossier des téléchargements (<code>Vidéos/Conférences</code>), créé s'il manque ;</li><li>un <strong>nom du fichier</strong>, modèle avec <code>{nom}</code> (sans l'extension), <code>{ext}</code>, <code>{hôte}</code> et <code>{date}</code> (jour de l'ajout) : par exemple <code>{date} {nom}.{ext}</code> ;</li><li>une <strong>commande à la fin du téléchargement</strong> : un programme (chemin complet), ses arguments, un par ligne, et un délai. Variables : <code>{chemin}</code> (le fichier), <code>{dossier}</code>, <code>{nom}</code>, <code>{taille}</code>, <code>{sha256}</code>, <code>{id}</code>. Par exemple, un antivirus avec <code>{chemin}</code>. La commande ne passe jamais par un shell ; le téléchargement reste en « Finition » tant qu'elle tourne, puis échoue si elle échoue ou dépasse son délai (« Reprendre » la refait).</li></ul></li></ul>
+<p>La première règle activée qui correspond s'applique ; « Monter » et « Descendre » changent l'ordre. Un torrent ne prend que le dossier. Les règles ne se modifient que dans l'application de l'ordinateur (pas par l'interface distante).</p>
+<h3 id="guide-07-organisation-historique" tabindex="-1">Historique</h3>
+<p>« Historique » liste les téléchargements finis, même retirés de la liste : recherche par nom, dossier ou site, « Exporter en CSV… », « Effacer l'historique… ».</p>
+</section>
+<section aria-labelledby="guide-08-options">
+<h2 id="guide-08-options" tabindex="-1">Options</h2>
+<p>« Options » ouvre les réglages, en rubriques. Les flèches gauche et droite passent d'une rubrique à l'autre.</p>
+<h3 id="guide-08-options-général" tabindex="-1">Général</h3>
+<ul><li><strong>Langue</strong> : celle du système, français ou anglais.</li><li><strong>Démarrer avec la session, dans la zone de notification</strong>.</li><li><strong>Fermer la fenêtre la replie dans la zone de notification</strong> : sinon, fermer la fenêtre quitte l'application (les téléchargements continuent, par le moteur).</li><li><strong>Afficher la fenêtre au premier plan quand un téléchargement est ajouté</strong> (par le navigateur ou la ligne de commande).</li><li><strong>Proposer d'ajouter les liens copiés</strong> : voir <a href="#guide-06-liens-liens-copiés">Analyse de liens</a>.</li><li><strong>Mises à jour</strong> : « Rechercher les mises à jour » (au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre) et « Rechercher maintenant ». Une version nouvelle s'affiche dans « Nouvelle version », avec ses nouveautés : « Installer et redémarrer » (Windows, AppImage), « Ouvrir la page de la version » (paquet <code>.deb</code>), ou « Plus tard ». La mise à jour est vérifiée par sa signature ; rien ne s'installe sans votre accord. Pendant l'installation, l'application se ferme, puis redémarre, et les téléchargements reprennent.</li></ul>
+<h3 id="guide-08-options-enregistrement" tabindex="-1">Enregistrement</h3>
+<ul><li><strong>Dossier des nouveaux téléchargements</strong>, quand aucun n'est choisi (extension, liens copiés, interface distante).</li><li><strong>Réserver la place de chaque fichier dès le départ</strong> : le disque plein se voit tout de suite, et le fichier est moins morcelé.</li><li><strong>Chercher l'empreinte à côté du fichier (SHA256SUMS, .sha256…)</strong> : quand vous n'en donnez pas, AuroDownloader cherche l'empreinte publiée à côté du fichier, et la vérifie.</li></ul>
+<h3 id="guide-08-options-règles" tabindex="-1">Règles</h3>
+<p>Les <a href="#guide-07-organisation-règles-de-rangement">règles de rangement</a> : Nouvelle…, Modifier…, Monter, Descendre, Désactiver, Supprimer.</p>
+<h3 id="guide-08-options-connexion" tabindex="-1">Connexion</h3>
+<ul><li><strong>Limite de débit globale</strong>.</li><li><strong>Proxy</strong> : celui du système (par défaut), aucun (toujours en direct), ou « Celui-ci » : adresse (<code>http://</code>, <code>https://</code> ou <code>socks5://</code>), adresses à joindre en direct, identifiant et mot de passe (rangé dans le coffre du système). Les torrents ne passent jamais par le proxy ; la recherche des mises à jour prend celui du système.</li></ul>
+<h3 id="guide-08-options-bittorrent" tabindex="-1">BitTorrent</h3>
+<p>Partage, limite d'envoi, interface réseau (VPN), UPnP, association des liens magnet et des <code>.torrent</code> : voir <a href="#guide-04-torrents-réglages-options-bittorrent">Torrents</a>.</p>
+<h3 id="guide-08-options-vidéo" tabindex="-1">Vidéo</h3>
+<p>Installation de yt-dlp et ffmpeg, et leur mise à jour : voir <a href="#guide-05-video">Vidéos</a>.</p>
+<h3 id="guide-08-options-identifiants-de-sites" tabindex="-1">Identifiants de sites</h3>
+<ul><li><strong>Identifiants</strong> d'un site (Nouveau…, Modifier…, Supprimer) : site, nom d'utilisateur, mot de passe ou clé privée SSH (SFTP), « FTP : autoriser sans chiffrement ». Les mots de passe vont au coffre du système et ne ressortent jamais.</li><li><strong>Clés des serveurs SSH</strong> acceptées, avec leur empreinte ; « Oublier la clé ».</li></ul>
+<h3 id="guide-08-options-plugins" tabindex="-1">Plugins</h3>
+<p>Un plugin d'hébergeur transforme la page d'un hébergeur de fichiers en liens directs.</p>
+<ul><li>« Installer un plugin… » : choisissez un fichier <code>.wasm</code>. Avant l'installation, AuroDownloader montre son nom, son auteur, les pages qu'il prend en charge, les domaines qu'il contactera et son empreinte : n'installez que des plugins de confiance.</li><li>Un plugin tourne isolé : il ne voit ni vos fichiers, ni vos mots de passe, ni vos cookies, et ne contacte que ses domaines déclarés.</li><li>Désactiver, Retirer. Une nouvelle version qui demande plus de domaines redemande votre accord.</li></ul>
+<h3 id="guide-08-options-accès-à-distance" tabindex="-1">Accès à distance</h3>
+<p>Voir <a href="#guide-11-acces-distant">Accès à distance</a>.</p>
+<h3 id="guide-08-options-à-propos" tabindex="-1">À propos</h3>
+<ul><li>La version d'AuroDownloader.</li><li><strong>Détail des journaux</strong> : Erreurs seulement, Erreurs et avertissements, Ordinaire (conseillé), Détaillé, pour un dépannage.</li><li><strong>Exporter un diagnostic…</strong> : voir <a href="#guide-14-depannage-diagnostic">Dépannage</a>.</li><li><strong>Quitter et arrêter les téléchargements</strong>.</li></ul>
+</section>
+<section aria-labelledby="guide-09-extension">
+<h2 id="guide-09-extension" tabindex="-1">Extension de navigateur</h2>
+<p>L'extension confie à AuroDownloader les téléchargements du navigateur, les liens magnet et la vidéo de la page. Elle marche avec Firefox (128 et plus), Chrome (121 et plus) et Edge, avec l'application de bureau installée (elle passe par son relais, <code>auro-relay</code>).</p>
+<h3 id="guide-09-extension-installer" tabindex="-1">Installer</h3>
+<p>L'extension n'est pas encore dans les boutiques des navigateurs ; elle se charge depuis le dossier <code>extension</code> du projet :</p>
+<ul><li><strong>Chrome</strong> : <code>chrome://extensions</code>, « Mode développeur », « Charger l'extension non empaquetée », dossier <code>extension</code>.</li><li><strong>Edge</strong> : <code>edge://extensions</code>, « Mode développeur », « Charger l'élément décompressé ». Edge signale un avertissement sur <code>background.scripts</code> (pour Firefox) : il est sans effet.</li><li><strong>Firefox</strong> : <code>about:debugging#/runtime/this-firefox</code>, « Charger un module complémentaire temporaire… », fichier <code>extension/manifest.json</code> (à recharger à chaque démarrage de Firefox). Puis, dans <code>about:addons</code>, AuroDownloader, Permissions : autoriser l'accès à tous les sites, sans quoi les cookies ne peuvent pas être lus.</li></ul>
+<p>Sous Linux, le relais n'est déclaré aux navigateurs que par le paquet <code>.deb</code>, pas par l'AppImage.</p>
+<p>Si IDM ou un autre gestionnaire de téléchargement est installé, désactivez son extension : sinon il prend les téléchargements avant AuroDownloader.</p>
+<h3 id="guide-09-extension-ce-quelle-fait" tabindex="-1">Ce qu'elle fait</h3>
+<ul><li><strong>Téléchargements</strong> : ceux de plus de 1 Mio (réglable) vont à AuroDownloader. Le navigateur garde le sien tant qu'AuroDownloader ne l'a pas accepté ; l'icône montre « ✓ » ou « ! ».</li><li><strong>Clic avec Alt</strong> : laisse ce téléchargement, ou ce lien magnet, au navigateur.</li><li><strong>Liens magnet</strong> : un clic les confie à AuroDownloader (option active par défaut). Les fichiers <code>.torrent</code> téléchargés deviennent des torrents.</li><li><strong>Menu contextuel</strong> : « Télécharger avec AuroDownloader » sur un lien, une image, une vidéo ou un son ; « Télécharger la vidéo de cette page avec AuroDownloader » (meilleure qualité).</li><li><strong>Fenêtre de l'icône</strong> : la vidéo de la page, avec le choix de la qualité, du son seul et des sous-titres, puis « Télécharger ».</li></ul>
+<h3 id="guide-09-extension-réglages" tabindex="-1">Réglages</h3>
+<p>Fenêtre de l'icône, « Réglages » :</p>
+<ul><li>Confier les téléchargements à AuroDownloader, seulement à partir d'une taille ;</li><li>Sites exclus (un par ligne ; leurs sous-domaines aussi) ;</li><li>Aussi en navigation privée ;</li><li><strong>Transmettre les cookies et la page d'origine</strong> : pour les téléchargements qui demandent d'être connecté ; AuroDownloader range les cookies dans le coffre du système ;</li><li>Confier les liens magnet à AuroDownloader ;</li><li><strong>Liaison avec AuroDownloader</strong>, « Vérifier » : « Relais présent » si tout va bien.</li></ul>
+</section>
+<section aria-labelledby="guide-10-android">
+<h2 id="guide-10-android" tabindex="-1">Android</h2>
+<p>L'application Android contient le même moteur que la version de bureau : téléchargements HTTP(S), FTP(S), SFTP et torrents, avec la même reprise sûre. La vidéo de sites (yt-dlp) n'y est pas.</p>
+<h3 id="guide-10-android-ajouter" tabindex="-1">Ajouter</h3>
+<ul><li><strong>Ajouter</strong>, puis l'adresse : <code>https://…</code>, <code>ftp://…</code>, <code>sftp://…</code> ou un lien magnet.</li><li><strong>Partager</strong> un lien depuis une autre application (navigateur, messagerie), ou <strong>ouvrir</strong> un lien magnet ou un fichier <code>.torrent</code> avec AuroDownloader : il est ajouté directement.</li></ul>
+<p>Les fichiers vont dans <code>Download/AuroDownloader</code>, où les autres applications les voient.</p>
+<h3 id="guide-10-android-la-liste-et-les-détails" tabindex="-1">La liste et les détails</h3>
+<p>Touchez un téléchargement pour ses détails : statut, taille, débit, temps restant, empreinte ; Pause, Reprendre, Relancer, Annuler le téléchargement, Retirer de la liste, Ouvrir ; pour un torrent, le choix de ses fichiers ; pour un serveur SFTP inconnu, l'empreinte de sa clé et « Accepter la clé… ».</p>
+<h3 id="guide-10-android-en-arrière-plan" tabindex="-1">En arrière-plan</h3>
+<p>Un téléchargement continue quand l'application est fermée : une notification montre l'avancement, avec « Tout mettre en pause ». Android peut demander d'autoriser les notifications au premier téléchargement.</p>
+<h3 id="guide-10-android-réglages" tabindex="-1">Réglages</h3>
+<ul><li><strong>Dossier des téléchargements</strong> (affiché : <code>Download/AuroDownloader</code>) et <strong>Limite de débit globale</strong>.</li><li><strong>Chercher l'empreinte à côté du fichier</strong>, <strong>Réserver la place de chaque fichier</strong>.</li><li><strong>Wi-Fi seulement</strong> : pas de téléchargement sur une connexion facturée au volume (données mobiles, partage de connexion).</li><li><strong>Reprendre après le redémarrage de l'appareil</strong> : les téléchargements inachevés reprennent, ou une notification propose de les reprendre (Android 14 et plus).</li><li><strong>BitTorrent</strong> : partage après le téléchargement, limite d'envoi. Rien n'est partagé sur une connexion facturée au volume.</li></ul>
+<p>Pour passer par un VPN, utilisez celui d'Android : il vaut pour toute l'application.</p>
+</section>
+<section aria-labelledby="guide-11-acces-distant">
+<h2 id="guide-11-acces-distant" tabindex="-1">Accès à distance</h2>
+<p>L'interface web distante montre la fenêtre d'AuroDownloader dans un navigateur, sur un téléphone ou un autre ordinateur du même réseau, pour ajouter et suivre des téléchargements. Elle est désactivée par défaut.</p>
+<h3 id="guide-11-acces-distant-activer" tabindex="-1">Activer</h3>
+<p>Options, Accès à distance :</p>
+<ol><li><strong>Piloter les téléchargements depuis un autre appareil</strong> : cochez.</li><li><strong>Adresse d'écoute</strong> et <strong>Port</strong> : l'adresse de cet ordinateur sur le réseau local (la liste les propose), et le port (7380 par exemple). Windows peut demander d'autoriser AuroDownloader dans le pare-feu.</li><li>Hors de cet ordinateur, la connexion est toujours chiffrée (HTTPS). AuroDownloader fabrique son propre certificat ; le navigateur de l'autre appareil avertit la première fois : comparez l'<strong>empreinte SHA-256</strong> affichée dans les Options avant d'accepter. « Utiliser mon certificat… » prend un certificat à vous à la place.</li></ol>
+<h3 id="guide-11-acces-distant-ajouter-un-appareil" tabindex="-1">Ajouter un appareil</h3>
+<p>« Ajouter un appareil… » : un nom (« Téléphone »), puis les <strong>droits</strong> :</p>
+<ul><li>Tout piloter : ajouter, arrêter, supprimer ;</li><li>Ajouter seulement ;</li><li>Regarder seulement.</li></ul>
+<p>« Créer le jeton » montre l'adresse de la page et un <strong>QR code</strong> : scannez-le avec l'appareil, qui ouvre la page connectée. Le jeton peut aussi se coller à la main. Il n'est montré qu'une fois ; « Retirer » un appareil coupe aussitôt son accès.</p>
+<h3 id="guide-11-acces-distant-ce-que-la-page-distante-ne-fait-pas" tabindex="-1">Ce que la page distante ne fait pas</h3>
+<p>Par sécurité, elle ne choisit pas de dossier sur l'ordinateur (seulement un sous-dossier du dossier des téléchargements), n'ouvre pas de fichier, ne modifie ni les règles, ni les plugins, ni les réglages de l'accès à distance, et ne télécharge que depuis Internet, pas depuis le réseau local de l'ordinateur (sauf <code>auro remote allow-private on</code>, par la ligne de commande).</p>
+</section>
+<section aria-labelledby="guide-12-ligne-de-commande">
+<h2 id="guide-12-ligne-de-commande" tabindex="-1">Ligne de commande</h2>
+<p><code>auro</code> pilote le même moteur que l'application : un téléchargement ajouté par <code>auro</code> apparaît dans la fenêtre, et inversement. Il est installé avec l'application (à côté d'elle sous Windows, dans le chemin sous Linux avec le paquet <code>.deb</code>). Si le moteur ne tourne pas, <code>auro</code> le démarre.</p>
+<p>Chaque commande a son aide (<code>auro add --help</code>) et, sous Linux, sa page de manuel (<code>man auro</code>, <code>man auro-add</code>, <code>man aurod</code>).</p>
+<h3 id="guide-12-ligne-de-commande-commandes-courantes" tabindex="-1">Commandes courantes</h3>
+<pre><code>auro get https://deb.debian.org/debian/README -o .   # télécharge et suit l'avancement
+auro add &lt;adresse&gt;… --paused                         # ajoute sans attendre (en pause)
+auro list                                            # liste
+auro watch                                           # suit ce qui tourne
+auro pause &lt;id&gt;… ; auro resume &lt;id&gt;…
+auro remove &lt;id&gt;… ; auro restart &lt;id&gt;… --delete-files
+auro move &lt;id&gt; -o &lt;dossier&gt; -n &lt;nom&gt;
+auro refresh &lt;id&gt; &lt;nouvelle-adresse&gt;</code></pre>
+<p>Sans <code>-o</code>, <code>auro add</code> télécharge dans le dossier courant ; <code>--auto</code> laisse les <a href="#guide-07-organisation-règles-de-rangement">règles de rangement</a> choisir.</p>
+<h3 id="guide-12-ligne-de-commande-plus-loin" tabindex="-1">Plus loin</h3>
+<pre><code>auro add &lt;adresse&gt; --checksum sha256:&lt;hex&gt;          # empreinte attendue
+auro get &lt;adresse&gt; --mirror &lt;adresse&gt;…              # miroirs
+auro metalink &lt;fichier.meta4&gt; ; auro get &lt;fichier.meta4&gt; --select 0,2
+auro add fichier.torrent ; auro files &lt;id&gt; --select 0,2-4
+auro links &lt;page&gt; -e iso,zip --min-size 10M --add -o .
+auro video info &lt;page&gt; ; auro video get &lt;page&gt; --subs fr,en
+auro limit 2M ; auro limit --upload 500K ; auro limit 1M --queue Nuit
+auro schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep
+auro login set &lt;site&gt; -u &lt;nom&gt; ; auro hostkey list
+auro proxy manual socks5://hôte:1080 -u moi ; auro proxy system
+auro history [texte] [--csv]
+auro config ; auro config torrent.ratioLimit 1.5
+auro diagnostic --save diag.zip
+auro engine stop</code></pre>
+<h3 id="guide-12-ligne-de-commande-le-moteur-seul" tabindex="-1">Le moteur seul</h3>
+<p><code>aurod</code> est le moteur, sans fenêtre. Pour un serveur ou un NAS, il se lance seul, et l'on s'en sert par <code>auro</code> ou par l'<a href="#guide-11-acces-distant">accès à distance</a>.</p>
+</section>
+<section aria-labelledby="guide-13-accessibilite">
+<h2 id="guide-13-accessibilite" tabindex="-1">Accessibilité</h2>
+<p>AuroDownloader se sert entièrement au clavier, et a été essayé avec NVDA (Windows), Orca (Linux) et TalkBack (Android).</p>
+<h3 id="guide-13-accessibilite-clavier-dans-la-fenêtre" tabindex="-1">Clavier, dans la fenêtre</h3>
+<table><thead><tr><th scope="col">Touches</th><th scope="col">Effet</th></tr></thead><tbody><tr><td>F1</td><td>Ce guide (aussi dans Options, À propos)</td></tr><tr><td>Ctrl+N ou Ctrl+L</td><td>Ajouter</td></tr><tr><td>Tab, Maj+Tab</td><td>Barre d'outils, catégories, tableau</td></tr><tr><td>Flèches haut et bas, Page préc., Page suiv., Début, Fin</td><td>Ligne précédente, suivante…</td></tr><tr><td>Maj+flèches</td><td>Étendre la sélection</td></tr><tr><td>Ctrl+Espace</td><td>Ajouter ou retirer une ligne de la sélection</td></tr><tr><td>Ctrl+A</td><td>Tout sélectionner</td></tr><tr><td>Entrée</td><td>Propriétés</td></tr><tr><td>Suppr</td><td>Supprimer…</td></tr><tr><td>Maj+F10 ou touche Menu</td><td>Menu contextuel</td></tr><tr><td>Échap</td><td>Fermer un menu ou une boîte ; le focus revient d'où il venait</td></tr><tr><td>Flèches gauche et droite</td><td>Rubrique suivante ou précédente des Options</td></tr><tr><td>Ctrl+plus, Ctrl+moins, Ctrl+0</td><td>Agrandir, réduire, taille normale</td></tr></tbody></table>
+<p>Dans la boîte « Ajouter », Entrée démarre, Maj+Entrée passe à la ligne.</p>
+<h3 id="guide-13-accessibilite-lecteurs-décran" tabindex="-1">Lecteurs d'écran</h3>
+<ul><li>Les messages (ajout refusé, empreinte retirée, téléchargement terminé…) sont annoncés ; une erreur liée à un champ est lue avec lui.</li><li><strong>Orca</strong> : la version 46 traite l'application comme une page WebKitGTK ; dans un champ, les lettres servent à se déplacer tant que la navigation structurelle est active : Orca+Z la coupe avant de taper. Orca 46 n'annonce pas non plus les messages d'état de la page.</li></ul>
+<p>Le détail de la revue d'accessibilité (WCAG 2.2, niveaux A et AA) est dans <code>docs/ACCESSIBILITE.md</code> (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/ACCESSIBILITE.md</span>).</p>
+</section>
+<section aria-labelledby="guide-14-depannage">
+<h2 id="guide-14-depannage" tabindex="-1">Dépannage</h2>
+<h3 id="guide-14-depannage-problèmes-fréquents" tabindex="-1">Problèmes fréquents</h3>
+<table><thead><tr><th scope="col">Ce que l'on voit</th><th scope="col">Que faire</th></tr></thead><tbody><tr><td>« Nouvel essai bientôt » qui dure</td><td>Le réseau ou le serveur ne répond pas : AuroDownloader réessaie de lui-même. Vérifiez la connexion et le proxy (Options, Connexion).</td></tr><tr><td>« refusé par le serveur »</td><td>Le lien a peut-être expiré : « Actualiser l'adresse… » avec un lien neuf, pris sur la page d'origine.</td></tr><tr><td>Le serveur demande de se connecter</td><td>Identifiants du site (Options, Identifiants de sites), ou passez par l'extension, qui transmet les cookies.</td></tr><tr><td>« certificat refusé »</td><td>Le certificat HTTPS du serveur n'est pas valable : AuroDownloader ne télécharge pas sans lui.</td></tr><tr><td>« empreinte différente de celle attendue »</td><td>Le fichier reçu n'est pas celui annoncé : vérifiez l'empreinte, ou retéléchargez.</td></tr><tr><td>« disque plein »</td><td>Faites de la place : le téléchargement repart seul.</td></tr><tr><td>« fichier distant modifié »</td><td>Le fichier a changé sur le serveur pendant le téléchargement : « Retélécharger… ».</td></tr><tr><td>L'extension ne prend rien</td><td>Fenêtre de l'icône, Réglages, « Vérifier » ; désactivez l'extension d'IDM ; sous Linux, préférez le paquet <code>.deb</code>.</td></tr><tr><td>Une vidéo refusée</td><td>Elle est protégée (DRM), ou yt-dlp ne connaît pas encore le site : attendez sa mise à jour de lui-même.</td></tr><tr><td>Les torrents ne démarrent pas</td><td>Si une interface réseau (VPN) est choisie (Options, BitTorrent), elle doit être là.</td></tr></tbody></table>
+<h3 id="guide-14-depannage-diagnostic" tabindex="-1">Diagnostic</h3>
+<p>Options, À propos, <strong>Exporter un diagnostic…</strong> : un résumé de l'état du moteur et ses journaux récents, <strong>nettoyés</strong> (sans adresses, noms de fichiers, en-têtes ni identifiants), montrés avant d'être enregistrés dans une archive <code>.zip</code>, à joindre à un signalement. Pour un problème qui se reproduit, réglez d'abord « Détail des journaux » sur « Détaillé, pour un dépannage », reproduisez-le, puis exportez.</p>
+<h3 id="guide-14-depannage-où-sont-les-données" tabindex="-1">Où sont les données</h3>
+<ul><li>La liste des téléchargements, l'historique et les réglages du moteur sont dans une base (<code>auro.db</code>), avec les journaux (<code>logs</code>) : <code>%LOCALAPPDATA%\AuroDownloader</code> sous Windows, <code>~/.local/share/aurodownloader</code> sous Linux.</li><li>Les mots de passe, cookies et jetons sont dans le coffre du système, jamais dans la base.</li></ul>
+<h3 id="guide-14-depannage-vie-privée" tabindex="-1">Vie privée</h3>
+<p>AuroDownloader n'envoie aucune télémétrie. Il ne contacte que :</p>
+<ul><li>les serveurs des fichiers que vous téléchargez (et leurs miroirs) ;</li><li>les pairs des torrents ;</li><li>GitHub, une fois par jour au plus, pour les mises à jour (désactivable) ;</li><li>les publications officielles de yt-dlp et ffmpeg, si vous les installez ;</li><li>les domaines déclarés par les plugins que vous installez.</li></ul>
+<h3 id="guide-14-depannage-signaler-un-problème" tabindex="-1">Signaler un problème</h3>
+<p>Sur la page des tickets (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/issues</span>), avec la version (Options, À propos), le système, ce qui se passe, et le diagnostic si possible. Une faille de sécurité se signale en privé, par les avis de sécurité (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/security/advisories/new</span>).</p>
+</section>

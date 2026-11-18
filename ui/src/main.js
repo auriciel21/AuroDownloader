@@ -4765,7 +4765,14 @@ function wire() {
       event.preventDefault();
       openAdd();
     }
+    // Guide de l'utilisateur (étape 9d), de partout.
+    if (event.key === "F1" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      event.preventDefault();
+      openGuide();
+    }
   });
+  $("guide-open").addEventListener("click", openGuide);
+  $("guide-content").addEventListener("click", followGuideLink);
 }
 
 /// Page distante (étape 3c) : la session de ce navigateur, ouverte au besoin avec le jeton de
@@ -4956,6 +4963,51 @@ function showUpdateProgress({ done, total }) {
   } else {
     $("update-progress-label").textContent = bytes(done, lang, t);
   }
+}
+
+// ---------- Guide de l'utilisateur (étape 9d) ----------
+
+/// Copies du guide (ui/src/guide/<langue>.html, faites par scripts/guide.mjs), lues une fois.
+const guides = new Map();
+
+/// Ouvre le guide, dans la langue de la page ; par-dessus une boîte ouverte (Options).
+async function openGuide() {
+  const dialog = $("guide-dialog");
+  if (dialog.open) return;
+  const want = lang === "en" ? "en" : "fr";
+  const content = $("guide-content");
+  if (content.dataset.lang !== want) {
+    let html = guides.get(want);
+    if (html === undefined) {
+      try {
+        const response = await fetch(`guide/${want}.html`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        html = await response.text();
+        guides.set(want, html);
+      } catch (e) {
+        showError(t("Guide introuvable : {0}", e?.message ?? String(e)));
+        return;
+      }
+    }
+    // Fragment de l'application elle-même, sans script, tout son texte échappé.
+    content.innerHTML = html;
+    content.dataset.lang = want;
+  }
+  dialog.showModal();
+  content.scrollTop = 0;
+  content.focus();
+}
+
+/// Lien interne du guide : le titre visé défile en vue et prend le focus (le lecteur d'écran
+/// le lit) ; l'adresse de la page ne change pas.
+function followGuideLink(event) {
+  const link = event.target.closest?.('a[href^="#guide-"]');
+  if (!link) return;
+  event.preventDefault();
+  const target = $(link.getAttribute("href").slice(1));
+  if (!target) return;
+  target.scrollIntoView({ block: "start" });
+  target.focus();
 }
 
 start().catch((e) => showError(String(e?.message ?? e)));

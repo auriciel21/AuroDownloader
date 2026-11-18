@@ -154,6 +154,16 @@ before(async () => {
     },
     event: { listen: async (name, fn) => { listeners[name] = fn; return () => {}; } },
   };
+  // Fichiers de la page (guide de l'utilisateur, étape 9d), comme les servirait l'hôte.
+  globalThis.fetch = async (url) => {
+    const path = new URL(url, "http://localhost/").pathname;
+    try {
+      const text = readFileSync(new URL(`../src${path}`, import.meta.url), "utf8");
+      return { ok: true, status: 200, text: async () => text };
+    } catch {
+      return { ok: false, status: 404, text: async () => "" };
+    }
+  };
   window.eval(axe.source);
   // La page est un module : chargée par Node, avec la fenêtre de jsdom comme globale.
   for (const key of Object.getOwnPropertyNames(window)) {
@@ -469,6 +479,39 @@ test("mises à jour : trouvée pendant qu'une autre boîte est ouverte, proposé
   await settle();
   assert.ok(dialog.open, "proposée à la fermeture");
   dialog.close("later");
+});
+
+test("guide de l'utilisateur : F1, le fragment de la langue, liens internes qui donnent le focus", async () => {
+  await closeAll();
+  const document = window.document;
+  key(document.body, "F1");
+  await settle();
+  const dialog = document.getElementById("guide-dialog");
+  assert.ok(dialog.open, "guide ouvert par F1");
+  const content = document.getElementById("guide-content");
+  assert.equal(content.dataset.lang, "fr");
+  assert.equal(document.activeElement, content, "focus dans le guide, au début");
+  assert.ok(content.querySelectorAll("section").length >= 10);
+  assert.equal(content.querySelector("script"), null);
+  // Le sommaire (première section) mène aux autres : le titre visé prend le focus.
+  const link = content.querySelector('a[href="#guide-07-organisation"]');
+  assert.ok(link, "lien du sommaire vers Organisation");
+  link.click();
+  assert.equal(document.activeElement?.id, "guide-07-organisation");
+  const anchor = content.querySelector('a[href="#guide-07-organisation-règles-de-rangement"]');
+  anchor.click();
+  assert.equal(document.activeElement?.id, "guide-07-organisation-règles-de-rangement");
+  assert.equal(window.location.hash, "", "l'adresse de la page ne change pas");
+  assert.deepEqual(await audit(dialog), []);
+  dialog.close();
+  await settle();
+  // Aussi depuis Options, À propos.
+  document.getElementById("tb-settings").click();
+  await settle();
+  document.getElementById("guide-open").click();
+  await settle();
+  assert.ok(dialog.open, "guide ouvert depuis les Options");
+  dialog.close();
 });
 
 test("action de fin annoncée pendant qu'une boîte est ouverte : dite dans la boîte", async () => {

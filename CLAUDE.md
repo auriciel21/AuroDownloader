@@ -29,6 +29,10 @@ téléchargement.
   (`AccessibilityNodeInfo`), pas celui de Compose ; sous WebKitGTK, nommer les lignes.
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
+- `docs/guide` : guide de l'utilisateur (phase 7, étape 9), en français (`fr`) et en anglais
+  (`en`), copié dans l'application (boîte « Guide », F1, Options › À propos) par
+  `scripts/guide.mjs`. `docs/man` : pages de manuel faites depuis clap (étape 9a).
+  `README.md` (anglais) et `README.fr.md`. `docs/PUBLICATION.md` : procédure du mainteneur.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
   l'export Markdown, qui les remplace par des marqueurs « embedded content ». L'architecture
   est décrite en texte aux sections 4.2 à 4.6 et 6.2 ; la feuille de route a été recopiée en
@@ -453,6 +457,8 @@ cd ui && npm ci --ignore-scripts && cd ..
 node --test ui/tests/
 node --test extension/tests/
 node --test scripts/tests/
+# Guide de l'utilisateur (docs/guide, étape 9c) : copie de l'application refaite, vérifiée :
+node scripts/guide.mjs ; node scripts/guide.mjs --check
 # Version (cinq fichiers ; docs/PUBLICATION.md) : affichée, réglée, vérifiée :
 sh scripts/version.sh ; sh scripts/version.sh 0.2.0 ; sh scripts/version.sh --check 0.2.0
 # Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
@@ -556,6 +562,12 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
   `testing::swarm`). Toute modification du module `media` ou de `store::media` passe aussi celui des
   vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`).
+- Guide de l'utilisateur (`docs/guide/fr` et `docs/guide/en`, mêmes fichiers numérotés et
+  mêmes titres dans les deux langues) : tout changement de l'interface qui le concerne s'y
+  reporte, dans les deux langues, avec les libellés exacts de la page (`index.html`,
+  `i18n.js`) ; puis `node scripts/guide.mjs` refait sa copie de l'application
+  (`ui/src/guide/*.html`, servie aussi par le moteur, `remote::page`), sinon les tests de
+  `scripts/tests` échouent.
 - Pages de manuel : tout changement d'une commande, d'une option ou de son aide (clap) dans
   `auro` ou `aurod` se refait dans `docs/man` (`AURO_UPDATE_MAN=1`), sinon le test échoue.
 - Tests qui démarrent un moteur dans un dossier temporaire : finir par

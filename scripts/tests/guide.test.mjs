@@ -1,0 +1,41 @@
+// Guide de l'utilisateur (étapes 9c et 9d) : node --test scripts/tests/
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { check, render, output, slug, LANGS, files, headings } from "../guide.mjs";
+
+test("liens internes et ancres du guide justes, langues de même structure", () => {
+  assert.deepEqual(check(), []);
+  for (const lang of LANGS) assert.ok(files(lang).length >= 10, lang);
+});
+
+test("ancres comme GitHub, accents gardés", () => {
+  assert.equal(slug("Réglages (Options, BitTorrent)"), "réglages-options-bittorrent");
+  assert.equal(slug("Règles de rangement"), "règles-de-rangement");
+  assert.equal(slug("FTP, FTPS et SFTP"), "ftp-ftps-et-sftp");
+  assert.equal(slug("Settings (Options, BitTorrent)"), "settings-options-bittorrent");
+});
+
+test("copies de l'application à jour (node scripts/guide.mjs)", () => {
+  for (const lang of LANGS) {
+    assert.ok(existsSync(output(lang)), `${output(lang)} absent`);
+    assert.equal(readFileSync(output(lang), "utf8"), render(lang), `ui/src/guide/${lang}.html pas à jour`);
+  }
+});
+
+test("copie de l'application : sans script ni lien qui sorte, chaque ancre interne existe", () => {
+  for (const lang of LANGS) {
+    const html = render(lang);
+    assert.doesNotMatch(html, /<script|on\w+=|javascript:/i);
+    const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+    assert.ok(hrefs.length > 10);
+    for (const href of hrefs) {
+      assert.match(href, /^#guide-/, `lien qui sortirait de l'application : ${href}`);
+      assert.ok(html.includes(`id="${href.slice(1)}"`), `${lang} : ancre ${href} absente`);
+    }
+    // Une section par fichier, un titre de niveau 2 en tête de chacune.
+    assert.equal((html.match(/<section /g) ?? []).length, files(lang).length);
+    const titles = files(lang).map((f) => headings(readFileSync(new URL(`../../docs/guide/${lang}/${f}`, import.meta.url), "utf8"))[0]);
+    assert.ok(titles.every((h) => h && h.level === 1), "chaque fichier commence par un titre #");
+  }
+});

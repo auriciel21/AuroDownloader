@@ -908,6 +908,20 @@ input.port { width: 6.5em; }
 /* Diagnostic (N-12) : ce que contiendra l'archive, à lire avant de l'enregistrer. */
 .diagnostic { max-height: 220px; overflow: auto; margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--row-line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.8em; }
 input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+/* Guide de l'utilisateur (étape 9d) : le fragment de scripts/guide.mjs, qui défile seul. */
+.guide { max-height: 65vh; overflow: auto; padding: 0 4px 8px; line-height: 1.45; }
+.guide h2 { font-size: 1.25em; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--row-line); }
+.guide section:first-child h2 { border-top: none; padding-top: 0; margin-top: 4px; }
+.guide h3 { font-size: 1.05em; margin: 14px 0 6px; }
+.guide h4 { font-size: 1em; margin: 12px 0 4px; }
+.guide p, .guide ul, .guide ol { margin: 6px 0; }
+.guide ul, .guide ol { padding-left: 1.6em; }
+.guide code { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; }
+.guide pre { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--row-line); border-radius: 4px; overflow-x: auto; }
+.guide table { border-collapse: collapse; margin: 6px 0; }
+.guide th, .guide td { border: 1px solid var(--row-line); padding: 3px 8px; text-align: left; vertical-align: top; }
+.guide .guide-url { overflow-wrap: anywhere; }
+.guide h2:focus, .guide h3:focus, .guide h4:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* Mises à jour (étape 8b) : rubrique d'Options › Général, notes de la version proposée. */
 .updates { border: 1px solid var(--row-line); border-radius: 4px; margin: 12px 0 0; padding: 4px 10px 8px; }
 .updates legend { padding: 0 4px; font-weight: 600; }

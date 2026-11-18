@@ -1,0 +1,250 @@
+<!-- Fait par scripts/guide.mjs depuis docs/guide/en : ne pas modifier à la main. -->
+<section aria-labelledby="guide-readme">
+<h2 id="guide-readme" tabindex="-1">AuroDownloader user guide</h2>
+<p>AuroDownloader is a free and open source download manager for Windows, Linux and Android. It downloads fast, in several parts at once, and picks up where it left off after an interruption, without losing or corrupting data.</p>
+<p>A single engine does all the downloading; the desktop application, the Android application, the browser extension, the web interface and the command line only drive it. Closing the window therefore does not stop downloads.</p>
+<p>Version française (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/guide/fr/README.md</span>)</p>
+<h3 id="guide-readme-contents" tabindex="-1">Contents</h3>
+<ol><li><a href="#guide-01-installation">Installation</a>: Windows, Linux, Android, extension, uninstalling.</li><li><a href="#guide-02-first-steps">First steps</a>: the window, a first download.</li><li><a href="#guide-03-downloads">Downloads</a>: adding, following, Properties, checksum, mirrors, Metalink, FTP and SFTP, moving, downloading again.</li><li><a href="#guide-04-torrents">Torrents</a>: magnet links, <code>.torrent</code> files, seeding.</li><li><a href="#guide-05-video">Videos</a>: the video of a page, quality, subtitles.</li><li><a href="#guide-06-links">Link grabber</a>: every file of a page or a list, copied links.</li><li><a href="#guide-07-organising">Organising</a>: queues, speed limits, time slots, filing rules, history.</li><li><a href="#guide-08-options">Options</a>: every section, including updates and the proxy.</li><li><a href="#guide-09-extension">Browser extension</a>: Firefox, Chrome, Edge.</li><li><a href="#guide-10-android">Android</a>.</li><li><a href="#guide-11-remote-access">Remote access</a>: driving downloads from another device.</li><li><a href="#guide-12-command-line">Command line</a>: <code>auro</code>.</li><li><a href="#guide-13-accessibility">Accessibility</a>: keyboard and screen readers.</li><li><a href="#guide-14-troubleshooting">Troubleshooting</a>: common problems, diagnostic, privacy.</li></ol>
+</section>
+<section aria-labelledby="guide-01-installation">
+<h2 id="guide-01-installation" tabindex="-1">Installation</h2>
+<p>Packages are on the project's Releases (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/releases</span>) page. Each release also provides <code>SHA256SUMS</code>, the checksum of every file, to check a download.</p>
+<h3 id="guide-01-installation-windows-10-and-11" tabindex="-1">Windows 10 and 11</h3>
+<ol><li>Download <code>AuroDownloader_&lt;version&gt;_x64-setup.exe</code> (most computers) or <code>_arm64-setup.exe</code> (computers with an ARM processor).</li><li>Run it. It installs for your account only, without administrator rights, in <code>%LOCALAPPDATA%\AuroDownloader</code>. If WebView2 is missing (rare on Windows 11), the installer downloads it.</li><li>If Windows shows &quot;Windows protected your PC&quot; and &quot;unknown publisher&quot;, the installer is not signed. Choose &quot;More info&quot;, then &quot;Run anyway&quot;, if you did get it from the Releases page.</li></ol>
+<p>The installer also registers the <a href="#guide-09-extension">extension</a>'s relay with the browsers.</p>
+<h3 id="guide-01-installation-linux" tabindex="-1">Linux</h3>
+<p>WebKitGTK 4.1 is required: Ubuntu 22.04, Debian 12 or later.</p>
+<ul><li><strong><code>.deb</code> package</strong> (Debian, Ubuntu and derivatives):</li></ul>
+<pre><code>sudo apt install ./AuroDownloader_&lt;version&gt;_amd64.deb</code></pre>
+<p>(<code>_arm64.deb</code> on an ARM computer). It registers the extension's relay with the browsers and installs the manual pages (<code>man auro</code>).</p>
+<ul><li><strong>AppImage</strong>: make the file executable (<code>chmod +x AuroDownloader_&lt;version&gt;_amd64.AppImage</code>) and run it. The AppImage updates itself, with your consent; it does not register the extension's relay.</li></ul>
+<h3 id="guide-01-installation-android-8-and-later" tabindex="-1">Android 8 and later</h3>
+<p>Download <code>AuroDownloader_&lt;version&gt;_arm64.apk</code> on the device and open it. Android asks you to allow installing from that source (the browser or the file manager). See <a href="#guide-10-android">Android</a>.</p>
+<h3 id="guide-01-installation-browser-extension" tabindex="-1">Browser extension</h3>
+<p>See <a href="#guide-09-extension">Browser extension</a>.</p>
+<h3 id="guide-01-installation-updates" tabindex="-1">Updates</h3>
+<p>The desktop application looks for updates at most once a day and offers a new version; nothing is installed without your consent (Options, General, &quot;Updates&quot;). The <code>.deb</code> package only tells you, with a link to the release page: install the new package like the first one. On Android, install the new APK over the old one.</p>
+<h3 id="guide-01-installation-uninstalling" tabindex="-1">Uninstalling</h3>
+<ul><li><strong>Windows</strong>: Settings, Apps, AuroDownloader, Uninstall. Your downloaded files are never touched. The download list, the history and the preferences are kept, unless you tick &quot;delete the data&quot;.</li><li><strong>Linux</strong>: <code>sudo apt remove auro-downloader</code> for the <code>.deb</code>; simply delete the AppImage file.</li><li><strong>Android</strong>: like any application. Files already downloaded stay in <code>Download/AuroDownloader</code>.</li></ul>
+</section>
+<section aria-labelledby="guide-02-first-steps">
+<h2 id="guide-02-first-steps" tabindex="-1">First steps</h2>
+<h3 id="guide-02-first-steps-the-window" tabindex="-1">The window</h3>
+<ul><li><strong>Toolbar</strong>, at the top: Add, Video, Links, Resume, Stop, Resume all, Stop all, Delete, Clear finished, Properties, Schedule, History, Options.</li><li><strong>Categories</strong>, on the left: All downloads, Unfinished, Finished, each with its file types (Archives, Documents, Images, Music, Programs, Videos, Other), then the queues. The number of downloads is next to each category.</li><li><strong>Table</strong>, in the middle: File name, Size, Progress, Status, Time left, Speed, Added. Clicking a column header sorts the table.</li><li><strong>Status bar</strong>, at the bottom: what is going on, and the global speed limit.</li></ul>
+<p>On first launch, AuroDownloader tells you it looks for updates at most once a day; &quot;Don't check&quot; turns that off.</p>
+<h3 id="guide-02-first-steps-a-first-download" tabindex="-1">A first download</h3>
+<ol><li>Copy the address of a file, for example <code>https://deb.debian.org/debian/README</code>.</li><li>&quot;Add&quot; (or Ctrl+N), paste the address into &quot;Addresses or magnet links, one per line&quot;.</li><li>&quot;Save to&quot; shows the folder: by default, your Downloads folder; &quot;Browse…&quot; picks another one.</li><li>&quot;Start&quot;. The download appears in the table, with its progress.</li></ol>
+<p>&quot;Download later&quot; adds it paused: &quot;Resume&quot; will start it.</p>
+<h3 id="guide-02-first-steps-what-you-can-do-with-a-download" tabindex="-1">What you can do with a download</h3>
+<p>Select a row (several with Ctrl or Shift), then use the toolbar, or right-click for the menu: Open, Show in folder, Download again…, Move/Rename…, Refresh address…, Resume, Stop, Limit speed…, Delete…, Properties.</p>
+<ul><li><strong>Stop</strong> pauses; <strong>Resume</strong> carries on where it stopped.</li><li><strong>Delete…</strong> removes it from the list; for a finished download, the &quot;Also delete finished files from the disk&quot; box deletes the file too.</li><li><strong>Clear finished</strong> removes completed and cancelled downloads from the list; their files stay on disk, and the <a href="#guide-07-organising-history">history</a> keeps them.</li><li>A double click, or Enter, opens the <strong>Properties</strong>.</li></ul>
+<p>A finished file opens with the system's program; for safety, AuroDownloader never opens a program or an installation package: &quot;Show in folder&quot; shows it.</p>
+<h3 id="guide-02-first-steps-closing-the-window" tabindex="-1">Closing the window</h3>
+<p>Closing the window keeps the application in the notification area (next to the clock): downloads go on. The notification area icon reopens the window, or quits: &quot;Quit (downloads continue)&quot; or &quot;Quit and stop downloads&quot;. This is set in the <a href="#guide-08-options-general">Options</a>.</p>
+<p>When the computer restarts, unfinished downloads resume when AuroDownloader starts again; &quot;Start with the session&quot; does that by itself.</p>
+</section>
+<section aria-labelledby="guide-03-downloads">
+<h2 id="guide-03-downloads" tabindex="-1">Downloads</h2>
+<h3 id="guide-03-downloads-adding" tabindex="-1">Adding</h3>
+<p>The &quot;Add downloads&quot; box takes:</p>
+<ul><li><strong>addresses</strong> <code>http://</code>, <code>https://</code>, <code>ftp://</code>, <code>ftps://</code> or <code>sftp://</code>, one per line (several at once);</li><li><strong>magnet links</strong> (see <a href="#guide-04-torrents">Torrents</a>);</li><li><strong><code>.torrent</code> or Metalink files</strong> (&quot;Choose .torrent or Metalink files…&quot;, or dropped on the window).</li></ul>
+<p>Optional fields:</p>
+<ul><li><strong>Mirrors</strong>, one per line: other addresses of the same file. Each one is checked (same size, same bytes) before use, and the download is spread between them by speed; a failing mirror is set aside.</li><li><strong>Expected checksum</strong>: SHA-256, SHA-1 or MD5 (<code>sha256:…</code> or the value alone). The file only takes its name once checked; otherwise the download fails with &quot;the file does not match its expected checksum&quot; and the file keeps its temporary name.</li><li><strong>Save to</strong>: the folder.</li></ul>
+<p>If the address is refused, the box stays open and says why, with the cursor in the field concerned.</p>
+<p>A page of a file host supported by a <a href="#guide-08-options-plugins">plugin</a> is read by that plugin; &quot;Add these pages as they are, without a plugin&quot; avoids it.</p>
+<h3 id="guide-03-downloads-statuses" tabindex="-1">Statuses</h3>
+<p>Queued (queue full, or time slot closed), Downloading, Paused, Retrying soon (network or server outage: AuroDownloader retries by itself), Verifying the checksum, Finishing (the command of a <a href="#guide-07-organising-filing-rules">rule</a> is running), Completed, Failed (the reason is given), Cancelled, Seeding (torrent).</p>
+<p>A full disk pauses the download (&quot;disk full&quot;): it starts again by itself once there is room.</p>
+<h3 id="guide-03-downloads-properties" tabindex="-1">Properties</h3>
+<p>Double click on a row, Enter, or &quot;Properties&quot;:</p>
+<ul><li>file, folder, address, source page, status, size, downloaded, speed, time left;</li><li><strong>Connections</strong>: the number of connections of this download (automatic by default);</li><li><strong>Can resume</strong>: whether the server allows resuming;</li><li><strong>Checksum</strong>: the expected one, or the one found next to the file, and whether it was checked; it can be given, changed or cleared here until the download is finished;</li><li><strong>Mirrors</strong>: each source, its state and speed; &quot;Add a mirror&quot;;</li><li>a <strong>segment map</strong>: what has been received, part by part;</li><li>the <strong>speed limit</strong> of this download.</li></ul>
+<h3 id="guide-03-downloads-ftp-ftps-and-sftp" tabindex="-1">FTP, FTPS and SFTP</h3>
+<ul><li>Unencrypted FTP never sends a password, unless you allow it for that site (&quot;FTP: allow without encryption&quot;, in the <a href="#guide-08-options-site-logins">site logins</a>).</li><li>SFTP: on first contact, AuroDownloader shows the <strong>server key fingerprint</strong>, in the Properties (&quot;SSH server key&quot;, &quot;Accept the key…&quot;). Check it with the server's administrator before accepting it; downloads from that server then resume. A key that changes blocks the downloads: it may be an attack.</li><li>Logins: name and password, or an SSH private key, in the site logins. An address like <code>ftp://name:password@server/file</code> works too: the password is stored in the system vault and removed from the address.</li></ul>
+<h3 id="guide-03-downloads-sites-that-need-an-account" tabindex="-1">Sites that need an account</h3>
+<p>A site's login (Basic or Digest) is set in the <a href="#guide-08-options-site-logins">site logins</a>. Passwords are kept in the system vault (Windows Credential Manager, Linux keyring), never in AuroDownloader's database. For a site where you sign in through a page, use the <a href="#guide-09-extension">extension</a>, which passes the cookies on.</p>
+<h3 id="guide-03-downloads-metalink" tabindex="-1">Metalink</h3>
+<p>A <code>.meta4</code> or <code>.metalink</code> file, or its address, gives each file's addresses and checksum. If it holds several files, the box lets you tick them. Every faulty piece is downloaded again, preferably from another source; a source that gives two faulty pieces is set aside.</p>
+<h3 id="guide-03-downloads-moving-renaming-refreshing-downloading-again" tabindex="-1">Moving, renaming, refreshing, downloading again</h3>
+<ul><li><strong>Move/Rename…</strong>: another name or another folder, even on another disk; possible for a download that is not running, finished or not.</li><li><strong>Refresh address…</strong>: replaces an expired link. For a started download, the new address must give the same file; what was received is kept.</li><li><strong>Download again…</strong>: starts over. &quot;Replace the file already downloaded&quot; overwrites it; otherwise the new one gets another name.</li></ul>
+<h3 id="guide-03-downloads-where-files-go" tabindex="-1">Where files go</h3>
+<p>While downloading, the file has a temporary <code>.part</code> name; it takes its name at the end. A name already in use gets a suffix (<code>file (1).iso</code>). <a href="#guide-07-organising-filing-rules">Filing rules</a> can choose the folder and the name.</p>
+</section>
+<section aria-labelledby="guide-04-torrents">
+<h2 id="guide-04-torrents" tabindex="-1">Torrents</h2>
+<h3 id="guide-04-torrents-adding-a-torrent" tabindex="-1">Adding a torrent</h3>
+<ul><li>Paste a <strong>magnet link</strong> (<code>magnet:?…</code>) into &quot;Add&quot;;</li><li>or choose a <strong><code>.torrent</code> file</strong> (&quot;Choose .torrent or Metalink files…&quot;), or drop it on the window;</li><li>or open it with AuroDownloader from the browser or the file manager: it fills in the &quot;Add&quot; box, which you confirm. Associating magnet links and <code>.torrent</code> files with AuroDownloader is an option, off by default (Options, BitTorrent).</li></ul>
+<p>A torrent needs no checksum: it checks its pieces itself.</p>
+<h3 id="guide-04-torrents-choosing-the-files" tabindex="-1">Choosing the files</h3>
+<p>A torrent's Properties show its files: untick the ones you do not want, then apply. The others are not downloaded.</p>
+<h3 id="guide-04-torrents-seeding" tabindex="-1">Seeding</h3>
+<p>A finished torrent stays <strong>Seeding</strong>: it sends what it received to other peers, up to the chosen limit (Options, BitTorrent, &quot;After downloading, seed&quot;):</p>
+<ul><li>Do not seed;</li><li>Until as much is sent as received (ratio 1), the default;</li><li>up to another ratio;</li><li>No limit, until I stop it.</li></ul>
+<p>Seeding does not take a place in the queue: other downloads start meanwhile. On a metered network (Android), nothing is seeded.</p>
+<h3 id="guide-04-torrents-settings-options-bittorrent" tabindex="-1">Settings (Options, BitTorrent)</h3>
+<ul><li><strong>Upload limit</strong>: the upload speed to other peers.</li><li><strong>Network interface for torrents (VPN)</strong>: torrents only go through that interface; if it disappears (VPN off), they stop and wait for it to come back. Other downloads are not affected.</li><li><strong>Open the listening port on the router (UPnP)</strong>: more reachable peers, off by default.</li></ul>
+<p>Torrents never go through the proxy.</p>
+<h3 id="guide-04-torrents-when-resuming" tabindex="-1">When resuming</h3>
+<p>After a restart, AuroDownloader checks the pieces already received again before resuming: it takes longer than an instant resume, but nothing faulty is kept.</p>
+</section>
+<section aria-labelledby="guide-05-video">
+<h2 id="guide-05-video" tabindex="-1">Videos</h2>
+<p>On Windows and Linux, AuroDownloader downloads the video of a web page, through two free programs: <strong>yt-dlp</strong> (which reads the page) and <strong>ffmpeg</strong> (which joins picture and sound). It does not download protected videos (DRM).</p>
+<h3 id="guide-05-video-installing-the-tools" tabindex="-1">Installing the tools</h3>
+<p>The first time, the &quot;Add a video&quot; box (&quot;Video&quot; button) offers &quot;Install yt-dlp and ffmpeg&quot;: they are downloaded from their official releases, their checksum or signature is checked, and they take about 400 MB. Nothing is installed without that click.</p>
+<p>yt-dlp updates itself, at most once a day (Options, Video, &quot;Let yt-dlp update itself&quot;), since sites change often.</p>
+<h3 id="guide-05-video-downloading-a-video" tabindex="-1">Downloading a video</h3>
+<ol><li>&quot;Video&quot;, paste the address of the page, &quot;Analyse&quot;.</li><li>AuroDownloader shows the title, the duration, the site and the available qualities, with their size. Choose the <strong>quality</strong> (or &quot;All formats&quot; for a precise choice) and the <strong>container</strong> (automatic by default).</li><li><strong>Subtitles</strong>: tick the languages you want; they are kept next to the video, in the site's format. A missing language is reported at the end.</li><li>&quot;Start&quot; or &quot;Download later&quot;.</li></ol>
+<p>The video goes through the same queues, speed limits and time slots as other downloads, and resumes the same way after an interruption.</p>
+<p>From the browser, the <a href="#guide-09-extension">extension</a> does the same in one click.</p>
+</section>
+<section aria-labelledby="guide-06-links">
+<h2 id="guide-06-links" tabindex="-1">Link grabber</h2>
+<h3 id="guide-06-links-every-file-of-a-page" tabindex="-1">Every file of a page</h3>
+<ol><li>&quot;Links&quot; opens &quot;Analyse links&quot;.</li><li>Paste the address of a web page, or a text containing addresses, then &quot;Analyse&quot;; or &quot;Import a list (text, CSV)…&quot;.</li><li>AuroDownloader reads the page (without running JavaScript) and lists the file links, with their name, size and address. Sizes are asked from the servers, four at a time.</li><li><strong>Filters</strong>: extensions (<code>iso, zip</code>), minimum and maximum size, regular expression on the address. &quot;Also show pages and links without an extension&quot; shows the rest.</li><li>Tick (&quot;Check all&quot;, &quot;Uncheck all&quot;), choose the folder, then &quot;Download&quot;.</li></ol>
+<p>Each link becomes a download; a refused link does not stop the others.</p>
+<h3 id="guide-06-links-copied-links" tabindex="-1">Copied links</h3>
+<p>Option &quot;Offer to add copied links&quot; (Options, General, off by default): when you copy the address of a file or a magnet link, a system notification offers it; a click opens &quot;Add&quot;. The clipboard is only read for that, and nothing from it is kept. If AuroDownloader's notifications are turned off in the system, the Options say so.</p>
+</section>
+<section aria-labelledby="guide-07-organising">
+<h2 id="guide-07-organising" tabindex="-1">Organising</h2>
+<h3 id="guide-07-organising-queues" tabindex="-1">Queues</h3>
+<p>Every download is in a queue. The main queue exists from the start; it runs 3 downloads at a time, the others wait (&quot;Queued&quot;). Other queues are created from the command line, with their number of simultaneous downloads and their own speed limit:</p>
+<pre><code>auro queue create Night --max-active 2 --limit 2M
+auro add &lt;address&gt; --queue Night</code></pre>
+<p>Queues appear under &quot;Queues&quot;, in the categories.</p>
+<h3 id="guide-07-organising-speed-limits" tabindex="-1">Speed limits</h3>
+<ul><li><strong>Global</strong>: at the bottom of the window, &quot;Global speed limit&quot;, or Options, Connection.</li><li><strong>Of one download</strong>: menu &quot;Limit speed…&quot;, or its Properties.</li><li><strong>Of a queue</strong>: from the command line (<code>auro limit 1M --queue Night</code>).</li></ul>
+<p>A changed limit applies at once, to running downloads too.</p>
+<h3 id="guide-07-organising-schedule" tabindex="-1">Schedule</h3>
+<p>&quot;Schedule&quot; sets, for a queue:</p>
+<ul><li><strong>Download only during these time slots</strong>: days and hours (&quot;Add a time slot&quot;), for example Monday to Friday from 23:00 to 07:00. Outside the slots, the queue waits (&quot;Paused (schedule)&quot;) and starts again by itself when a slot opens.</li><li><strong>When the queue has nothing left to download</strong>: Do nothing, Put the computer to sleep or Shut down the computer. The action is announced a minute before, with a button to cancel it.</li></ul>
+<h3 id="guide-07-organising-filing-rules" tabindex="-1">Filing rules</h3>
+<p>Options, Rules. A rule files the downloads added <strong>without a chosen folder</strong> (by the extension, copied links, the remote interface):</p>
+<ul><li><strong>If</strong>: file types or extensions, site domains, regular expression on the address or the file name (all criteria met; empty: any task).</li><li><strong>Then</strong>:<ul><li>a <strong>folder</strong>: full path, or relative to the download folder (<code>Videos/Talks</code>), created if missing;</li><li>a <strong>file name</strong>, a template with <code>{name}</code> (without the extension), <code>{ext}</code>, <code>{host}</code> and <code>{date}</code> (day added): for example <code>{date} {name}.{ext}</code>;</li><li>a <strong>command when the download ends</strong>: a program (full path), its arguments, one per line, and a time limit. Variables: <code>{path}</code> (the file), <code>{dir}</code>, <code>{name}</code>, <code>{size}</code>, <code>{sha256}</code>, <code>{id}</code>. For example, an antivirus with <code>{path}</code>. The command never goes through a shell; the download stays &quot;Finishing&quot; while it runs, then fails if it fails or runs past its time limit (&quot;Resume&quot; runs it again).</li></ul></li></ul>
+<p>The first enabled rule that matches applies; &quot;Move up&quot; and &quot;Move down&quot; change the order. A torrent only takes the folder. Rules can only be changed in the application on the computer (not from the remote interface).</p>
+<h3 id="guide-07-organising-history" tabindex="-1">History</h3>
+<p>&quot;History&quot; lists finished downloads, even those removed from the list: search by name, folder or site, &quot;Export as CSV…&quot;, &quot;Clear history…&quot;.</p>
+</section>
+<section aria-labelledby="guide-08-options">
+<h2 id="guide-08-options" tabindex="-1">Options</h2>
+<p>&quot;Options&quot; opens the settings, in sections. The left and right arrow keys move from one section to the next.</p>
+<h3 id="guide-08-options-general" tabindex="-1">General</h3>
+<ul><li><strong>Language</strong>: the system's, English or French.</li><li><strong>Start with the session, in the notification area</strong>.</li><li><strong>Closing the window keeps the app in the notification area</strong>: otherwise, closing the window quits the application (downloads go on, through the engine).</li><li><strong>Bring the window to the front when a download is added</strong> (by the browser or the command line).</li><li><strong>Offer to add copied links</strong>: see <a href="#guide-06-links-copied-links">Link grabber</a>.</li><li><strong>Updates</strong>: &quot;Check for updates&quot; (at most once a day, from GitHub, which sees the IP address and the version in use, nothing else) and &quot;Check now&quot;. A new version shows up in &quot;New version&quot;, with what is new: &quot;Install and restart&quot; (Windows, AppImage), &quot;Open the release page&quot; (<code>.deb</code> package), or &quot;Later&quot;. The update is checked by its signature; nothing is installed without your consent. During the installation, the application closes, then restarts, and downloads resume.</li></ul>
+<h3 id="guide-08-options-saving" tabindex="-1">Saving</h3>
+<ul><li><strong>Folder for new downloads</strong>, when none is chosen (extension, copied links, remote interface).</li><li><strong>Reserve each file's space from the start</strong>: a full disk shows at once, and the file is less fragmented.</li><li><strong>Look for the checksum next to the file (SHA256SUMS, .sha256…)</strong>: when you give none, AuroDownloader looks for the checksum published next to the file, and checks it.</li></ul>
+<h3 id="guide-08-options-rules" tabindex="-1">Rules</h3>
+<p>The <a href="#guide-07-organising-filing-rules">filing rules</a>: New…, Edit…, Move up, Move down, Disable, Delete.</p>
+<h3 id="guide-08-options-connection" tabindex="-1">Connection</h3>
+<ul><li><strong>Global speed limit</strong>.</li><li><strong>Proxy</strong>: the system's (default), none (always direct), or &quot;This one&quot;: address (<code>http://</code>, <code>https://</code> or <code>socks5://</code>), addresses to reach directly, login and password (stored in the system vault). Torrents never go through the proxy; the update check uses the system's.</li></ul>
+<h3 id="guide-08-options-bittorrent" tabindex="-1">BitTorrent</h3>
+<p>Seeding, upload limit, network interface (VPN), UPnP, association of magnet links and <code>.torrent</code> files: see <a href="#guide-04-torrents-settings-options-bittorrent">Torrents</a>.</p>
+<h3 id="guide-08-options-video" tabindex="-1">Video</h3>
+<p>Installing yt-dlp and ffmpeg, and updating them: see <a href="#guide-05-video">Videos</a>.</p>
+<h3 id="guide-08-options-site-logins" tabindex="-1">Site logins</h3>
+<ul><li>A site's <strong>logins</strong> (New…, Edit…, Delete): site, user name, password or SSH private key (SFTP), &quot;FTP: allow without encryption&quot;. Passwords go to the system vault and never come out.</li><li>Accepted <strong>SSH server keys</strong>, with their fingerprint; &quot;Forget the key&quot;.</li></ul>
+<h3 id="guide-08-options-plugins" tabindex="-1">Plugins</h3>
+<p>A host plugin turns the page of a file host into direct links.</p>
+<ul><li>&quot;Install a plugin…&quot;: choose a <code>.wasm</code> file. Before installing, AuroDownloader shows its name, its author, the pages it handles, the domains it will contact and its fingerprint: only install plugins you trust.</li><li>A plugin runs isolated: it sees neither your files, nor your passwords, nor your cookies, and only contacts its declared domains.</li><li>Disable, Remove. A new version that asks for more domains asks for your consent again.</li></ul>
+<h3 id="guide-08-options-remote-access" tabindex="-1">Remote access</h3>
+<p>See <a href="#guide-11-remote-access">Remote access</a>.</p>
+<h3 id="guide-08-options-about" tabindex="-1">About</h3>
+<ul><li>AuroDownloader's version.</li><li><strong>Log detail</strong>: Errors only, Errors and warnings, Normal (recommended), Detailed, for troubleshooting.</li><li><strong>Export a diagnostic…</strong>: see <a href="#guide-14-troubleshooting-diagnostic">Troubleshooting</a>.</li><li><strong>Quit and stop downloads</strong>.</li></ul>
+</section>
+<section aria-labelledby="guide-09-extension">
+<h2 id="guide-09-extension" tabindex="-1">Browser extension</h2>
+<p>The extension hands the browser's downloads, magnet links and the page's video to AuroDownloader. It works with Firefox (128 and later), Chrome (121 and later) and Edge, with the desktop application installed (it goes through its relay, <code>auro-relay</code>).</p>
+<h3 id="guide-09-extension-installing" tabindex="-1">Installing</h3>
+<p>The extension is not yet in the browser stores; it is loaded from the project's <code>extension</code> folder:</p>
+<ul><li><strong>Chrome</strong>: <code>chrome://extensions</code>, &quot;Developer mode&quot;, &quot;Load unpacked&quot;, <code>extension</code> folder.</li><li><strong>Edge</strong>: <code>edge://extensions</code>, &quot;Developer mode&quot;, &quot;Load unpacked&quot;. Edge reports a warning about <code>background.scripts</code> (for Firefox): it has no effect.</li><li><strong>Firefox</strong>: <code>about:debugging#/runtime/this-firefox</code>, &quot;Load Temporary Add-on…&quot;, file <code>extension/manifest.json</code> (to load again at each Firefox start). Then, in <code>about:addons</code>, AuroDownloader, Permissions: allow access to all sites, otherwise cookies cannot be read.</li></ul>
+<p>On Linux, the relay is registered with the browsers only by the <code>.deb</code> package, not by the AppImage.</p>
+<p>If IDM or another download manager is installed, disable its extension: otherwise it takes the downloads before AuroDownloader.</p>
+<h3 id="guide-09-extension-what-it-does" tabindex="-1">What it does</h3>
+<ul><li><strong>Downloads</strong>: those over 1 MiB (adjustable) go to AuroDownloader. The browser keeps its own until AuroDownloader has accepted it; the icon shows &quot;✓&quot; or &quot;!&quot;.</li><li><strong>Click with Alt</strong>: leaves that download, or that magnet link, to the browser.</li><li><strong>Magnet links</strong>: a click hands them to AuroDownloader (option on by default). Downloaded <code>.torrent</code> files become torrents.</li><li><strong>Context menu</strong>: &quot;Download with AuroDownloader&quot; on a link, an image, a video or a sound; &quot;Download this page's video with AuroDownloader&quot; (best quality).</li><li><strong>Icon window</strong>: the page's video, with the choice of quality, audio only and subtitles, then &quot;Download&quot;.</li></ul>
+<h3 id="guide-09-extension-settings" tabindex="-1">Settings</h3>
+<p>Icon window, &quot;Settings&quot;:</p>
+<ul><li>Hand downloads to AuroDownloader, only from a given size;</li><li>Excluded sites (one per line; their subdomains too);</li><li>In private browsing too;</li><li><strong>Send the page's cookies and address</strong>: for downloads that require signing in; AuroDownloader keeps the cookies in the system vault;</li><li>Hand magnet links to AuroDownloader;</li><li><strong>Link with AuroDownloader</strong>, &quot;Check&quot;: &quot;Relay found&quot; if all is well.</li></ul>
+</section>
+<section aria-labelledby="guide-10-android">
+<h2 id="guide-10-android" tabindex="-1">Android</h2>
+<p>The Android application holds the same engine as the desktop version: HTTP(S), FTP(S), SFTP and torrent downloads, with the same safe resume. Site videos (yt-dlp) are not available there.</p>
+<h3 id="guide-10-android-adding" tabindex="-1">Adding</h3>
+<ul><li><strong>Add</strong>, then the address: <code>https://…</code>, <code>ftp://…</code>, <code>sftp://…</code> or a magnet link.</li><li><strong>Share</strong> a link from another application (browser, messaging), or <strong>open</strong> a magnet link or a <code>.torrent</code> file with AuroDownloader: it is added directly.</li></ul>
+<p>Files go to <code>Download/AuroDownloader</code>, where other applications see them.</p>
+<h3 id="guide-10-android-the-list-and-the-details" tabindex="-1">The list and the details</h3>
+<p>Tap a download for its details: status, size, speed, time left, checksum; Pause, Resume, Retry, Cancel the download, Remove from the list, Open; for a torrent, the choice of its files; for an unknown SFTP server, its key fingerprint and &quot;Accept the key…&quot;.</p>
+<h3 id="guide-10-android-in-the-background" tabindex="-1">In the background</h3>
+<p>A download goes on when the application is closed: a notification shows the progress, with &quot;Pause all&quot;. Android may ask to allow notifications on the first download.</p>
+<h3 id="guide-10-android-settings" tabindex="-1">Settings</h3>
+<ul><li><strong>Download folder</strong> (shown: <code>Download/AuroDownloader</code>) and <strong>Global speed limit</strong>.</li><li><strong>Look for the checksum next to the file</strong>, <strong>Reserve each file's space from the start</strong>.</li><li><strong>Wi-Fi only</strong>: no downloading on a metered connection (mobile data, hotspot).</li><li><strong>Resume after the device restarts</strong>: unfinished downloads resume, or a notification offers to resume them (Android 14 and later).</li><li><strong>BitTorrent</strong>: seeding after downloading, upload limit. Nothing is seeded on a metered connection.</li></ul>
+<p>To go through a VPN, use Android's: it applies to the whole application.</p>
+</section>
+<section aria-labelledby="guide-11-remote-access">
+<h2 id="guide-11-remote-access" tabindex="-1">Remote access</h2>
+<p>The remote web interface shows the AuroDownloader window in a browser, on a phone or another computer on the same network, to add and follow downloads. It is off by default.</p>
+<h3 id="guide-11-remote-access-turning-it-on" tabindex="-1">Turning it on</h3>
+<p>Options, Remote access:</p>
+<ol><li><strong>Control downloads from another device</strong>: tick it.</li><li><strong>Listening address</strong> and <strong>Port</strong>: this computer's address on the local network (the list offers them), and the port (7380 for example). Windows may ask to allow AuroDownloader through the firewall.</li><li>Away from this computer, the connection is always encrypted (HTTPS). AuroDownloader makes its own certificate; the other device's browser warns the first time: compare the <strong>SHA-256 fingerprint</strong> shown in the Options before accepting. &quot;Use my certificate…&quot; takes a certificate of yours instead.</li></ol>
+<h3 id="guide-11-remote-access-adding-a-device" tabindex="-1">Adding a device</h3>
+<p>&quot;Add a device…&quot;: a name (&quot;Phone&quot;), then the <strong>permissions</strong>:</p>
+<ul><li>Full control: add, stop, delete;</li><li>Add only;</li><li>View only.</li></ul>
+<p>&quot;Create the token&quot; shows the page address and a <strong>QR code</strong>: scan it with the device, which opens the page signed in. The token can also be pasted by hand. It is shown only once; &quot;Remove&quot; a device cuts its access at once.</p>
+<h3 id="guide-11-remote-access-what-the-remote-page-does-not-do" tabindex="-1">What the remote page does not do</h3>
+<p>For safety, it does not choose a folder on the computer (only a subfolder of the download folder), does not open files, does not change the rules, the plugins or the remote access settings, and only downloads from the Internet, not from the computer's local network (unless <code>auro remote allow-private on</code>, from the command line).</p>
+</section>
+<section aria-labelledby="guide-12-command-line">
+<h2 id="guide-12-command-line" tabindex="-1">Command line</h2>
+<p><code>auro</code> drives the same engine as the application: a download added by <code>auro</code> shows up in the window, and the other way round. It is installed with the application (next to it on Windows, in the path on Linux with the <code>.deb</code> package). If the engine is not running, <code>auro</code> starts it.</p>
+<p>Every command has its help (<code>auro add --help</code>) and, on Linux, its manual page (<code>man auro</code>, <code>man auro-add</code>, <code>man aurod</code>). The command line's messages and manual pages are in French.</p>
+<h3 id="guide-12-command-line-common-commands" tabindex="-1">Common commands</h3>
+<pre><code>auro get https://deb.debian.org/debian/README -o .   # download and follow the progress
+auro add &lt;address&gt;… --paused                         # add without waiting (paused)
+auro list                                            # list
+auro watch                                           # follow what is running
+auro pause &lt;id&gt;… ; auro resume &lt;id&gt;…
+auro remove &lt;id&gt;… ; auro restart &lt;id&gt;… --delete-files
+auro move &lt;id&gt; -o &lt;folder&gt; -n &lt;name&gt;
+auro refresh &lt;id&gt; &lt;new-address&gt;</code></pre>
+<p>Without <code>-o</code>, <code>auro add</code> downloads to the current folder; <code>--auto</code> lets the <a href="#guide-07-organising-filing-rules">filing rules</a> choose.</p>
+<h3 id="guide-12-command-line-going-further" tabindex="-1">Going further</h3>
+<pre><code>auro add &lt;address&gt; --checksum sha256:&lt;hex&gt;          # expected checksum
+auro get &lt;address&gt; --mirror &lt;address&gt;…              # mirrors
+auro metalink &lt;file.meta4&gt; ; auro get &lt;file.meta4&gt; --select 0,2
+auro add file.torrent ; auro files &lt;id&gt; --select 0,2-4
+auro links &lt;page&gt; -e iso,zip --min-size 10M --add -o .
+auro video info &lt;page&gt; ; auro video get &lt;page&gt; --subs fr,en
+auro limit 2M ; auro limit --upload 500K ; auro limit 1M --queue Night
+auro schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep
+auro login set &lt;site&gt; -u &lt;name&gt; ; auro hostkey list
+auro proxy manual socks5://host:1080 -u me ; auro proxy system
+auro history [text] [--csv]
+auro config ; auro config torrent.ratioLimit 1.5
+auro diagnostic --save diag.zip
+auro engine stop</code></pre>
+<h3 id="guide-12-command-line-the-engine-alone" tabindex="-1">The engine alone</h3>
+<p><code>aurod</code> is the engine, without a window. For a server or a NAS, it runs on its own, and is used through <code>auro</code> or through <a href="#guide-11-remote-access">remote access</a>.</p>
+</section>
+<section aria-labelledby="guide-13-accessibility">
+<h2 id="guide-13-accessibility" tabindex="-1">Accessibility</h2>
+<p>AuroDownloader can be used entirely from the keyboard, and has been tried with NVDA (Windows), Orca (Linux) and TalkBack (Android).</p>
+<h3 id="guide-13-accessibility-keyboard-in-the-window" tabindex="-1">Keyboard, in the window</h3>
+<table><thead><tr><th scope="col">Keys</th><th scope="col">Effect</th></tr></thead><tbody><tr><td>F1</td><td>This guide (also in Options, About)</td></tr><tr><td>Ctrl+N or Ctrl+L</td><td>Add</td></tr><tr><td>Tab, Shift+Tab</td><td>Toolbar, categories, table</td></tr><tr><td>Up and down arrows, Page Up, Page Down, Home, End</td><td>Previous row, next row…</td></tr><tr><td>Shift+arrows</td><td>Extend the selection</td></tr><tr><td>Ctrl+Space</td><td>Add a row to the selection, or remove it</td></tr><tr><td>Ctrl+A</td><td>Select all</td></tr><tr><td>Enter</td><td>Properties</td></tr><tr><td>Delete</td><td>Delete…</td></tr><tr><td>Shift+F10 or Menu key</td><td>Context menu</td></tr><tr><td>Escape</td><td>Close a menu or a box; focus goes back where it came from</td></tr><tr><td>Left and right arrows</td><td>Next or previous section of the Options</td></tr><tr><td>Ctrl+plus, Ctrl+minus, Ctrl+0</td><td>Zoom in, zoom out, normal size</td></tr></tbody></table>
+<p>In the &quot;Add&quot; box, Enter starts, Shift+Enter starts a new line.</p>
+<h3 id="guide-13-accessibility-screen-readers" tabindex="-1">Screen readers</h3>
+<ul><li>Messages (refused addition, checksum cleared, download completed…) are announced; an error tied to a field is read with it.</li><li><strong>Orca</strong>: version 46 treats the application as a WebKitGTK page; in a field, letters move around while structural navigation is on: Orca+Z turns it off before typing. Orca 46 does not announce the page's status messages either.</li></ul>
+<p>The detail of the accessibility review (WCAG 2.2, levels A and AA, in French) is in <code>docs/ACCESSIBILITE.md</code> (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/ACCESSIBILITE.md</span>).</p>
+</section>
+<section aria-labelledby="guide-14-troubleshooting">
+<h2 id="guide-14-troubleshooting" tabindex="-1">Troubleshooting</h2>
+<h3 id="guide-14-troubleshooting-common-problems" tabindex="-1">Common problems</h3>
+<table><thead><tr><th scope="col">What you see</th><th scope="col">What to do</th></tr></thead><tbody><tr><td>&quot;Retrying soon&quot; that lasts</td><td>The network or the server does not answer: AuroDownloader retries by itself. Check the connection and the proxy (Options, Connection).</td></tr><tr><td>&quot;refused by the server&quot;</td><td>The link may have expired: &quot;Refresh address…&quot; with a fresh link, taken from the source page.</td></tr><tr><td>The server asks you to sign in</td><td>Site logins (Options, Site logins), or use the extension, which passes the cookies on.</td></tr><tr><td>&quot;certificate rejected&quot;</td><td>The server's HTTPS certificate is not valid: AuroDownloader does not download without it.</td></tr><tr><td>&quot;the file does not match its expected checksum&quot;</td><td>The file received is not the one announced: check the checksum, or download again.</td></tr><tr><td>&quot;disk full&quot;</td><td>Make room: the download starts again by itself.</td></tr><tr><td>&quot;remote file changed&quot;</td><td>The file changed on the server during the download: &quot;Download again…&quot;.</td></tr><tr><td>The extension takes nothing</td><td>Icon window, Settings, &quot;Check&quot;; disable IDM's extension; on Linux, prefer the <code>.deb</code> package.</td></tr><tr><td>A video is refused</td><td>It is protected (DRM), or yt-dlp does not know the site yet: wait for it to update itself.</td></tr><tr><td>Torrents do not start</td><td>If a network interface (VPN) is chosen (Options, BitTorrent), it must be there.</td></tr></tbody></table>
+<h3 id="guide-14-troubleshooting-diagnostic" tabindex="-1">Diagnostic</h3>
+<p>Options, About, <strong>Export a diagnostic…</strong>: a summary of the engine's state and its recent logs, <strong>cleaned</strong> (no addresses, file names, headers or logins), shown before being saved in a <code>.zip</code> archive, to attach to a report. For a problem that happens again, first set &quot;Log detail&quot; to &quot;Detailed, for troubleshooting&quot;, reproduce it, then export.</p>
+<h3 id="guide-14-troubleshooting-where-the-data-is" tabindex="-1">Where the data is</h3>
+<ul><li>The download list, the history and the engine's settings are in a database (<code>auro.db</code>), with the logs (<code>logs</code>): <code>%LOCALAPPDATA%\AuroDownloader</code> on Windows, <code>~/.local/share/aurodownloader</code> on Linux.</li><li>Passwords, cookies and tokens are in the system vault, never in the database.</li></ul>
+<h3 id="guide-14-troubleshooting-privacy" tabindex="-1">Privacy</h3>
+<p>AuroDownloader sends no telemetry. It only contacts:</p>
+<ul><li>the servers of the files you download (and their mirrors);</li><li>torrent peers;</li><li>GitHub, at most once a day, for updates (can be turned off);</li><li>the official releases of yt-dlp and ffmpeg, if you install them;</li><li>the domains declared by the plugins you install.</li></ul>
+<h3 id="guide-14-troubleshooting-reporting-a-problem" tabindex="-1">Reporting a problem</h3>
+<p>On the issues (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/issues</span>) page, with the version (Options, About), the system, what happens, and the diagnostic if possible. A security flaw is reported privately, through the security advisories (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/security/advisories/new</span>).</p>
+</section>

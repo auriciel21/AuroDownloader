@@ -543,6 +543,11 @@ export const EN = {
   "Fermer la fenêtre la replie dans la zone de notification": "Closing the window keeps the app in the notification area",
   "Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)":
     "Bring the window to the front when a download is added (browser, command line)",
+  // Guide de l'utilisateur (étape 9d).
+  "Guide de l'utilisateur": "User guide",
+  "Guide de l'utilisateur (F1)": "User guide (F1)",
+  "Contenu du guide": "Guide content",
+  "Guide introuvable : {0}": "Guide not found: {0}",
   // Mises à jour de l'application (étape 8b).
   "Mises à jour": "Updates",
   "Rechercher les mises à jour": "Check for updates",

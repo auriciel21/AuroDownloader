@@ -32,6 +32,10 @@ pub const ASSETS: &[Asset] = &[
     asset!("i18n.js", "text/javascript; charset=utf-8"),
     asset!("host.js", "text/javascript; charset=utf-8"),
     asset!("web.js", "text/javascript; charset=utf-8"),
+    // Guide de l'utilisateur (étape 9d), lu par la boîte « Guide » ; fait par
+    // scripts/guide.mjs, sans script.
+    asset!("guide/fr.html", "text/html; charset=utf-8"),
+    asset!("guide/en.html", "text/html; charset=utf-8"),
 ];
 
 /// Le fichier d'un chemin (`/` : la page).
@@ -60,6 +64,8 @@ mod tests {
     fn only_the_page_files_are_found() {
         assert_eq!(find("/").unwrap().path, "/index.html");
         assert!(find("/main.js").is_some() && find("/web.js").is_some());
+        assert!(find("/guide/fr.html").is_some() && find("/guide/en.html").is_some());
+        assert!(find("/guide/").is_none() && find("/guide/../index.html").is_none());
         for missing in [
             "/../Cargo.toml",
             "/index.htm",

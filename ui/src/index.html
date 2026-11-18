@@ -1023,6 +1023,7 @@
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
         <p id="about"></p>
+        <p><button type="button" id="guide-open" data-i18n="Guide de l'utilisateur (F1)">Guide de l'utilisateur (F1)</button></p>
         <div data-needs="admin">
           <label class="field">
             <span data-i18n="Détail des journaux">Détail des journaux</span>
@@ -1038,6 +1039,18 @@
         </div>
         <button type="button" id="stop-engine" data-needs="app" data-i18n="Quitter et arrêter les téléchargements">Quitter et arrêter les téléchargements</button>
       </div>
+      <div class="buttons end">
+        <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Guide de l'utilisateur (étape 9d) : copie de docs/guide, faite par scripts/guide.mjs. -->
+  <dialog id="guide-dialog" class="wide" aria-labelledby="guide-title">
+    <form method="dialog">
+      <h2 id="guide-title" data-i18n="Guide de l'utilisateur">Guide de l'utilisateur</h2>
+      <div id="guide-content" class="guide" role="region" tabindex="0"
+        data-i18n-label="Contenu du guide" aria-label="Contenu du guide"></div>
       <div class="buttons end">
         <button value="close" data-i18n="Fermer">Fermer</button>
       </div>
