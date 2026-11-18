@@ -77,7 +77,7 @@ Colonnes :
 | 1.3.2 Ordre séquentiel logique | A | Oui | Oui | Oui | L'ordre du DOM suit l'ordre visuel ; aucun `tabindex` positif |
 | 1.3.3 Caractéristiques sensorielles | A | Oui | Oui | Oui | Aucune consigne ne repose sur la forme, la place ou la couleur seules |
 | 1.3.4 Orientation | AA | Oui | Oui | Oui | Aucune orientation imposée : manifeste Android sans `screenOrientation`, page fluide |
-| 1.3.5 Finalité des champs | AA | Oui | S. o. | S. o. | Aucun champ ne recueille des données de l'utilisateur au sens du critère : les identifiants de sites et du proxy sont ceux de tiers, rangés au coffre, et leurs champs gardent `autocomplete="off"` (choix discutable, signalé à l'utilisateur). Le jeton de l'interface distante a `autocomplete="new-password"` |
+| 1.3.5 Finalité des champs | AA | Oui | S. o. | S. o. | Aucun champ ne recueille des données de l'utilisateur au sens du critère : les identifiants de sites et du proxy sont ceux de tiers, rangés au coffre, et leurs champs gardent `autocomplete="off"` (décision de l'utilisateur du 2026-11-18 : aucun gestionnaire de mots de passe du navigateur ne garde ces secrets, qui restent au coffre du système, SPEC 8.2). Le jeton de l'interface distante a `autocomplete="new-password"` |
 | 1.4.1 Utilisation de la couleur | A | Oui | Oui | Oui | L'état d'une tâche est toujours écrit (colonne État, résumé Android) ; la couleur ne fait que le doubler |
 | 1.4.2 Contrôle du son | A | S. o. | S. o. | S. o. | Aucun son |
 | 1.4.3 Contraste (minimum) | AA | Corrigé | Oui | Oui | `contrast.test.js` sur 17 couples par thème. « Terminé » sur une ligne choisie était à 4,03:1 en thème clair. Android : couleurs de Material 3, et ATF. Extension : `a11y.test.cjs` |
