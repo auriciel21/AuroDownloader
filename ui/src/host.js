@@ -33,6 +33,13 @@
 //   « Plugins » (l'ajout par un plugin reste possible).
 // - pickKey() (étape 6d), facultatif : rend le chemin d'un fichier de clé privée SSH choisi,
 //   ou null. Sans lui, le chemin s'écrit à la main.
+// - mises à jour de l'application (étape 8b), facultatives : updateStatus() rend {kind
+//   ("install", "notify" ou "none"), configured, enabled, lastCheck, found} ;
+//   updateCheck(force) rend {checkedAt, found} ou null (pas encore due), found étant
+//   {version, current, notes, date, page} ou null ; updateInstall() télécharge, vérifie et
+//   installe, puis relance ; updateOpenPage(version) ouvre la page de la publication ;
+//   onUpdate(fn) reçoit une version trouvée par la recherche de fond, onUpdateProgress(fn)
+//   {done, total} pendant le téléchargement. Sans elles, pas de rubrique « Mises à jour ».
 
 export function tauriHost() {
   const { invoke } = window.__TAURI__.core;
@@ -71,5 +78,12 @@ export function tauriHost() {
     readPlugin: (path) => invoke("read_plugin", { path }),
     linksStatus: () => invoke("links_status"),
     setLinks: (enabled) => invoke("set_links", { enabled }),
+    // Mises à jour de l'application (étape 8b) : proposées, installées sur accord.
+    updateStatus: () => invoke("update_status"),
+    updateCheck: (force) => invoke("update_check", { force }),
+    updateInstall: () => invoke("update_install"),
+    updateOpenPage: (version) => invoke("update_open_page", { version }),
+    onUpdate: (fn) => listen("update-available", (event) => fn(event.payload)),
+    onUpdateProgress: (fn) => listen("update-progress", (event) => fn(event.payload)),
   };
 }

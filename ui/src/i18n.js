@@ -543,6 +543,35 @@ export const EN = {
   "Fermer la fenêtre la replie dans la zone de notification": "Closing the window keeps the app in the notification area",
   "Afficher la fenêtre au premier plan quand un téléchargement est ajouté (navigateur, ligne de commande)":
     "Bring the window to the front when a download is added (browser, command line)",
+  // Mises à jour de l'application (étape 8b).
+  "Mises à jour": "Updates",
+  "Rechercher les mises à jour": "Check for updates",
+  "Au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Rien ne s'installe sans votre accord.":
+    "At most once a day, from GitHub, which sees the IP address and the version in use, nothing else. Nothing is installed without your consent.",
+  "Rechercher maintenant": "Check now",
+  "Nouvelle version": "New version",
+  "Nouveautés": "What's new",
+  "L'application se ferme le temps de l'installation, puis redémarre ; les téléchargements en cours reprennent ensuite.":
+    "The application closes during the installation, then restarts; downloads in progress resume afterwards.",
+  "Cette installation (paquet .deb) se met à jour par le paquet de la nouvelle version, à télécharger sur sa page.":
+    "This installation (.deb package) is updated with the new version's package, downloaded from its page.",
+  "Plus tard": "Later",
+  "Ouvrir la page de la version": "Open the release page",
+  "Installer et redémarrer": "Install and restart",
+  "AuroDownloader recherche ses mises à jour au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Une version nouvelle vous est proposée ; rien ne s'installe sans votre accord. Vous pouvez couper cette recherche ici ou dans Options, Général.":
+    "AuroDownloader checks for updates at most once a day, from GitHub, which sees the IP address and the version in use, nothing else. A new version is offered to you; nothing is installed without your consent. You can turn this off here or in Options, General.",
+  "Ne pas rechercher": "Don't check",
+  "D'accord": "OK",
+  "Mises à jour non configurées dans cette version.": "Updates are not configured in this build.",
+  "Version {0} disponible.": "Version {0} available.",
+  "Dernière recherche : {0}.": "Last check: {0}.",
+  "Aucune recherche faite pour l'instant.": "No check made yet.",
+  "Recherche d'une version nouvelle…": "Checking for a new version…",
+  "Recherche impossible : {0}": "Check failed: {0}",
+  "AuroDownloader est à jour (version {0}).": "AuroDownloader is up to date (version {0}).",
+  "AuroDownloader {0} est disponible ; vous avez la version {1}.": "AuroDownloader {0} is available; you have version {1}.",
+  "Téléchargement de la version {0}…": "Downloading version {0}…",
+  "Mise à jour impossible : {0}": "Update failed: {0}",
   // Presse-papiers (F-30, étape 2c).
   "Proposer d'ajouter les liens copiés": "Offer to add copied links",
   "L'adresse d'un fichier ou un lien magnet copié fait apparaître une notification ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé.":

@@ -841,6 +841,14 @@
           data-i18n="Windows n'affiche pas les notifications d'AuroDownloader (Paramètres, Système, Notifications) : cette option n'aura aucun effet tant qu'elles restent désactivées."></p>
         <p id="pref-no-tray" data-needs="app" class="note" hidden
           data-i18n="Aucune zone de notification sur ce bureau : fermer la fenêtre quitte l'application, les téléchargements continuent."></p>
+        <fieldset class="updates" id="updates-section" data-needs="updates">
+          <legend data-i18n="Mises à jour">Mises à jour</legend>
+          <label class="check"><input type="checkbox" id="pref-updates" aria-describedby="pref-updates-note">
+            <span data-i18n="Rechercher les mises à jour">Rechercher les mises à jour</span></label>
+          <p id="pref-updates-note" class="note" data-i18n="Au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Rien ne s'installe sans votre accord.">Au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Rien ne s'installe sans votre accord.</p>
+          <p class="row"><button type="button" id="update-check-now" data-i18n="Rechercher maintenant">Rechercher maintenant</button>
+            <span id="update-state" role="status"></span></p>
+        </fieldset>
       </div>
       <div class="tab-panel" role="tabpanel" id="panel-save" aria-labelledby="tab-save" hidden>
         <div class="field">
@@ -1032,6 +1040,42 @@
       </div>
       <div class="buttons end">
         <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Mise à jour de l'application (étape 8b) : version trouvée, installée sur accord. -->
+  <dialog id="update-dialog" aria-labelledby="update-title" aria-describedby="update-text">
+    <form method="dialog">
+      <h2 id="update-title" data-i18n="Nouvelle version">Nouvelle version</h2>
+      <p id="update-text"></p>
+      <div class="field" id="update-notes-field">
+        <span id="update-notes-title" data-i18n="Nouveautés">Nouveautés</span>
+        <pre id="update-notes" class="update-notes" role="region" aria-labelledby="update-notes-title" tabindex="0"></pre>
+      </div>
+      <p class="note" id="update-install-note" data-i18n="L'application se ferme le temps de l'installation, puis redémarre ; les téléchargements en cours reprennent ensuite.">L'application se ferme le temps de l'installation, puis redémarre ; les téléchargements en cours reprennent ensuite.</p>
+      <p class="note" id="update-page-note" data-i18n="Cette installation (paquet .deb) se met à jour par le paquet de la nouvelle version, à télécharger sur sa page.">Cette installation (paquet .deb) se met à jour par le paquet de la nouvelle version, à télécharger sur sa page.</p>
+      <p class="row" id="update-progress-row" hidden>
+        <progress id="update-progress" aria-labelledby="update-progress-label"></progress>
+        <span id="update-progress-label" role="status"></span></p>
+      <div class="buttons">
+        <button value="later" data-i18n="Plus tard">Plus tard</button>
+        <span class="row">
+          <button type="button" id="update-page" data-i18n="Ouvrir la page de la version">Ouvrir la page de la version</button>
+          <button type="button" id="update-install" class="primary" data-i18n="Installer et redémarrer">Installer et redémarrer</button>
+        </span>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Avis du premier lancement : la recherche des mises à jour, et comment la couper. -->
+  <dialog id="update-notice" aria-labelledby="update-notice-title" aria-describedby="update-notice-text">
+    <form method="dialog">
+      <h2 id="update-notice-title" data-i18n="Mises à jour">Mises à jour</h2>
+      <p id="update-notice-text" data-i18n="AuroDownloader recherche ses mises à jour au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Une version nouvelle vous est proposée ; rien ne s'installe sans votre accord. Vous pouvez couper cette recherche ici ou dans Options, Général.">AuroDownloader recherche ses mises à jour au plus une fois par jour, auprès de GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre. Une version nouvelle vous est proposée ; rien ne s'installe sans votre accord. Vous pouvez couper cette recherche ici ou dans Options, Général.</p>
+      <div class="buttons">
+        <button value="off" data-i18n="Ne pas rechercher">Ne pas rechercher</button>
+        <button value="ok" class="primary" data-i18n="D'accord">D'accord</button>
       </div>
     </form>
   </dialog>

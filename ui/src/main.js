@@ -49,6 +49,9 @@ const caps = {
   plugins: typeof host.readPlugin === "function",
   // Export du diagnostic (N-12) : seulement avec un hôte qui sait enregistrer l'archive.
   diagnostic: typeof host.saveDiagnostic === "function",
+  // Mises à jour de l'application (étape 8b) : vrai quand l'hôte dit que cette installation
+  // se met à jour (`refreshUpdateStatus`).
+  updates: false,
 };
 
 function applyScope(scope) {
@@ -4259,6 +4262,7 @@ function applyInfo(next) {
   $("pref-clipboard-note").hidden = !host.watchesClipboard;
   renderClipboardWarning();
   $("pref-autostart").checked = info.autostart;
+  renderUpdates();
   $("grid").setAttribute("aria-label", t("Téléchargements : {0}", viewLabel(view)));
   renderAbout();
   renderLimit();
@@ -4729,6 +4733,18 @@ function wire() {
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));
   $("pref-tray").addEventListener("change", (e) => savePrefs({ closeToTray: e.target.checked }));
   $("pref-show-on-add").addEventListener("change", (e) => savePrefs({ showOnAdd: e.target.checked }));
+  // Mises à jour (étape 8b).
+  $("pref-updates").addEventListener("change", (e) => savePrefs({ checkUpdates: e.target.checked }));
+  $("update-check-now").addEventListener("click", checkUpdatesNow);
+  $("update-install").addEventListener("click", installUpdate);
+  $("update-page").addEventListener("click", () => {
+    if (proposedUpdate) host.updateOpenPage(proposedUpdate.version).catch((e) => showError(refused(e)));
+  });
+  $("update-notice").addEventListener("close", () => {
+    const off = $("update-notice").returnValue === "off";
+    savePrefs({ updateNoticeShown: true, checkUpdates: !off });
+    $("tb-add").focus();
+  });
   $("pref-clipboard").addEventListener("change", (e) => {
     savePrefs({ watchClipboard: e.target.checked });
     renderClipboardWarning();
@@ -4803,6 +4819,143 @@ async function start() {
     takeOpened();
   }
   (cursor ? rows.get(cursor) : $("tb-add"))?.focus();
+  // Après le focus de la fenêtre : l'avis du premier lancement le prend à son tour.
+  await setupUpdates();
+}
+
+// ---------- Mises à jour de l'application (SPEC §4.6, étape 8b) ----------
+
+/// État tenu par l'hôte (`updateStatus`) ; `null` sans mises à jour (page distante).
+let updateStatus = null;
+/// Version proposée par la boîte « Nouvelle version ».
+let proposedUpdate = null;
+/// Version trouvée par la recherche de fond pendant qu'une autre boîte était ouverte.
+let waitingUpdate = null;
+let updateChecking = false;
+
+async function setupUpdates() {
+  if (typeof host.updateStatus !== "function") return;
+  await host.onUpdate(async (found) => {
+    await refreshUpdateStatus();
+    proposeUpdate(found);
+  });
+  await host.onUpdateProgress(showUpdateProgress);
+  await refreshUpdateStatus();
+  // Avis du premier lancement, une fois : la recherche, et comment la couper.
+  if (caps.updates && updateStatus.configured && info.prefs.updateNoticeShown !== true
+    && !document.querySelector("dialog[open]")) {
+    $("update-notice").returnValue = "";
+    $("update-notice").showModal();
+  }
+}
+
+async function refreshUpdateStatus() {
+  try {
+    updateStatus = await host.updateStatus();
+  } catch {
+    updateStatus = null;
+  }
+  caps.updates = Boolean(updateStatus) && updateStatus.kind !== "none";
+  markNeeds(document);
+  renderUpdates();
+}
+
+/// Rubrique « Mises à jour » d'Options › Général.
+function renderUpdates() {
+  if (!updateStatus) return;
+  $("pref-updates").checked = info.prefs.checkUpdates !== false;
+  $("pref-updates").disabled = !updateStatus.configured;
+  $("update-check-now").disabled = !updateStatus.configured || updateChecking;
+  if (updateChecking) return;
+  const text = !updateStatus.configured
+    ? t("Mises à jour non configurées dans cette version.")
+    : updateStatus.found
+      ? t("Version {0} disponible.", updateStatus.found.version)
+      : updateStatus.lastCheck
+        ? t("Dernière recherche : {0}.", dateText(updateStatus.lastCheck * 1000))
+        : t("Aucune recherche faite pour l'instant.");
+  if ($("update-state").textContent !== text) $("update-state").textContent = text;
+}
+
+/// « Rechercher maintenant » : sans attendre un jour.
+async function checkUpdatesNow() {
+  if (updateChecking) return;
+  updateChecking = true;
+  renderUpdates();
+  $("update-state").textContent = t("Recherche d'une version nouvelle…");
+  let found = null;
+  let failure = null;
+  try {
+    found = (await host.updateCheck(true))?.found ?? null;
+  } catch (e) {
+    failure = e?.message ?? String(e);
+  }
+  updateChecking = false;
+  await refreshUpdateStatus();
+  if (failure) $("update-state").textContent = t("Recherche impossible : {0}", failure);
+  else if (found) proposeUpdate(found);
+  else $("update-state").textContent = t("AuroDownloader est à jour (version {0}).", info.version);
+}
+
+/// Propose une version : tout de suite si rien n'est ouvert, ou par-dessus les Options
+/// (« Rechercher maintenant ») ; sinon à la fermeture de la boîte ouverte.
+function proposeUpdate(found) {
+  const open = [...document.querySelectorAll("dialog[open]")];
+  if (open.some((dialog) => dialog.id === "update-dialog")) return;
+  if (open.length && !(open.length === 1 && open[0].id === "settings")) {
+    waitingUpdate = found;
+    return;
+  }
+  waitingUpdate = null;
+  proposedUpdate = found;
+  const install = updateStatus?.kind === "install";
+  $("update-text").textContent = t("AuroDownloader {0} est disponible ; vous avez la version {1}.", found.version, found.current);
+  // Notes de la publication : du texte, jamais du HTML.
+  const notes = (found.notes ?? "").trim();
+  $("update-notes").textContent = notes;
+  $("update-notes-field").hidden = !notes;
+  $("update-install").hidden = !install;
+  $("update-install").disabled = false;
+  $("update-install-note").hidden = !install;
+  $("update-page-note").hidden = install;
+  $("update-progress-row").hidden = true;
+  const dialog = $("update-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  (install ? $("update-install") : $("update-page")).focus();
+}
+
+document.addEventListener("close", (event) => {
+  if (waitingUpdate && event.target?.tagName === "DIALOG") setTimeout(() => waitingUpdate && proposeUpdate(waitingUpdate), 0);
+}, true);
+
+async function installUpdate() {
+  if (!proposedUpdate) return;
+  $("update-install").disabled = true;
+  $("update-progress").removeAttribute("value");
+  $("update-progress-label").textContent = "";
+  $("update-progress-row").hidden = false;
+  announce(t("Téléchargement de la version {0}…", proposedUpdate.version));
+  try {
+    // L'application se ferme ou redémarre d'elle-même une fois la version installée.
+    await host.updateInstall();
+  } catch (e) {
+    $("update-progress-row").hidden = true;
+    $("update-install").disabled = false;
+    showError(t("Mise à jour impossible : {0}", e?.message ?? String(e)));
+  }
+}
+
+/// Avancement du téléchargement : la barre seule (pas d'annonce à chaque morceau).
+function showUpdateProgress({ done, total }) {
+  const bar = $("update-progress");
+  if (total) {
+    bar.max = total;
+    bar.value = done;
+    $("update-progress-label").textContent = t("{0} sur {1}", bytes(done, lang, t), bytes(total, lang, t));
+  } else {
+    $("update-progress-label").textContent = bytes(done, lang, t);
+  }
 }
 
 start().catch((e) => showError(String(e?.message ?? e)));

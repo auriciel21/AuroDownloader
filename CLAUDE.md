@@ -216,7 +216,12 @@ téléchargement.
   (`.wasm` choisi, lu en base64 pour le moteur, jamais exécuté par l'application), rubrique
   « Plugins » des Options de la page. SFTP (étape 6d) : `pick_key` (fichier de clé privée choisi,
   relu par le moteur), section « Clé du serveur SSH » des Propriétés et clés SSH des Options
-  dans la page. Paquets : `bundle.ps1`,
+  dans la page. `update` (étape 8b, SPEC 4.6) : mise à jour signée par
+  `tauri-plugin-updater` (commandes `update_*`, au plus une fois par jour, installée sur
+  accord ; `.deb` averti ; construction sans paquet jamais ; clé publique vide dans
+  `tauri.conf.json` tant que l'utilisateur ne l'a pas créée ; essais par `AURO_UPDATE_KIND`
+  et `AURO_UPDATE_ENDPOINT`), rubrique « Mises à jour » d'Options › Général et boîte
+  « Nouvelle version » de la page. Paquets : `bundle.ps1`,
   `bundle.sh`, `tauri.bundle.json` (ajoute `aurod` et `auro`), `windows/hooks.nsh`
   (arrêt du moteur, effacement des données sur demande), `icons/icon.svg` (source des
   icônes).

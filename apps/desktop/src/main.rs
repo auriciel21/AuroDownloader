@@ -20,6 +20,7 @@ mod links;
 mod opened;
 mod prefs;
 mod qr;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -173,6 +174,7 @@ fn app_info(app: AppHandle, state: State<'_, App>) -> Info {
 /// Enregistre les préférences ; renvoie les informations mises à jour.
 #[tauri::command]
 fn save_prefs(app: AppHandle, state: State<'_, App>, prefs: Prefs) -> Result<Info, String> {
+    let prefs = Prefs::from_page(prefs, &state.prefs.lock().unwrap());
     prefs
         .save(&state.prefs_path)
         .map_err(|e| format!("préférences non enregistrées : {e}"))?;
@@ -182,6 +184,58 @@ fn save_prefs(app: AppHandle, state: State<'_, App>, prefs: Prefs) -> Result<Inf
         menu.translate(info.lang);
     }
     Ok(info)
+}
+
+/// Préférences de la mise à jour (`update`), tenues par l'état de l'application.
+struct AppPrefs(AppHandle);
+
+impl update::Prefs for AppPrefs {
+    fn enabled(&self) -> bool {
+        self.0.state::<App>().prefs.lock().unwrap().check_updates
+    }
+
+    fn last_check(&self) -> Option<u64> {
+        self.0
+            .state::<App>()
+            .prefs
+            .lock()
+            .unwrap()
+            .last_update_check
+    }
+
+    fn record_check(&self, at: u64) {
+        let state = self.0.state::<App>();
+        let mut prefs = state.prefs.lock().unwrap();
+        prefs.last_update_check = Some(at);
+        let _ = prefs.save(&state.prefs_path);
+    }
+}
+
+/// État de la mise à jour : type d'installation, clé présente, préférence, version trouvée.
+#[tauri::command]
+fn update_status(app: AppHandle) -> update::Status {
+    update::status(&app, &AppPrefs(app.clone()))
+}
+
+/// Recherche une version nouvelle ; `force` : sans attendre un jour (« Rechercher
+/// maintenant »). `None` : pas encore due.
+#[tauri::command]
+async fn update_check(app: AppHandle, force: bool) -> Result<Option<update::Checked>, String> {
+    update::check(&app, &AppPrefs(app.clone()), force).await
+}
+
+/// Installe la version trouvée, sur accord de l'utilisateur, puis relance l'application.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<(), String> {
+    update::install(&app).await
+}
+
+/// Ouvre la page de la publication d'une version dans le navigateur (paquet `.deb`).
+#[tauri::command]
+fn update_open_page(app: AppHandle, version: String) -> Result<(), String> {
+    app.opener()
+        .open_url(update::release_page(&version), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 /// Démarrage avec la session (SPEC §4.6), dans la zone de notification.
@@ -578,6 +632,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Mise à jour signée (étape 8b) : seulement par les commandes `update_*`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update::Updates::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
@@ -607,6 +664,10 @@ fn main() {
             pick_key,
             pick_plugin,
             read_plugin,
+            update_status,
+            update_check,
+            update_install,
+            update_open_page,
             quit
         ])
         .setup(move |app| {
@@ -652,6 +713,11 @@ fn main() {
                     receive(app, vec![opened]);
                 },
             );
+
+            // Mises à jour (étape 8b) : au plus une fois par jour, proposées à la page.
+            update::spawn(app.handle().clone(), |app| {
+                app.try_state::<App>().map(|_| AppPrefs(app.clone()))
+            });
 
             let sink: Arc<dyn Sink> = Arc::new(WindowSink(app.handle().clone()));
             let connect = bridge::local_connect(endpoint.clone(), db.clone(), true);

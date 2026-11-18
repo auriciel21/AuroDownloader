@@ -324,6 +324,25 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
     gardée en secret GitHub ; la clé publique est dans `tauri.conf.json`. Windows et
     AppImage se mettent à jour sur accord ; le paquet `.deb` dit seulement qu'une version
     nouvelle existe, avec le lien de la publication.
+  - **Mise en œuvre de la mise à jour (étape 8b, 2026-11-18)** : module `update` de
+    l'application de bureau, greffon `tauri-plugin-updater` (2.12, Rust 1.88), seulement
+    par les commandes `update_status`, `update_check`, `update_install`,
+    `update_open_page` (aucune permission du greffon donnée à la page). Préférences
+    `checkUpdates` (vraie par défaut), `lastUpdateCheck` (tenue par l'application seule,
+    jamais par la page) et `updateNoticeShown`. Recherche de fond une minute après le
+    démarrage, puis toutes les trois heures, faite seulement si un jour a passé (horloge
+    qui recule : refaite) ; l'heure est notée même en cas d'échec. Une version trouvée est
+    proposée par la boîte « Nouvelle version » (notes de la publication montrées en texte,
+    jamais en HTML), par-dessus les Options (« Rechercher maintenant ») ou à la fermeture de
+    la boîte ouverte ; « Installer et redémarrer » (NSIS en mode passif, AppImage) ou
+    « Ouvrir la page de la version » (`.deb`). Avis du premier lancement, une fois, avec
+    « Ne pas rechercher ». Type d'installation lu dans le binaire (`bundle_type` de Tauri) :
+    une construction sans paquet (`cargo run`, variante d'essai) ne cherche jamais ; clé
+    publique vide (avant que l'utilisateur la crée) : « non configurée », rien n'est cherché.
+    Proxy : celui du système seulement (le proxy manuel du moteur, avec son mot de passe au
+    coffre, ne sert pas à l'application). Essais : `AURO_UPDATE_KIND` (`install`,
+    `notify`, `none`) et `AURO_UPDATE_ENDPOINT` ; la signature reste vérifiée avec la clé de
+    la construction.
 
 ## 5. Modèle de données
 
@@ -1912,7 +1931,7 @@ Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ai
 | Fichier malveillant | Un exécutable téléchargé | Aucune ouverture ni exécution automatique ; avertissement sur les extensions exécutables ; commande externe (F-34) pour brancher un antivirus |
 | Fuite de secrets | Mot de passe ou cookie dans la base ou les journaux | Secrets dans le coffre du système, masqués dans les journaux, adresses réduites au nom d'hôte par défaut |
 | Plugin malveillant | Un plugin qui lit des fichiers ou envoie des données | Exécution dans un bac à sable, permissions déclarées (domaines réseau, dossiers) et acceptées par l'utilisateur |
-| Mise à jour compromise | Faux installateur, faux yt-dlp | Mises à jour signées ; yt-dlp téléchargé depuis la source du projet avec contrôle de l'empreinte qu'elle publie |
+| Mise à jour compromise | Faux installateur, faux yt-dlp | Mises à jour signées : `latest.json` et chaque paquet vérifiés par le greffon de Tauri avec la clé publique de la construction (la clé privée n'est que chez l'utilisateur et dans un secret GitHub), adresses HTTPS seulement, rien d'installé sans accord ; exécutables Windows signés par SignPath ; yt-dlp téléchargé depuis la source du projet avec contrôle de l'empreinte qu'elle publie |
 | Exposition de l'adresse IP en torrent | Les pairs voient l'adresse de l'utilisateur | Option de liaison à une interface réseau précise (VPN) ; arrêt du torrent si cette interface disparaît (réglage `torrent.interface`, fait le 2026-11-09, section 7.16 : les torrents attendent son retour) |
 
 Aléa cryptographique : TLS repose sur l'aléa du système (`getrandom` sous Linux et Android, le générateur du système sous Windows), sur lequel s'amorce aws-lc, le fournisseur cryptographique de rustls. Depuis le 2026-11-06, aws-lc est compilé sans sa source d'appoint, l'entropie de gigue du processeur (`AWS_LC_SYS_NO_JITTER_ENTROPY=1`, dans `.cargo/config.toml`). Cette source coûtait 56 à 60 ms de processeur au premier tirage de chaque processus (`docs/MESURES.md`). Elle sert surtout aux certifications FIPS, que le projet ne vise pas. L'aléa du système est celui qu'utilisent par défaut OpenSSL, GnuTLS et ring.

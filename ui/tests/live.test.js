@@ -64,6 +64,22 @@ const ENGINE = {
   },
 };
 
+const APP_INFO = { lang: "fr", prefs: { lang: "fr", closeToTray: true, showOnAdd: true }, tray: true, executableExtensions: ["exe"], platform: "linux", autostart: false, version: "0.1.0" };
+
+/** Faux hôte des mises à jour (étape 8b) : installation qui se met à jour, clé présente. */
+const FOUND = {
+  version: "0.2.0", current: "0.1.0", date: null,
+  page: "https://github.com/aurodownloader/aurodownloader/releases/tag/v0.2.0",
+  // Notes venues de la publication : du texte, jamais interprété comme du HTML.
+  notes: "Corrections.\n<img src=x onerror=\"globalThis.piege = 1\">",
+};
+const UPDATE = {
+  status: { kind: "install", configured: true, enabled: true, lastCheck: null, found: null },
+  next: FOUND,
+  installs: 0,
+  pages: [],
+};
+
 let window;
 const calls = [];
 /** Écouteurs des événements de l'hôte (« engine » : notifications du moteur). */
@@ -120,7 +136,15 @@ before(async () => {
         calls.push(command === "rpc" ? args.method : command);
         switch (command) {
           case "rpc": return (ENGINE[args.method] ?? (() => ({})))(args.params ?? {});
-          case "app_info": return { lang: "fr", prefs: { lang: "fr", closeToTray: true, showOnAdd: true }, tray: true, executableExtensions: ["exe"], platform: "linux", autostart: false, version: "0.1.0" };
+          case "app_info": return APP_INFO;
+          case "save_prefs":
+            APP_INFO.prefs = args.prefs;
+            return APP_INFO;
+          // Mises à jour (étape 8b).
+          case "update_status": return { ...UPDATE.status };
+          case "update_check": return { checkedAt: 1_790_000_000, found: UPDATE.next };
+          case "update_install": UPDATE.installs += 1; return null;
+          case "update_open_page": UPDATE.pages.push(args.version); return null;
           case "engine_status": return { state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope: "admin" } };
           case "links_status": return { available: false, enabled: false };
           case "take_opened": return [];
@@ -145,6 +169,25 @@ before(async () => {
   globalThis.navigator ??= window.navigator;
   await import("../src/main.js");
   await settle();
+});
+
+test("mises à jour : l'avis du premier lancement, une fois, puis la préférence enregistrée", async () => {
+  const document = window.document;
+  const notice = document.getElementById("update-notice");
+  assert.ok(notice.open, "avis montré au premier lancement");
+  assert.ok(notice.contains(document.activeElement), "focus dans l'avis");
+  assert.deepEqual(await audit(notice), []);
+  notice.close("off");
+  await settle();
+  assert.equal(APP_INFO.prefs.updateNoticeShown, true);
+  assert.equal(APP_INFO.prefs.checkUpdates, false, "« Ne pas rechercher » coupe la recherche");
+  assert.equal(document.getElementById("pref-updates").checked, false);
+  // Recochée pour la suite.
+  const box = document.getElementById("pref-updates");
+  box.checked = true;
+  box.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await settle();
+  assert.equal(APP_INFO.prefs.checkUpdates, true);
 });
 
 test("la page s'est remplie depuis le faux moteur", () => {
@@ -343,6 +386,89 @@ test("Propriétés : erreur et annonce dans la boîte", async () => {
   const status = details.querySelector('[aria-live="polite"][data-live]');
   assert.match(status?.textContent ?? "", /Empreinte retirée/);
   assert.doesNotMatch(document.getElementById("announce").textContent, /Empreinte/, "annonce de la fenêtre, inerte derrière la boîte");
+});
+
+test("mises à jour : « Rechercher maintenant », la version proposée, notes en texte, installation", async () => {
+  await closeAll();
+  const document = window.document;
+  document.getElementById("tb-settings").click();
+  await settle();
+  const section = document.getElementById("updates-section");
+  assert.equal(section.classList.contains("lacks"), false, "rubrique visible : cette installation se met à jour");
+  document.getElementById("update-check-now").click();
+  await settle();
+  const dialog = document.getElementById("update-dialog");
+  assert.ok(dialog.open, "version proposée par-dessus les Options");
+  assert.match(document.getElementById("update-text").textContent, /0\.2\.0.*0\.1\.0/);
+  const notes = document.getElementById("update-notes");
+  assert.match(notes.textContent, /<img src=x/, "notes montrées telles quelles");
+  assert.equal(dialog.querySelector("img"), null, "rien d'interprété comme du HTML");
+  assert.equal(globalThis.piege, undefined);
+  assert.equal(document.getElementById("update-install").hidden, false);
+  assert.equal(document.activeElement?.id, "update-install");
+  assert.deepEqual(await audit(dialog), []);
+  document.getElementById("update-install").click();
+  await settle();
+  assert.equal(UPDATE.installs, 1, "installation demandée à l'hôte");
+  assert.equal(document.getElementById("update-progress-row").hidden, false);
+  listeners["update-progress"]({ payload: { done: 512, total: 1024 } });
+  assert.equal(document.getElementById("update-progress").value, 512);
+  dialog.close("later");
+  await settle();
+  assert.ok(document.getElementById("settings").open, "les Options restent ouvertes");
+});
+
+test("mises à jour : à jour, l'état le dit dans la rubrique", async () => {
+  await closeAll();
+  const document = window.document;
+  UPDATE.next = null;
+  try {
+    document.getElementById("tb-settings").click();
+    await settle();
+    document.getElementById("update-check-now").click();
+    await settle();
+    assert.equal(document.getElementById("update-dialog").open, false);
+    assert.match(document.getElementById("update-state").textContent, /à jour \(version 0\.1\.0\)/);
+  } finally {
+    UPDATE.next = FOUND;
+  }
+});
+
+test("mises à jour : paquet .deb, la version signalée avec sa page, sans installation", async () => {
+  await closeAll();
+  const document = window.document;
+  UPDATE.status.kind = "notify";
+  try {
+    // Trouvée par la recherche de fond, aucune boîte ouverte.
+    listeners["update-available"]({ payload: FOUND });
+    await settle();
+    const dialog = document.getElementById("update-dialog");
+    assert.ok(dialog.open);
+    assert.equal(document.getElementById("update-install").hidden, true, "pas d'installation pour un .deb");
+    assert.equal(document.getElementById("update-page-note").hidden, false);
+    assert.equal(document.activeElement?.id, "update-page");
+    document.getElementById("update-page").click();
+    await settle();
+    assert.deepEqual(UPDATE.pages, ["0.2.0"]);
+    dialog.close("later");
+  } finally {
+    UPDATE.status.kind = "install";
+  }
+});
+
+test("mises à jour : trouvée pendant qu'une autre boîte est ouverte, proposée à sa fermeture", async () => {
+  await closeAll();
+  const document = window.document;
+  row("pause").firstElementChild.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true }));
+  await settle();
+  listeners["update-available"]({ payload: FOUND });
+  await settle();
+  const dialog = document.getElementById("update-dialog");
+  assert.equal(dialog.open, false, "pas par-dessus les Propriétés");
+  document.getElementById("details").close();
+  await settle();
+  assert.ok(dialog.open, "proposée à la fermeture");
+  dialog.close("later");
 });
 
 test("action de fin annoncée pendant qu'une boîte est ouverte : dite dans la boîte", async () => {

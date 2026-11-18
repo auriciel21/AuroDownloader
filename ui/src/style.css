@@ -908,6 +908,11 @@ input.port { width: 6.5em; }
 /* Diagnostic (N-12) : ce que contiendra l'archive, à lire avant de l'enregistrer. */
 .diagnostic { max-height: 220px; overflow: auto; margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--row-line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; font-size: 0.8em; }
 input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
+/* Mises à jour (étape 8b) : rubrique d'Options › Général, notes de la version proposée. */
+.updates { border: 1px solid var(--row-line); border-radius: 4px; margin: 12px 0 0; padding: 4px 10px 8px; }
+.updates legend { padding: 0 4px; font-weight: 600; }
+.update-notes { max-height: 220px; overflow: auto; margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--row-line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
+#update-progress { flex: 1; }
 .note.warn { color: var(--fail); }
 .qr { display: flex; justify-content: center; margin: 8px 0; }
 /* Sans le trait des icônes (règle svg ci-dessus) : il épaissirait chaque module. */
