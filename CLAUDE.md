@@ -22,8 +22,11 @@ téléchargement.
   corrigés, risques résiduels. À tenir à jour quand ces parties changent.
 - `docs/ACCESSIBILITE.md` : revue d'accessibilité WCAG 2.2 A et AA (phase 7, étape 7, 2026-11-18) :
   tests automatiques, revue critère par critère de la page, d'Android et de l'extension,
-  constats corrigés, restes, essais réels (NVDA, Orca, TalkBack). À tenir à jour quand
-  l'interface change.
+  constats corrigés, restes, essais réels (NVDA, Orca, TalkBack, faits le 2026-11-18). À
+  tenir à jour quand l'interface change. Leçons des essais : jamais d'erreur montrée en
+  refermant puis rouvrant une boîte ; zones `aria-live` créées d'avance, dans la boîte
+  ouverte ; erreur liée au champ avant son focus ; sous Android, l'arbre réel
+  (`AccessibilityNodeInfo`), pas celui de Compose ; sous WebKitGTK, nommer les lignes.
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans
@@ -730,7 +733,10 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   Compose instrumentés avec l'Accessibility Test Framework pour Android ; audit WCAG 2.2 AA
   de toutes les interfaces (page, Android, extension) écrit dans `docs/ACCESSIBILITE.md`,
   défauts corrigés au fil ; Orca sous WSLg préparé par Claude ; 7a page, 7b extension et
-  7c Android faites le 2026-11-18, puis 7d rapport et essais réels) ; 8. dépôt
+  7c Android faites le 2026-11-18, puis 7d rapport et essais réels : TalkBack, NVDA (bureau
+  et extension) et Orca 46.1 conformes le 2026-11-18 après correction d'A12 à A18, commits
+  07a08d5, 130103b, 2103498 ; écueils de l'essai Orca sous WSLg dans la section 6 du
+  rapport : quitter NVDA, qui garde Insert ; `PULSE_SERVER` pour speech-dispatcher) ; 8. dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en
