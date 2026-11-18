@@ -9,6 +9,13 @@ plugins {
 // Racine du dépôt (espace de travail Cargo) : deux dossiers au-dessus de apps/android.
 val repoRoot: File = rootProject.projectDir.parentFile.parentFile
 
+/// Architectures du moteur : arm64 par défaut (appareils) ; `-PauroAbis=x86_64` ou
+/// `-PauroAbis=arm64-v8a,x86_64` pour l'émulateur de l'intégration continue (étape 8).
+val rustTargets = mapOf("arm64-v8a" to "aarch64-linux-android", "x86_64" to "x86_64-linux-android")
+val auroAbis: List<String> = (findProperty("auroAbis") as String? ?: "arm64-v8a")
+    .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    .onEach { require(it in rustTargets) { "auroAbis : $it inconnue (${rustTargets.keys})" } }
+
 android {
     namespace = "org.aurodownloader"
     compileSdk = 35
@@ -25,8 +32,8 @@ android {
         // Tests instrumentés (accessibilité, étape 7c) : androidTest/.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            // Le moteur n'est compilé que pour arm64 pour l'instant.
-            abiFilters += "arm64-v8a"
+            // Les architectures du moteur (`auroAbis`).
+            abiFilters += auroAbis
         }
     }
 
@@ -54,30 +61,34 @@ kotlin {
 
 // ---------- Moteur : bibliothèque native compilée par Cargo ----------
 
-/// Construit `libauro_android.so` (crate `auro-android`) pour arm64, API 26, avec le NDK
-/// d'Android, et le range là où l'application prend ses bibliothèques natives.
-val cargoBuild by tasks.registering(Exec::class) {
-    val ndk = android.ndkDirectory
-    val host = if (System.getProperty("os.name").startsWith("Windows")) "windows-x86_64" else "linux-x86_64"
-    val bin = File(ndk, "toolchains/llvm/prebuilt/$host/bin")
-    val ext = if (host.startsWith("windows")) ".cmd" else ""
-    val exe = if (host.startsWith("windows")) ".exe" else ""
-    val clang = File(bin, "aarch64-linux-android26-clang$ext").path
-    workingDir = repoRoot
-    environment("CC_aarch64_linux_android", clang)
-    environment("AR_aarch64_linux_android", File(bin, "llvm-ar$exe").path)
-    environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clang)
-    commandLine("cargo", "build", "-p", "auro-android", "--target", "aarch64-linux-android", "--release")
-    val out = layout.buildDirectory.dir("rustJniLibs/arm64-v8a")
-    doLast {
-        val so = File(repoRoot, "target/aarch64-linux-android/release/libauro_android.so")
-        val dir = out.get().asFile
-        dir.mkdirs()
-        so.copyTo(File(dir, so.name), overwrite = true)
+/// Construit `libauro_android.so` (crate `auro-android`) pour une architecture, API 26, avec
+/// le NDK d'Android, et le range là où l'application prend ses bibliothèques natives.
+val cargoBuilds = auroAbis.map { abi ->
+    val target = rustTargets.getValue(abi)
+    val env = target.replace('-', '_')
+    tasks.register<Exec>("cargoBuild-$abi") {
+        val ndk = android.ndkDirectory
+        val host = if (System.getProperty("os.name").startsWith("Windows")) "windows-x86_64" else "linux-x86_64"
+        val bin = File(ndk, "toolchains/llvm/prebuilt/$host/bin")
+        val ext = if (host.startsWith("windows")) ".cmd" else ""
+        val exe = if (host.startsWith("windows")) ".exe" else ""
+        val clang = File(bin, "${target}26-clang$ext").path
+        workingDir = repoRoot
+        environment("CC_$env", clang)
+        environment("AR_$env", File(bin, "llvm-ar$exe").path)
+        environment("CARGO_TARGET_${env.uppercase()}_LINKER", clang)
+        commandLine("cargo", "build", "-p", "auro-android", "--target", target, "--release")
+        val out = layout.buildDirectory.dir("rustJniLibs/$abi")
+        doLast {
+            val so = File(repoRoot, "target/$target/release/libauro_android.so")
+            val dir = out.get().asFile
+            dir.mkdirs()
+            so.copyTo(File(dir, so.name), overwrite = true)
+        }
     }
 }
 
-tasks.named("preBuild") { dependsOn(cargoBuild) }
+tasks.named("preBuild") { dependsOn(cargoBuilds) }
 
 // ---------- Partie Kotlin de rustls-platform-verifier ----------
 

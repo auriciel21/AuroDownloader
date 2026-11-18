@@ -283,8 +283,15 @@ téléchargement.
   `net::platform_tls_ready`).
 - `apps/android` : application Android (Gradle 8.14.3, AGP 8.10.1, Kotlin ; projet à part,
   hors de l'espace de travail Cargo). `app/build.gradle.kts` compile la bibliothèque par
-  Cargo et le NDK (tâche `cargoBuild`) et prend la partie Kotlin de
+  Cargo et le NDK (tâches `cargoBuild-<abi>`, arm64 par défaut ; `-PauroAbis=arm64-v8a,x86_64`
+  pour l'émulateur x86_64 de la CI) et prend la partie Kotlin de
   rustls-platform-verifier (groupe `org.rustls`) à la version de `Cargo.lock`.
+  `ci-instrument.sh` : tests instrumentés de la CI (APK installés, `am instrument`, résultat
+  lu ; `ANDROID_SERIAL` pour viser un appareil).
+- `.github/workflows/ci.yml` : intégration continue (étape 8a) : moteur et bureau sous
+  Windows, Linux et ARM64 natif, page et extension, licences, Android sur l'émulateur ;
+  banc de performance le lundi. Jamais encore lancée : le dépôt GitHub est à créer par
+  l'utilisateur.
   `local.properties` (chemin du SDK, non versionné). `AuroApp` (moteur démarré une fois
   par processus, dossier par défaut `Download/AuroDownloader`, indexation par
   `MediaScannerConnection`, actions) ; `engine/` : `NativeEngine`, `EngineClient` (client

@@ -1,5 +1,8 @@
 name: CI
 
+# Intégration continue (SPEC 4.6 et 9.1, phase 7, étape 8 ; décisions du 2026-11-18) : tout
+# tourne à chaque envoi sur main et à chaque pull request, ARM64 et émulateur Android
+# compris.
 on:
   push:
     branches: [main]
@@ -9,14 +12,27 @@ on:
   schedule:
     - cron: "0 3 * * 1"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
-    name: ${{ matrix.os }}
+  # Le moteur, la CLI et le banc de reprise court (cargo test) ; ARM64 sur les machines ARM
+  # natives de GitHub, sans essai sur du matériel réel.
+  engine:
+    name: moteur (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, windows-11-arm]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -26,6 +42,109 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # L'application de bureau (Tauri 2), espace de travail à part.
+  desktop:
+    name: bureau (${{ matrix.os }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, windows-11-arm]
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Bibliothèques de Tauri (WebKitGTK 4.1)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config build-essential
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop -> target
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # La page (ui) et l'extension : tests node, axe-core et jsdom (dépendances de développement).
+  web:
+    name: page et extension
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: ui
+      - run: node --check ui/src/main.js
+      - run: node --test ui/tests/ extension/tests/
+
+  # Licences des dépendances (N-11, SPEC 8.3), les deux espaces de travail Cargo.
+  licenses:
+    name: licences
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Les commandes de CLAUDE.md, telles quelles.
+      - run: cargo deny check licenses
+      - run: cargo deny --manifest-path apps/desktop/Cargo.toml --config deny.toml check licenses
+
+  # Android : l'application construite, et ses tests instrumentés (accessibilité, étape 7c)
+  # sur l'émulateur x86_64, avec le moteur compilé pour x86_64 (`auroAbis`).
+  android:
+    name: Android (émulateur)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: NDK du projet
+        run: echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+      - name: Construction (arm64 des appareils, x86_64 de l'émulateur)
+        working-directory: apps/android
+        run: ./gradlew assembleDebug assembleDebugAndroidTest -PauroAbis=arm64-v8a,x86_64
+      - name: Accélération de l'émulateur (KVM)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Tests instrumentés
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: sh apps/android/ci-instrument.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-instrument
+          path: apps/android/app/build/instrument.txt
+          if-no-files-found: ignore
 
   # La porte de performance se mesure sous Linux, sans antivirus (SPEC §9.1) : à nombre de
   # connexions égal, débit au moins 0,95 fois et coût processeur par octet au plus 1,0
