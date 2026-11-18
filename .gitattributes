@@ -7,5 +7,9 @@
 *.yml       text eol=lf
 Cargo.lock  text eol=lf
 *.sh        text eol=lf
+# Lus ligne par ligne par scripts/version.sh et latest-json.mjs (étape 8c).
+*.json      text eol=lf
+*.kts       text eol=lf
+*.mjs       text eol=lf
 # Jeu d'essai signé (SPEC 7.17) : octets exacts, sans conversion des fins de ligne.
 crates/engine/src/media/testdata/** -text
