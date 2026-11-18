@@ -242,7 +242,9 @@ téléchargement.
   toucher au démarrage avec la session (clé `Run` de l'utilisateur) ; finir par
   `engine stop` sur ce point d'accès. Pour essayer sans fermer l'application de
   l'utilisateur : la construire avec l'identifiant d'essai (`cargo tauri build --no-bundle
-  --config tauri.essai.json`), qui a sa propre instance unique. Ne jamais arrêter les
+  --config tauri.essai.json`), qui a sa propre instance unique et ne se met jamais à jour
+  (clé publique vide dans `tauri.essai.json`, même en installateur d'essai : sinon il
+  installerait la vraie version par-dessus). Ne jamais arrêter les
   processus `aurodownloader` ou `aurod` par leur nom : seulement ceux de `target\` ou du
   dossier d'essai (celui de l'utilisateur porte le même nom).
 - L'utilisateur se sert de l'application installée (depuis le 2026-11-07) : instance
@@ -292,11 +294,9 @@ téléchargement.
   pour l'émulateur x86_64 de la CI) et prend la partie Kotlin de
   rustls-platform-verifier (groupe `org.rustls`) à la version de `Cargo.lock`.
   `ci-instrument.sh` : tests instrumentés de la CI (APK installés, `am instrument`, résultat
-  lu ; `ANDROID_SERIAL` pour viser un appareil).
-- `.github/workflows/ci.yml` : intégration continue (étape 8a) : moteur et bureau sous
-  Windows, Linux et ARM64 natif, page et extension, licences, Android sur l'émulateur ;
-  banc de performance le lundi. Jamais encore lancée : le dépôt GitHub est à créer par
-  l'utilisateur.
+  lu ; `ANDROID_SERIAL` pour viser un appareil). Signature de l'APK de publication par
+  l'environnement (`AURO_KEYSTORE`, `AURO_KEYSTORE_PASSWORD`, `AURO_KEY_ALIAS`,
+  `AURO_KEY_PASSWORD`), jamais de clé dans le dépôt.
   `local.properties` (chemin du SDK, non versionné). `AuroApp` (moteur démarré une fois
   par processus, dossier par défaut `Download/AuroDownloader`, indexation par
   `MediaScannerConnection`, actions) ; `engine/` : `NativeEngine`, `EngineClient` (client
@@ -312,6 +312,15 @@ téléchargement.
   d'Android (`Transfers.kt` : `TransferJob`, transfert lancé par l'utilisateur, Android 14
   et plus ; `TransferService`, Android 8 à 13), notifications, « Wi-Fi seulement »,
   redémarrage (`BootReceiver`). Le moteur Android démarre sans réseau utilisable.
+- `.github/workflows/` (étape 8, SPEC 4.6) : `ci.yml` (8a : moteur et bureau sous Windows,
+  Linux et ARM64 natif, page, extension et scripts, licences, Android sur l'émulateur ;
+  banc de performance le lundi) ; `release.yml` (8c : étiquette `v0.x.y`, paquets de toutes
+  les plateformes, SignPath facultatif, signature des mises à jour après Authenticode, APK
+  signé, brouillon de publication avec `latest.json` et `SHA256SUMS`). Jamais encore lancés :
+  le dépôt GitHub est à créer par l'utilisateur. `scripts/version.sh` (version des cinq
+  fichiers, `--check` pour la publication), `scripts/latest-json.mjs` (tests dans
+  `scripts/tests`). Procédure du mainteneur (dépôt, clés, secrets, SignPath, publication) :
+  `docs/PUBLICATION.md` ; clés et secrets créés par l'utilisateur seul, jamais par Claude.
 - Essais Android : tablette Teclast T70 (Android 15, `adb -s <série de la tablette>`) et
   téléphone Galaxy S25 Ultra (Android 17, `adb -s <série du téléphone>` ; antivirus AVG installé, qui signale l'application à l'installation : ne pas toucher à sa fenêtre) ; messages du moteur par
   `adb logcat -s AuroDownloader:I`. Sous Git Bash, `MSYS_NO_PATHCONV=1` pour les chemins
@@ -440,6 +449,9 @@ AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai>
 cd ui && npm ci --ignore-scripts && cd ..
 node --test ui/tests/
 node --test extension/tests/
+node --test scripts/tests/
+# Version (cinq fichiers ; docs/PUBLICATION.md) : affichée, réglée, vérifiée :
+sh scripts/version.sh ; sh scripts/version.sh 0.2.0 ; sh scripts/version.sh --check 0.2.0
 # Installateurs (SPEC 4.6 ; tauri-cli : cargo install tauri-cli --version "^2" --locked) :
 apps/desktop/bundle.ps1   # Windows, NSIS : apps/desktop/target/release/bundle/nsis/
 apps/desktop/bundle.sh    # Linux, .deb et AppImage (distribution WSL Ubuntu-24.04)

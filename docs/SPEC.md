@@ -349,7 +349,20 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
     Proxy : celui du système seulement (le proxy manuel du moteur, avec son mot de passe au
     coffre, ne sert pas à l'application). Essais : `AURO_UPDATE_KIND` (`install`,
     `notify`, `none`) et `AURO_UPDATE_ENDPOINT` ; la signature reste vérifiée avec la clé de
-    la construction.
+    la construction. La variante d'essai a une clé publique vide (`tauri.essai.json`) : même
+    installée, elle ne se met jamais à jour.
+  - **Mise en œuvre de la publication (étape 8c, 2026-11-18)** : `release.yml`
+    (vérifications, puis Windows x64 et ARM64 par `bundle.ps1`, Linux amd64 et arm64 par
+    `bundle.sh` sur Ubuntu 22.04 pour la glibc la plus ancienne, APK arm64 ; brouillon).
+    Ordre des signatures d'un installateur Windows : Authenticode par SignPath d'abord (s'il
+    est configuré, vérifiée ensuite), puis signature de la mise à jour (`tauri signer sign`)
+    sur le fichier publié. `latest.json` fait par `scripts/latest-json.mjs` : une entrée
+    par plateforme (`windows-x86_64`, `windows-aarch64`, `linux-x86_64`, `linux-aarch64`),
+    publication refusée si un paquet ou sa signature manque ; un `.deb` trouve l'entrée de
+    son architecture, pour l'avertissement seulement. Notes : message de l'étiquette
+    annotée. Versions des cinq fichiers par `scripts/version.sh` (`versionCode` Android =
+    majeur × 10000 + mineur × 100 + correctif). Procédure du mainteneur :
+    `docs/PUBLICATION.md`. Jamais encore lancée sur GitHub.
 
 ## 5. Modèle de données
 

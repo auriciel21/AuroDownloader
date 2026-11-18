@@ -89,6 +89,11 @@ jobs:
         working-directory: ui
       - run: node --check ui/src/main.js
       - run: node --test ui/tests/ extension/tests/
+      # Scripts de publication (latest.json, étape 8c) et de version.
+      - run: node --test scripts/tests/
+      - name: Versions accordées (scripts/version.sh)
+        run: |
+          sh scripts/version.sh --check "$(sed -n 's/^  "version": "\(.*\)",$/\1/p' apps/desktop/tauri.conf.json)"
 
   # Licences des dépendances (N-11, SPEC 8.3), les deux espaces de travail Cargo.
   licenses:

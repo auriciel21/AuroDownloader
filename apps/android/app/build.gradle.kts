@@ -27,7 +27,8 @@ android {
         // Android 8.0 et plus (N-08).
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        // Réglés par scripts/version.sh (versionCode = majeur × 10000 + mineur × 100 + correctif).
+        versionCode = 100
         versionName = "0.1.0"
         // Tests instrumentés (accessibilité, étape 7c) : androidTest/.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -37,9 +38,25 @@ android {
         }
     }
 
+    // APK de publication (étape 8c) : signé par la clé de l'utilisateur, donnée par
+    // l'environnement (CI de publication, docs/PUBLICATION.md) ; sans elle, l'APK de
+    // publication n'est pas signé. La clé n'est jamais dans le dépôt.
+    val keystore = System.getenv("AURO_KEYSTORE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("AURO_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("AURO_KEY_ALIAS")
+                keyPassword = System.getenv("AURO_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (keystore != null) signingConfig = signingConfigs.getByName("release")
         }
     }
 

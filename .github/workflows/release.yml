@@ -1,0 +1,252 @@
+name: Publication
+
+# Publication d'une version (SPEC 4.6, phase 7, étape 8c ; décisions du 2026-11-18) :
+# l'utilisateur pousse une étiquette v0.x.y ; tout est construit, les installateurs Windows
+# sont signés par SignPath quand ses secrets existent (facultatif), les mises à jour par la
+# clé de l'utilisateur, l'APK par son magasin de clés ; un BROUILLON de publication est
+# préparé, que l'utilisateur relit et publie. Procédure : docs/PUBLICATION.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Rien ne se construit si la version, la clé publique ou les secrets manquent.
+  preflight:
+    name: vérifications
+    runs-on: ubuntu-latest
+    env:
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version de l'étiquette partout
+        run: sh scripts/version.sh --check "$GITHUB_REF_NAME"
+      - name: Clé publique des mises à jour dans tauri.conf.json
+        run: |
+          if grep -q '"pubkey": ""' apps/desktop/tauri.conf.json; then
+            echo "::error::clé publique des mises à jour absente de apps/desktop/tauri.conf.json (docs/PUBLICATION.md)"
+            exit 1
+          fi
+      - name: Secrets
+        run: |
+          [ "$HAS_UPDATER_KEY" = true ] || { echo "::error::secret TAURI_SIGNING_PRIVATE_KEY absent"; exit 1; }
+          [ "$HAS_KEYSTORE" = true ] || { echo "::error::secret ANDROID_KEYSTORE_BASE64 absent"; exit 1; }
+          if [ "$HAS_SIGNPATH" = true ]; then echo "Signature Windows : SignPath"; \
+          else echo "::warning::sans SignPath : installateurs Windows non signés (SmartScreen avertira)"; fi
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop -> target
+      - run: cargo install tauri-cli --version "^2" --locked
+      - name: Installateur NSIS
+        shell: pwsh
+        run: apps/desktop/bundle.ps1
+      - name: Installateur trouvé
+        id: setup
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem apps/desktop/target/release/bundle/nsis/*_${{ matrix.arch }}-setup.exe)
+          if ($files.Count -ne 1) { throw "installateur introuvable ou en double : $($files.Name)" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $files[0].FullName dist/
+          "name=$($files[0].Name)" >> $env:GITHUB_OUTPUT
+      # Signature Authenticode (facultative) : SignPath signe l'installateur.
+      - name: Installateur à signer
+        id: unsigned
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-${{ matrix.arch }}
+          path: dist/${{ steps.setup.outputs.name }}
+      - name: Signature SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - name: Installateur signé à la place
+        if: env.SIGNPATH_API_TOKEN != ''
+        shell: pwsh
+        run: |
+          Copy-Item "signed/${{ steps.setup.outputs.name }}" "dist/${{ steps.setup.outputs.name }}" -Force
+          $sig = Get-AuthenticodeSignature "dist/${{ steps.setup.outputs.name }}"
+          if ($sig.Status -ne 'Valid') { throw "signature Authenticode : $($sig.Status)" }
+      # Signature de la mise à jour, APRÈS Authenticode : elle porte sur le fichier publié.
+      - name: Signature de la mise à jour
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cargo tauri signer sign "dist/${{ steps.setup.outputs.name }}"
+          if ($LASTEXITCODE -ne 0) { throw "signature de la mise à jour : échec" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          # Ubuntu 22.04 : la plus ancienne glibc qui a WebKitGTK 4.1, pour que l'AppImage
+          # tourne sur le plus de systèmes.
+          - { runner: ubuntu-22.04, arch: amd64, appimage: amd64 }
+          - { runner: ubuntu-22.04-arm, arch: arm64, appimage: aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bibliothèques de Tauri (WebKitGTK 4.1) et outils de l'AppImage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config build-essential file libfuse2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop -> target
+      - run: cargo install tauri-cli --version "^2" --locked
+      - name: Paquets .deb et AppImage
+        run: sh apps/desktop/bundle.sh
+      - name: Paquets trouvés
+        run: |
+          set -eu
+          mkdir -p dist
+          cp apps/desktop/target/release/bundle/deb/*_${{ matrix.arch }}.deb dist/
+          cp apps/desktop/target/release/bundle/appimage/*_${{ matrix.appimage }}.AppImage dist/
+          ls -la dist
+      - name: Signature de la mise à jour (AppImage)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri signer sign dist/*_${{ matrix.appimage }}.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/
+
+  android:
+    name: Android
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: NDK du projet
+        run: echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+      - name: Magasin de clés de l'utilisateur
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/auro.jks"
+      - name: APK de publication, signé
+        working-directory: apps/android
+        env:
+          AURO_KEYSTORE: ${{ runner.temp }}/auro.jks
+          AURO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          AURO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          AURO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease -PauroAbis=arm64-v8a
+      - name: Signature vérifiée
+        run: |
+          set -eu
+          version=${GITHUB_REF_NAME#v}
+          apk=apps/android/app/build/outputs/apk/release/app-release.apk
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$tools/apksigner" verify --print-certs "$apk"
+          mkdir -p dist
+          cp "$apk" "dist/AuroDownloader_${version}_arm64.apk"
+      - name: Magasin de clés effacé
+        if: always()
+        run: rm -f "$RUNNER_TEMP/auro.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/
+
+  # Brouillon de publication : paquets, signatures, latest.json, SHA256SUMS. Les notes sont
+  # le message de l'étiquette annotée (git tag -a).
+  draft:
+    name: brouillon de publication
+    needs: [windows, linux, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Message de l'étiquette
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' > notes.md
+          [ -s notes.md ] || echo "AuroDownloader ${GITHUB_REF_NAME#v}." > notes.md
+          cat notes.md
+      # Installateurs signés seulement (pas les « unsigned-… » envoyés à SignPath).
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+          pattern: windows-*
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+          pattern: linux-*
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: android
+      - name: latest.json et SHA256SUMS
+        run: |
+          set -eu
+          node scripts/latest-json.mjs "$GITHUB_REF_NAME" dist notes.md > dist/latest.json
+          cat dist/latest.json
+          (cd dist && sha256sum $(ls | grep -v -e '\.sig$' -e '^SHA256SUMS$') > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Brouillon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "AuroDownloader ${GITHUB_REF_NAME#v}" --notes-file notes.md dist/*

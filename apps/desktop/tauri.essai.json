@@ -1,4 +1,7 @@
 {
   "productName": "AuroDownloader Essai",
-  "identifier": "org.aurodownloader.essai"
+  "identifier": "org.aurodownloader.essai",
+  "plugins": {
+    "updater": { "pubkey": "" }
+  }
 }
