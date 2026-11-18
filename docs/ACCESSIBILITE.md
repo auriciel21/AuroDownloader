@@ -144,7 +144,7 @@ Colonnes :
 | A15 | Ajout refusé lu en dernier, après tout le texte de la boîte, et sans l'état « non valide » : la boîte se refermait puis se rouvrait, et NVDA la relisait en entier | 3.3.1, 4.1.3 | page | La boîte « Ajouter » reste ouverte jusqu'au succès ; l'erreur est liée au champ (`aria-invalid`, `aria-describedby`) avant qu'il prenne le focus (aussi : empreinte et miroir des Propriétés, champ refusé d'une règle) | 130103b |
 | A16 | Première annonce d'une boîte muette (« Empreinte retirée ») : zone `aria-live` créée au moment du message | 4.1.3 | page | Zones de chaque boîte créées au chargement | 130103b |
 | A17 | Échec de suppression d'identifiants ou d'une clé SSH invisible : effacé aussitôt par la relecture de la liste | 3.3.1 | page | Liste relue, focus placé, puis le message | 130103b |
-| A18 | Ligne du tableau muette sous Orca : sans nom propre, WebKitGTK ne le tire pas de ses cellules (Chromium, oui) | 4.1.2 | page (bureau Linux) | Chaque ligne nommée par ses cellules (`aria-labelledby`) | ce commit |
+| A18 | Ligne du tableau muette sous Orca : sans nom propre, WebKitGTK ne le tire pas de ses cellules (Chromium, oui) | 4.1.2 | page (bureau Linux) | Chaque ligne nommée par ses cellules (`aria-labelledby`) | 2103498 |
 | T1 | Les tests axe des boîtes passaient sans rien vérifier | — | tests | `elementFromPoint` fourni, règle sautée = échec, défaut glissé | 960260a |
 | T2 | A12 et A13 passaient les contrôles de l'ATF et l'arbre sémantique de Compose, qui les voyaient nommés | — | tests | Contrôle de l'arbre réel d'Android (`assertButtonsNamed`) | 07a08d5 |
 
@@ -165,7 +165,7 @@ Colonnes :
     (A15) est lue, avec lui, quand il prend le focus. Les versions suivantes d'Orca ne sont
     pas vérifiées.
 - **Ligne nommée (A18).** Le nom tiré des cellules change ce que lit NVDA sur une ligne :
-  à revérifier avec NVDA.
+  revérifié avec NVDA le 2026-11-18, chaque ligne lue une fois, sélection annoncée.
 - **Annonces des changements d'état.** Une tâche qui finit ou échoue n'est pas annoncée
   par la zone `aria-live`. C'est voulu (pas de bavardage pendant les téléchargements) ;
   la notification du système le dit. À revoir si les essais réels le demandent.
