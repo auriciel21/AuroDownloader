@@ -28,7 +28,7 @@ Hors périmètre :
 | Test | Ce qu'il vérifie | Ses limites |
 |---|---|---|
 | `ui/tests/axe.test.js` | axe-core 4.10 (règles WCAG 2.0 à 2.2, A et AA, et bonnes pratiques) sur le balisage de la fenêtre et de chacune des 20 boîtes. Le contenu caché est montré : messages d'erreur, sections selon l'état | Sans mise en page : ni contraste, ni taille, ni focus |
-| `ui/tests/live.test.js` | La vraie page (`main.js`), branchée à un faux moteur qui tient des tâches dans tous les états. axe-core passe sur ce que le script dessine : lignes, arborescence, Propriétés de chaque état, clé SSH, menu, chaque rubrique des Options, boîtes de la barre d'outils. Le parcours au clavier est vérifié : flèches, Entrée, Maj+F10, Échap, focus qui entre dans une boîte puis revient | jsdom ne montre rien : le focus de `showModal` est imité, selon la norme HTML |
+| `ui/tests/live.test.js` | La vraie page (`main.js`), branchée à un faux moteur qui tient des tâches dans tous les états. axe-core passe sur ce que le script dessine : lignes, arborescence, Propriétés de chaque état, clé SSH, menu, chaque rubrique des Options, boîtes de la barre d'outils. Le parcours au clavier est vérifié : flèches, Entrée, Maj+F10, Échap, focus qui entre dans une boîte puis revient. Les messages pendant qu'une boîte est ouverte sont vérifiés aussi (A14 à A17) : zones de messages de chaque boîte présentes dès le chargement, erreur dans la boîte et liée au champ avant qu'il prenne le focus, boîte « Ajouter » ouverte jusqu'au succès | jsdom ne montre rien : le focus de `showModal` et de `close` est imité, selon la norme HTML ; ce que lit vraiment un lecteur d'écran (ordre, coupures) ne se voit qu'aux essais réels |
 | `ui/tests/contrast.test.js` | Les contrastes des couleurs de `style.css`, thèmes clair et sombre, couleur par couleur selon leur usage réel : 4,5:1 pour le texte (1.4.3) ; 3:1 pour le focus, les icônes et les bords des champs (1.4.11) | Couleurs pleines seulement ; les dégradés des barres de progression sont vus à la main |
 | `extension/tests/a11y.test.cjs` | axe-core sur la fenêtre de l'icône (vidéo décrite, relais absent) et sur les options, avec leurs scripts, en français et en anglais ; contrastes d'`options.css` | Comme la page |
 | `apps/android/app/src/androidTest/…/AccessibilityTest.kt` | L'application réelle, avec les contrôles de l'Accessibility Test Framework de Google à chaque action : liste vide et avec une tâche, boîte d'ajout, réglages vue par vue jusqu'en bas, détails. Ces contrôles couvrent la taille des cibles, les noms lus, les doublons et les contrastes que l'outil sait mesurer. En plus, l'arbre d'accessibilité réel d'Android, celui que lit TalkBack : tout élément cliquable porte son nom ou le tient de textes à l'intérieur, jamais d'une icône seule (A12, A13) | La section de la clé SSH demande un vrai serveur SFTP : elle est vue à l'essai réel (capture du 2026-11-17, essai TalkBack du 2026-11-18). Un élément coupé par le bord d'une zone qui défile n'est jugé que dans une vue où il est entier |
@@ -41,7 +41,9 @@ Hors périmètre :
   sans nom, champ sans étiquette) et exigent qu'il soit vu.
 - **Défauts remis.** Le contrôle de l'arbre réel d'Android a été essayé contre les deux
   défauts trouvés par TalkBack, remis un à un dans l'application : il échoue sur chacun
-  (2026-11-18).
+  (2026-11-18). De même, les tests des messages de la page échouent sur l'ancien code et
+  sur la version intermédiaire essayée avec NVDA (erreur écrite après la réouverture de la
+  boîte).
 
 **Lancement.**
 - Page et extension : `cd ui && npm ci --ignore-scripts`, puis `node --test ui/tests/
@@ -112,14 +114,14 @@ Colonnes :
 | 3.2.3 Navigation cohérente | AA | Oui | Oui | S. o. | Barre d'outils et rubriques au même endroit partout |
 | 3.2.4 Identification cohérente | AA | Oui | Oui | Oui | Mêmes libellés pour les mêmes fonctions (bureau et Android partagent leurs libellés) |
 | 3.2.6 Aide cohérente | A | S. o. | S. o. | S. o. | Aucun mécanisme d'aide répété d'un écran à l'autre ; le guide viendra à l'étape 9 |
-| 3.3.1 Identification des erreurs | A | Oui | Oui | Oui | Messages en texte avec `role="alert"`, focus sur le champ fautif (règles, miroirs) ; Android : texte d'erreur sous le champ et messages en bas d'écran |
+| 3.3.1 Identification des erreurs | A | Corrigé | Oui | Oui | Messages en texte avec `role="alert"`, focus sur le champ fautif (règles, miroirs, adresses, empreinte), qui porte l'erreur (`aria-invalid`, `aria-describedby` : A15, A17) ; Android : texte d'erreur sous le champ et messages en bas d'écran |
 | 3.3.2 Étiquettes ou instructions | A | Oui | Oui | Oui | Étiquettes visibles, notes liées par `aria-describedby` (format attendu, exemples) |
 | 3.3.3 Suggestion après une erreur | AA | Oui | Oui | Oui | Les messages disent quoi faire (ex. : « essayer l'adresse en ftp:// », format du jeton) |
 | 3.3.4 Prévention des erreurs | AA | Oui | Oui | S. o. | Aucune transaction juridique ou financière. Ce qui efface des fichiers demande une confirmation (Supprimer, Retélécharger, clé SSH) |
 | 3.3.7 Saisie redondante | A | Oui | Oui | Oui | Rien n'est redemandé dans un même parcours ; les champs gardent leur saisie après un refus |
 | 3.3.8 Authentification accessible (minimum) | AA | Oui | S. o. | S. o. | Interface distante : un jeton collé (copier-coller permis), ou le QR code qui le porte ; aucun test cognitif |
 | 4.1.2 Nom, rôle et valeur | A | Corrigé | Oui | Oui | axe : `aria-labelledby` interdit sur deux `<pre>` (devenus `role="region"`), titres et boutons vides dans le balisage avant le script. Android : ATF, rôles des choix et des interrupteurs |
-| 4.1.3 Messages d'état | AA | Oui | Oui | Oui | `role="status"` et `role="alert"` ; zone `aria-live` des annonces après une action (miroir, empreinte, limite). Android : messages en bas d'écran, lus par TalkBack |
+| 4.1.3 Messages d'état | AA | Corrigé | Oui | Oui | `role="status"` et `role="alert"` ; zone `aria-live` des annonces après une action (miroir, empreinte, limite) ; dans la boîte ouverte, s'il y en a une (A14 à A16, essai NVDA). Android : messages en bas d'écran, lus par TalkBack |
 
 ## 4. Constats et corrections
 
@@ -136,10 +138,14 @@ Colonnes :
 | A9 | Choix à bouton radio des réglages de 36 dp | 2.5.8 | Android | Hauteur de 48 dp au moins, composant `Choice` partout | 2d458f5 |
 | A10 | Aucun zoom au bureau | 1.4.4 | bureau | `zoomHotkeysEnabled` (Ctrl+, Ctrl−, Ctrl+0) | c474b91 |
 | A11 | Ligne active masquable par l'en-tête collé du tableau | 2.4.11 | page | `scroll-padding-top` | c474b91 |
-| A12 | Bouton flottant « Ajouter » sans nom pour TalkBack, inopérant au double appui : la forme à `text` et `icon` de Material 3 retire le texte de l'arbre d'accessibilité | 4.1.2, 2.5.3 | Android | Forme à contenu libre : le texte fait le nom du bouton | ce commit |
-| A13 | « Réglages » et les deux « Retour » lus sur leur icône, qui ne réagit pas au double appui : le nom était sur un nœud intérieur non cliquable | 4.1.2 | Android | Nom posé sur le bouton lui-même, icône sans description | ce commit |
+| A12 | Bouton flottant « Ajouter » sans nom pour TalkBack, inopérant au double appui : la forme à `text` et `icon` de Material 3 retire le texte de l'arbre d'accessibilité | 4.1.2, 2.5.3 | Android | Forme à contenu libre : le texte fait le nom du bouton | 07a08d5 |
+| A13 | « Réglages » et les deux « Retour » lus sur leur icône, qui ne réagit pas au double appui : le nom était sur un nœud intérieur non cliquable | 4.1.2 | Android | Nom posé sur le bouton lui-même, icône sans description | 07a08d5 |
+| A14 | Erreurs et annonces muettes pendant qu'une boîte est ouverte : bandeau d'erreur et zone `aria-live` de la fenêtre sont inertes derrière une boîte modale (ajout refusé, miroir, empreinte, limite des Propriétés, action de fin) | 4.1.3, 3.3.1 | page | Messages dans la boîte au premier plan, zones de chaque boîte | ce commit |
+| A15 | Ajout refusé lu en dernier, après tout le texte de la boîte, et sans l'état « non valide » : la boîte se refermait puis se rouvrait, et NVDA la relisait en entier | 3.3.1, 4.1.3 | page | La boîte « Ajouter » reste ouverte jusqu'au succès ; l'erreur est liée au champ (`aria-invalid`, `aria-describedby`) avant qu'il prenne le focus (aussi : empreinte et miroir des Propriétés, champ refusé d'une règle) | ce commit |
+| A16 | Première annonce d'une boîte muette (« Empreinte retirée ») : zone `aria-live` créée au moment du message | 4.1.3 | page | Zones de chaque boîte créées au chargement | ce commit |
+| A17 | Échec de suppression d'identifiants ou d'une clé SSH invisible : effacé aussitôt par la relecture de la liste | 3.3.1 | page | Liste relue, focus placé, puis le message | ce commit |
 | T1 | Les tests axe des boîtes passaient sans rien vérifier | — | tests | `elementFromPoint` fourni, règle sautée = échec, défaut glissé | 960260a |
-| T2 | A12 et A13 passaient les contrôles de l'ATF et l'arbre sémantique de Compose, qui les voyaient nommés | — | tests | Contrôle de l'arbre réel d'Android (`assertButtonsNamed`) | ce commit |
+| T2 | A12 et A13 passaient les contrôles de l'ATF et l'arbre sémantique de Compose, qui les voyaient nommés | — | tests | Contrôle de l'arbre réel d'Android (`assertButtonsNamed`) | 07a08d5 |
 
 ## 5. Restes et risques connus
 
@@ -159,6 +165,13 @@ Colonnes :
   les annonces restent vérifiés par les essais réels.
 - **WebKitGTK et WebView2.** Leur arbre d'accessibilité peut différer de celui de Chromium
   que modèle axe : seuls les essais réels le disent.
+- **Focus après un ajout.** Une fois, à l'essai NVDA, le focus a fini sur « Tous les
+  téléchargements » au lieu du bouton « Ajouter », après un ajout qui suivait une erreur
+  dans la même boîte. Non reproduit ensuite, avec ou sans l'option « afficher la fenêtre à
+  l'ajout » ; rien changé. À surveiller.
+- **Messages hors d'une boîte.** La bannière de l'action de fin reste dans la fenêtre :
+  derrière une boîte, son texte est dit dans la boîte, mais « Annuler » ne se joint
+  qu'après Échap.
 
 ## 6. Essais réels
 
@@ -167,7 +180,7 @@ ses données. Résultats à reporter ici.
 
 | Essai | Système | Lecteur | État |
 |---|---|---|---|
-| Bureau, variante d'essai | Windows 11 | NVDA | à faire (un premier essai NVDA sur l'application installée a été fait le 2026-11-08 : fonctionnel) |
+| Bureau, variante d'essai | Windows 11 | NVDA | conforme le 2026-11-18, après correction d'A14 à A17 : fenêtre, tableau, menu, Propriétés, boîte « Ajouter » (erreur et succès), Options, zoom, annonces des Propriétés (empreinte, limite). Un premier essai sur l'application installée avait été fait le 2026-11-08 : fonctionnel |
 | Bureau, AppImage sous WSLg | Ubuntu 24.04 | Orca | à faire |
 | Application Android | Android 15 (tablette) | TalkBack | conforme le 2026-11-18, après correction d'A12 et A13 : liste, ajout, détails, clé SSH acceptée, réglages, boîte d'ajout |
 | Extension | Windows 11, Edge ou Firefox | NVDA | à faire |

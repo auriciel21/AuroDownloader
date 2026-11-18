@@ -111,9 +111,112 @@ function saveLocal() {
 
 // ---------- Messages ----------
 
+// Une boîte modale rend le reste de la page inerte, hors de portée des lecteurs d'écran :
+// bandeau d'erreur et annonces de la fenêtre s'y taisent (essai NVDA du 2026-11-18). Les
+// messages vont donc dans la boîte au premier plan, s'il y en a une.
+
+/// Boîte modale au premier plan : celle du focus, sinon la dernière ouverte.
+function topDialog() {
+  return document.activeElement?.closest?.("dialog[open]")
+    ?? [...document.querySelectorAll("dialog[open]")].pop()
+    ?? null;
+}
+
+/// Zone de messages d'une boîte, créée au premier besoin, avant ses boutons : `alert` pour
+/// les erreurs (visibles), `status` pour les annonces (cachées à l'œil).
+function dialogLive(dialog, kind) {
+  let box = dialog.querySelector(`[data-live="${kind}"]`);
+  if (!box) {
+    box = document.createElement(kind === "alert" ? "p" : "div");
+    box.dataset.live = kind;
+    if (kind === "alert") {
+      box.className = "form-error";
+      box.setAttribute("role", "alert");
+      box.hidden = true;
+    } else {
+      box.className = "visually-hidden";
+      box.setAttribute("aria-live", "polite");
+    }
+    const buttons = dialog.querySelector(".buttons");
+    if (buttons) buttons.before(box);
+    else dialog.append(box);
+  }
+  return box;
+}
+
+// Créées dès le chargement : une zone `aria-live` doit exister avant que son texte change,
+// sinon le lecteur d'écran prend le premier message pour du contenu initial et le tait
+// (essai NVDA du 2026-11-18 : « Empreinte retirée » muet).
+for (const dialog of document.querySelectorAll("dialog")) {
+  dialogLive(dialog, "status");
+  dialogLive(dialog, "alert");
+}
+
+// Une boîte fermée oublie ses messages.
+document.addEventListener("close", (event) => {
+  if (event.target?.tagName !== "DIALOG") return;
+  clearFieldErrors(event.target);
+  for (const box of event.target.querySelectorAll("[data-live]")) {
+    box.textContent = "";
+    if (box.dataset.live === "alert") box.hidden = true;
+  }
+}, true);
+
+/// Erreur d'un champ d'une boîte : écrite dans la boîte et liée au champ (`aria-invalid`,
+/// `aria-describedby`), lue avec lui quand il prend le focus. L'appelant le lui donne ensuite.
+/// Une alerte seule est coupée par l'annonce du focus qui la suit (essai NVDA du 2026-11-18 :
+/// ajout refusé affiché, mais pas lu).
+function fieldError(field, text, box = null) {
+  const dialog = field.closest("dialog");
+  $("error").hidden = true;
+  clearFieldErrors(dialog);
+  box ??= dialogLive(dialog, "alert");
+  box.id ||= `${dialog.id}-live-error`;
+  box.dataset.fieldError = "";
+  liveSerial.set(box, (liveSerial.get(box) ?? 0) + 1);
+  box.textContent = text;
+  box.hidden = false;
+  field.setAttribute("aria-invalid", "true");
+  field.dataset.errorLinked = "";
+  const ids = (field.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
+  field.setAttribute("aria-describedby", [box.id, ...ids].join(" "));
+  // Déjà au focus : rien ne le relira, l'alerte le dit.
+  if (document.activeElement === field) speak(box, text);
+}
+
+function clearFieldErrors(dialog) {
+  const boxes = new Set([...dialog.querySelectorAll("[data-field-error]")].map((box) => box.id));
+  for (const field of dialog.querySelectorAll("[data-error-linked]")) {
+    delete field.dataset.errorLinked;
+    field.removeAttribute("aria-invalid");
+    const ids = (field.getAttribute("aria-describedby") ?? "").split(/\s+/).filter((id) => id && !boxes.has(id));
+    if (ids.length) field.setAttribute("aria-describedby", ids.join(" "));
+    else field.removeAttribute("aria-describedby");
+  }
+}
+
+/// Écrit un message après coup (image suivante) : un changement de contenu, lu par les
+/// lecteurs d'écran même s'il redit le message d'avant. Un message plus récent l'emporte.
+const liveSerial = new WeakMap();
+function speak(box, text) {
+  const serial = (liveSerial.get(box) ?? 0) + 1;
+  liveSerial.set(box, serial);
+  box.textContent = "";
+  if (text) requestAnimationFrame(() => { if (liveSerial.get(box) === serial) box.textContent = text; });
+}
+
 function showError(text) {
-  $("error-text").textContent = text;
-  $("error").hidden = !text;
+  const dialog = topDialog();
+  if (!dialog) {
+    $("error").hidden = !text;
+    speak($("error-text"), text);
+    return;
+  }
+  $("error").hidden = true;
+  clearFieldErrors(dialog);
+  const box = dialogLive(dialog, "alert");
+  box.hidden = !text;
+  speak(box, text);
 }
 
 function refused(e) {
@@ -121,10 +224,8 @@ function refused(e) {
 }
 
 function announce(text) {
-  const box = $("announce");
-  box.textContent = "";
-  // Un changement de contenu après coup : lu par les lecteurs d'écran.
-  requestAnimationFrame(() => { box.textContent = text; });
+  const dialog = topDialog();
+  speak(dialog ? dialogLive(dialog, "status") : $("announce"), text);
 }
 
 // ---------- Textes ----------
@@ -1111,7 +1212,7 @@ async function addMirror() {
   const taskId = detailsTask;
   if (!url || !taskId || addingMirror) return;
   if (!/^https?:\/\/\S+$/i.test(url)) {
-    showError(mirrorsError({ error: "scheme", url }));
+    fieldError(input, mirrorsError({ error: "scheme", url }));
     input.focus();
     return;
   }
@@ -1282,7 +1383,7 @@ function checksumError() {
 async function applyChecksum() {
   const { checksum, error } = parseChecksum($("d-checksum-input").value);
   if (error) {
-    showError(checksumError());
+    fieldError($("d-checksum-input"), checksumError());
     $("d-checksum-input").focus();
     return;
   }
@@ -1358,7 +1459,12 @@ function renderEndAction() {
   const queue = store.queues.get(pending.queueId);
   const text = t(END_ACTIONS[pending.action] ?? END_ACTIONS.shutdown, queue ? queueName(queue) : "?");
   // Lu une fois par les lecteurs d'écran ; le décompte, lui, ne l'est pas.
-  if ($("end-action-text").textContent !== text) $("end-action-text").textContent = text;
+  if ($("end-action-text").textContent !== text) {
+    $("end-action-text").textContent = text;
+    // Derrière une boîte modale, le bandeau est inerte : l'annonce est dite dans la boîte
+    // (Échap la ferme et rend « Annuler » joignable).
+    if (topDialog()) announce(text);
+  }
   const tick = () => {
     const left = Math.max(0, Math.ceil((pending.at - Date.now()) / 1000));
     $("end-action-count").textContent = t("({0} s)", left);
@@ -2156,15 +2262,45 @@ function openAdd() {
   $("urls").focus();
 }
 
-async function closeAdd() {
-  const choice = $("add-dialog").returnValue;
-  if (choice !== "start" && choice !== "later") {
-    $("tb-add").focus();
+/// Ajout refusé, ou choix à faire : la boîte reste ouverte, le message lié au champ en cause
+/// (`fieldError`), qui reprend le focus. Elle ne se ferme qu'une fois tout ajouté : refermée
+/// puis rouverte, elle était relue en entier par NVDA, le message en dernier (essai du
+/// 2026-11-18).
+function addFailed(text, fieldId = "urls") {
+  if (!$("add-dialog").open) {
+    // Fermée entre-temps (Échap, moteur perdu) : le message va au bandeau de la fenêtre.
+    showError(text);
     return;
   }
+  renderAddTorrents();
+  renderAddPluginPages();
+  renderPluginMatch();
+  fieldError($(fieldId), text);
+  $(fieldId).focus();
+}
+
+/// Un ajout attend le moteur : un second « Démarrer » n'en lance pas un autre.
+let addBusy = false;
+
+/// « Démarrer » ou « Télécharger plus tard » (`choice`), la boîte ouverte.
+async function submitAdd(choice) {
+  if (addBusy) return;
+  addBusy = true;
+  try {
+    await addFromDialog(choice);
+  } finally {
+    addBusy = false;
+  }
+}
+
+async function addFromDialog(choice) {
+  const dialog = $("add-dialog");
   const field = $("urls");
   let urls = field.value.split(/\s+/).filter(Boolean);
-  if ((!urls.length && !addTorrents.length && !addMetalinks.length && !addPluginPages.length) || !connected) return;
+  if ((!urls.length && !addTorrents.length && !addMetalinks.length && !addPluginPages.length) || !connected) {
+    dialog.close(choice);
+    return;
+  }
   // Pages d'hébergeurs (SPEC §7.20) : celles qu'un plugin lira, sauf « sans plugin ».
   const noPlugin = $("add-no-plugin").checked;
   const pluginUrls = noPlugin ? new Map() : await matchPlugins(urls);
@@ -2175,7 +2311,7 @@ async function closeAdd() {
   const metalinks = addMetalinks.length > 0 || urls.some(isMetalinkUrl);
   const items = urls.length + addTorrents.length + addMetalinks.length + addPluginPages.length;
   if (error || (checksum && (items > 1 || torrents || metalinks || hosted))) {
-    showError(error
+    addFailed(error
       ? checksumError()
       : torrents
         ? t("Un torrent vérifie ses morceaux lui-même : pas d'empreinte à donner.")
@@ -2183,25 +2319,19 @@ async function closeAdd() {
           ? t("Un Metalink donne lui-même l'empreinte de chaque fichier.")
           : hosted
             ? t("Une page d'hébergeur donne ses liens par son plugin : pas d'empreinte à donner.")
-            : t("Une empreinte ne vaut que pour une seule adresse."));
-    openAdd();
-    $("add-checksum").focus();
+            : t("Une empreinte ne vaut que pour une seule adresse."), "add-checksum");
     return;
   }
   const sub = subDirParam("add-subdir");
   if (sub === null) {
-    showError(t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."));
-    openAdd();
-    $("add-subdir").focus();
+    addFailed(t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."), "add-subdir");
     return;
   }
   // Miroirs (SPEC §7.7) : d'autres adresses du même fichier, pour une seule adresse HTTP.
   const parsed = parseMirrors($("add-mirrors").value, urls, addTorrents.length, addMetalinks.length);
   if (!parsed.error && parsed.mirrors.length && hosted) parsed.error = "plugin";
   if (parsed.error) {
-    showError(mirrorsError(parsed));
-    openAdd();
-    $("add-mirrors").focus();
+    addFailed(mirrorsError(parsed), "add-mirrors");
     return;
   }
   const mirrors = parsed.mirrors.map((url) => ({ url }));
@@ -2226,10 +2356,9 @@ async function closeAdd() {
     urls = urls.filter((u) => !isMetalinkUrl(u) || unread.includes(u));
     field.value = urls.join("\n");
     if (readError || toChoose) {
-      showError(readError
+      addFailed(readError
         ? refused(readError)
         : t("Choisissez les fichiers du Metalink, puis « Démarrer » ou « Télécharger plus tard »."));
-      openAdd();
       return;
     }
   }
@@ -2254,10 +2383,9 @@ async function closeAdd() {
     field.value = urls.join("\n");
     renderPluginMatch();
     if (readError || toChoose) {
-      showError(readError
+      addFailed(readError
         ? refused(readError)
         : t("Choisissez les liens des pages d'hébergeurs, puis « Démarrer » ou « Télécharger plus tard »."));
-      openAdd();
       return;
     }
   }
@@ -2346,14 +2474,13 @@ async function closeAdd() {
     $("add-plugin-row").hidden = true;
   }
   if (refusedCount) {
-    showError(t("{0} ajout(s) refusé(s) : {1}", refusedCount, firstError?.message ?? ""));
-    openAdd();
+    addFailed(t("{0} ajout(s) refusé(s) : {1}", refusedCount, firstError?.message ?? ""));
     return;
   }
+  dialog.close(choice);
   showError("");
   // Les nouvelles tâches doivent se voir.
   if (view.startsWith("completed")) chooseView("all");
-  $("tb-add").focus();
 }
 
 // ---------- Vidéo (SPEC §7.17, étape 5c) ----------
@@ -3273,15 +3400,22 @@ async function saveLogin() {
 async function deleteLogin() {
   const login = logins.find((l) => l.loginId === $("logins").value);
   if (!login) return;
+  let error = null;
   try {
     await host.call("login.delete", { loginId: login.loginId });
-    announce(t("Identifiants de {0} supprimés", login.site));
   } catch (e) {
-    $("logins-error").textContent = refused(e);
-    $("logins-error").hidden = false;
+    error = e;
   }
+  // Liste relue, focus placé, puis le message : ni effacé par la relecture, ni coupé par
+  // l'annonce du focus.
   await loadLogins();
   (logins.length ? $("logins") : $("login-new")).focus();
+  if (error) {
+    $("logins-error").hidden = false;
+    speak($("logins-error"), refused(error));
+  } else {
+    announce(t("Identifiants de {0} supprimés", login.site));
+  }
 }
 
 // ---------- Clés des serveurs SSH (SFTP, SPEC §7.22, étape 6d) ----------
@@ -3406,15 +3540,21 @@ function syncHostKeyButtons() {
 async function forgetHostKey() {
   const key = hostKeys[Number($("hostkeys").value)];
   if (!key) return;
+  let error = null;
   try {
     await host.call("hostkey.remove", { host: key.host, port: key.port });
-    announce(t("Clé de {0} oubliée", key.host));
   } catch (e) {
-    $("hostkeys-error").textContent = refused(e);
-    $("hostkeys-error").hidden = false;
+    error = e;
   }
+  // Comme `deleteLogin` : liste relue, focus placé, puis le message.
   await loadHostKeys();
   (hostKeys.length ? $("hostkeys") : $("login-new")).focus();
+  if (error) {
+    $("hostkeys-error").hidden = false;
+    speak($("hostkeys-error"), refused(error));
+  } else {
+    announce(t("Clé de {0} oubliée", key.host));
+  }
 }
 
 // ---------- Règles de rangement (F-32, F-34, SPEC §7.21, étape 4c) ----------
@@ -3557,9 +3697,14 @@ async function saveRule() {
     // Le moteur dit quel champ il refuse (`rules[0] : actions.folder : …`) : le message
     // sans ce chemin, et le curseur dans le champ.
     const { field, text } = ruleError(e?.message ?? String(e));
-    $("rule-error").textContent = text;
-    $("rule-error").hidden = false;
-    if (field) $(field).focus();
+    if (field) {
+      fieldError($(field), text, $("rule-error"));
+      $(field).focus();
+    } else {
+      clearFieldErrors($("rule-dialog"));
+      $("rule-error").hidden = false;
+      speak($("rule-error"), text);
+    }
   } finally {
     $("rule-save").disabled = false;
   }
@@ -4467,21 +4612,29 @@ function wire() {
   addEventListener("blur", () => closeMenu(false));
   addEventListener("resize", () => closeMenu(false));
 
-  $("add-dialog").addEventListener("close", closeAdd);
+  // « Démarrer » et « Télécharger plus tard » ajoutent, la boîte ouverte ; « Annuler » et
+  // Échap la ferment.
+  $("add-form").addEventListener("submit", (event) => {
+    const choice = event.submitter?.value;
+    if (choice !== "start" && choice !== "later") return;
+    event.preventDefault();
+    submitAdd(choice);
+  });
+  $("add-dialog").addEventListener("close", () => $("tb-add").focus());
   // Plugins des adresses saisies (étape 4c) : `plugin.match` seulement, sans requête aux sites.
   $("urls").addEventListener("input", schedulePluginMatch);
   $("urls").addEventListener("keydown", (event) => {
     // Entrée démarre ; Maj+Entrée passe à la ligne.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      $("add-dialog").close("start");
+      submitAdd("start");
     }
   });
   // Sans cela, Entrée dans un champ actionnerait le premier bouton du formulaire.
   $("add-checksum").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      $("add-dialog").close("start");
+      submitAdd("start");
     }
   });
   $("d-checksum-input").addEventListener("keydown", (event) => {

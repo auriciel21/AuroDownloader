@@ -58,10 +58,22 @@ const ENGINE = {
   "plugin.list": () => ({ items: [] }),
   "token.list": () => ({ items: [] }),
   "history.list": () => ({ items: [], next: null }),
+  "task.add": ({ sources }) => {
+    if (!/^https?:\/\//.test(sources?.[0]?.url ?? "")) throw new Error("adresse invalide");
+    return { taskId: "nouvelle" };
+  },
 };
 
 let window;
 const calls = [];
+/** Écouteurs des événements de l'hôte (« engine » : notifications du moteur). */
+const listeners = {};
+let rev = 1;
+
+function notify(method, params) {
+  rev += 1;
+  listeners.engine({ payload: { kind: "message", message: { method, params: { rev, ...params } } } });
+}
 
 async function settle() {
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -84,7 +96,10 @@ before(async () => {
   // jsdom n'ouvre pas les boîtes. Comme un navigateur (HTML, « dialog focusing steps ») :
   // le focus va à l'élément `autofocus`, sinon au premier qui le prend.
   const proto = window.HTMLDialogElement.prototype;
+  // À la fermeture, le focus revient à l'élément qui l'avait avant l'ouverture.
+  const previous = new WeakMap();
   proto.showModal = function () {
+    previous.set(this, document.activeElement);
     this.setAttribute("open", "");
     const candidates = [...this.querySelectorAll("button, input, select, textarea, [tabindex]")]
       .filter((el) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden], .lacks"));
@@ -94,6 +109,7 @@ before(async () => {
   proto.close = function (value) {
     if (value !== undefined) this.returnValue = value;
     this.removeAttribute("open");
+    if (this.contains(document.activeElement)) previous.get(this)?.focus();
     this.dispatchEvent(new window.Event("close"));
   };
   window.matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
@@ -112,7 +128,7 @@ before(async () => {
         }
       },
     },
-    event: { listen: async () => () => {} },
+    event: { listen: async (name, fn) => { listeners[name] = fn; return () => {}; } },
   };
   window.eval(axe.source);
   // La page est un module : chargée par Node, avec la fenêtre de jsdom comme globale.
@@ -134,6 +150,14 @@ before(async () => {
 test("la page s'est remplie depuis le faux moteur", () => {
   assert.equal(window.document.getElementById("error").hidden, true, window.document.getElementById("error").textContent);
   assert.equal(window.document.querySelectorAll("#grid tbody tr").length, TASKS.length, calls.join(", "));
+});
+
+test("chaque boîte a ses zones de messages dès le chargement, avant tout message", () => {
+  // Une zone `aria-live` créée au moment du message n'est pas lue (essai NVDA).
+  const missing = [...window.document.querySelectorAll("dialog")]
+    .filter((dialog) => !dialog.querySelector('[data-live="status"][aria-live="polite"]') || !dialog.querySelector('[data-live="alert"][role="alert"]'))
+    .map((dialog) => dialog.id);
+  assert.deepEqual(missing, []);
 });
 
 test("fenêtre principale, avec ses lignes et son arborescence", async () => {
@@ -211,6 +235,121 @@ for (const [button, dialog] of [["tb-add", "add-dialog"], ["tb-history", "histor
     assert.deepEqual(await audit(box), []);
   });
 }
+
+// Une boîte modale rend le reste de la page inerte : un message hors d'elle n'est pas lu
+// (essai NVDA du 2026-11-18, ajout refusé muet). Il doit être dans la boîte au premier plan.
+/** Description d'un champ, telle que la lit un lecteur d'écran (`aria-describedby`). */
+function described(field) {
+  return (field.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean)
+    .map((id) => window.document.getElementById(id)?.textContent.trim() ?? "").join(" ");
+}
+
+function assertAlertIn(dialog, pattern) {
+  const document = window.document;
+  assert.equal(document.getElementById("error").hidden, true, "bandeau de la fenêtre, inerte derrière la boîte");
+  const alerts = [...dialog.querySelectorAll('[role="alert"]')].filter((el) => !el.hidden && el.textContent.trim());
+  assert.equal(alerts.length, 1, dialog.innerHTML.slice(-300));
+  assert.match(alerts[0].textContent, pattern);
+}
+
+test("boîte d'ajout : un ajout refusé est annoncé dans la boîte rouverte, le curseur dans le champ", async () => {
+  await closeAll();
+  const document = window.document;
+  document.getElementById("tb-add").click();
+  await settle();
+  const box = document.getElementById("add-dialog");
+  let closes = 0;
+  box.addEventListener("close", () => { closes += 1; }, { once: true });
+  const urls = document.getElementById("urls");
+  urls.value = "pas-une-adresse";
+  // Une alerte seule est coupée par l'annonce du focus (essai NVDA) : le champ porte déjà
+  // l'erreur quand il le prend, et le lecteur d'écran la lit avec lui.
+  const heard = [];
+  const onFocus = () => heard.push(described(urls));
+  urls.addEventListener("focus", onFocus);
+  const start = document.getElementById("add-start");
+  start.focus();
+  start.click();
+  await settle();
+  urls.removeEventListener("focus", onFocus);
+  // Refermée puis rouverte, elle était relue en entier, le message en dernier (essai NVDA).
+  assert.ok(box.open, "boîte restée ouverte");
+  assert.equal(closes, 0, "jamais fermée");
+  assertAlertIn(box, /refusé.*adresse invalide/);
+  assert.equal(document.activeElement?.id, "urls");
+  assert.ok(heard.length > 0 && heard.every((text) => /refusé.*adresse invalide/.test(text)), heard.join(" | "));
+  assert.equal(urls.getAttribute("aria-invalid"), "true");
+  assert.deepEqual(await audit(box), []);
+  // Fermée, elle oublie le message.
+  box.close("cancel");
+  await settle();
+  assert.equal([...box.querySelectorAll('[role="alert"]')].filter((el) => !el.hidden).length, 0);
+  assert.equal(urls.hasAttribute("aria-invalid"), false);
+  assert.equal(described(urls), "");
+  urls.value = "";
+});
+
+test("boîte d'ajout : un ajout accepté la ferme et rend le focus à la barre d'outils", async () => {
+  await closeAll();
+  const document = window.document;
+  document.getElementById("tb-add").click();
+  await settle();
+  const box = document.getElementById("add-dialog");
+  document.getElementById("urls").value = "https://exemple.org/essai.iso";
+  const before = calls.filter((c) => c === "task.add").length;
+  document.getElementById("add-start").click();
+  await settle();
+  assert.equal(calls.filter((c) => c === "task.add").length, before + 1);
+  assert.equal(box.open, false, "boîte fermée");
+  assert.equal(document.activeElement?.id, "tb-add");
+  assert.equal(document.getElementById("error").hidden, true);
+});
+
+test("Propriétés : erreur et annonce dans la boîte", async () => {
+  await closeAll();
+  const document = window.document;
+  row("pause").firstElementChild.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true }));
+  await settle();
+  const details = document.getElementById("details");
+  const input = document.getElementById("d-checksum-input");
+  const note = described(input);
+  input.value = "pas-une-empreinte";
+  document.getElementById("d-checksum-apply").focus();
+  document.getElementById("d-checksum-apply").click();
+  await settle();
+  assertAlertIn(details, /Empreinte illisible/);
+  assert.equal(document.activeElement?.id, "d-checksum-input");
+  assert.match(described(input), /Empreinte illisible/, "erreur lue avec le champ");
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+  input.value = "";
+  document.getElementById("d-checksum-apply").click();
+  await settle();
+  assert.equal([...details.querySelectorAll('[role="alert"]')].filter((el) => !el.hidden).length, 0, "erreur effacée");
+  assert.equal(input.hasAttribute("aria-invalid"), false);
+  assert.equal(described(input), note, "description d'origine rendue");
+  const status = details.querySelector('[aria-live="polite"][data-live]');
+  assert.match(status?.textContent ?? "", /Empreinte retirée/);
+  assert.doesNotMatch(document.getElementById("announce").textContent, /Empreinte/, "annonce de la fenêtre, inerte derrière la boîte");
+});
+
+test("action de fin annoncée pendant qu'une boîte est ouverte : dite dans la boîte", async () => {
+  await closeAll();
+  const document = window.document;
+  document.getElementById("tb-add").click();
+  await settle();
+  notify("engine.endAction", { pending: { action: "sleep", queueId: "default", at: NOW + 60_000 } });
+  try {
+    await settle();
+    assert.equal(document.getElementById("end-action").hidden, false, "bandeau de la fenêtre");
+    const status = document.getElementById("add-dialog").querySelector('[aria-live="polite"][data-live]');
+    assert.match(status?.textContent ?? "", /Mise en veille/);
+  } finally {
+    // Sinon le décompte du bandeau tient Node en vie.
+    notify("engine.endAction", { pending: null });
+    await settle();
+  }
+  assert.equal(document.getElementById("end-action").hidden, true);
+});
 
 test("clavier : Entrée ouvre les Propriétés, le focus y entre puis revient à la ligne", async () => {
   await closeAll();
