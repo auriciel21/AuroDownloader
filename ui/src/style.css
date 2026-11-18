@@ -262,6 +262,8 @@ main {
   flex: 1;
   min-width: 0;
   overflow: auto;
+  /* Une ligne atteinte au clavier s'arrête sous l'en-tête collé, pas dessous (WCAG 2.4.11). */
+  scroll-padding-top: 32px;
   background: var(--panel);
 }
 

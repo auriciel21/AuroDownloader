@@ -20,6 +20,10 @@ téléchargement.
 - `docs/SECURITE.md` : revue de sécurité de l'interface distante, des plugins et du canal
   local (porte de la phase 6, 2026-11-12) : modèle de menace, points vérifiés, constats
   corrigés, risques résiduels. À tenir à jour quand ces parties changent.
+- `docs/ACCESSIBILITE.md` : revue d'accessibilité WCAG 2.2 A et AA (phase 7, étape 7, 2026-11-18) :
+  tests automatiques, revue critère par critère de la page, d'Android et de l'extension,
+  constats corrigés, restes, essais réels (NVDA, Orca, TalkBack). À tenir à jour quand
+  l'interface change.
 - `docs/MESURES.md` : relevés datés du banc de performance face à aria2. Ajouter une
   section datée à chaque nouvelle campagne, sans réécrire les anciennes.
 - Les deux schémas du document d'origine (architecture, feuille de route) ne sont pas dans

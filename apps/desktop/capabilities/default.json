@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Fenêtre principale : événements du moteur et commandes de l'application. Dialogues, ouverture de fichiers et démarrage avec la session passent par les commandes Rust, qui vérifient leurs arguments.",
+  "description": "Fenêtre principale : événements du moteur et commandes de l'application. Zoom au clavier (Ctrl+ et Ctrl−, WCAG 1.4.4) : sous Linux, Tauri le fait par set_webview_zoom. Dialogues, ouverture de fichiers et démarrage avec la session passent par les commandes Rust, qui vérifient leurs arguments.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:webview:allow-set-webview-zoom"]
 }
