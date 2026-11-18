@@ -736,7 +736,12 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   7c Android faites le 2026-11-18, puis 7d rapport et essais réels : TalkBack, NVDA (bureau
   et extension) et Orca 46.1 conformes le 2026-11-18 après correction d'A12 à A18, commits
   07a08d5, 130103b, 2103498 ; écueils de l'essai Orca sous WSLg dans la section 6 du
-  rapport : quitter NVDA, qui garde Insert ; `PULSE_SERVER` pour speech-dispatcher) ; 8. dépôt
+  rapport : quitter NVDA, qui garde Insert ; `PULSE_SERVER` pour speech-dispatcher ; étape 7
+  terminée) ; 8. (décisions du 2026-11-18, SPEC 4.6 : dépôt public dès le départ ; émulateur
+  et ARM64 à chaque envoi, ARM64 sur les machines ARM de GitHub ; APK signé par la clé de
+  l'utilisateur joint aux publications ; étiquette `v0.x.y`, brouillon publié par
+  l'utilisateur ; clé des mises à jour créée par l'utilisateur, jamais par Claude ;
+  `latest.json` des publications GitHub ; `.deb` averti seulement) dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
   émulateur Android, ARM64 construits non essayés, signature SignPath, mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en

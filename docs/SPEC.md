@@ -300,6 +300,30 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
   - Avant d'installer, de mettre à jour ou de désinstaller : l'application est fermée (sinon elle relancerait le moteur), puis le moteur arrêté proprement (`auro engine stop`) ; il n'est forcé que s'il tourne encore depuis le dossier du programme.
   - Désinstallation : la base, son journal et les préférences sont conservés ; une case « supprimer les données », décochée par défaut, les efface avec le cache de la page. Les fichiers téléchargés ne sont jamais touchés. Le démarrage avec la session est retiré.
 - **Android** : F-Droid et APK signé.
+- **Intégration continue, publication et mise à jour** (phase 7, étape 8 ; décisions de
+  l'utilisateur du 2026-11-18). Dépôt GitHub public dès le départ, créé et poussé par
+  l'utilisateur seul :
+  - **CI**, à chaque envoi sur `main` et à chaque pull request, tout compris : Rust sous
+    Windows et Linux (fmt, clippy, tests), application de bureau, tests de la page et de
+    l'extension (Node), licences (`cargo deny`, deux espaces de travail), Android construit
+    et tests instrumentés sur l'émulateur, ARM64 (Windows ARM64 et Linux aarch64) construit
+    et testé sur les machines ARM natives de GitHub (`windows-11-arm`, `ubuntu-24.04-arm`),
+    sans essai sur du matériel réel.
+  - **Publication** : l'utilisateur pousse une étiquette `v0.x.y` ; la CI construit tous les
+    paquets (NSIS Windows x64 et ARM64, `.deb` et AppImage x64 et aarch64, APK Android),
+    fait signer les exécutables Windows par SignPath Foundation, signe les mises à jour et
+    prépare un **brouillon** de publication GitHub, que l'utilisateur relit et publie.
+  - **APK Android** : signé par la clé de l'utilisateur (créée par lui, gardée en secret
+    GitHub), joint à chaque publication ; F-Droid et Play Store plus tard ; pas de mise à
+    jour silencieuse (N-14).
+  - **Mise à jour du bureau** : `latest.json` signé, joint à la dernière publication GitHub
+    (`releases/latest/download/latest.json`), aucun autre serveur ; GitHub ne voit que
+    l'adresse IP et la version demandée, aucune télémétrie. Vérifiée au plus une fois par
+    jour, proposée, installée seulement sur accord. Clé de signature créée par
+    l'utilisateur sur sa machine (`cargo tauri signer generate`), jamais vue par Claude,
+    gardée en secret GitHub ; la clé publique est dans `tauri.conf.json`. Windows et
+    AppImage se mettent à jour sur accord ; le paquet `.deb` dit seulement qu'une version
+    nouvelle existe, avec le lien de la publication.
 
 ## 5. Modèle de données
 
