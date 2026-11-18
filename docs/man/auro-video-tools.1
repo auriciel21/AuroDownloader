@@ -1,0 +1,36 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-video-tools 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-video\-tools \- État de yt\-dlp et ffmpeg ; avec \-\-install, les télécharge depuis leurs publications officielles (signature et empreintes vérifiées)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro video tools\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-install\fR] [\fB\-\-force\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+État de yt\-dlp et ffmpeg ; avec \-\-install, les télécharge depuis leurs publications officielles (signature et empreintes vérifiées)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-install\fR
+
+.TP
+\fB\-\-force\fR
+Réinstaller même ce qui est déjà là (avec \-\-install)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte

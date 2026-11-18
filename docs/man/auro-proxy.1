@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-proxy 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-proxy \- Proxy des connexions HTTP(S) : celui du système (par défaut), aucun, ou un proxy choisi ; sans argument, l\*(Aqaffiche
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro proxy\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fIsubcommands\fR]
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Proxy des connexions HTTP(S) : celui du système (par défaut), aucun, ou un proxy choisi ; sans argument, l\*(Aqaffiche
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-proxy\-show(1)
+Réglages du proxy (par défaut) ; jamais le mot de passe
+.TP
+auro\-proxy\-system(1)
+Le proxy du système (par défaut) : réglages Internet sous Windows, variables d\*(Aqenvironnement ailleurs
+.TP
+auro\-proxy\-none(1)
+Aucun proxy : toujours en direct
+.TP
+auro\-proxy\-manual(1)
+Un proxy choisi : http://hôte:port, https://…, socks5://… ou socks5h://… (le proxy résout alors les noms). Les torrents n\*(Aqy passent jamais. Avec \-\-user, le mot de passe est demandé sans écho et rangé au coffre du système

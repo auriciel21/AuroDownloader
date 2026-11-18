@@ -23,9 +23,19 @@ use clap::Parser;
 #[command(
     name = "aurod",
     version,
-    about = "AuroDownloader : moteur de téléchargement"
+    about = "AuroDownloader : moteur de téléchargement",
+    disable_help_flag = true,
+    disable_version_flag = true
 )]
 struct Args {
+    /// Affiche l'aide
+    #[arg(short = 'h', long = "help", action = clap::ArgAction::Help)]
+    help: Option<bool>,
+
+    /// Affiche la version
+    #[arg(short = 'V', long = "version", action = clap::ArgAction::Version)]
+    version: Option<bool>,
+
     /// Base du moteur (par défaut, dans le dossier de données de l'utilisateur)
     #[arg(long, value_name = "FICHIER")]
     db: Option<PathBuf>,
@@ -222,8 +232,20 @@ async fn stop_signal() {
 }
 
 #[cfg(test)]
+#[path = "../../cli/src/man_pages.rs"]
+mod man_pages;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Page de manuel d'`aurod` (étape 9a) ; son installation par le `.deb` est vérifiée par
+    /// le test d'`auro`.
+    #[test]
+    fn man_pages_are_up_to_date() {
+        use clap::CommandFactory;
+        man_pages::check("aurod", Args::command());
+    }
 
     #[test]
     fn a_test_endpoint_never_opens_the_default_database() {

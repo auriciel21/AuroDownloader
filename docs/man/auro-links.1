@@ -1,0 +1,60 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-links 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-links \- Liens d\*(Aqune page, d\*(Aqun fichier texte ou CSV, ou de l\*(Aqentrée standard (« \- ») : nom, taille et adresse des fichiers trouvés ; avec \-\-add, les ajoute
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro links\fR [\fB\-e\fR|\fB\-\-ext\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-regex\fR] [\fB\-\-endpoint\fR] [\fB\-\-min\-size\fR] [\fB\-\-max\-size\fR] [\fB\-\-no\-start\fR] [\fB\-\-all\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-no\-sizes\fR] [\fB\-\-add\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-paused\fR] <\fISOURCE\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Liens d\*(Aqune page, d\*(Aqun fichier texte ou CSV, ou de l\*(Aqentrée standard (« \- ») : nom, taille et adresse des fichiers trouvés ; avec \-\-add, les ajoute
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-e\fR, \fB\-\-ext\fR \fI<EXTENSIONS>\fR
+Extensions à garder : « iso,zip »
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-regex\fR \fI<EXPRESSION>\fR
+Expression régulière que l\*(Aqadresse doit contenir
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-min\-size\fR \fI<TAILLE>\fR
+Taille minimale (500K, 2M, 1G) ; une taille inconnue écarte le lien
+.TP
+\fB\-\-max\-size\fR \fI<TAILLE>\fR
+Taille maximale ; une taille inconnue écarte le lien
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-all\fR
+Montrer aussi les pages et les liens sans extension
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-no\-sizes\fR
+Ne pas demander la taille des fichiers (aucune requête vers eux)
+.TP
+\fB\-\-add\fR
+Ajouter les liens gardés
+.TP
+\fB\-o\fR, \fB\-\-dir\fR \fI<DIR>\fR [default: .]
+Dossier de destination (avec \-\-add)
+.TP
+\fB\-\-paused\fR
+Ajouter en pause (avec \-\-add)
+.TP
+<\fISOURCE\fR>
+Adresse d\*(Aqune page, fichier texte ou CSV, ou « \- »

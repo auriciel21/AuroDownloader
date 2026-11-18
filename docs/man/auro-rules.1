@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-rules 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-rules \- Règles de rangement : dossier, nom et commande de fin des tâches ajoutées sans dossier (\-\-auto, extension, page) ; la première règle activée qui correspond l\*(Aqemporte. Sans argument, les montre
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro rules\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fIsubcommands\fR]
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Règles de rangement : dossier, nom et commande de fin des tâches ajoutées sans dossier (\-\-auto, extension, page) ; la première règle activée qui correspond l\*(Aqemporte. Sans argument, les montre
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-rules\-show(1)
+Les règles, dans leur ordre (par défaut)
+.TP
+auro\-rules\-add(1)
+Ajoute une règle (à la fin, ou au rang \-\-at). Critères facultatifs, tous requis ; sans critère, la règle prend toute tâche
+.TP
+auro\-rules\-remove(1)
+Retire une règle (rang, identifiant ou nom)
+.TP
+auro\-rules\-enable(1)
+Active une règle
+.TP
+auro\-rules\-disable(1)
+Désactive une règle
+.TP
+auro\-rules\-move(1)
+Change le rang d\*(Aqune règle (1 : la première)

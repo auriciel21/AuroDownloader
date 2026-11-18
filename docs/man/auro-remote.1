@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-remote 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-remote \- Interface web distante : état, ouverture, adresse d\*(Aqécoute
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro remote\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fIsubcommands\fR]
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Interface web distante : état, ouverture, adresse d\*(Aqécoute
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-remote\-status(1)
+État : réglages et écoute (par défaut)
+.TP
+auro\-remote\-enable(1)
+Ouvre l\*(Aqinterface distante (127.0.0.1:7380 par défaut ; hors de la boucle locale, en TLS, avec un certificat fabriqué par le moteur ou fourni)
+.TP
+auro\-remote\-hosts(1)
+Noms ajoutés, acceptés et portés par le certificat fabriqué (nom DNS ou adresse IP)
+.TP
+auro\-remote\-cert(1)
+Certificat de l\*(Aqécoute en TLS : fourni (fichiers PEM), ou celui fabriqué par le moteur
+.TP
+auro\-remote\-disable(1)
+Ferme l\*(Aqinterface distante ; ses connexions se ferment
+.TP
+auro\-remote\-allow\-private(1)
+Réseau interne pour les tâches des jetons (adresses privées, boucle locale) : on ou off

@@ -1,0 +1,39 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-history 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-history \- Historique des téléchargements, les plus récents d\*(Aqabord (terminés, et ceux en échec ou annulés une fois retirés de la liste)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro history\fR [\fB\-\-csv\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-clear\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fIQUERY\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Historique des téléchargements, les plus récents d\*(Aqabord (terminés, et ceux en échec ou annulés une fois retirés de la liste)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-\-csv\fR
+Au format CSV (virgules, RFC 4180), pour un tableur ou un script
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-clear\fR
+Effacer tout l\*(Aqhistorique (ni les tâches ni les fichiers)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+[\fIQUERY\fR]
+Texte cherché dans le nom, le chemin ou le site

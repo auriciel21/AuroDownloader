@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-video 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-video \- Vidéos de pages web, par yt\-dlp et ffmpeg (sites sans DRM)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro video\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIsubcommands\fR>
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Vidéos de pages web, par yt\-dlp et ffmpeg (sites sans DRM)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-video\-tools(1)
+État de yt\-dlp et ffmpeg ; avec \-\-install, les télécharge depuis leurs publications officielles (signature et empreintes vérifiées)
+.TP
+auro\-video\-info(1)
+Décrit une page de vidéo : titre, durée, sous\-titres et formats proposés
+.TP
+auro\-video\-add(1)
+Ajoute des vidéos au moteur, sans attendre
+.TP
+auro\-video\-get(1)
+Télécharge une vidéo et suit l\*(Aqavancement (Ctrl\-C la met en pause)

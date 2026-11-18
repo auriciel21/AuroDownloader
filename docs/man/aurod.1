@@ -1,0 +1,48 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH aurod 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+aurod \- AuroDownloader : moteur de téléchargement
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBaurod\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fB\-\-db\fR] [\fB\-\-endpoint\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-simulate\-power\fR] [\fB\-\-torrent\-peers\fR] [\fB\-\-media\-ytdlp\fR] [\fB\-\-media\-ffmpeg\fR] [\fB\-\-media\-ffprobe\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+AuroDownloader : moteur de téléchargement
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Affiche la version
+.TP
+\fB\-\-db\fR \fI<FICHIER>\fR
+Base du moteur (par défaut, dans le dossier de données de l\*(Aqutilisateur)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès local : canal nommé (Windows) ou chemin du socket (Unix)
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM). La validation des certificats reste stricte
+.TP
+\fB\-\-simulate\-power\fR
+Essais : l\*(Aqaction de fin d\*(Aqune planification (veille, extinction) est écrite dans le journal au lieu d\*(Aqêtre exécutée
+.TP
+\fB\-\-torrent\-peers\fR \fI<PAIRS>\fR
+Essais : les torrents passent par ces seuls pairs (adresse:port, séparées par des virgules), sans DHT ni connexion entrante (banc de reprise des torrents)
+.TP
+\fB\-\-media\-ytdlp\fR \fI<FICHIER>\fR
+Essais : ce yt\-dlp, pris tel quel, sans installation ni mise à jour (banc de reprise des vidéos) ; avec \-\-media\-ffmpeg et \-\-media\-ffprobe
+.TP
+\fB\-\-media\-ffmpeg\fR \fI<FICHIER>\fR
+Essais : ce ffmpeg, pris tel quel
+.TP
+\fB\-\-media\-ffprobe\fR \fI<FICHIER>\fR
+Essais : ce ffprobe, pris tel quel

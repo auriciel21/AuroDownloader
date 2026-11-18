@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-limit 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-limit \- Limite de débit, globale par défaut, ou d\*(Aqune tâche ou d\*(Aqune file ; sans débit, l\*(Aqaffiche. Elle s\*(Aqapplique aussitôt aux téléchargements en cours
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro limit\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-t\fR|\fB\-\-task\fR] [\fB\-q\fR|\fB\-\-queue\fR] [\fB\-\-endpoint\fR] [\fB\-\-upload\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fIDÉBIT\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Limite de débit, globale par défaut, ou d\*(Aqune tâche ou d\*(Aqune file ; sans débit, l\*(Aqaffiche. Elle s\*(Aqapplique aussitôt aux téléchargements en cours
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-t\fR, \fB\-\-task\fR \fI<TASK>\fR
+Tâche dont changer la limite
+.TP
+\fB\-q\fR, \fB\-\-queue\fR \fI<QUEUE>\fR
+File (nom ou identifiant) dont changer la limite
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-upload\fR
+Limite d\*(Aqenvoi des torrents aux autres pairs, globale
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+[\fIDÉBIT\fR]
+Débit par seconde (800000, 500K, 2M, 1.5G) ou « none » pour la retirer

@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-login-set 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-login\-set \- Enregistre ou modifie les identifiants d\*(Aqun site. Le mot de passe est demandé sans écho ; il n\*(Aqest jamais un argument, qui resterait dans l\*(Aqhistorique du terminal
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro login set\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-password\-stdin\fR] [\fB\-\-endpoint\fR] [\fB\-\-keep\-password\fR] [\fB\-\-allow\-plain\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-require\-tls\fR] [\fB\-\-key\fR] [\fB\-\-no\-key\fR] <\fB\-u\fR|\fB\-\-username\fR> <\fISITE\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Enregistre ou modifie les identifiants d\*(Aqun site. Le mot de passe est demandé sans écho ; il n\*(Aqest jamais un argument, qui resterait dans l\*(Aqhistorique du terminal
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-u\fR, \fB\-\-username\fR \fI<USERNAME>\fR
+
+.TP
+\fB\-\-password\-stdin\fR
+Lire le mot de passe sur l\*(Aqentrée standard (une ligne), pour un script
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-keep\-password\fR
+Garder le mot de passe déjà enregistré (changer seulement le nom d\*(Aqutilisateur)
+.TP
+\fB\-\-allow\-plain\fR
+FTP : autoriser ce site sans chiffrement (serveur sans AUTH TLS) ; le mot de passe y passe alors en clair
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-require\-tls\fR
+FTP : exiger de nouveau le chiffrement pour ce site (par défaut)
+.TP
+\fB\-\-key\fR \fI<FICHIER>\fR
+SFTP : s\*(Aqidentifier par ce fichier de clé privée (OpenSSH, PEM, PuTTY) ; la phrase de passe est alors demandée à la place du mot de passe (vide si elle n\*(Aqen a pas)
+.TP
+\fB\-\-no\-key\fR
+SFTP : ne plus utiliser de clé privée (un mot de passe est alors demandé)
+.TP
+<\fISITE\fR>
+Site : exemple.org (ses sous\-domaines compris, HTTP, FTP et SFTP), ou https://exemple.org/dossier, ftp://exemple.org, sftp://exemple.org

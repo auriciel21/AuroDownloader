@@ -1,0 +1,69 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-video-add 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-video\-add \- Ajoute des vidéos au moteur, sans attendre
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro video add\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-auto\fR] [\fB\-\-endpoint\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-container\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-subs\fR] [\fB\-q\fR|\fB\-\-queue\fR] [\fB\-l\fR|\fB\-\-limit\fR] [\fB\-\-paused\fR] <\fIPAGES\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Ajoute des vidéos au moteur, sans attendre
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-o\fR, \fB\-\-dir\fR \fI<DIR>\fR [default: .]
+Dossier de destination
+.TP
+\fB\-\-auto\fR
+Dossier des téléchargements du moteur au lieu de \-o : les règles de rangement y choisissent le dossier et le nom (auro rules)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-f\fR, \fB\-\-format\fR \fI<FORMAT>\fR
+Format à télécharger (identifiants de auro video info, ou sélecteur de yt\-dlp : « 137+140 », « bv*[height<=720]+ba/b ») ; par défaut la meilleure image et le meilleur son
+.TP
+\fB\-\-container\fR \fI<CONTAINER>\fR
+Conteneur du fichier final (automatique sinon)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+mp4
+.IP \(bu 2
+mkv
+.IP \(bu 2
+webm
+.RE
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-subs\fR \fI<LANGUES>\fR
+Langues des sous\-titres, gardés à côté de la vidéo : « fr,en »
+.TP
+\fB\-q\fR, \fB\-\-queue\fR \fI<QUEUE>\fR
+File (nom ou identifiant)
+.TP
+\fB\-l\fR, \fB\-\-limit\fR \fI<DÉBIT>\fR
+Limite de débit de la tâche (500K, 2M…)
+.TP
+\fB\-\-paused\fR
+Ajouter en pause
+.TP
+<\fIPAGES\fR>
+Adresses des pages

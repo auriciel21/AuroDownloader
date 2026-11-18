@@ -30,8 +30,22 @@ use display::Limit;
 use remote::AddOptions;
 
 #[derive(Parser)]
-#[command(name = "auro", version, about = "AuroDownloader : ligne de commande")]
+#[command(
+    name = "auro",
+    version,
+    about = "AuroDownloader : ligne de commande",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 struct Cli {
+    /// Affiche l'aide (-h : résumé)
+    #[arg(short = 'h', long = "help", action = clap::ArgAction::Help, global = true)]
+    help: Option<bool>,
+
+    /// Affiche la version
+    #[arg(short = 'V', long = "version", action = clap::ArgAction::Version)]
+    version: Option<bool>,
+
     /// Point d'accès du moteur : canal nommé (Windows) ou socket (Unix)
     #[arg(long, global = true, value_name = "NOM")]
     endpoint: Option<String>,
@@ -1490,8 +1504,48 @@ fn probe(url: &str, ca: Option<&Path>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "man_pages.rs"]
+mod man_pages;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pages de manuel d'`auro` (étape 9a), et leur installation par le paquet `.deb` :
+    /// `bundle.linux.deb.files` de `apps/desktop/tauri.bundle.json` donne toutes les pages de
+    /// `docs/man` (celles d'`aurod` comprises), sous `/usr/share/man/man1`.
+    #[test]
+    fn man_pages_are_up_to_date() {
+        use clap::CommandFactory;
+        man_pages::check("auro", Cli::command());
+
+        let path = man_pages::dir().join("../../apps/desktop/tauri.bundle.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut pages = man_pages::existing("auro");
+        pages.extend(man_pages::existing("aurod"));
+        let wanted: serde_json::Map<String, serde_json::Value> = pages
+            .iter()
+            .map(|name| {
+                (
+                    format!("/usr/share/man/man1/{name}"),
+                    serde_json::Value::String(format!("../../docs/man/{name}")),
+                )
+            })
+            .collect();
+        let files = &mut bundle["bundle"]["linux"]["deb"]["files"];
+        if std::env::var_os("AURO_UPDATE_MAN").is_some() {
+            *files = serde_json::Value::Object(wanted);
+            let text = serde_json::to_string_pretty(&bundle).unwrap() + "\n";
+            std::fs::write(&path, text).unwrap();
+            return;
+        }
+        assert_eq!(
+            files.as_object(),
+            Some(&wanted),
+            "pages du paquet .deb (tauri.bundle.json) pas à jour : AURO_UPDATE_MAN=1 cargo test -p auro-cli man_pages"
+        );
+    }
 
     #[test]
     fn days_are_read_as_lists_ranges_or_all() {

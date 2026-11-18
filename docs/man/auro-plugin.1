@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-plugin 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-plugin \- Plugins d\*(Aqhébergeurs : installer (permissions montrées d\*(Aqabord), lister, retirer
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro plugin\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIsubcommands\fR>
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Plugins d\*(Aqhébergeurs : installer (permissions montrées d\*(Aqabord), lister, retirer
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-plugin\-install(1)
+Montre un plugin (fichier .wasm) : pages, domaines demandés, empreinte ; l\*(Aqinstalle avec \-\-yes
+.TP
+auro\-plugin\-list(1)
+Liste les plugins installés et leurs permissions
+.TP
+auro\-plugin\-remove(1)
+Retire un plugin, avec son fichier
+.TP
+auro\-plugin\-enable(1)
+Active un plugin
+.TP
+auro\-plugin\-disable(1)
+Désactive un plugin (gardé, mais plus utilisé)
+.TP
+auro\-plugin\-resolve(1)
+Montre les liens qu\*(Aqun plugin trouve sur une page, numérotés
+.TP
+auro\-plugin\-add(1)
+Ajoute des liens d\*(Aqune page par son plugin (tous, ou ceux de \-\-select)

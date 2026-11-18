@@ -25,3 +25,4 @@ base64 = "0.22.1"
 auro-engine = { path = "../engine", features = ["testing"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
+clap_mangen = "0.3.4"

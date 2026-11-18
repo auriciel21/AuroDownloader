@@ -1,0 +1,57 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-schedule-set 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-schedule\-set \- Donne à une file une plage horaire, qui remplace sa planification
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro schedule set\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-q\fR|\fB\-\-queue\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-then\fR] <\fB\-\-days\fR> <\fB\-\-from\fR> <\fB\-\-to\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Donne à une file une plage horaire, qui remplace sa planification
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-\-days\fR \fI<DAYS>\fR
+Jours : « 1\-5 », « 6,7 » ou « tous » (1 : lundi, 7 : dimanche)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-from\fR \fI<HH:MM>\fR
+Début de la plage, HH:MM
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-to\fR \fI<HH:MM>\fR
+Fin de la plage, HH:MM ; avant le début, la plage passe minuit
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-q\fR, \fB\-\-queue\fR \fI<QUEUE>\fR
+File (nom ou identifiant ; la principale par défaut)
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-then\fR \fI<THEN>\fR [default: none]
+Quand la file n\*(Aqa plus rien à télécharger : none, sleep (veille) ou shutdown (extinction), annoncée 60 s avant
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+none
+.IP \(bu 2
+sleep
+.IP \(bu 2
+shutdown
+.RE

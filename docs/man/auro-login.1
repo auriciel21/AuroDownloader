@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-login 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-login \- Identifiants de sites (Basic, Digest, FTP, SFTP) : envoyés quand un serveur du site les demande ; le mot de passe va au coffre du système
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro login\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIsubcommands\fR>
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Identifiants de sites (Basic, Digest, FTP, SFTP) : envoyés quand un serveur du site les demande ; le mot de passe va au coffre du système
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-login\-list(1)
+Liste les sites et leurs noms d\*(Aqutilisateur (jamais les mots de passe)
+.TP
+auro\-login\-set(1)
+Enregistre ou modifie les identifiants d\*(Aqun site. Le mot de passe est demandé sans écho ; il n\*(Aqest jamais un argument, qui resterait dans l\*(Aqhistorique du terminal
+.TP
+auro\-login\-remove(1)
+Retire les identifiants d\*(Aqun site

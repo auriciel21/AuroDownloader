@@ -1,0 +1,141 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro \- AuroDownloader : ligne de commande
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIsubcommands\fR>
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+AuroDownloader : ligne de commande
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Affiche la version
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-add(1)
+Ajoute des téléchargements au moteur, sans attendre
+.TP
+auro\-get(1)
+Télécharge un fichier et suit l\*(Aqavancement (Ctrl\-C met la tâche en pause)
+.TP
+auro\-list(1)
+Liste les tâches
+.TP
+auro\-pause(1)
+Met des tâches en pause
+.TP
+auro\-resume(1)
+Remet en file des tâches en pause ou en échec
+.TP
+auro\-cancel(1)
+Annule des tâches
+.TP
+auro\-remove(1)
+Retire de la liste des tâches finies (terminées, en échec ou annulées)
+.TP
+auro\-restart(1)
+Retélécharge depuis le début des tâches terminées, en échec, annulées ou en pause
+.TP
+auro\-move(1)
+Déplace ou renomme le fichier d\*(Aqune tâche qui ne tourne pas (le fichier final d\*(Aqune tâche terminée, le fichier partiel des autres)
+.TP
+auro\-refresh(1)
+Remplace l\*(Aqadresse d\*(Aqune tâche qui ne tourne pas, par exemple un lien expiré ; pour une tâche commencée, la nouvelle adresse doit donner le même fichier
+.TP
+auro\-mirror(1)
+Ajoute un miroir à une tâche pas encore terminée (le même fichier ailleurs) ; sans adresse, montre ses sources : rang, état, débit, raison d\*(Aqun refus
+.TP
+auro\-checksum(1)
+Donne, change ou retire l\*(Aqempreinte attendue du fichier d\*(Aqune tâche pas encore terminée ; après un échec CHECKSUM_MISMATCH, `auro resume` vérifie de nouveau le fichier reçu, sans le retélécharger
+.TP
+auro\-watch(1)
+Suit l\*(Aqavancement des tâches (toutes celles en cours par défaut)
+.TP
+auro\-links(1)
+Liens d\*(Aqune page, d\*(Aqun fichier texte ou CSV, ou de l\*(Aqentrée standard (« \- ») : nom, taille et adresse des fichiers trouvés ; avec \-\-add, les ajoute
+.TP
+auro\-metalink(1)
+Contenu d\*(Aqun fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers, rangs, empreintes et sources, sans rien ajouter
+.TP
+auro\-files(1)
+Fichiers d\*(Aqun torrent ; avec \-\-select, ceux à télécharger (les autres sont laissés)
+.TP
+auro\-limit(1)
+Limite de débit, globale par défaut, ou d\*(Aqune tâche ou d\*(Aqune file ; sans débit, l\*(Aqaffiche. Elle s\*(Aqapplique aussitôt aux téléchargements en cours
+.TP
+auro\-config(1)
+Réglages du moteur : sans argument, tous ; avec une clé, le sien ; avec une valeur, le change (true/false, un nombre, un texte, ou « none » pour retirer la valeur). Par exemple : torrent.ratioLimit 1.5, torrent.interface none, media.autoUpdate false
+.TP
+auro\-video(1)
+Vidéos de pages web, par yt\-dlp et ffmpeg (sites sans DRM)
+.TP
+auro\-history(1)
+Historique des téléchargements, les plus récents d\*(Aqabord (terminés, et ceux en échec ou annulés une fois retirés de la liste)
+.TP
+auro\-proxy(1)
+Proxy des connexions HTTP(S) : celui du système (par défaut), aucun, ou un proxy choisi ; sans argument, l\*(Aqaffiche
+.TP
+auro\-rules(1)
+Règles de rangement : dossier, nom et commande de fin des tâches ajoutées sans dossier (\-\-auto, extension, page) ; la première règle activée qui correspond l\*(Aqemporte. Sans argument, les montre
+.TP
+auro\-diagnostic(1)
+Diagnostic du moteur, sans adresses ni identifiants : état résumé et journaux nettoyés, montrés ; avec \-\-save, enregistrés dans une archive .zip à joindre à un signalement
+.TP
+auro\-dir(1)
+Dossier des téléchargements du moteur, pour les ajouts sans dossier (extension, application) ; sans argument, l\*(Aqaffiche
+.TP
+auro\-queue(1)
+Files de téléchargement
+.TP
+auro\-login(1)
+Identifiants de sites (Basic, Digest, FTP, SFTP) : envoyés quand un serveur du site les demande ; le mot de passe va au coffre du système
+.TP
+auro\-hostkey(1)
+Clés des serveurs SSH (SFTP) : acceptées, en attente ; accepter une clé relance les tâches qu\*(Aqelle bloquait
+.TP
+auro\-remote(1)
+Interface web distante : état, ouverture, adresse d\*(Aqécoute
+.TP
+auro\-plugin(1)
+Plugins d\*(Aqhébergeurs : installer (permissions montrées d\*(Aqabord), lister, retirer
+.TP
+auro\-token(1)
+Jetons de l\*(Aqinterface distante (lecture, ajout ou contrôle ; jamais administration)
+.TP
+auro\-schedule(1)
+Plages horaires d\*(Aqune file et action de fin (veille, extinction)
+.TP
+auro\-engine(1)
+Moteur : démarrage, état, arrêt
+.TP
+auro\-probe(1)
+Interroge un serveur : taille, plages acceptées, validateurs et nom du fichier
+.TP
+auro\-db(1)
+Gestion d\*(Aqune base de données du moteur
+.TP
+auro\-direct(1)
+Sans moteur : exécute une tâche avec la bibliothèque (bancs, dépannage)

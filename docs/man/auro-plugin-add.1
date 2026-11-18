@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-plugin-add 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-plugin\-add \- Ajoute des liens d\*(Aqune page par son plugin (tous, ou ceux de \-\-select)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro plugin add\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-select\fR] [\fB\-\-endpoint\fR] [\fB\-\-paused\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIPAGE\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Ajoute des liens d\*(Aqune page par son plugin (tous, ou ceux de \-\-select)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-o\fR, \fB\-\-dir\fR \fI<DIR>\fR [default: .]
+Dossier de destination
+.TP
+\fB\-\-select\fR \fI<RANGS>\fR
+Liens à ajouter : « 0,2\-4 » (rangs montrés par auro plugin resolve)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-paused\fR
+Ajouter en pause
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+<\fIPAGE\fR>
+

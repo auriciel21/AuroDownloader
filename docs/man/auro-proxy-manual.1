@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-proxy-manual 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-proxy\-manual \- Un proxy choisi : http://hôte:port, https://…, socks5://… ou socks5h://… (le proxy résout alors les noms). Les torrents n\*(Aqy passent jamais. Avec \-\-user, le mot de passe est demandé sans écho et rangé au coffre du système
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro proxy manual\fR [\fB\-\-except\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-\-endpoint\fR] [\fB\-\-password\-stdin\fR] [\fB\-\-keep\-password\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIURL\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Un proxy choisi : http://hôte:port, https://…, socks5://… ou socks5h://… (le proxy résout alors les noms). Les torrents n\*(Aqy passent jamais. Avec \-\-user, le mot de passe est demandé sans écho et rangé au coffre du système
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-\-except\fR \fI<HÔTES>\fR
+Hôtes joints en direct, séparés par des virgules (localhost,.lan,192.168.0.0/16)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-u\fR, \fB\-\-user\fR \fI<USER>\fR
+
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-password\-stdin\fR
+Lire le mot de passe sur l\*(Aqentrée standard (une ligne), pour un script
+.TP
+\fB\-\-keep\-password\fR
+Garder le mot de passe déjà enregistré
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+<\fIURL\fR>
+

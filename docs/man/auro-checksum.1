@@ -1,0 +1,39 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-checksum 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-checksum \- Donne, change ou retire l\*(Aqempreinte attendue du fichier d\*(Aqune tâche pas encore terminée ; après un échec CHECKSUM_MISMATCH, `auro resume` vérifie de nouveau le fichier reçu, sans le retélécharger
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro checksum\fR [\fB\-\-clear\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fITASK_ID\fR> [\fIEMPREINTE\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Donne, change ou retire l\*(Aqempreinte attendue du fichier d\*(Aqune tâche pas encore terminée ; après un échec CHECKSUM_MISMATCH, `auro resume` vérifie de nouveau le fichier reçu, sans le retélécharger
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-\-clear\fR
+Retirer l\*(Aqempreinte
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+<\fITASK_ID\fR>
+
+.TP
+[\fIEMPREINTE\fR]
+« sha256:… », « sha1:… », « md5:… », ou la valeur seule

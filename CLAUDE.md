@@ -404,6 +404,9 @@ cargo run -p auro-cli -- proxy ; proxy manual socks5://hôte:1080 --except local
 cargo run -p auro-cli -- rules ; rules add --type video --folder Vidéos --rename "{date} {nom}.{ext}" ; rules remove 1
 cargo run -p auro-cli -- rules add --exec /usr/bin/clamscan --arg {chemin} --timeout 600 ; get <url> --auto
 cargo run -p auro-cli -- video tools --install ; video info <page> ; video get <page> --subs fr,en
+# Pages de manuel (docs/man, étape 9a) : refaites après tout changement des commandes ;
+# sans la variable, le test vérifie qu'elles sont à jour (et la liste du .deb) :
+AURO_UPDATE_MAN=1 cargo test -p auro-cli -p auro-daemon man_pages
 # Sans moteur (bancs, dépannage) : la bibliothèque sur une base donnée.
 cargo run -p auro-cli -- direct --db essai.db get https://deb.debian.org/debian/README -o .
 cargo run -p auro-daemon -- --db essai.db   # moteur ; Ctrl-C l'arrête proprement
@@ -553,6 +556,8 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
   `testing::swarm`). Toute modification du module `media` ou de `store::media` passe aussi celui des
   vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`).
+- Pages de manuel : tout changement d'une commande, d'une option ou de son aide (clap) dans
+  `auro` ou `aurod` se refait dans `docs/man` (`AURO_UPDATE_MAN=1`), sinon le test échoue.
 - Tests qui démarrent un moteur dans un dossier temporaire : finir par
   `testing::stop(&engine).await` (arrêt, puis fermeture de la base attendue) ; sous Windows,
   un fichier encore ouvert ne s'efface pas et le dossier resterait dans `%TEMP%`.
