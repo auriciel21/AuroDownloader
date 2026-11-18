@@ -31,7 +31,7 @@ Hors périmètre :
 | `ui/tests/live.test.js` | La vraie page (`main.js`), branchée à un faux moteur qui tient des tâches dans tous les états. axe-core passe sur ce que le script dessine : lignes, arborescence, Propriétés de chaque état, clé SSH, menu, chaque rubrique des Options, boîtes de la barre d'outils. Le parcours au clavier est vérifié : flèches, Entrée, Maj+F10, Échap, focus qui entre dans une boîte puis revient | jsdom ne montre rien : le focus de `showModal` est imité, selon la norme HTML |
 | `ui/tests/contrast.test.js` | Les contrastes des couleurs de `style.css`, thèmes clair et sombre, couleur par couleur selon leur usage réel : 4,5:1 pour le texte (1.4.3) ; 3:1 pour le focus, les icônes et les bords des champs (1.4.11) | Couleurs pleines seulement ; les dégradés des barres de progression sont vus à la main |
 | `extension/tests/a11y.test.cjs` | axe-core sur la fenêtre de l'icône (vidéo décrite, relais absent) et sur les options, avec leurs scripts, en français et en anglais ; contrastes d'`options.css` | Comme la page |
-| `apps/android/app/src/androidTest/…/AccessibilityTest.kt` | L'application réelle, avec les contrôles de l'Accessibility Test Framework de Google à chaque action : liste vide et avec une tâche, boîte d'ajout, réglages jusqu'en bas, détails. Ces contrôles couvrent la taille des cibles, les noms lus, les doublons et les contrastes que l'outil sait mesurer | La section de la clé SSH demande un vrai serveur SFTP : elle est vue à l'essai réel (capture du 2026-11-17) |
+| `apps/android/app/src/androidTest/…/AccessibilityTest.kt` | L'application réelle, avec les contrôles de l'Accessibility Test Framework de Google à chaque action : liste vide et avec une tâche, boîte d'ajout, réglages vue par vue jusqu'en bas, détails. Ces contrôles couvrent la taille des cibles, les noms lus, les doublons et les contrastes que l'outil sait mesurer. En plus, l'arbre d'accessibilité réel d'Android, celui que lit TalkBack : tout élément cliquable porte son nom ou le tient de textes à l'intérieur, jamais d'une icône seule (A12, A13) | La section de la clé SSH demande un vrai serveur SFTP : elle est vue à l'essai réel (capture du 2026-11-17, essai TalkBack du 2026-11-18). Un élément coupé par le bord d'une zone qui défile n'est jugé que dans une vue où il est entier |
 
 **Garde-fous des tests.**
 - **axe.** Une règle qu'axe n'a pas pu exécuter compte comme un échec. Ce n'est pas
@@ -39,6 +39,9 @@ Hors périmètre :
   d'`elementFromPoint` dans jsdom, et les 20 boîtes « passaient » sans rien vérifier.
 - **Défaut glissé.** Les tests de la page et de l'extension glissent un défaut (bouton
   sans nom, champ sans étiquette) et exigent qu'il soit vu.
+- **Défauts remis.** Le contrôle de l'arbre réel d'Android a été essayé contre les deux
+  défauts trouvés par TalkBack, remis un à un dans l'application : il échoue sur chacun
+  (2026-11-18).
 
 **Lancement.**
 - Page et extension : `cd ui && npm ci --ignore-scripts`, puis `node --test ui/tests/
@@ -133,7 +136,10 @@ Colonnes :
 | A9 | Choix à bouton radio des réglages de 36 dp | 2.5.8 | Android | Hauteur de 48 dp au moins, composant `Choice` partout | 2d458f5 |
 | A10 | Aucun zoom au bureau | 1.4.4 | bureau | `zoomHotkeysEnabled` (Ctrl+, Ctrl−, Ctrl+0) | c474b91 |
 | A11 | Ligne active masquable par l'en-tête collé du tableau | 2.4.11 | page | `scroll-padding-top` | c474b91 |
+| A12 | Bouton flottant « Ajouter » sans nom pour TalkBack, inopérant au double appui : la forme à `text` et `icon` de Material 3 retire le texte de l'arbre d'accessibilité | 4.1.2, 2.5.3 | Android | Forme à contenu libre : le texte fait le nom du bouton | ce commit |
+| A13 | « Réglages » et les deux « Retour » lus sur leur icône, qui ne réagit pas au double appui : le nom était sur un nœud intérieur non cliquable | 4.1.2 | Android | Nom posé sur le bouton lui-même, icône sans description | ce commit |
 | T1 | Les tests axe des boîtes passaient sans rien vérifier | — | tests | `elementFromPoint` fourni, règle sautée = échec, défaut glissé | 960260a |
+| T2 | A12 et A13 passaient les contrôles de l'ATF et l'arbre sémantique de Compose, qui les voyaient nommés | — | tests | Contrôle de l'arbre réel d'Android (`assertButtonsNamed`) | ce commit |
 
 ## 5. Restes et risques connus
 
@@ -147,6 +153,10 @@ Colonnes :
   la notification du système le dit. À revoir si les essais réels le demandent.
 - **Contrastes mesurés par ATF.** Ils dépendent de ce que l'outil capture à l'écran ; les
   couleurs de Material 3 sont conformes par construction.
+- **Ce que l'ATF ne voit pas.** L'ATF et l'arbre sémantique de Compose ne sont pas ce que
+  lit TalkBack : A12 et A13 leur échappaient. Le contrôle de l'arbre réel les couvre
+  désormais, mais seulement pour les noms des éléments cliquables ; l'ordre de lecture et
+  les annonces restent vérifiés par les essais réels.
 - **WebKitGTK et WebView2.** Leur arbre d'accessibilité peut différer de celui de Chromium
   que modèle axe : seuls les essais réels le disent.
 
@@ -159,5 +169,5 @@ ses données. Résultats à reporter ici.
 |---|---|---|---|
 | Bureau, variante d'essai | Windows 11 | NVDA | à faire (un premier essai NVDA sur l'application installée a été fait le 2026-11-08 : fonctionnel) |
 | Bureau, AppImage sous WSLg | Ubuntu 24.04 | Orca | à faire |
-| Application Android | Android 15 (tablette) | TalkBack | à faire |
+| Application Android | Android 15 (tablette) | TalkBack | conforme le 2026-11-18, après correction d'A12 et A13 : liste, ajout, détails, clé SSH acceptée, réglages, boîte d'ajout |
 | Extension | Windows 11, Edge ou Firefox | NVDA | à faire |

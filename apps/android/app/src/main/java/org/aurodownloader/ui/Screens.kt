@@ -198,18 +198,24 @@ private fun ListScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
-                    IconButton(onClick = settings) {
-                        Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.settings))
+                    // Nom sur le bouton lui-même : posé sur l'icône, TalkBack lisait l'icône, qui ne
+                    // réagit pas (essai TalkBack du 2026-11-18).
+                    val settingsLabel = stringResource(R.string.settings)
+                    IconButton(onClick = settings, modifier = Modifier.semantics { contentDescription = settingsLabel }) {
+                        Icon(Icons.Filled.Settings, contentDescription = null)
                     }
                 },
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = add,
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text(stringResource(R.string.add)) },
-            )
+            // Forme à contenu libre : celle à `text` et `icon` retire le texte de l'arbre
+            // d'accessibilité, et le bouton restait sans nom pour TalkBack (essai du 2026-11-18).
+            // Ici le texte se fond dans le bouton, comme pour un bouton ordinaire.
+            ExtendedFloatingActionButton(onClick = add) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(12.dp))
+                Text(stringResource(R.string.add))
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
@@ -338,8 +344,9 @@ private fun DetailsScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.details)) },
                 navigationIcon = {
-                    IconButton(onClick = back) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+                    val backLabel = stringResource(R.string.back)
+                    IconButton(onClick = back, modifier = Modifier.semantics { contentDescription = backLabel }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                     }
                 },
             )
@@ -569,8 +576,9 @@ private fun SettingsScreen(app: AuroApp, snackbar: SnackbarHostState, back: () -
             TopAppBar(
                 title = { Text(stringResource(R.string.settings)) },
                 navigationIcon = {
-                    IconButton(onClick = back) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+                    val backLabel = stringResource(R.string.back)
+                    IconButton(onClick = back, modifier = Modifier.semantics { contentDescription = backLabel }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                     }
                 },
             )
