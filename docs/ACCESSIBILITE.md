@@ -131,8 +131,8 @@ Colonnes :
 | A7 | Flèche de l'arborescence de 22 px de large | 2.5.8 | page | 24 px | 960260a |
 | A8 | Bords des champs à 1,4:1 | 1.4.11 | extension | Couleur `--control` | fb10073 |
 | A9 | Choix à bouton radio des réglages de 36 dp | 2.5.8 | Android | Hauteur de 48 dp au moins, composant `Choice` partout | 2d458f5 |
-| A10 | Aucun zoom au bureau | 1.4.4 | bureau | `zoomHotkeysEnabled` (Ctrl+, Ctrl−, Ctrl+0) | étape 7d |
-| A11 | Ligne active masquable par l'en-tête collé du tableau | 2.4.11 | page | `scroll-padding-top` | étape 7d |
+| A10 | Aucun zoom au bureau | 1.4.4 | bureau | `zoomHotkeysEnabled` (Ctrl+, Ctrl−, Ctrl+0) | c474b91 |
+| A11 | Ligne active masquable par l'en-tête collé du tableau | 2.4.11 | page | `scroll-padding-top` | c474b91 |
 | T1 | Les tests axe des boîtes passaient sans rien vérifier | — | tests | `elementFromPoint` fourni, règle sautée = échec, défaut glissé | 960260a |
 
 ## 5. Restes et risques connus
