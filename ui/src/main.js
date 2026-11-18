@@ -469,6 +469,14 @@ function renderRow(taskId) {
   if (!row) {
     row = template.content.firstElementChild.cloneNode(true);
     row.dataset.taskId = taskId;
+    // Nom de la ligne : ses cellules, dans l'ordre. Chromium le tire du contenu, WebKitGTK non,
+    // et Orca ne lisait rien d'une ligne qui prend le focus (essai Orca du 2026-11-18).
+    const parts = ["name .text", "size", "pct", "state", "eta", "rate", "added"].map((sel) => {
+      const part = row.querySelector(`.${sel}`);
+      part.id = `row-${taskId}-${sel.split(" ")[0]}`;
+      return part.id;
+    });
+    row.setAttribute("aria-labelledby", parts.join(" "));
     markNeeds(row);
     rows.set(taskId, row);
   }

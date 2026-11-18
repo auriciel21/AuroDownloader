@@ -168,6 +168,19 @@ function row(taskId) {
   return window.document.querySelector(`#grid tbody tr[data-task-id="${taskId}"]`);
 }
 
+test("chaque ligne du tableau porte un nom tiré de ses cellules (WebKitGTK ne le calcule pas)", () => {
+  const document = window.document;
+  for (const { taskId } of TASKS) {
+    const r = row(taskId);
+    const ids = (r.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean);
+    const parts = ids.map((id) => document.getElementById(id));
+    assert.ok(parts.length >= 4 && parts.every((el) => el && r.contains(el)), `${taskId} : ${ids.join(" ")}`);
+    const name = parts.map((el) => el.textContent.trim()).filter(Boolean).join(" ");
+    assert.ok(name.startsWith(`${taskId}.iso`), name);
+    assert.ok(name.includes(r.querySelector(".state").textContent.trim()), name);
+  }
+});
+
 function key(target, key, extra = {}) {
   target.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...extra }));
 }

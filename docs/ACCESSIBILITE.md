@@ -140,10 +140,11 @@ Colonnes :
 | A11 | Ligne active masquable par l'en-tête collé du tableau | 2.4.11 | page | `scroll-padding-top` | c474b91 |
 | A12 | Bouton flottant « Ajouter » sans nom pour TalkBack, inopérant au double appui : la forme à `text` et `icon` de Material 3 retire le texte de l'arbre d'accessibilité | 4.1.2, 2.5.3 | Android | Forme à contenu libre : le texte fait le nom du bouton | 07a08d5 |
 | A13 | « Réglages » et les deux « Retour » lus sur leur icône, qui ne réagit pas au double appui : le nom était sur un nœud intérieur non cliquable | 4.1.2 | Android | Nom posé sur le bouton lui-même, icône sans description | 07a08d5 |
-| A14 | Erreurs et annonces muettes pendant qu'une boîte est ouverte : bandeau d'erreur et zone `aria-live` de la fenêtre sont inertes derrière une boîte modale (ajout refusé, miroir, empreinte, limite des Propriétés, action de fin) | 4.1.3, 3.3.1 | page | Messages dans la boîte au premier plan, zones de chaque boîte | ce commit |
-| A15 | Ajout refusé lu en dernier, après tout le texte de la boîte, et sans l'état « non valide » : la boîte se refermait puis se rouvrait, et NVDA la relisait en entier | 3.3.1, 4.1.3 | page | La boîte « Ajouter » reste ouverte jusqu'au succès ; l'erreur est liée au champ (`aria-invalid`, `aria-describedby`) avant qu'il prenne le focus (aussi : empreinte et miroir des Propriétés, champ refusé d'une règle) | ce commit |
-| A16 | Première annonce d'une boîte muette (« Empreinte retirée ») : zone `aria-live` créée au moment du message | 4.1.3 | page | Zones de chaque boîte créées au chargement | ce commit |
-| A17 | Échec de suppression d'identifiants ou d'une clé SSH invisible : effacé aussitôt par la relecture de la liste | 3.3.1 | page | Liste relue, focus placé, puis le message | ce commit |
+| A14 | Erreurs et annonces muettes pendant qu'une boîte est ouverte : bandeau d'erreur et zone `aria-live` de la fenêtre sont inertes derrière une boîte modale (ajout refusé, miroir, empreinte, limite des Propriétés, action de fin) | 4.1.3, 3.3.1 | page | Messages dans la boîte au premier plan, zones de chaque boîte | 130103b |
+| A15 | Ajout refusé lu en dernier, après tout le texte de la boîte, et sans l'état « non valide » : la boîte se refermait puis se rouvrait, et NVDA la relisait en entier | 3.3.1, 4.1.3 | page | La boîte « Ajouter » reste ouverte jusqu'au succès ; l'erreur est liée au champ (`aria-invalid`, `aria-describedby`) avant qu'il prenne le focus (aussi : empreinte et miroir des Propriétés, champ refusé d'une règle) | 130103b |
+| A16 | Première annonce d'une boîte muette (« Empreinte retirée ») : zone `aria-live` créée au moment du message | 4.1.3 | page | Zones de chaque boîte créées au chargement | 130103b |
+| A17 | Échec de suppression d'identifiants ou d'une clé SSH invisible : effacé aussitôt par la relecture de la liste | 3.3.1 | page | Liste relue, focus placé, puis le message | 130103b |
+| A18 | Ligne du tableau muette sous Orca : sans nom propre, WebKitGTK ne le tire pas de ses cellules (Chromium, oui) | 4.1.2 | page (bureau Linux) | Chaque ligne nommée par ses cellules (`aria-labelledby`) | ce commit |
 | T1 | Les tests axe des boîtes passaient sans rien vérifier | — | tests | `elementFromPoint` fourni, règle sautée = échec, défaut glissé | 960260a |
 | T2 | A12 et A13 passaient les contrôles de l'ATF et l'arbre sémantique de Compose, qui les voyaient nommés | — | tests | Contrôle de l'arbre réel d'Android (`assertButtonsNamed`) | 07a08d5 |
 
@@ -152,8 +153,19 @@ Colonnes :
 - **Couleur des barres de progression d'Android.** Le vert des tâches terminées
   (`#43A047`) est à environ 3,3:1 sur une surface blanche du thème clair : il tient le minimum de
   1.4.11 de justesse. L'état est toujours écrit à côté.
-- **Zoom sous Linux.** Tauri l'imite par `set_webview_zoom` (pas de 20 %). À vérifier à
-  l'essai Orca.
+- **Zoom sous Linux.** Tauri l'imite par `set_webview_zoom` (pas de 20 %) : vérifié à
+  l'essai Orca, correct.
+- **Orca 46.1 et WebKitGTK.** Orca traite l'application comme une application WebKitGTK
+  (script `WebKitGtk`), pas comme une page de navigateur. Constaté le 2026-11-18, sans
+  correction possible dans l'application :
+  - les lettres restent des raccourcis de navigation structurelle dans un champ : il faut
+    Orca+Z avant de taper, et Orca les réactive quand le focus revient sur la boîte ;
+  - les zones `aria-live` ne sont pas annoncées (le script ne sait que s'y déplacer) :
+    « Empreinte retirée », « Miroir ajouté »… se taisent ; une erreur liée à un champ
+    (A15) est lue, avec lui, quand il prend le focus. Les versions suivantes d'Orca ne sont
+    pas vérifiées.
+- **Ligne nommée (A18).** Le nom tiré des cellules change ce que lit NVDA sur une ligne :
+  à revérifier avec NVDA.
 - **Annonces des changements d'état.** Une tâche qui finit ou échoue n'est pas annoncée
   par la zone `aria-live`. C'est voulu (pas de bavardage pendant les téléchargements) ;
   la notification du système le dit. À revoir si les essais réels le demandent.
@@ -181,6 +193,7 @@ ses données. Résultats à reporter ici.
 | Essai | Système | Lecteur | État |
 |---|---|---|---|
 | Bureau, variante d'essai | Windows 11 | NVDA | conforme le 2026-11-18, après correction d'A14 à A17 : fenêtre, tableau, menu, Propriétés, boîte « Ajouter » (erreur et succès), Options, zoom, annonces des Propriétés (empreinte, limite). Un premier essai sur l'application installée avait été fait le 2026-11-08 : fonctionnel |
-| Bureau, AppImage sous WSLg | Ubuntu 24.04 | Orca | à faire |
+| Bureau, variante d'essai sous WSLg | Ubuntu 24.04 | Orca 46.1 | conforme le 2026-11-18 après correction d'A18, avec les limites d'Orca 46 (section 5) : noms et rôles, tableau (lignes lues), menu par la touche Menu, Propriétés, boîte « Ajouter » (champ non valide), Options, zoom. Annonces `aria-live` non lues par Orca 46 |
+| Préparation de l'essai Orca sous WSLg | — | — | Écueils de l'environnement, pas de l'application : NVDA (Windows) garde Insert, à quitter pendant l'essai ; Verr. Maj n'arrive que comme état, inutilisable comme touche Orca ; Maj+F10 retenu par la fenêtre WSLg (la touche Menu ouvre le menu) ; speech-dispatcher lancé par systemd sans `PULSE_SERVER` (bloquait Orca) ; `xkbcomp` manquant (`x11-xkb-utils`) ; crochet d'apport qui figeait Orca ; Orca en français par `language-pack-fr` et `language-pack-gnome-fr` |
 | Application Android | Android 15 (tablette) | TalkBack | conforme le 2026-11-18, après correction d'A12 et A13 : liste, ajout, détails, clé SSH acceptée, réglages, boîte d'ajout |
 | Extension | Windows 11, Edge ou Firefox | NVDA | à faire |
