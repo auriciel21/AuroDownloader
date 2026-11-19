@@ -113,8 +113,9 @@ pub struct Resolution {
 impl Resolution {
     /// L'en-tête `Cookie` du lien `link`, s'il y a des cookies du site pour son hôte.
     pub fn cookie_for(&self, link: &Link) -> Option<String> {
-        let host = Url::parse(&link.url).ok()?.host_str()?.to_owned();
-        self.jar.header_for(&host)
+        let url = Url::parse(&link.url).ok()?;
+        self.jar
+            .header_for(url.host_str()?, url.scheme() == "https")
     }
 }
 
@@ -211,22 +212,34 @@ impl Plugins {
         self.dir.join(format!("{digest}.wasm"))
     }
 
-    /// Range le fichier d'un plugin sous son empreinte : écrit sous un nom provisoire,
-    /// vidé sur disque, puis renommé ; rien à faire s'il est déjà là.
+    /// Range le fichier d'un plugin sous son empreinte : écrit sous un nom provisoire propre
+    /// à cet appel, vidé sur disque, puis renommé. Un fichier déjà là n'est gardé que si son
+    /// empreinte est la bonne : un fichier abîmé ou modifié est réécrit, si bien qu'une
+    /// réinstallation répare (audit D5).
     pub fn save(&self, digest: &str, bytes: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         let path = self.file(digest);
-        if path.exists() {
+        if std::fs::read(&path).is_ok_and(|present| digest_of(&present) == digest) {
             return Ok(());
         }
         std::fs::create_dir_all(&self.dir)?;
-        let partial = self.dir.join(format!("{digest}.wasm.tmp"));
-        {
-            let mut file = std::fs::File::create(&partial)?;
+        let partial = self
+            .dir
+            .join(format!("{digest}.{}.wasm.tmp", crate::store::new_id()));
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial)?;
             file.write_all(bytes)?;
             file.sync_all()?;
+            drop(file);
+            std::fs::rename(&partial, &path)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
         }
-        std::fs::rename(&partial, &path)
+        written
     }
 
     /// Efface le fichier d'un plugin (absent : rien à faire).

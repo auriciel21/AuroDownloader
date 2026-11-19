@@ -40,10 +40,15 @@ pub fn is_public(ip: IpAddr) -> bool {
             }
             let s = v6.segments();
             let o = v6.octets();
-            // NAT64 (RFC 6052, et le préfixe d'usage local 64:ff9b:1::/48 de RFC 8215), forme
-            // traduite `::ffff:0:a.b.c.d` (RFC 2765) : l'adresse IPv4 est dans les 32 derniers
-            // bits. Revue de sécurité (étape 5) : préfixe local et forme traduite ajoutés.
-            if (s[0] == 0x64 && s[1] == 0xff9b && (s[2..6] == [0; 4] || s[2] == 1))
+            // Préfixe NAT64 d'usage local 64:ff9b:1::/48 (RFC 8215) : jamais routé sur
+            // Internet, et l'adresse IPv4 n'y est pas toujours dans les 32 derniers bits (un
+            // /48 la place aux octets 6, 7, 9 et 10, RFC 6052) : toujours refusé (audit D9).
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1 {
+                return false;
+            }
+            // NAT64 bien connu 64:ff9b::/96 (RFC 6052), forme traduite `::ffff:0:a.b.c.d`
+            // (RFC 2765) : l'adresse IPv4 est dans les 32 derniers bits.
+            if (s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4])
                 || (s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0)
             {
                 return is_public_v4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
@@ -180,6 +185,8 @@ mod tests {
             "::ffff:192.168.0.1",
             "64:ff9b::a00:1",
             "64:ff9b:1::c0a8:101",
+            // Audit D9 : un /48 local qui finit comme une adresse publique (8.8.8.8).
+            "64:ff9b:1:c0a8:1::808:808",
             "::ffff:0:127.0.0.1",
             "2002:c0a8:0101::1",
             "2002:7f00:1::",

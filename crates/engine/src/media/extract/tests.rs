@@ -144,6 +144,39 @@ fn subtitles_are_picked_by_format_and_protocol() {
     assert_eq!(parse_probe(&answer).unwrap().subtitles, ["de", "en", "fr"]);
 }
 
+/// Audit V3 et V21 : une extension hostile ne sort jamais du dossier (elle devient `bin`),
+/// et un flux n'est direct que si son adresse est en HTTP(S).
+#[test]
+fn hostile_extensions_and_non_http_streams_are_refused() {
+    let answer = json!({
+        "title": "t", "duration": 1.0,
+        "requested_formats": [
+            {"format_id": "v", "ext": "mp4/../../x", "vcodec": "avc1", "acodec": "none",
+             "protocol": "https", "url": "https://exemple.org/v.mp4"},
+            {"format_id": "a", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
+             "protocol": "https", "url": "ftp://exemple.org/a.m4a"}
+        ]
+    });
+    let resolution = parse_resolution(&answer).unwrap();
+    assert_eq!(resolution.streams[0].ext, "bin");
+    assert!(resolution.streams[0].direct);
+    assert_eq!(resolution.streams[1].ext, "m4a");
+    assert!(
+        !resolution.streams[1].direct,
+        "adresse FTP : pas une tâche interne"
+    );
+    for bad in ["", "a b", "trèslongueextension", "mp4\\x", ".mp4"] {
+        let probe = parse_probe(&json!({"title": "t", "format_id": "0", "ext": bad,
+                                        "protocol": "https"}))
+        .unwrap();
+        assert!(
+            probe.formats[0].ext.is_empty() || probe.formats[0].ext == "bin",
+            "{bad:?} → {}",
+            probe.formats[0].ext
+        );
+    }
+}
+
 #[test]
 fn a_single_format_video_and_a_playlist() {
     // Vidéo à format unique : décrite à la racine.

@@ -15,8 +15,10 @@
     }
   };
 
+  // Seuls les gestes de l'utilisateur comptent : un clic fabriqué par la page
+  // (`a.click()`, `dispatchEvent`) n'a pas `isTrusted` (audit W1, W10).
   const note = (event) => {
-    if (event.altKey) send({ type: "altClick" }).catch(() => {});
+    if (event.isTrusted && event.altKey) send({ type: "altClick" }).catch(() => {});
   };
   for (const kind of ["mousedown", "click", "auxclick"]) {
     addEventListener(kind, note, { capture: true, passive: true });
@@ -53,6 +55,10 @@
         passing = null;
         return;
       }
+      // Un lien magnet « cliqué » par un script de la page (même d'une iframe publicitaire)
+      // suit son chemin habituel, où le navigateur demande confirmation : sinon le torrent
+      // démarrerait, puis partagerait, sans aucun geste de l'utilisateur.
+      if (!event.isTrusted) return;
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !captureMagnet) return;
       event.preventDefault();
       const giveBack = () => {
@@ -61,7 +67,7 @@
       };
       // Rendu au navigateur seulement si AuroDownloader est injoignable (ou l'extension
       // retirée) ; un refus du moteur est montré sur l'icône.
-      send({ type: "magnet", url: a.href, page: location.href }).then(
+      send({ type: "magnet", url: a.href }).then(
         (reply) => { if (reply?.giveBack) giveBack(); },
         giveBack,
       );

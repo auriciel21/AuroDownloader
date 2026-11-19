@@ -43,6 +43,8 @@ struct Cookie {
     /// Hôte (cookie sans `Domain`) ou domaine.
     domain: String,
     host_only: bool,
+    /// `Secure` : ne repart qu'en HTTPS (audit D11).
+    secure: bool,
     name: String,
     value: String,
 }
@@ -61,14 +63,22 @@ impl Jar {
         let host = host.to_ascii_lowercase();
         let mut domain = None;
         let mut removed = false;
+        let mut secure = false;
         for attribute in parts {
             let (key, val) = attribute.split_once('=').unwrap_or((attribute, ""));
             let key = key.trim().to_ascii_lowercase();
             let val = val.trim();
             if key == "domain" {
                 domain = Some(val.trim_start_matches('.').to_ascii_lowercase());
-            } else if key == "max-age" && val.parse::<i64>().is_ok_and(|n| n <= 0) {
+            } else if (key == "max-age" && val.parse::<i64>().is_ok_and(|n| n <= 0))
+                // Une date passée efface le cookie (forme courante d'un effacement).
+                || (key == "expires"
+                    && httpdate::parse_http_date(val)
+                        .is_ok_and(|t| t <= std::time::SystemTime::now()))
+            {
                 removed = true;
+            } else if key == "secure" {
+                secure = true;
             }
         }
         let (domain, host_only) = match domain {
@@ -87,18 +97,21 @@ impl Jar {
             self.cookies.push(Cookie {
                 domain,
                 host_only,
+                secure,
                 name: name.to_owned(),
                 value: value.to_owned(),
             });
         }
     }
 
-    /// L'en-tête `Cookie` à envoyer à `host`, s'il y a des cookies pour lui.
-    pub fn header_for(&self, host: &str) -> Option<String> {
+    /// L'en-tête `Cookie` à envoyer à `host`, s'il y a des cookies pour lui ; un cookie
+    /// `Secure` seulement quand `https` (jamais en clair).
+    pub fn header_for(&self, host: &str, https: bool) -> Option<String> {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         let pairs: Vec<String> = self
             .cookies
             .iter()
+            .filter(|c| https || !c.secure)
             .filter(|c| {
                 if c.host_only {
                     c.domain == host
@@ -244,7 +257,7 @@ impl Session {
                 .request(method.clone(), url.clone())
                 .headers(headers.clone())
                 .timeout(left);
-            if let Some(cookie) = self.jar.header_for(&host)
+            if let Some(cookie) = self.jar.header_for(&host, url.scheme() == "https")
                 && let Ok(value) = HeaderValue::from_str(&cookie)
             {
                 builder = builder.header(header::COOKIE, value);
@@ -322,27 +335,51 @@ mod tests {
         // Un domaine qui ne couvre pas l'hôte : refusé.
         jar.store("www.fichiers.exemple", "evil=1; Domain=autre.exemple");
         assert_eq!(
-            jar.header_for("www.fichiers.exemple").as_deref(),
+            jar.header_for("www.fichiers.exemple", true).as_deref(),
             Some("session=abc; large=1")
         );
         assert_eq!(
-            jar.header_for("cdn.fichiers.exemple").as_deref(),
+            jar.header_for("cdn.fichiers.exemple", true).as_deref(),
             Some("large=1")
         );
-        assert_eq!(jar.header_for("autre.exemple"), None);
+        assert_eq!(jar.header_for("autre.exemple", true), None);
         // Remplacé, puis effacé.
         jar.store("www.fichiers.exemple", "session=def");
         assert_eq!(
-            jar.header_for("www.fichiers.exemple").as_deref(),
+            jar.header_for("www.fichiers.exemple", true).as_deref(),
             Some("large=1; session=def")
         );
         jar.store("www.fichiers.exemple", "session=; Max-Age=0");
         assert_eq!(
-            jar.header_for("www.fichiers.exemple").as_deref(),
+            jar.header_for("www.fichiers.exemple", true).as_deref(),
             Some("large=1")
         );
         jar.store("x.exemple", "pas de signe égal");
-        assert_eq!(jar.header_for("x.exemple"), None);
+        assert_eq!(jar.header_for("x.exemple", true), None);
+    }
+
+    /// Audit D11 : un cookie `Secure` ne repart jamais en clair ; une date d'expiration
+    /// passée l'efface, comme `Max-Age=0`.
+    #[test]
+    fn secure_cookies_stay_on_https_and_expired_ones_go() {
+        let mut jar = Jar::default();
+        jar.store("f.exemple", "s=1; Secure; HttpOnly");
+        jar.store("f.exemple", "clair=1");
+        assert_eq!(
+            jar.header_for("f.exemple", true).as_deref(),
+            Some("s=1; clair=1")
+        );
+        assert_eq!(
+            jar.header_for("f.exemple", false).as_deref(),
+            Some("clair=1")
+        );
+        jar.store("f.exemple", "clair=; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        assert_eq!(jar.header_for("f.exemple", false), None);
+        jar.store("f.exemple", "tard=1; Expires=Fri, 01 Jan 2100 00:00:00 GMT");
+        assert_eq!(
+            jar.header_for("f.exemple", false).as_deref(),
+            Some("tard=1")
+        );
     }
 
     #[test]

@@ -139,4 +139,27 @@ fn page_headers_stay_with_their_host() {
         other,
         [("User-Agent".to_owned(), "Navigateur/1".to_owned())]
     );
+    // Audit T6 : même hôte, mais en clair ou sur un autre port : le seul `User-Agent`.
+    for elsewhere in ["http://a.exemple/f", "https://a.exemple:8443/f"] {
+        assert_eq!(
+            headers_for(&headers, "https://a.exemple/f", elsewhere),
+            [("User-Agent".to_owned(), "Navigateur/1".to_owned())],
+            "{elsewhere}"
+        );
+    }
+    // Le port par défaut écrit ou non, et la casse de l'hôte, ne changent rien.
+    assert_eq!(
+        headers_for(&headers, "https://a.exemple/f", "https://A.EXEMPLE:443/g"),
+        headers
+    );
+}
+
+#[test]
+fn same_origin_compares_scheme_host_and_port() {
+    use crate::net::same_origin;
+    assert!(same_origin("ftp://h/a", "ftp://H:21/b"));
+    assert!(same_origin("sftp://h/a", "sftp://h/b"));
+    assert!(!same_origin("sftp://h/a", "sftp://h:2222/b"));
+    assert!(!same_origin("https://h/a", "http://h/a"));
+    assert!(!same_origin("https://h/a", "pas une adresse"));
 }

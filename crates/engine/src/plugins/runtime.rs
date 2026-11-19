@@ -28,6 +28,8 @@ pub const LIMITS: Limits = Limits {
 /// réponse de `fetch` (page) peut aller jusqu'à 8 Mio, la sortie de `auro_resolve` aussi.
 const MAX_MESSAGE: usize = 1 << 20;
 const MAX_OUTPUT: usize = 8 << 20;
+/// Réponse d'`auro.fetch` remise au plugin, encodée en JSON, au plus (audit D12).
+const MAX_ANSWER: usize = 12 << 20;
 /// Lignes de journal gardées par résolution.
 const MAX_LOGS: usize = 50;
 /// Entrées d'une table de fonctions, au plus, déclarées ou agrandies (revue de sécurité,
@@ -48,7 +50,11 @@ fn engine(limits: &Limits) -> Engine {
     let mut config = Config::default();
     config
         .consume_fuel(true)
-        .set_max_recursion_depth(limits.depth);
+        .set_max_recursion_depth(limits.depth)
+        // Bornes de la lecture du module (fonctions, globales, segments, paramètres,
+        // taille moyenne d'une fonction), recommandées par wasmi contre un module
+        // malveillant : la compilation aussi a ses limites (audit D8).
+        .enforced_limits(wasmi::EnforcedLimits::strict());
     Engine::new(&config)
 }
 
@@ -79,7 +85,13 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
             "fetch",
             |mut caller: Caller<'_, State>, ptr: i32, len: i32| -> Result<i64, Error> {
                 let request = read(&caller, ptr, len)?;
-                let answer = (caller.data_mut().fetch)(&request);
+                let mut answer = (caller.data_mut().fetch)(&request);
+                // Une réponse de 8 Mio d'octets de contrôle grossit jusqu'à six fois une
+                // fois échappée en JSON : bornée avant d'entrer dans la mémoire du plugin
+                // (audit D12).
+                if answer.len() > MAX_ANSWER {
+                    answer = br#"{"error": "reponse trop grosse une fois encodee"}"#.to_vec();
+                }
                 let alloc = caller
                     .get_export("auro_alloc")
                     .and_then(|e| e.into_func())

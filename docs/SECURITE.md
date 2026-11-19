@@ -49,7 +49,7 @@ compte de l'utilisateur. Ils ont de toute façon tous ses droits.
 | Dossier | Une tâche d'un jeton reste sous le dossier des téléchargements, chemin résolu (`canonicalize` : liens et jonctions) | `rpc::tests` (sous-dossier, `..`, lien vers ailleurs) |
 | Réseau interne (SSRF) | Résolveur filtrant, à chaque connexion et à chaque redirection ; adresses écrites telles quelles refusées ; sans mandataire ; pour toute la vie de la tâche | `net::reach::tests`, `net::tests`, `rpc::tests` ; **6to4 et NAT64 local ajoutés**, voir C6 |
 | Secrets | Jamais rendus par le protocole ; les cookies d'une tâche ne suivent pas un changement d'hôte ; réglages `remote.*` cachés à un jeton | `rpc::tests` |
-| Page | Liste blanche de fichiers intégrés ; politique de sécurité stricte ; `X-Frame-Options`, `nosniff`, `no-referrer`, `no-store` ; aucune donnée insérée par `innerHTML` (seulement deux icônes fixes) | `remote::page::tests`, lecture de `ui/src` |
+| Page | Liste blanche de fichiers intégrés ; politique de sécurité stricte ; `X-Frame-Options`, `nosniff`, `no-referrer`, `no-store` ; aucune donnée insérée par `innerHTML` (seulement deux icônes fixes, et la copie du guide, fragment figé dans le binaire, produit avec échappement et vérifié sans script ni attribut `on*` par `scripts/tests/guide.test.mjs` ; mise à jour de l'audit du 2026-11-19, D15) | `remote::page::tests`, lecture de `ui/src` |
 | Canal local | Canal nommé réservé au SID de l'utilisateur, ou socket `0600` dans un dossier `0700` ; **le client vérifie désormais le propriétaire**, voir C3 | `winsec::tests`, `rpc::local::tests` |
 
 ### Plugins
@@ -199,6 +199,53 @@ machine à plusieurs comptes.
   - Délai propre à chaque règle ; à son terme, ou à l'arrêt du moteur, tout l'arbre de
     processus est tué (Job Object sous Windows, groupe sous Linux).
   - Pas de commande sous Android.
+
+## Complément du 2026-11-19 : audit du code avant la version 1 (`docs/AUDIT.md`, lot 3)
+
+Constats de sécurité de l'audit, corrigés avec un test qui échouait avant le correctif
+(sauf mention) :
+
+- **D1, jeton et tâches locales.** La poignée d'une connexion à jeton ne contrôlait le
+  dossier qu'à l'ajout et au déplacement vers un autre dossier : sur une tâche locale
+  existante, elle pouvait changer l'adresse, retélécharger, renommer sur place ou ajouter
+  un miroir, et faire écrire son contenu dans un dossier quelconque. Ces quatre actions
+  exigent désormais une tâche sous le dossier des téléchargements (`DEST_FORBIDDEN`,
+  `Engine::guard_folder`). Le renouvellement d'un lien de plugin passe par une poignée
+  « réseau public seulement » du moteur (`public_network`), sans ces limites de jeton.
+  Test : `a_token_cannot_rewrite_a_task_outside_the_download_folder`.
+- **R1, réglages de l'écoute.** `settings.get` les cachait au jeton, mais `sync.snapshot`
+  et `settings.updated` les donnaient (chemins du certificat et de sa clé, noms). Les trois
+  les cachent ; l'annonce garde sa révision, sans valeur. Test étendu :
+  `a_sub_folder_is_created_under_the_destination_and_never_escapes_it`.
+- **D2, révocation pendant l'ouverture d'un WebSocket.** Le jeton se relit après
+  l'abonnement aux événements : une révocation arrivée entre la vérification et
+  l'abonnement ne laisse plus une connexion ouverte pour toujours.
+- **D4, limite des WebSocket.** hyper rend la place d'une connexion à sa mise à niveau :
+  la limite de 64 ne valait pas pour les WebSocket. Ils ont la leur (64, au-delà `503`).
+  Test : `websockets_have_their_own_limit`.
+- **D6, table des échecs.** Comptés par réseau /64 en IPv6, table bornée, ménage amorti.
+- **D7, client qui ne lit plus.** Chaque envoi vers un WebSocket a un délai de 30 s (sans
+  test dédié : il faudrait remplir les tampons du système).
+- **R3, `AURO_ENDPOINT`.** Les gardes contre un moteur d'essai ouvert sur la base réelle
+  comparaient au point d'accès effectif, qui rend la variable : un navigateur d'essai
+  faisait démarrer par le relais un `aurod` d'essai sur la base réelle. Ils comparent
+  désormais à `paths::default_endpoint()` (`aurod`, CLI, relais). Test :
+  `crates/daemon/tests/test_endpoint.rs`.
+- **T6, T7, origine des secrets.** `Cookie` et `Authorization` ne suivent une adresse que
+  de même origine (protocole, hôte, port : `net::same_origin`), ni sa variante en clair,
+  ni un autre port, y compris après une redirection qui demande à s'identifier.
+- **F4, compte FTP nommé `ftp`.** Avec un vrai mot de passe, ce n'est plus un accès
+  anonyme : le mot de passe ne part plus en clair sans autorisation.
+- **V3, V21, sorties de yt-dlp.** Une extension hostile devient `bin` ; un flux n'est direct
+  (tâche interne) que si son adresse est en HTTP(S).
+- **W1, W10, extension.** Un clic fabriqué par la page (`a.click()`) ne confie plus de lien
+  magnet à AuroDownloader, et ne passe plus pour un Alt+clic. Test :
+  `extension/tests/content.test.cjs`.
+- **Plugins.** D5 : un fichier de plugin abîmé est réécrit à la réinstallation ; D8 : la
+  lecture d'un module est bornée par `EnforcedLimits::strict` de wasmi ; D9 : le préfixe
+  NAT64 local `64:ff9b:1::/48` est toujours refusé ; D11 : un cookie `Secure` ne repart
+  qu'en HTTPS, une date `Expires` passée l'efface ; D12 : la réponse d'`auro.fetch` est
+  bornée à 12 Mio une fois encodée.
 
 ## 5. Vérifications
 

@@ -112,6 +112,14 @@ impl Relay {
         if self.rpc.is_none() {
             let rpc = match Rpc::open(&self.endpoint, &SESSION).await {
                 Ok(rpc) => rpc,
+                // Un moteur d'essai (`AURO_ENDPOINT`) ne se démarre jamais d'ici : sans
+                // base d'essai, il prendrait celle du moteur réel (audit R3).
+                Err(e) if self.endpoint != auro_engine::paths::default_endpoint() => {
+                    return Err(anyhow::anyhow!(
+                        "aucun moteur d'essai sur {} : le démarrer avec sa base ({e})",
+                        self.endpoint
+                    ));
+                }
                 Err(_) => {
                     client::start_daemon(&self.endpoint, None, None)?;
                     client::wait_for_session(&self.endpoint, &SESSION).await?

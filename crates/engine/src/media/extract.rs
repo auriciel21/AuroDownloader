@@ -184,6 +184,18 @@ fn text(v: &Value) -> Option<String> {
     v.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
+/// Extension d'un format rendue par yt-dlp : elle entre dans le nom du fichier final, des
+/// flux et dans le modèle `-o` de yt-dlp. Seulement 1 à 10 lettres ou chiffres ASCII ; une
+/// autre valeur (`mp4/../../x`) devient `bin` (audit V3, défense en profondeur : le
+/// yt-dlp officiel les vérifie aussi depuis 2024.07.01). Absente, elle reste vide.
+fn clean_ext(ext: Option<String>) -> String {
+    match ext {
+        None => String::new(),
+        Some(e) if (1..=10).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric()) => e,
+        Some(_) => "bin".into(),
+    }
+}
+
 /// Un codec ; `none` (absent) devient `None`.
 fn codec(v: &Value) -> Option<String> {
     text(v).filter(|c| c != "none")
@@ -226,7 +238,7 @@ fn parse_format(f: &Value) -> Option<Format> {
     };
     Some(Format {
         format_id,
-        ext: text(&f["ext"]).unwrap_or_default(),
+        ext: clean_ext(text(&f["ext"])),
         vcodec: codec(&f["vcodec"]),
         acodec: codec(&f["acodec"]),
         width: f["width"].as_u64(),
@@ -427,7 +439,16 @@ fn parse_resolved(f: &Value) -> Option<Resolved> {
     let format = parse_format(f)?;
     let url = text(&f["url"])?;
     let headers = headers_of(f);
+    // Direct : protocole et adresse en HTTP(S) ; le moteur ne prend jamais d'un yt-dlp une
+    // adresse d'un autre protocole pour une tâche interne (audit V21).
+    let scheme_ok = url
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+        || url
+            .get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("http://"));
     let direct = matches!(format.protocol.as_str(), "http" | "https")
+        && scheme_ok
         && f.get("fragments").is_none_or(Value::is_null);
     // Sans codec annoncé, un format est pris pour complet (vidéo et son).
     let unknown = format.vcodec.is_none() && format.acodec.is_none();

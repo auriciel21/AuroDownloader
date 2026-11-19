@@ -184,6 +184,12 @@ pub async fn serve_messages(
                 return;
             };
             let events = engine.subscribe();
+            // Abonné d'abord, puis le jeton relu : une révocation arrivée entre sa
+            // vérification et cet abonnement n'est pas perdue (audit D2).
+            match engine.tokens().await {
+                Ok(tokens) if tokens.iter().any(|t| &t.id == id) => {}
+                _ => return,
+            }
             let watch = Box::pin(revocation(engine.clone(), events, id.clone()));
             (restricted, Some(watch))
         }
@@ -507,14 +513,31 @@ async fn describe(
             "limits.updated",
             json!({"rev": rev, "downloadBps": download_bps, "uploadBps": upload_bps}),
         )),
-        Event::SettingChanged { rev, key, value } if topics.queues => Some(notification(
-            "settings.updated",
-            json!({"rev": rev, "values": {key: value}}),
-        )),
-        Event::FlagChanged { rev, flag, on } if topics.queues => Some(notification(
-            "settings.updated",
-            json!({"rev": rev, "values": {flag.key(): on}}),
-        )),
+        // Réglages de l'écoute : canal local seulement (audit R1). Une connexion à jeton
+        // reçoit la révision sans la valeur, pour ne pas y voir un trou (SPEC §6.10).
+        Event::SettingChanged { rev, key, value } if topics.queues => {
+            let values = if engine.is_restricted() && super::methods::is_remote_setting(key) {
+                json!({})
+            } else {
+                json!({key: value})
+            };
+            Some(notification(
+                "settings.updated",
+                json!({"rev": rev, "values": values}),
+            ))
+        }
+        Event::FlagChanged { rev, flag, on } if topics.queues => {
+            let key = flag.key();
+            let values = if engine.is_restricted() && super::methods::is_remote_setting(key) {
+                json!({})
+            } else {
+                json!({key: on})
+            };
+            Some(notification(
+                "settings.updated",
+                json!({"rev": rev, "values": values}),
+            ))
+        }
         Event::NetworkChanged {
             rev,
             usable,

@@ -75,11 +75,10 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    check_test_setup(
-        args.endpoint.as_deref(),
-        args.db.as_deref(),
-        &paths::endpoint(),
-    )?;
+    // Le point d'accès effectif (`--endpoint`, sinon `AURO_ENDPOINT`, sinon le défaut),
+    // comparé au seul vrai défaut (audit R3).
+    let effective = args.endpoint.clone().unwrap_or_else(paths::endpoint);
+    check_test_setup(&effective, args.db.as_deref(), &paths::default_endpoint())?;
     let db = match args.db {
         Some(db) => db,
         None => paths::database().context("dossier de données introuvable ; préciser --db")?,
@@ -136,15 +135,16 @@ fn main() -> Result<()> {
 
 /// Un point d'accès autre que celui par défaut sert aux essais : sans `--db`, il ouvrirait
 /// pourtant la base par défaut, celle du moteur réel (incident du 2026-11-08). Refusé avant
-/// toute ouverture de base.
-fn check_test_setup(endpoint: Option<&str>, db: Option<&Path>, default: &str) -> Result<()> {
-    match (endpoint, db) {
-        (Some(e), None) if e != default => anyhow::bail!(
-            "--endpoint {e} sans --db : un point d'accès autre que celui par défaut ne sert \
-             jamais la base par défaut, celle du moteur réel ; préciser --db"
-        ),
-        _ => Ok(()),
+/// toute ouverture de base, qu'il vienne de `--endpoint` ou d'`AURO_ENDPOINT` (audit R3).
+fn check_test_setup(endpoint: &str, db: Option<&Path>, default: &str) -> Result<()> {
+    if db.is_none() && endpoint != default {
+        anyhow::bail!(
+            "point d'accès {endpoint} sans --db : un point d'accès autre que celui par défaut \
+             (--endpoint ou AURO_ENDPOINT) ne sert jamais la base par défaut, celle du moteur \
+             réel ; préciser --db"
+        );
     }
+    Ok(())
 }
 
 async fn run(
@@ -250,9 +250,19 @@ mod tests {
     #[test]
     fn a_test_endpoint_never_opens_the_default_database() {
         let default = r"\.\pipe\aurodownloader-alice";
-        assert!(check_test_setup(Some(r"\.\pipe\essai"), None, default).is_err());
-        assert!(check_test_setup(Some(r"\.\pipe\essai"), Some(Path::new("e.db")), default).is_ok());
-        assert!(check_test_setup(Some(default), None, default).is_ok());
-        assert!(check_test_setup(None, None, default).is_ok());
+        assert!(check_test_setup(r"\.\pipe\essai", None, default).is_err());
+        assert!(check_test_setup(r"\.\pipe\essai", Some(Path::new("e.db")), default).is_ok());
+        assert!(check_test_setup(default, None, default).is_ok());
+    }
+
+    /// Audit R3 : `AURO_ENDPOINT` (navigateur d'essai) rend un point d'accès effectif autre
+    /// que le défaut ; sans `--db`, refusé comme `--endpoint`.
+    #[test]
+    fn auro_endpoint_without_a_database_is_refused() {
+        let default = paths::default_endpoint();
+        let from_variable = r"\\.\pipe\auro-essai-navigateur".to_owned();
+        assert_ne!(from_variable, default);
+        assert!(check_test_setup(&from_variable, None, &default).is_err());
+        assert!(check_test_setup(&from_variable, Some(Path::new("e.db")), &default).is_ok());
     }
 }

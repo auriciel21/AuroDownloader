@@ -683,18 +683,22 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         "sync.snapshot" => {
             let s = ctx.engine.snapshot().await?;
+            let mut settings = settings_json(
+                s.download_dir,
+                &s.flags,
+                s.torrent_ratio,
+                s.torrent_interface,
+                s.logs_level,
+            );
+            if ctx.engine.is_restricted() {
+                hide_remote_settings(&mut settings);
+            }
             Ok(json!({
                 "rev": s.rev,
                 "tasks": s.tasks.iter().map(task_json).collect::<Vec<_>>(),
                 "queues": s.queues.iter().map(queue_json).collect::<Vec<_>>(),
                 "limits": {"downloadBps": s.download_limit, "uploadBps": s.upload_limit},
-                "settings": settings_json(
-                    s.download_dir,
-                    &s.flags,
-                    s.torrent_ratio,
-                    s.torrent_interface,
-                    s.logs_level,
-                ),
+                "settings": settings,
                 "networkUsable": s.network_usable,
                 "networkMetered": s.network_metered,
                 "torrentInterfaceUp": s.torrent_interface_up,
@@ -970,14 +974,8 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     let interface = ctx.engine.torrent_interface().await?;
     let level = ctx.engine.logs_level().await?;
     let mut values = settings_json(dir, &flags, ratio, interface, level);
-    // Les réglages de l'écoute (chemins du certificat et de sa clé, noms) ne regardent que
-    // le canal local (SPEC §7.19) : une connexion à jeton ne les voit pas.
     if ctx.engine.is_restricted() {
-        for key in [Flag::RemoteEnabled.key(), Flag::RemoteAllowPrivate.key()] {
-            if let Some(map) = values.as_object_mut() {
-                map.remove(key);
-            }
-        }
+        hide_remote_settings(&mut values);
         return Ok(json!({"values": values}));
     }
     let remote = ctx.engine.remote_config().await?;
@@ -987,6 +985,20 @@ async fn settings(ctx: &Ctx) -> Result<Value, RpcError> {
     values[REMOTE_TLS_CERT] = json!(cert);
     values[REMOTE_TLS_KEY] = json!(key);
     Ok(json!({"values": values}))
+}
+
+/// Les réglages de l'écoute (`remote.*` : chemins du certificat et de sa clé, noms,
+/// adresse) ne regardent que le canal local (SPEC §7.19) : une connexion à jeton ne les
+/// voit ni dans `settings.get`, ni dans `sync.snapshot`, ni dans `settings.updated`
+/// (audit R1).
+pub(crate) fn is_remote_setting(key: &str) -> bool {
+    key.starts_with("remote.")
+}
+
+fn hide_remote_settings(values: &mut Value) {
+    if let Some(map) = values.as_object_mut() {
+        map.retain(|key, _| !is_remote_setting(key));
+    }
 }
 
 /// Valeurs des réglages, telles que `settings.get` et `sync.snapshot` les donnent.

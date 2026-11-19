@@ -34,6 +34,14 @@ pub fn endpoint() -> String {
     if let Some(endpoint) = std::env::var_os("AURO_ENDPOINT").and_then(|e| e.into_string().ok()) {
         return endpoint;
     }
+    default_endpoint()
+}
+
+/// Point d'accès par défaut, sans tenir compte d'`AURO_ENDPOINT` : celui du moteur réel,
+/// le seul qui sert la base par défaut. Les gardes contre un moteur d'essai ouvert sur la
+/// base réelle le comparent au point d'accès effectif (audit R3 : avec la variable,
+/// `endpoint()` rendait le point d'essai, pris alors pour celui par défaut).
+pub fn default_endpoint() -> String {
     let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "user".into())

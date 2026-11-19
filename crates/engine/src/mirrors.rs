@@ -160,15 +160,15 @@ async fn read_range(
     Ok(bytes)
 }
 
-/// En-têtes de la tâche envoyés à une source (SPEC §7.7) : tous vers le même hôte que la
-/// référence ; vers un autre hôte, le seul `User-Agent` (ni cookie, ni `Referer`, ni
-/// `Authorization` ne partent ailleurs).
+/// En-têtes de la tâche envoyés à une source (SPEC §7.7) : tous vers la même origine que la
+/// référence (protocole, hôte, port) ; ailleurs, le seul `User-Agent` (ni cookie, ni
+/// `Referer`, ni `Authorization` ne partent ailleurs, ni en clair, audit T6).
 pub fn headers_for(
     task_headers: &[(String, String)],
     reference_url: &str,
     url: &str,
 ) -> Vec<(String, String)> {
-    let same_host = crate::transfer::host_of(reference_url) == crate::transfer::host_of(url);
+    let same_host = crate::net::same_origin(reference_url, url);
     task_headers
         .iter()
         .filter(|(name, _)| same_host || name.eq_ignore_ascii_case("user-agent"))

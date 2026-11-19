@@ -417,6 +417,46 @@ async fn a_browser_session_opens_the_websocket_from_its_own_origin_only() {
     crate::testing::stop(&engine).await;
 }
 
+/// Audit D4 : les WebSocket ont leur limite, une connexion mise à niveau ne rendant plus
+/// sa place parmi les connexions HTTP ; au-delà, `503`, et une place rendue resservira.
+#[tokio::test]
+async fn websockets_have_their_own_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let (_, token) = engine.create_token("script", "read").await.unwrap();
+    let addr = listening(&engine).await;
+    let bearer = format!("Bearer {token}");
+    let mut open = Vec::new();
+    for _ in 0..crate::remote::server::MAX_WEBSOCKETS {
+        let mut socket = websocket(addr, &[("Authorization", bearer.as_str())])
+            .await
+            .unwrap();
+        socket.send(Message::text(hello())).await.unwrap();
+        assert!(next_text(&mut socket).await.is_some());
+        open.push(socket);
+    }
+    assert_eq!(
+        refused_with(websocket(addr, &[("Authorization", bearer.as_str())]).await),
+        503
+    );
+    let mut first = open.remove(0);
+    first.close(None).await.unwrap();
+    while next_text(&mut first).await.is_some() {}
+    drop(first);
+    // La place revient quand la tâche du WebSocket finit.
+    let mut again = None;
+    for _ in 0..100 {
+        if let Ok(s) = websocket(addr, &[("Authorization", bearer.as_str())]).await {
+            again = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(again.is_some(), "place rendue");
+    drop((open, again));
+    crate::testing::stop(&engine).await;
+}
+
 async fn state_until(engine: &Engine, pred: impl Fn(&RemoteState) -> bool) -> RemoteState {
     for _ in 0..200 {
         let state = engine.remote_state();

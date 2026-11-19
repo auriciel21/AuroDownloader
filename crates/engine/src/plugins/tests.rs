@@ -141,6 +141,19 @@ async fn a_modified_plugin_file_is_refused() {
         .await
         .unwrap_err();
     assert!(e.contains("modifié"), "{e}");
+    // Audit D5 : la réinstallation du même fichier répare celui qui a changé.
+    plugins.save(&row.digest, &bytes).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(
+        plugins.run(&row, "https://fichiers.exemple/").await.is_ok(),
+        "réparé"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
     std::fs::remove_file(&path).unwrap();
     let e = plugins
         .run(&row, "https://fichiers.exemple/")
@@ -434,7 +447,20 @@ mod fuzz {
         fn cookies_never_leak_to_other_hosts(set in "[ -~]{0,80}", host in r"[a-z]{1,8}\.exemple") {
             let mut jar = Jar::default();
             jar.store(&host, &set);
-            prop_assert!(jar.header_for("autre.domaine").is_none());
+            prop_assert!(jar.header_for("autre.domaine", true).is_none());
         }
     }
+}
+
+/// Audit D8 : la lecture d'un module a ses bornes (`EnforcedLimits::strict` de wasmi) ;
+/// un module fait de dizaines de milliers de petites fonctions est refusé dès `inspect`,
+/// avant tout accord de l'utilisateur. Un plugin ordinaire passe.
+#[test]
+fn a_module_with_too_many_functions_is_refused_at_inspection() {
+    let output = r#"{"links": []}"#;
+    let swarm = "(func)\n".repeat(20_000);
+    let hostile = plugin(MANIFEST, &[output], &packed(0, output), &swarm);
+    let e = inspect(&hostile).unwrap_err();
+    assert!(e.contains("WebAssembly invalide"), "{e}");
+    assert!(inspect(&fixed(output)).is_ok());
 }

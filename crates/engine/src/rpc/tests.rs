@@ -3859,6 +3859,18 @@ async fn a_token_connection_reaches_only_the_public_network_and_the_download_fol
             .unwrap()
             .is_empty()
     );
+    // Audit D2 : une connexion vérifiée juste avant la révocation, servie juste après,
+    // se ferme aussitôt au lieu de rester ouverte pour toujours.
+    let mut late = TestClient::connect_as(
+        &engine,
+        super::Peer::token(&token_id, super::Scope::Control),
+    );
+    late.send_raw(
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "engine.hello", "params": hello()})
+            .to_string(),
+    )
+    .await;
+    assert!(late.read().await.is_none(), "jeton révoqué servi");
     crate::testing::stop(&engine).await;
 }
 
@@ -4049,6 +4061,143 @@ async fn a_sub_folder_is_created_under_the_destination_and_never_escapes_it() {
     }
     let all = local.result("settings.get", json!({})).await["values"].clone();
     assert!(all.get("remote.listen").is_some(), "{all}");
+    // Ni dans l'instantané, ni dans les annonces (audit R1) : la révision arrive, sans la
+    // valeur ; les autres réglages restent annoncés.
+    let snapshot = remote.result("sync.snapshot", json!({})).await["settings"].clone();
+    assert!(snapshot.get("downloads.dir").is_some(), "{snapshot}");
+    assert!(
+        snapshot
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|k| !k.starts_with("remote.")),
+        "{snapshot}"
+    );
+    remote
+        .result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"remote.hosts": ["nas.maison"], "remote.allowPrivate": true}}),
+        )
+        .await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.preallocate": false}}),
+        )
+        .await;
+    // Chaque message reçu jusqu'à l'annonce du réglage ordinaire est relu.
+    let mut hidden = 0;
+    loop {
+        let message = match remote.pending.pop_front() {
+            Some(m) => m,
+            None => remote.read().await.expect("connexion fermée"),
+        };
+        let text = message.to_string();
+        assert!(
+            !text.contains("nas.maison") && !text.contains("remote."),
+            "annonce vue par le jeton : {text}"
+        );
+        if message["method"] == "settings.updated" {
+            let values = &message["params"]["values"];
+            if values.get("downloads.preallocate").is_some() {
+                assert_eq!(values["downloads.preallocate"], false);
+                break;
+            }
+            assert_eq!(values, &json!({}), "{text}");
+            hidden += 1;
+        }
+    }
+    assert!(
+        hidden >= 2,
+        "révisions des réglages cachés annoncées : {hidden}"
+    );
+    crate::testing::stop(&engine).await;
+}
+
+/// Audit D1 : sur une tâche locale hors du dossier des téléchargements, une connexion à
+/// jeton ne change ni l'adresse, ni le nom, ne retélécharge pas et n'ajoute pas de miroir :
+/// sinon, elle ferait écrire son contenu dans ce dossier. Sur une tâche du dossier, si.
+#[tokio::test]
+async fn a_token_cannot_rewrite_a_task_outside_the_download_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let downloads = dir.path().join("dl");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let elsewhere = dir.path().join("Outils");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let engine = engine(dir.path());
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"downloads.dir": dir_text(&downloads)}}),
+        )
+        .await;
+    let add = |dest: &Path, name: &str| {
+        json!({"sources": [{"url": format!("https://exemple.org/{name}")}],
+               "destDir": dir_text(dest), "startPaused": true})
+    };
+    let outside = local.result("task.add", add(&elsewhere, "outil.exe")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inside = local.result("task.add", add(&downloads, "a.iso")).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = local
+        .result("token.create", json!({"name": "tél", "scope": "control"}))
+        .await;
+    let peer = super::Peer::token(token["id"].as_str().unwrap(), super::Scope::Control);
+    let mut remote = TestClient::connect_as(&engine, peer);
+    remote.result("engine.hello", hello()).await;
+
+    let attempts = [
+        (
+            "task.update",
+            json!({"taskId": outside, "url": "https://attaquant.example/outil.exe"}),
+        ),
+        (
+            "task.update",
+            json!({"taskId": outside, "fileName": "autre.exe"}),
+        ),
+        (
+            "task.addSource",
+            json!({"taskId": outside, "url": "https://attaquant.example/outil.exe"}),
+        ),
+    ];
+    for (method, params) in attempts {
+        assert_eq!(
+            remote.error_code(method, params.clone()).await,
+            "DEST_FORBIDDEN",
+            "{method} {params}"
+        );
+    }
+    // Un retéléchargement rend ses refus tâche par tâche.
+    let restarted = remote
+        .result(
+            "task.restart",
+            json!({"taskIds": [outside], "deleteFiles": true}),
+        )
+        .await;
+    assert_eq!(restarted["taskIds"], json!([]), "{restarted}");
+    assert_eq!(
+        restarted["errors"][0]["code"], "DEST_FORBIDDEN",
+        "{restarted}"
+    );
+    let task = local.result("task.get", json!({"taskId": outside})).await;
+    assert_eq!(task["displayName"], "outil.exe", "{task}");
+
+    // Sur une tâche du dossier des téléchargements : permis.
+    remote
+        .result(
+            "task.update",
+            json!({"taskId": inside, "url": "https://exemple.org/b.iso"}),
+        )
+        .await;
     crate::testing::stop(&engine).await;
 }
 

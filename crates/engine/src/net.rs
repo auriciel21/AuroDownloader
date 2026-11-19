@@ -31,8 +31,8 @@ use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_ENCODING,
-    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, HeaderValue,
-    IF_RANGE, LAST_MODIFIED, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG, HeaderMap, HeaderName, HeaderValue,
+    IF_RANGE, LAST_MODIFIED, PROXY_AUTHORIZATION, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
 };
 use reqwest::{Method, Response, StatusCode, Url, redirect};
 
@@ -1031,7 +1031,15 @@ impl Client {
         let mut target = url.clone();
         // Défi initial, puis au plus un nonce périmé (Digest).
         for _ in 0..3 {
+            // Une redirection a mené ailleurs : comme reqwest pendant la redirection, les
+            // secrets de la tâche ne partent pas vers cette autre origine (audit T7) ; seule
+            // l'identification de son site, ajoutée ci-dessous, la suit.
             let mut headers = extra.clone();
+            if !same_origin(url.as_str(), target.as_str()) {
+                for name in [COOKIE, AUTHORIZATION, PROXY_AUTHORIZATION] {
+                    headers.remove(name);
+                }
+            }
             let authorization = auth.and_then(|a| a.authorization(&method, &target));
             let sent = authorization.is_some();
             if let Some(value) = authorization {
@@ -1222,6 +1230,22 @@ pub fn parse_task_url(url: &str) -> Result<Url, NetError> {
 }
 
 /// Vérifie qu'une adresse est utilisable (HTTP ou HTTPS) avant de créer une tâche.
+/// Deux adresses de même origine : même protocole, même hôte, même port. Seule une adresse
+/// de même origine reçoit les secrets d'une tâche (`Cookie`, `Authorization`) : ni un autre
+/// port du même hôte, ni sa variante `http://` d'une référence `https://`, où ils partiraient
+/// en clair (audit T6, D10). Les protocoles sans origine de la bibliothèque (FTP, SFTP) se
+/// comparent de même.
+pub fn same_origin(a: &str, b: &str) -> bool {
+    let (Ok(a), Ok(b)) = (Url::parse(a), Url::parse(b)) else {
+        return false;
+    };
+    let host = |u: &Url| u.host_str().map(str::to_ascii_lowercase);
+    a.scheme() == b.scheme()
+        && host(&a).is_some()
+        && host(&a) == host(&b)
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
 pub fn check_url(url: &str) -> Result<(), NetError> {
     parse_url(url).map(|_| ())
 }

@@ -160,6 +160,21 @@ pub(crate) fn basic_credentials(task_headers: &[(String, String)]) -> Option<(St
     Some((user.to_owned(), pass.to_owned()))
 }
 
+/// Accès anonyme (RFC 1635), qui part sans chiffrement exigé : le nom `anonymous`, ou le
+/// nom `ftp` avec un mot de passe vide ou de forme adresse. `ftp` est aussi un vrai compte
+/// sur certains serveurs (NAS) : avec un vrai mot de passe, il est traité comme tel, et ce
+/// mot de passe ne part jamais en clair sans autorisation (audit F4).
+fn is_anonymous(user: &str, pass: &str) -> bool {
+    if user.eq_ignore_ascii_case("anonymous") {
+        return true;
+    }
+    user.eq_ignore_ascii_case("ftp")
+        && (pass.is_empty()
+            || pass
+                .split_once('@')
+                .is_some_and(|(_, host)| !host.contains('@')))
+}
+
 fn credentials(url: &Url, task_headers: &[(String, String)], auth: Option<&Auth>) -> Creds {
     let found = basic_credentials(task_headers)
         .or_else(|| {
@@ -173,7 +188,7 @@ fn credentials(url: &Url, task_headers: &[(String, String)], auth: Option<&Auth>
         })
         .or_else(|| auth.and_then(|a| a.credentials_for(url)));
     match found {
-        Some((user, pass)) if !user.eq_ignore_ascii_case("anonymous") && user != "ftp" => Creds {
+        Some((user, pass)) if !is_anonymous(&user, &pass) => Creds {
             user,
             pass,
             anonymous: false,

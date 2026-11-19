@@ -766,6 +766,34 @@ mod authentication {
         );
     }
 
+    /// Audit T7 : après une redirection vers une autre origine qui demande à s'identifier,
+    /// la requête suivante n'y porte pas les secrets de la tâche (cookie, `Authorization`),
+    /// seulement l'identification du site visé.
+    #[tokio::test]
+    async fn task_secrets_do_not_follow_a_redirect_into_a_challenge() {
+        let protected = protected(SiteAuth::digest("moi", "secret", "SHA-256"));
+        let target = protected.url("/f.bin");
+        let site = serve(move |_| {
+            reply(
+                "302 Found",
+                &[("Location", target.as_str()), ("Content-Length", "0")],
+                b"",
+            )
+        });
+        let headers = [("Cookie".to_owned(), "session=1".to_owned())];
+        let auth = login("127.0.0.1", "secret");
+        let probe = client()
+            .probe_as(&site.url("/ailleurs"), &headers, Some(&auth))
+            .await
+            .unwrap();
+        assert_eq!(probe.total_bytes, Some(10_000));
+        let seen = protected.requests();
+        assert!(seen.len() >= 2, "défi puis réponse : {}", seen.len());
+        for r in &seen {
+            assert_eq!(r.header("cookie"), None, "{} {}", r.method, r.path);
+        }
+    }
+
     #[tokio::test]
     async fn basic_goes_over_https_only() {
         // En clair : refusé, sans jamais envoyer le mot de passe.

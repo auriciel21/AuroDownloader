@@ -93,6 +93,11 @@ fn credentials_come_from_the_task_then_the_address_then_the_site() {
     );
     assert!(pick("ftp://autre/f", &[], Some(&site)).2);
     assert!(pick("ftp://anonymous:x@h/f", &[], None).2);
+    // Audit F4 : `ftp` avec un vrai mot de passe est un vrai compte (NAS), jamais en clair
+    // sans autorisation ; vide ou de forme adresse, l'accès anonyme habituel.
+    assert!(!pick("ftp://ftp:vrai@h/f", &[], None).2);
+    assert!(pick("ftp://ftp@h/f", &[], None).2);
+    assert!(pick("ftp://ftp:moi%40exemple.org@h/f", &[], None).2);
     // Jamais le mot de passe dans un journal.
     assert!(
         !format!("{:?}", credentials(&url("ftp://u:secret@h/f"), &[], None)).contains("secret")

@@ -762,6 +762,12 @@ enum Command {
         url: String,
         reply: Reply<MirrorCheck>,
     },
+    /// Poignée restreinte : la tâche doit être sous le dossier des téléchargements (audit
+    /// D1).
+    CheckWithinDownloads {
+        task_id: String,
+        reply: Reply<()>,
+    },
     AddMirror {
         task_id: String,
         url: String,
@@ -1013,6 +1019,17 @@ impl Engine {
             client,
             remote: true,
             public_only: !allow_private,
+            ..self.clone()
+        })
+    }
+
+    /// Poignée du moteur lui-même limitée au réseau public (lien neuf d'un plugin,
+    /// SPEC §7.20) : ses adresses marquent la tâche `public_only`, sans les limites d'une
+    /// connexion à jeton (dossier des téléchargements, réglages cachés).
+    fn public_network(&self) -> Result<Engine, EngineError> {
+        Ok(Engine {
+            client: self.client.restricted().map_err(EngineError::Url)?,
+            public_only: true,
             ..self.clone()
         })
     }
@@ -1467,11 +1484,25 @@ impl Engine {
         .await
     }
 
+    /// Poignée d'une connexion à jeton (SPEC §7.19) : changer l'adresse, retélécharger,
+    /// renommer ou ajouter un miroir n'est permis que pour une tâche sous le dossier des
+    /// téléchargements. Sinon, un jeton ferait écrire son contenu dans n'importe quel dossier
+    /// où une tâche locale se trouve déjà (audit D1). `DEST_FORBIDDEN`.
+    async fn guard_folder(&self, task_id: &str) -> Result<(), EngineError> {
+        if !self.remote {
+            return Ok(());
+        }
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::CheckWithinDownloads { task_id, reply })
+            .await
+    }
+
     /// Retélécharge une tâche (SPEC §5.5) : terminée, en échec, annulée, en pause ou en
     /// attente d'un nouvel essai, elle repart de zéro. Son `.part` est supprimé ; avec
     /// `delete_files`, le fichier final d'une tâche terminée aussi (sinon il reste, et le
     /// nouveau prend un autre nom).
     pub async fn restart(&self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        self.guard_folder(task_id).await?;
         let task_id = task_id.to_owned();
         self.ask(|reply| Command::Restart {
             task_id,
@@ -1492,6 +1523,9 @@ impl Engine {
         dest_dir: Option<String>,
         file_name: Option<String>,
     ) -> Result<TaskRow, EngineError> {
+        // Le fichier d'une tâche hors du dossier des téléchargements ne se renomme ni ne se
+        // déplace par un jeton, même sur place (audit D1).
+        self.guard_folder(task_id).await?;
         let task_id = task_id.to_owned();
         self.ask(|reply| Command::Relocate {
             task_id,
@@ -1512,6 +1546,7 @@ impl Engine {
         if self.public_only {
             check_public_literal(url)?;
         }
+        self.guard_folder(task_id).await?;
         let (id, address) = (task_id.to_owned(), url.to_owned());
         let check = self
             .ask(|reply| Command::CheckSource {
@@ -1653,6 +1688,7 @@ impl Engine {
         if self.public_only {
             check_public_literal(url)?;
         }
+        self.guard_folder(task_id).await?;
         let (id, address) = (task_id.to_owned(), url.to_owned());
         let check = self
             .ask(|reply| Command::CheckMirror {
@@ -2165,7 +2201,7 @@ impl Engine {
             .await?;
         // Le lien d'un plugin ne se vérifie que sur le réseau public, comme sa tâche.
         let checker = match fresh.public_only {
-            true => self.restricted(false)?,
+            true => self.public_network()?,
             false => self.clone(),
         };
         if let Err(e) = checker.set_url(task_id, &fresh.url).await {
@@ -2861,6 +2897,12 @@ impl Scheduler {
                 reply,
             } => {
                 let _ = reply.send(self.check_mirror(&task_id, &url));
+            }
+            Command::CheckWithinDownloads { task_id, reply } => {
+                let checked = load_task(&self.conn, &task_id)
+                    .map_err(EngineError::from)
+                    .and_then(|task| self.check_within_downloads(&task.dest_dir));
+                let _ = reply.send(checked);
             }
             Command::AddMirror {
                 task_id,
@@ -4411,7 +4453,8 @@ impl Scheduler {
     fn check_source(&self, task_id: &str, url: &str) -> Result<SourceCheck, EngineError> {
         let task = self.idle(task_id, "changement d'adresse")?;
         let old = tasks::primary_source(&self.conn, task_id)?;
-        let other_host = transfer::host_of(&old.url) != transfer::host_of(url);
+        // Une autre origine (hôte, protocole ou port) ne reçoit pas les secrets (audit T6).
+        let other_host = !net::same_origin(&old.url, url);
         let headers: Vec<StoredHeader> = headers::load(&self.conn, task_id)?
             .into_iter()
             .filter(|(_, s)| !other_host || matches!(s, Stored::Plain(_)))
@@ -4465,7 +4508,7 @@ impl Scheduler {
         let explicit = headers
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
-        let same_host = transfer::host_of(&reference.url) == transfer::host_of(url);
+        let same_host = net::same_origin(&reference.url, url);
         let reference_login = match explicit {
             true => None,
             false => store::logins::best_for(&self.conn, &reference.url)?,

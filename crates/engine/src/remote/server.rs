@@ -47,6 +47,10 @@ pub const MAX_FAILURES: u32 = 10;
 const PENALTY: Duration = Duration::from_secs(60);
 /// Connexions servies à la fois ; les suivantes sont fermées aussitôt.
 const MAX_CONNECTIONS: usize = 64;
+/// WebSocket ouverts à la fois. Une connexion mise à niveau ne compte plus parmi les
+/// connexions HTTP (hyper rend sa place à la mise à niveau) : elle a sa propre limite
+/// (audit D4) ; au-delà, `503`.
+pub(crate) const MAX_WEBSOCKETS: usize = 64;
 /// En-têtes d'une requête reçus dans ce délai, sinon la connexion se ferme.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Corps de `POST /login`, au plus.
@@ -72,6 +76,8 @@ struct Shared {
     /// Délai de la négociation TLS, des en-têtes et du corps de `/login` ([`HEADER_TIMEOUT`],
     /// plus court dans les tests).
     timeout: Duration,
+    /// Places des WebSocket ([`MAX_WEBSOCKETS`]), gardées par la tâche de chacun.
+    websockets: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -169,6 +175,7 @@ pub(super) async fn serve_timed(
         failures: Mutex::default(),
         closed,
         timeout,
+        websockets: Arc::new(Semaphore::new(MAX_WEBSOCKETS)),
     });
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut connections = JoinSet::new();
@@ -355,35 +362,69 @@ impl Shared {
 
     fn blocked(&self, ip: IpAddr) -> bool {
         let failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
-        failures
-            .get(&ip)
-            .and_then(|f| f.blocked_until)
-            .is_some_and(|until| Instant::now() < until)
+        is_blocked(&failures, ip, Instant::now())
     }
 
     fn failed(&self, ip: IpAddr) {
-        let now = Instant::now();
         let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
-        // Les adresses oubliées depuis longtemps partent : la table ne grossit pas.
-        if failures.len() > 4096 {
-            failures.retain(|_, f| now.duration_since(f.since) < PENALTY * 2);
+        note_failure(&mut failures, ip, Instant::now());
+    }
+}
+
+fn is_blocked(failures: &HashMap<IpAddr, Failures>, ip: IpAddr, now: Instant) -> bool {
+    failures
+        .get(&network_of(ip))
+        .and_then(|f| f.blocked_until)
+        .is_some_and(|until| now < until)
+}
+
+fn note_failure(failures: &mut HashMap<IpAddr, Failures>, ip: IpAddr, now: Instant) {
+    // La table ne grossit pas : au-delà de sa taille, les adresses oubliées depuis
+    // longtemps partent, puis, s'il le faut, toutes celles qui ne sont pas bloquées. Le
+    // ménage vide alors une bonne part de la table : il ne revient pas à chaque échec
+    // (audit D6).
+    if failures.len() > MAX_TRACKED {
+        failures.retain(|_, f| now.duration_since(f.since) < PENALTY * 2);
+        if failures.len() > MAX_TRACKED / 2 {
+            failures.retain(|_, f| f.blocked_until.is_some_and(|until| now < until));
         }
-        let entry = failures.entry(ip).or_insert(Failures {
+    }
+    let entry = failures.entry(network_of(ip)).or_insert(Failures {
+        since: now,
+        count: 0,
+        blocked_until: None,
+    });
+    if now.duration_since(entry.since) >= PENALTY {
+        *entry = Failures {
             since: now,
             count: 0,
             blocked_until: None,
-        });
-        if now.duration_since(entry.since) >= PENALTY {
-            *entry = Failures {
-                since: now,
-                count: 0,
-                blocked_until: None,
-            };
-        }
-        entry.count += 1;
-        if entry.count > MAX_FAILURES {
-            entry.blocked_until = Some(now + PENALTY);
-        }
+        };
+    }
+    entry.count += 1;
+    if entry.count > MAX_FAILURES {
+        entry.blocked_until = Some(now + PENALTY);
+    }
+}
+
+/// Adresses suivies dans la table des échecs, au plus.
+const MAX_TRACKED: usize = 4096;
+
+/// Délai d'un envoi vers un WebSocket (audit D7).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Ce que la table des échecs compte : une adresse IPv4, un réseau /64 en IPv6 (un poste y
+/// change d'adresse à volonté, audit D6).
+fn network_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let s = v6.segments();
+                IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+        },
     }
 }
 
@@ -476,10 +517,15 @@ async fn websocket(
     let Some(peer) = peer_of(&token) else {
         return plain(StatusCode::FORBIDDEN, "portée du jeton invalide");
     };
+    let Ok(place) = Arc::clone(&shared.websockets).try_acquire_owned() else {
+        return plain(StatusCode::SERVICE_UNAVAILABLE, "trop de connexions");
+    };
     let accept = derive_accept_key(key.as_bytes());
     let engine = shared.engine.clone();
     let closed = shared.closed.clone();
     tokio::spawn(async move {
+        // La place se rend à la fin du WebSocket, pas à la mise à niveau.
+        let _place = place;
         let Ok(upgraded) = hyper::upgrade::on(request).await else {
             return;
         };
@@ -514,13 +560,16 @@ async fn run_websocket<S>(
     let (incoming, messages) = mpsc::channel(1);
     let (out, mut outgoing) = mpsc::channel::<String>(256);
     let mut serving = tokio::spawn(serve_messages(engine, peer, messages, out));
-    let writing = tokio::spawn(async move {
+    // Un client qui ne lit plus ne garde pas la connexion : chaque envoi a son délai, et sa
+    // fin ferme le service des messages (leur file se ferme avec l'écriture, audit D7).
+    let mut writing = tokio::spawn(async move {
         while let Some(message) = outgoing.recv().await {
-            if sink.send(Message::text(message)).await.is_err() {
-                break;
+            match tokio::time::timeout(WRITE_TIMEOUT, sink.send(Message::text(message))).await {
+                Ok(Ok(())) => {}
+                _ => break,
             }
         }
-        let _ = sink.close().await;
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, sink.close()).await;
     });
     let mut served = false;
     loop {
@@ -552,7 +601,12 @@ async fn run_websocket<S>(
     if !served {
         let _ = serving.await;
     }
-    let _ = writing.await;
+    if tokio::time::timeout(WRITE_TIMEOUT, &mut writing)
+        .await
+        .is_err()
+    {
+        writing.abort();
+    }
 }
 
 /// `POST /rpc` : un message JSON-RPC (requête ou lot), sa réponse ; `Authorization`
@@ -772,4 +826,35 @@ fn hardened(mut reply: Reply) -> Reply {
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
     );
     reply
+}
+
+#[cfg(test)]
+mod failure_table {
+    use super::*;
+
+    /// Audit D6 : en IPv6, un réseau /64 compte pour un, quelle que soit l'adresse prise
+    /// à chaque essai ; et la table reste sous sa taille, même face à des milliers
+    /// d'adresses, sans oublier une adresse bloquée.
+    #[test]
+    fn a_64_network_is_one_offender_and_the_table_stays_bounded() {
+        let now = Instant::now();
+        let mut table = HashMap::new();
+        for i in 0..=MAX_FAILURES {
+            let ip: IpAddr = format!("2001:db8:1:2::{:x}", i + 1).parse().unwrap();
+            note_failure(&mut table, ip, now);
+        }
+        let other_in_64: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert!(is_blocked(&table, other_in_64, now), "le /64 est bloqué");
+        let neighbour: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert!(!is_blocked(&table, neighbour, now));
+        let mapped: IpAddr = "::ffff:192.0.2.1".parse().unwrap();
+        assert_eq!(network_of(mapped), "192.0.2.1".parse::<IpAddr>().unwrap());
+
+        for i in 0..(MAX_TRACKED as u32 * 3) {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
+            note_failure(&mut table, ip, now);
+            assert!(table.len() <= MAX_TRACKED + 1, "{}", table.len());
+        }
+        assert!(is_blocked(&table, other_in_64, now), "le bloqué reste");
+    }
 }
