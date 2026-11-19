@@ -696,6 +696,38 @@ async fn choosing_files_downloads_only_those() {
     crate::testing::stop(&engine).await;
 }
 
+/// Audit V1 : un fichier coché au moment où le passage finit est téléchargé à son tour
+/// par un autre passage, au lieu de prendre son nom final incomplet (ou vide).
+#[tokio::test]
+async fn a_file_chosen_as_the_download_ends_is_fetched_too() {
+    const LEN: usize = 256 * 1024;
+    let files = [("a.bin", LEN), ("b.bin", LEN)];
+    let seed = seeder("Tard", &files, Some(64 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    engine.set_files(&id, vec![0]).await.unwrap();
+    // Le second fichier est coché juste quand le premier passage finit.
+    let target = id.clone();
+    *crate::torrent::ON_REACHED.lock().unwrap() = Some((
+        id.clone(),
+        Box::new(move |conn: &mut rusqlite::Connection| {
+            crate::store::torrents::set_selected(conn, &target, &[0, 1]).unwrap();
+        }),
+    ));
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert!(
+        crate::torrent::ON_REACHED.lock().unwrap().is_none(),
+        "le crochet a joué"
+    );
+    let top = dir.path().join("Tard");
+    assert_eq!(std::fs::read(top.join("a.bin")).unwrap(), data(0, LEN));
+    assert_eq!(std::fs::read(top.join("b.bin")).unwrap(), data(1, LEN));
+    no_part_left(dir.path());
+    crate::testing::stop(&engine).await;
+}
+
 /// État d'une tâche lu dans la base, moteur arrêté.
 fn engine_state(dir: &Path, task_id: &str) -> TaskState {
     let conn = crate::store::open(&dir.join("auro.db")).unwrap();

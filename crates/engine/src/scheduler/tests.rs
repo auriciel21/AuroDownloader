@@ -899,6 +899,22 @@ async fn an_announced_state_is_already_recorded() {
     scheduler.begin_shutdown(None);
 }
 
+/// Audit R2 : un second moteur sur la même base est refusé avant toute reprise ; quand le
+/// premier s'arrête, la base se rouvre.
+#[tokio::test]
+async fn a_second_engine_on_the_same_base_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = Engine::start(config(dir.path())).unwrap();
+    let second = Engine::start(config(dir.path()));
+    assert!(
+        matches!(second, Err(EngineError::Store(StoreError::Locked { .. }))),
+        "{second:?}"
+    );
+    crate::testing::stop(&first).await;
+    let again = Engine::start(config(dir.path())).unwrap();
+    crate::testing::stop(&again).await;
+}
+
 /// Audit P1 : une nouvelle tentative échue qui ne peut pas partir (ici, réseau
 /// inutilisable ; de même file pleine ou fermée) ne rend pas un délai nul. Avant le
 /// correctif, la boucle se réveillait sans arrêt et relisait la base à chaque tour.
@@ -1616,6 +1632,63 @@ async fn a_paused_task_is_moved_and_renamed_then_finishes_there() {
         Some("après.bin")
     );
     engine.shutdown().await;
+}
+
+/// Audit S2 : « Déplacer/Renommer » réserve le nom visé, comme une préparation (règle 7) ;
+/// un nom qu'une autre tâche vient de réserver est refusé, et la réservation part avec
+/// l'enregistrement du nouvel emplacement.
+#[tokio::test]
+async fn a_move_reserves_its_target_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("ailleurs");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let (_, server) = fast_site(SIZE);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&server.url("/fini.bin"), dir.path()))
+        .await
+        .unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+
+    // Une autre tâche se prépare sous « pris.bin » (réservé, `.part` pas encore créé).
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    assert!(
+        store::claims::insert(
+            &conn,
+            &dir_text(&elsewhere),
+            "pris.bin",
+            store::claims::ClaimKind::Part,
+            "autre-tache",
+        )
+        .unwrap()
+    );
+    assert!(matches!(
+        engine
+            .relocate(&id, Some(dir_text(&elsewhere)), Some("pris.bin".into()))
+            .await,
+        Err(EngineError::FileExists(_))
+    ));
+    assert!(dir.path().join("fini.bin").exists(), "rien n'a bougé");
+
+    let moved = engine
+        .relocate(&id, Some(dir_text(&elsewhere)), Some("libre.bin".into()))
+        .await
+        .unwrap();
+    assert_eq!(moved.file_name.as_deref(), Some("libre.bin"));
+    assert_file(&elsewhere, "libre.bin", SIZE);
+    let left: Vec<String> = store::claims::all(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.task_id)
+        .collect();
+    assert_eq!(
+        left,
+        ["autre-tache"],
+        "la réservation du déplacement est partie"
+    );
+    drop(conn);
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]

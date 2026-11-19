@@ -882,16 +882,24 @@ async fn drive(
     };
 
     if !seeding {
-        match pass
-            .follow(conn, stop, on_progress, &mut counters, false)
-            .await?
-        {
-            Passed::Reached => {}
-            Passed::Stopped => return Ok(End::Stopped),
-            Passed::Failed(f) => return Ok(End::Failed(f)),
-        }
+        let selected = loop {
+            match pass
+                .follow(conn, stop, on_progress, &mut counters, false)
+                .await?
+            {
+                // Seuls les fichiers que librqbit a suivis sont complets. Un choix changé
+                // pendant la fin du passage (`task.setFiles`) en demande un autre : un
+                // fichier coché trop tard ne prend jamais son nom incomplet (audit V1).
+                Passed::Reached(applied) => {
+                    if selected_files(conn, task_id)? == applied {
+                        break applied;
+                    }
+                }
+                Passed::Stopped => return Ok(End::Stopped),
+                Passed::Failed(f) => return Ok(End::Failed(f)),
+            }
+        };
         // Fichiers choisis vidés sur disque, puis sous leur nom final.
-        let selected = selected_files(conn, task_id)?;
         for (i, path) in paths.iter().enumerate() {
             if let Some(path) = path
                 && selected.contains(&i)
@@ -923,7 +931,7 @@ async fn drive(
         .follow(conn, stop, on_progress, &mut counters, true)
         .await?
     {
-        Passed::Reached => complete(conn, task_id, &task.dest_dir, &top, counters.total),
+        Passed::Reached(_) => complete(conn, task_id, &task.dest_dir, &top, counters.total),
         Passed::Stopped => Ok(End::SeedingStopped),
         Passed::Failed(f) => Ok(End::SeedingFailed(f)),
     }
@@ -989,8 +997,9 @@ struct Pass<'a> {
 }
 
 enum Passed {
-    /// Fichiers choisis complets, ou ratio atteint.
-    Reached,
+    /// Fichiers choisis complets, ou ratio atteint ; avec le choix des fichiers que
+    /// librqbit a vraiment suivi (audit V1).
+    Reached(HashSet<usize>),
     Stopped,
     Failed(Failure),
 }
@@ -1059,6 +1068,9 @@ impl Pass<'_> {
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_saved = Instant::now();
+        // Erreur de la base pendant le passage : le torrent est quand même retiré de la
+        // session et ses fichiers fermés avant de la rendre (audit V2).
+        let mut db_error: Option<TransferError> = None;
         let passed = loop {
             tokio::select! {
                 changed = stop.changed() => {
@@ -1075,20 +1087,37 @@ impl Pass<'_> {
                         break Passed::Failed(Failure::Torrent(e.clone()));
                     }
                     let live = stats.live.as_ref();
-                    // Fichiers choisis changés en cours (`task.setFiles`).
+                    // Fichiers choisis changés en cours (`task.setFiles`). Un choix que
+                    // librqbit refuse se retente au tour suivant (audit V1).
                     if !sharing {
-                        let now = selected_files(conn, task_id)?;
+                        let now = match selected_files(conn, task_id) {
+                            Ok(now) => now,
+                            Err(e) => {
+                                db_error = Some(e);
+                                break Passed::Stopped;
+                            }
+                        };
                         if now != selected {
-                            if let Err(e) = self.session.update_only_files(&handle, &now).await {
-                                tracing::warn!(
+                            match self.session.update_only_files(&handle, &now).await {
+                                Ok(()) => {
+                                    selected = now;
+                                    match load_task(conn, task_id) {
+                                        Ok(t) => {
+                                            counters.total =
+                                                t.total_bytes.unwrap_or(counters.total);
+                                        }
+                                        Err(e) => {
+                                            db_error = Some(e.into());
+                                            break Passed::Stopped;
+                                        }
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
                                     tache = %task_id,
                                     erreur = %format!("{e:#}"),
                                     "choix des fichiers d'un torrent"
-                                );
+                                ),
                             }
-                            selected = now;
-                            counters.total =
-                                load_task(conn, task_id)?.total_bytes.unwrap_or(counters.total);
                         }
                     }
                     // Pendant la vérification de départ, librqbit compte les octets lus : la
@@ -1104,11 +1133,16 @@ impl Pass<'_> {
                     on_progress(counters.progress(connections, upload_bps, sharing));
                     if last_saved.elapsed() >= SAVE_EVERY {
                         let files = (!sharing).then_some(&stats.file_progress);
-                        save_counters(conn, task_id, counters, files)?;
+                        if let Err(e) = save_counters(conn, task_id, counters, files) {
+                            db_error = Some(e);
+                            break Passed::Stopped;
+                        }
                         last_saved = Instant::now();
                     }
                     if !sharing && stats.finished {
-                        break Passed::Reached;
+                        #[cfg(test)]
+                        reached_hook(conn, task_id);
+                        break Passed::Reached(selected.clone());
                     }
                     if sharing && live.is_some() {
                         // Les fichiers terminés ont changé sur le disque : librqbit voudrait
@@ -1119,7 +1153,7 @@ impl Pass<'_> {
                             ));
                         }
                         if counters.target.is_some_and(|t| counters.uploaded >= t) {
-                            break Passed::Reached;
+                            break Passed::Reached(selected.clone());
                         }
                     }
                 }
@@ -1140,9 +1174,36 @@ impl Pass<'_> {
         if !factory.wait_closed(CLOSE_WAIT).await {
             tracing::warn!(tache = %task_id, "fichiers du torrent encore ouverts");
         }
+        if let Some(e) = db_error {
+            return Err(e);
+        }
         let files = (!sharing).then_some(&file_progress);
         save_counters(conn, task_id, counters, files)?;
         Ok(passed)
+    }
+}
+
+/// Essais (audit V1) : action jouée une fois, pour la tâche donnée, au moment où un passage
+/// de téléchargement atteint la fin de ses fichiers, avant le retrait de la session.
+#[cfg(test)]
+type ReachedHook = (String, Box<dyn FnOnce(&mut Connection) + Send>);
+
+#[cfg(test)]
+pub(crate) static ON_REACHED: Mutex<Option<ReachedHook>> = Mutex::new(None);
+
+#[cfg(test)]
+fn reached_hook(conn: &mut Connection, task_id: &str) {
+    let hook = {
+        let mut slot = ON_REACHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match slot.as_ref() {
+            Some((id, _)) if id == task_id => slot.take(),
+            _ => None,
+        }
+    };
+    if let Some((_, action)) = hook {
+        action(conn);
     }
 }
 

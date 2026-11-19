@@ -14,12 +14,34 @@ use tokio::sync::watch;
 
 use crate::display::{Line, Speed, Status, size};
 
-pub fn open_db(path: &Path) -> Result<Connection> {
+/// Base ouverte par le mode direct, avec son verrou : un `aurod` sur la même base est
+/// refusé, et réciproquement (audit R2). La connexion se ferme avant le verrou.
+pub struct Db {
+    conn: Connection,
+    _lock: auro_engine::store::lock::DbLock,
+}
+
+impl std::ops::Deref for Db {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for Db {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+}
+
+pub fn open_db(path: &Path) -> Result<Db> {
+    let lock = auro_engine::store::lock::acquire(path)
+        .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))?;
     let conn = auro_engine::store::open(path)
         .with_context(|| format!("impossible d'ouvrir la base {}", path.display()))?;
     // Sans moteur, comme à son démarrage : noms réservés avant un arrêt (SPEC §5.6, règle 7).
     auro_engine::claims::recover(&conn)?;
-    Ok(conn)
+    Ok(Db { conn, _lock: lock })
 }
 
 pub fn get(

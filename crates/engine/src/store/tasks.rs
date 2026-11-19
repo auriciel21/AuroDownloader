@@ -883,10 +883,26 @@ fn check_transition(
     Ok(from)
 }
 
+/// Relance par l'utilisateur d'une tâche `paused` ou `failed` (SPEC §5.5) : passe en
+/// `queued` et redonne ses tentatives à la tâche (SPEC §7.8) et ses tours aux morceaux
+/// faux (F-12, SPEC §7.9), dans une seule transaction. Les remises en file automatiques
+/// passent par [`change_state`], qui les garde.
+pub fn change_state_by_user(conn: &mut Connection, task_id: &str) -> Result<TaskState, StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let from = change_state_in(&tx, task_id, &Change::to(TaskState::Queued))?;
+    tx.execute("UPDATE tasks SET retry_count = 0 WHERE id = ?1", [task_id])?;
+    tx.execute(
+        "UPDATE task_pieces SET rounds = 0 WHERE task_id = ?1",
+        [task_id],
+    )?;
+    tx.commit()?;
+    Ok(from)
+}
+
 /// Change l'état d'une tâche si la SPEC §5.5 le permet ; renvoie l'état quitté.
 ///
-/// `retry_count` compte les passages consécutifs en `retry_wait` ; il repart de zéro à
-/// une relance manuelle (`queued`).
+/// `retry_count` compte les passages en `retry_wait` depuis la dernière relance par
+/// l'utilisateur ([`change_state_by_user`]).
 pub fn change_state(
     conn: &mut Connection,
     task_id: &str,
@@ -913,20 +929,14 @@ pub(super) fn change_state_in(
     let from = check_transition(tx, task_id, change.to)?;
     let to = change.to;
     let (code, detail) = change.error.unzip();
-    // Une relance manuelle redonne ses tours aux morceaux faux (F-12, SPEC §7.9), comme
-    // ses tentatives à la tâche.
-    if to == TaskState::Queued {
-        tx.execute(
-            "UPDATE task_pieces SET rounds = 0 WHERE task_id = ?1",
-            [task_id],
-        )?;
-    }
+    // Les remises en file automatiques (arrêt du moteur, plage, place revenue, reprise
+    // après un plantage) gardent les tentatives et les tours des morceaux faux : seule une
+    // relance de l'utilisateur les redonne ([`change_state_by_user`], audit S4).
     tx.execute(
         "UPDATE tasks SET
            state = ?2, pause_reason = ?3, error_code = ?4, error_detail = ?5,
            next_retry_at = ?6,
-           retry_count = CASE ?2 WHEN 'retry_wait' THEN retry_count + 1
-                                 WHEN 'queued' THEN 0 ELSE retry_count END,
+           retry_count = CASE ?2 WHEN 'retry_wait' THEN retry_count + 1 ELSE retry_count END,
            started_at = CASE ?2 WHEN 'active' THEN COALESCE(started_at, ?7) ELSE started_at END,
            finished_at = CASE WHEN ?2 IN ('failed', 'cancelled') THEN ?7 ELSE NULL END,
            updated_at = ?7
@@ -1601,8 +1611,18 @@ mod tests {
         assert_eq!(task.error_code, None);
         assert_eq!(task.retry_count, 1, "compté jusqu'à la relance manuelle");
 
+        // Remise en file automatique (arrêt du moteur, plage, place revenue) : les
+        // tentatives restent comptées (audit S4).
         change_state(&mut conn, &id, &Change::to(TaskState::Queued)).unwrap();
         let task = load_task(&conn, &id).unwrap();
+        assert_eq!((task.retry_count, task.pause_reason), (1, None));
+
+        // Relance de l'utilisateur : elles repartent de zéro.
+        change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+        change_state(&mut conn, &id, &pause).unwrap();
+        change_state_by_user(&mut conn, &id).unwrap();
+        let task = load_task(&conn, &id).unwrap();
+        assert_eq!(task.state, TaskState::Queued);
         assert_eq!((task.retry_count, task.pause_reason), (0, None));
     }
 

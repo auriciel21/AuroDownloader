@@ -791,6 +791,54 @@ async fn a_fragmented_stream_goes_through_ytdlp_within_the_limit() {
     crate::testing::stop(&s.engine).await;
 }
 
+/// Audit V4 : un fichier déjà présent sous le nom d'un flux (laissé par un yt-dlp lancé à
+/// la main, par exemple) n'est ni pris pour le flux fait, ni fusionné, ni effacé : la
+/// vidéo prend le nom suivant.
+#[tokio::test]
+async fn a_file_already_named_like_a_stream_is_left_alone() {
+    let server = site(None);
+    let fragment = crate::testing::content_range(3_000_000, 100 * 1024);
+    let answer = serde_json::json!({
+        "title": "Fragments", "duration": 6.0,
+        "requested_formats": [
+            {"format_id": "hls-1", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+             "protocol": "m3u8_native", "url": server.url("/v.m3u8")},
+            {"format_id": "a1", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
+             "protocol": "http", "url": server.url("/a.m4a")}
+        ]
+    })
+    .to_string();
+    let s = setup_with(|fake| crate::media::tools::Sources {
+        local_ytdlp: Some(crate::testing::tools::fake_ytdlp_media(
+            fake, &answer, &fragment, 0,
+        )),
+        local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(fake, "6.0")),
+        system_ffmpeg: false,
+        ..Default::default()
+    });
+    let other = s.dest.join("Fragments.fhls-1.mp4");
+    std::fs::write(&other, b"un autre fichier").unwrap();
+    let mut events = s.engine.subscribe();
+    let id = s
+        .engine
+        .add(add_video(&s, "https://exemple.org/page"))
+        .await
+        .unwrap();
+    let end = wait_end(&mut events, &id).await;
+    let task = s.engine.get(&id).await.unwrap();
+    assert_eq!(end, TaskState::Completed, "{task:?}");
+    assert_eq!(task.file_name.as_deref(), Some("Fragments (1).mp4"));
+    let mut expected = fragment.clone();
+    expected.extend(audio_bytes());
+    assert_eq!(
+        std::fs::read(s.dest.join("Fragments (1).mp4")).unwrap(),
+        expected
+    );
+    assert_eq!(std::fs::read(&other).unwrap(), b"un autre fichier");
+    assert_eq!(files_in(&s.dest).len(), 2, "{:?}", files_in(&s.dest));
+    crate::testing::stop(&s.engine).await;
+}
+
 /// Attend l'avertissement `code` du moteur ; rend son message et sa tâche.
 async fn wait_warning(
     events: &mut broadcast::Receiver<Event>,

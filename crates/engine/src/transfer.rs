@@ -2355,7 +2355,7 @@ pub fn display_name_for(url: &str) -> String {
 
 /// Relance manuelle d'une tâche `paused` ou `failed` : elle repasse dans la file (SPEC §5.5).
 pub fn requeue(conn: &mut Connection, task_id: &str) -> Result<(), TransferError> {
-    change_state(conn, task_id, &Change::to(TaskState::Queued))?;
+    crate::store::tasks::change_state_by_user(conn, task_id)?;
     Ok(())
 }
 

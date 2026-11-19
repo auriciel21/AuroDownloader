@@ -186,6 +186,11 @@ struct GateState {
     /// Numéro du dernier vidage réussi ; les vidages se suivent, jamais en même temps.
     succeeded: u64,
     running: bool,
+    /// Premier vidage raté (genre et texte de l'erreur). Après lui, aucun vidage de ce
+    /// descripteur ne prouve plus rien : sous Linux, l'erreur n'est rendue qu'une fois et
+    /// les pages perdues sont marquées propres, si bien que le `fsync` suivant réussit sans
+    /// qu'elles soient sur le disque (audit S1). La reprise rouvre le fichier.
+    failure: Option<(io::ErrorKind, String)>,
 }
 
 impl SyncGate {
@@ -195,13 +200,16 @@ impl SyncGate {
     }
 
     /// Revient quand un vidage commencé après l'appel a réussi ; `sync` fait ce vidage,
-    /// si c'est à ce fil de le faire. Une erreur ne revient qu'au fil qui a fait le vidage
-    /// raté ; ceux qui l'attendaient en recommencent un.
+    /// si c'est à ce fil de le faire. Après un vidage raté, tous les appels, en cours ou à
+    /// venir, échouent : la porte est définitivement fermée (voir `GateState::failure`).
     fn sync(&self, sync: impl Fn() -> io::Result<()>) -> io::Result<()> {
         let mut state = self.lock();
         // Premier vidage à commencer après cet appel.
         let needed = state.started + 1;
         loop {
+            if let Some(e) = Self::failed(&state) {
+                return Err(e);
+            }
             if state.succeeded >= needed {
                 return Ok(());
             }
@@ -219,13 +227,27 @@ impl SyncGate {
             let result = sync();
             state = self.lock();
             state.running = false;
-            if result.is_ok() {
-                state.succeeded = mine;
+            match &result {
+                Ok(()) => state.succeeded = mine,
+                Err(e) => state.failure = Some((e.kind(), e.to_string())),
             }
             self.finished.notify_all();
             // Ici `mine >= needed` : ce vidage a commencé après l'appel.
             return result;
         }
+    }
+
+    /// Erreur à rendre si un vidage a déjà raté.
+    fn failed(state: &GateState) -> Option<io::Error> {
+        state
+            .failure
+            .as_ref()
+            .map(|(kind, text)| io::Error::new(*kind, format!("vidage précédent raté : {text}")))
+    }
+
+    /// Erreur du premier vidage raté, s'il y en a eu un.
+    fn failure(&self) -> Option<io::Error> {
+        Self::failed(&self.lock())
     }
 }
 
@@ -402,6 +424,10 @@ impl PartFile {
     ///
     /// Refuse si un écrivain est encore ouvert.
     pub fn seal(self) -> Result<SealedPart, IoError> {
+        // Un vidage déjà raté : celui-ci pourrait réussir sans que tout soit sur le disque.
+        if let Some(e) = self.gate.failure() {
+            return Err(file_error(&self.part)(e));
+        }
         let PartFile {
             file, part, dest, ..
         } = self;
@@ -1133,28 +1159,48 @@ mod tests {
             assert!(n <= THREADS / 2, "{n} vidages pour {THREADS} demandes");
         }
 
-        /// Un vidage raté ne vaut pour personne : la demande suivante en refait un.
+        /// Audit S1 : après un vidage raté, aucun vidage du même descripteur ne prouve plus
+        /// rien (sous Linux, le suivant réussit sans les pages perdues). Toutes les
+        /// demandes suivantes échouent, sans vider, avec le genre de la première erreur
+        /// (disque plein : pause `disk_full`).
         #[test]
-        fn a_failed_sync_covers_nothing() {
+        fn a_failed_sync_fails_every_later_sync() {
             let gate = SyncGate::default();
             let calls = AtomicUsize::new(0);
             let failed = gate.sync(|| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Err(io::Error::other("disque"))
+                Err(io::Error::from(io::ErrorKind::StorageFull))
             });
             assert!(failed.is_err());
-            gate.sync(|| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            for _ in 0..3 {
+                let later = gate.sync(|| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                });
+                assert_eq!(later.unwrap_err().kind(), io::ErrorKind::StorageFull);
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(gate.failure().is_some());
         }
 
-        /// Des demandes qui arrivent pendant un vidage raté en refont un elles-mêmes, et
-        /// toutes finissent couvertes.
+        /// Un `.part` dont un vidage a raté ne se scelle pas : son vidage final pourrait
+        /// réussir sans que tout soit sur le disque.
         #[test]
-        fn waiters_retry_after_a_failed_sync() {
+        fn a_part_whose_sync_failed_is_not_sealed() {
+            let dir = tempfile::tempdir().unwrap();
+            let part = PartFile::create(&dir.path().join("f.bin")).unwrap();
+            let _ = part.gate.sync(|| Err(io::Error::other("disque")));
+            assert!(part.seal().is_err());
+            assert!(
+                part_path(&dir.path().join("f.bin")).exists(),
+                "le .part reste"
+            );
+        }
+
+        /// Des demandes qui arrivent pendant un vidage raté échouent toutes, sans en
+        /// refaire un.
+        #[test]
+        fn waiters_fail_after_a_failed_sync() {
             let gate = Arc::new(SyncGate::default());
             let attempts = Arc::new(AtomicUsize::new(0));
             let barrier = Arc::new(Barrier::new(4));
@@ -1167,29 +1213,23 @@ mod tests {
                     );
                     thread::spawn(move || {
                         barrier.wait();
-                        // Le premier vidage échoue, les suivants réussissent ; un fil
-                        // réessaie tant que son propre vidage a échoué.
-                        loop {
-                            let result = gate.sync(|| {
-                                let n = attempts.fetch_add(1, Ordering::SeqCst);
-                                thread::sleep(Duration::from_millis(20));
-                                if n == 0 {
-                                    Err(io::Error::other("disque"))
-                                } else {
-                                    Ok(())
-                                }
-                            });
-                            if result.is_ok() {
-                                break;
+                        // Le premier vidage échoue ; un second réussirait s'il était fait.
+                        gate.sync(|| {
+                            let n = attempts.fetch_add(1, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(20));
+                            if n == 0 {
+                                Err(io::Error::other("disque"))
+                            } else {
+                                Ok(())
                             }
-                        }
+                        })
                     })
                 })
                 .collect();
             for t in threads {
-                t.join().unwrap();
+                assert!(t.join().unwrap().is_err());
             }
-            assert!(attempts.load(Ordering::SeqCst) >= 2);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
         }
     }
 }

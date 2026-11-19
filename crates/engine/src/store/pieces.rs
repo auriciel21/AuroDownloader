@@ -268,7 +268,23 @@ mod tests {
             },
         )
         .unwrap();
+        // Remise en file automatique (arrêt du moteur, plage) : les tours restent (audit
+        // S4) ; une relance de l'utilisateur les redonne.
         change_state(conn2, &id, &Change::to(TaskState::Queued)).unwrap();
+        let loaded = load(conn2, &id).unwrap().unwrap();
+        assert_eq!(
+            (loaded.rounds, loaded.redone),
+            (2, 3),
+            "les deux tours restent"
+        );
+        let pause = Change {
+            to: TaskState::Paused,
+            pause_reason: Some(crate::store::tasks::PauseReason::User),
+            error: None,
+            next_retry_at: None,
+        };
+        change_state(conn2, &id, &pause).unwrap();
+        crate::store::tasks::change_state_by_user(conn2, &id).unwrap();
         let loaded = load(conn2, &id).unwrap().unwrap();
         assert_eq!((loaded.rounds, loaded.redone), (0, 3));
         let pause = Change {

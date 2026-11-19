@@ -225,12 +225,25 @@ async fn pieces_still_bad_after_three_rounds_fail_and_keep_the_part() {
     // Le serveur réparé, l'utilisateur relance : trois tours de nouveau, et seuls les
     // morceaux faux repartent (le `.part` est complet).
     site.lock().unwrap().corrupt.clear();
+    // Une remise en file automatique garde les tours (audit S4) ; la relance de
+    // l'utilisateur les redonne.
     change_state(
         &mut case.conn,
         &case.task_id,
         &Change::to(TaskState::Queued),
     )
     .unwrap();
+    assert_eq!(case.counts(), (3, 6));
+    change_state(
+        &mut case.conn,
+        &case.task_id,
+        &Change {
+            pause_reason: Some(crate::store::tasks::PauseReason::User),
+            ..Change::to(TaskState::Paused)
+        },
+    )
+    .unwrap();
+    crate::store::tasks::change_state_by_user(&mut case.conn, &case.task_id).unwrap();
     assert_eq!(case.counts(), (0, 6));
     let outcome = case.run().await;
     assert_eq!(outcome, Outcome::Completed(case.path("f.bin")));

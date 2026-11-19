@@ -231,6 +231,53 @@ fn safe_id(id: &str) -> String {
         .collect()
 }
 
+/// Lignes des flux de la vidéo nommée `final_stem`, puis des sous-titres demandés que la
+/// page propose (F-24) : à côté de la vidéo, sous `<nom>.<langue>.<ext>`. Les autres
+/// manqueront, signalés à la fin.
+fn stream_rows(resolution: &Resolution, subtitles: &[String], final_stem: &str) -> Vec<StreamRow> {
+    let mut rows: Vec<StreamRow> = resolution
+        .streams
+        .iter()
+        .enumerate()
+        .map(|(i, s)| StreamRow {
+            position: i as u32,
+            format_id: s.format_id.clone(),
+            protocol: s.protocol.clone(),
+            ext: s.ext.clone(),
+            has_video: s.has_video,
+            has_audio: s.has_audio,
+            file_name: format!("{final_stem}.f{}.{}", safe_id(&s.format_id), s.ext),
+            size: s.size,
+            child_id: None,
+            done: false,
+            language: None,
+        })
+        .collect();
+    for lang in subtitles {
+        if let Some(sub) = resolution.subtitles.iter().find(|s| &s.language == lang) {
+            rows.push(StreamRow {
+                position: rows.len() as u32,
+                format_id: format!("sub-{}", sub.ext),
+                protocol: match &sub.source {
+                    SubtitleSource::Url { url, .. } if url.starts_with("http://") => "http",
+                    SubtitleSource::Url { .. } => "https",
+                    SubtitleSource::Data(_) => "data",
+                }
+                .into(),
+                ext: sub.ext.clone(),
+                has_video: false,
+                has_audio: false,
+                file_name: format!("{final_stem}.{lang}.{}", sub.ext),
+                size: None,
+                child_id: None,
+                done: false,
+                language: Some(lang.clone()),
+            });
+        }
+    }
+    rows
+}
+
 /// Résolution, puis chaque flux, puis la fusion.
 async fn download(
     conn: &mut Connection,
@@ -304,62 +351,49 @@ async fn download(
             None => task.dest_dir.clone(),
         };
         let wanted = placement.name.clone().unwrap_or(titled);
-        let reserved = reserved_names(conn, &dest_dir, task_id)?;
+        let mut reserved = reserved_names(conn, &dest_dir, task_id)?;
         // Le nom final est pris sur le disque (`.part`), comme pour une tâche HTTP ; la
         // réservation, notée d'abord, part avec `save_resolution` (SPEC §5.6, règle 7).
+        // Les noms qui en dérivent (flux, sous-titres) doivent être libres eux aussi : un
+        // fichier déjà là sous l'un d'eux serait pris pour un flux fait, fusionné puis
+        // effacé (audit V4). Sinon, le nom suivant.
         let dir = Path::new(&dest_dir);
-        let final_name =
-            match claims::claim(conn, dir, &wanted, &reserved, ClaimKind::Part, task_id) {
-                Ok(name) => name,
-                Err(claims::ClaimError::Store(e)) => return Err(e.into()),
-                Err(claims::ClaimError::Disk(e)) => return Ok(failed("DISK_IO", e.to_string())),
-            };
-        let final_stem = final_name
-            .strip_suffix(&format!(".{container}"))
-            .unwrap_or(&final_name)
-            .to_owned();
-        let mut rows: Vec<StreamRow> = resolution
-            .streams
-            .iter()
-            .enumerate()
-            .map(|(i, s)| StreamRow {
-                position: i as u32,
-                format_id: s.format_id.clone(),
-                protocol: s.protocol.clone(),
-                ext: s.ext.clone(),
-                has_video: s.has_video,
-                has_audio: s.has_audio,
-                file_name: format!("{final_stem}.f{}.{}", safe_id(&s.format_id), s.ext),
-                size: s.size,
-                child_id: None,
-                done: false,
-                language: None,
-            })
-            .collect();
-        // Sous-titres demandés que la page propose (F-24), après les flux : à côté de la
-        // vidéo, sous `<nom>.<langue>.<ext>`. Les autres manqueront, signalés à la fin.
-        for lang in &job.subtitles {
-            if let Some(sub) = resolution.subtitles.iter().find(|s| &s.language == lang) {
-                rows.push(StreamRow {
-                    position: rows.len() as u32,
-                    format_id: format!("sub-{}", sub.ext),
-                    protocol: match &sub.source {
-                        SubtitleSource::Url { url, .. } if url.starts_with("http://") => "http",
-                        SubtitleSource::Url { .. } => "https",
-                        SubtitleSource::Data(_) => "data",
+        let mut tries = 0;
+        let (final_name, rows) = loop {
+            let final_name =
+                match claims::claim(conn, dir, &wanted, &reserved, ClaimKind::Part, task_id) {
+                    Ok(name) => name,
+                    Err(claims::ClaimError::Store(e)) => return Err(e.into()),
+                    Err(claims::ClaimError::Disk(e)) => {
+                        return Ok(failed("DISK_IO", e.to_string()));
                     }
-                    .into(),
-                    ext: sub.ext.clone(),
-                    has_video: false,
-                    has_audio: false,
-                    file_name: format!("{final_stem}.{lang}.{}", sub.ext),
-                    size: None,
-                    child_id: None,
-                    done: false,
-                    language: Some(lang.clone()),
-                });
+                };
+            let final_stem = final_name
+                .strip_suffix(&format!(".{container}"))
+                .unwrap_or(&final_name)
+                .to_owned();
+            let rows = stream_rows(&resolution, &job.subtitles, &final_stem);
+            let taken = rows.iter().any(|r| {
+                let path = dir.join(&r.file_name);
+                path.exists() || part_path(&path).exists()
+            });
+            tries += 1;
+            if !taken {
+                break (final_name, rows);
             }
-        }
+            // Défait : le `.part` vide, puis la réservation.
+            if let Err(e) = std::fs::remove_file(part_path(&dir.join(&final_name))) {
+                return Ok(failed("DISK_IO", e.to_string()));
+            }
+            crate::store::claims::delete(conn, &dir.to_string_lossy(), &final_name)?;
+            if tries >= 100 {
+                return Ok(failed(
+                    "DISK_IO",
+                    "aucun nom libre pour la vidéo et ses flux",
+                ));
+            }
+            reserved.push(final_name);
+        };
         media::save_resolution(
             conn,
             task_id,
@@ -1190,6 +1224,11 @@ pub fn delete_files(conn: &Connection, task: &TaskRow, finals: bool) -> std::io:
     for s in &streams {
         if keep_subtitles && s.is_subtitle() {
             kept.extend(s.child_id.as_deref());
+            continue;
+        }
+        // Un flux direct a sa tâche interne, effacée plus bas sous son nom réel (qui peut
+        // porter un numéro) : le nom prévu peut être celui d'un autre fichier (audit V4).
+        if s.child_id.is_some() {
             continue;
         }
         let path = dir.join(&s.file_name);

@@ -17,6 +17,7 @@ pub mod claims;
 pub mod headers;
 pub mod history;
 pub mod host_keys;
+pub mod lock;
 pub mod logins;
 pub mod media;
 pub mod moves;
@@ -168,6 +169,9 @@ pub enum StoreError {
 
     #[error("la tâche {task_id} n'a aucune source")]
     NoSource { task_id: String },
+
+    #[error("la base est déjà ouverte par un autre moteur (verrou {})", path.display())]
+    Locked { path: PathBuf },
 }
 
 /// Identifiant d'une ligne : UUID v7 en texte, triable par date de création (SPEC §5.1).

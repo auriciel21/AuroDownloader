@@ -135,6 +135,8 @@ pub fn commit(conn: &mut Connection, task_id: &str, then: Phase) -> Result<(), S
         StoreError::BadValue(format!("tâche {task_id} : aucun déplacement en cours"))
     })?;
     set_location(&tx, task_id, &m.dest_dir, Some(&m.file_name))?;
+    // Le nom visé, réservé au début du déplacement, est désormais enregistré (règle 7).
+    super::claims::release(&tx, task_id)?;
     match then {
         Phase::Moved => {
             tx.execute(
@@ -150,9 +152,10 @@ pub fn commit(conn: &mut Connection, task_id: &str, then: Phase) -> Result<(), S
     Ok(())
 }
 
-/// Efface la ligne d'un déplacement fini ou abandonné.
+/// Efface la ligne d'un déplacement fini ou abandonné, et la réservation du nom visé.
 pub fn forget(conn: &Connection, task_id: &str) -> Result<(), StoreError> {
     conn.execute("DELETE FROM file_moves WHERE task_id = ?1", [task_id])?;
+    super::claims::release(conn, task_id)?;
     Ok(())
 }
 

@@ -893,6 +893,9 @@ impl Engine {
     /// reprend aussitôt les tâches interrompues par un arrêt du moteur (SPEC §7.4).
     /// Demande un environnement d'exécution `tokio`.
     pub fn start(mut config: Config) -> Result<Engine, EngineError> {
+        // Un seul moteur par base, avant toute migration ou reprise (audit R2) ; gardé par
+        // la boucle jusqu'à son arrêt.
+        let lock = store::lock::acquire(&config.db_path)?;
         let mut conn = store::open(&config.db_path)?;
         let data_dir = config
             .db_path
@@ -954,6 +957,8 @@ impl Engine {
         let client = state.config.client.clone();
         tokio::spawn(async move {
             state.run(inbox, prepared).await;
+            // Boucle finie, base fermée : un autre moteur peut l'ouvrir.
+            drop(lock);
             let _ = stopped_tx.send(true);
         });
         // Ramassage des secrets orphelins : le relevé du coffre, hors de la boucle, puis
@@ -4059,7 +4064,10 @@ impl Scheduler {
             }
             TaskState::Paused | TaskState::Failed => {
                 self.broken.remove(task_id);
-                self.set_state(task_id, &Change::to(TaskState::Queued))
+                // Relance de l'utilisateur : tentatives et tours redonnés (audit S4).
+                let from = tasks::change_state_by_user(&mut self.conn, task_id)?;
+                self.changed(task_id, from, TaskState::Queued);
+                Ok(())
             }
             TaskState::Queued
             | TaskState::Active
@@ -4290,7 +4298,7 @@ impl Scheduler {
         }
         let completed = task.state == TaskState::Completed;
         let (from, to) = if completed {
-            (old_final, new_final)
+            (old_final, new_final.clone())
         } else {
             (part_path(&old_final), part_path(&new_final))
         };
@@ -4302,6 +4310,21 @@ impl Scheduler {
             store::moves::set_location(&self.conn, task_id, &dir, Some(&new_name))?;
             return self.relocated(task_id, None);
         }
+        // Le nom visé, réservé comme à la préparation (SPEC §5.6, règle 7) : une tâche qui se
+        // prépare pendant le déplacement (ou la copie vers un autre volume) en prend un
+        // autre (audit S2). La réservation part avec l'enregistrement du nouvel
+        // emplacement, ou avec l'abandon (`store::moves::commit`, `forget`).
+        if !same_file
+            && !store::claims::insert(
+                &self.conn,
+                &dir,
+                &new_name,
+                store::claims::ClaimKind::Part,
+                task_id,
+            )?
+        {
+            return Err(EngineError::FileExists(new_final));
+        }
         let journal = store::moves::FileMove {
             task_id: task_id.to_owned(),
             from_path: from.to_string_lossy().into_owned(),
@@ -4311,7 +4334,10 @@ impl Scheduler {
             file_name: new_name,
             phase: store::moves::Phase::Moving,
         };
-        store::moves::begin(&self.conn, &journal)?;
+        if let Err(e) = store::moves::begin(&self.conn, &journal) {
+            let _ = store::claims::release(&self.conn, task_id);
+            return Err(e.into());
+        }
         match crate::moves::rename(&from, &to) {
             Ok(true) => {
                 store::moves::commit(&mut self.conn, task_id, store::moves::Phase::Moving)?;
