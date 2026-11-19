@@ -368,3 +368,9 @@ sur le code corrigé, banc de 1 000 cycles compris.
 - `ui/Screens.kt` et `ui/Format.kt` en détail, `style.css` ligne à ligne, `bundle.ps1`,
   `bundle.sh` et `ci-instrument.sh`.
 - Aucun constat n'a été essayé sur un appareil Android ni en conditions réelles.
+
+## 8. Suivi des correctifs
+
+| Lot | Constats | Commit | Vérification |
+| --- | --- | --- | --- |
+| 1 | T1, P1 | (ce commit) | Tests qui échouaient sans le correctif (`a_split_task_moved_to_a_server_without_ranges_restarts_whole`, `a_due_retry_that_cannot_start_does_not_spin_the_loop`) ; fmt, clippy, tests sous Windows et Linux ; banc de reprise (300 cycles) et banc d'`aurod` (150 cycles) sous les deux. Sous Windows, `busy_server_halves_connections_and_the_download_goes_on` a échoué une fois, machine chargée par les deux campagnes (plafond 7 au lieu de 3 : montée plus rapide que prévu), puis réussi 5 fois sur 5 seul : test sensible au temps, à revoir avec T3 et T4. |

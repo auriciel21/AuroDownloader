@@ -304,6 +304,41 @@ async fn cut_connections_resume_where_they_stopped() {
     }
 }
 
+/// Audit T1 : une tâche découpée dont la nouvelle adresse (« Actualiser l'adresse »,
+/// SPEC §7.13) mène à un serveur sans plages repart du début en un seul flux. Avant le
+/// correctif, chaque segment recevait le début du fichier à sa place.
+#[tokio::test]
+async fn a_split_task_moved_to_a_server_without_ranges_restarts_whole() {
+    let data = content(SIZE);
+    let (site, server, mut case) = interrupted(&data).await;
+    assert!(load_segments(&case.conn, &case.task_id).unwrap().len() > 1);
+    site.lock().unwrap().ranges = false;
+    let url = server.url("/gros.bin");
+    crate::store::tasks::replace_url(
+        &mut case.conn,
+        &case.task_id,
+        &url,
+        Some(&crate::store::tasks::Revalidation {
+            accepts_ranges: false,
+            etag: Some("\"v1\""),
+            last_modified: None,
+            total_bytes: Some(SIZE as u64),
+        }),
+        None,
+    )
+    .unwrap();
+    let before = server.requests().len();
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "gros.bin", &data);
+    let gets: Vec<_> = server.requests()[before..]
+        .iter()
+        .filter(|r| r.method == "GET")
+        .cloned()
+        .collect();
+    assert_eq!(gets.len(), 1, "un seul flux : {gets:?}");
+    assert_eq!(gets[0].header("range"), None);
+}
+
 #[tokio::test]
 async fn changed_file_pauses_the_task() {
     let data = content(SIZE);

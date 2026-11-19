@@ -2346,6 +2346,9 @@ struct Scheduler {
     next_iface_check: Instant,
     /// Outils de la vidéo (SPEC §7.17) ; `None` hors de Windows et Linux.
     tools: Option<Arc<media::tools::Tools>>,
+    /// Heure (ms) de la dernière recherche des tâches à démarrer : les nouvelles
+    /// tentatives échues avant elle ont déjà été essayées (audit P1).
+    runnable_scan_ms: i64,
 }
 
 /// Seaux de débit (SPEC §7.6) : global, par file, et par tâche en cours.
@@ -2424,6 +2427,7 @@ impl Scheduler {
             iface_generation: 0,
             next_iface_check: Instant::now() + INTERFACE_CHECK,
             tools,
+            runnable_scan_ms: 0,
         }
     }
 
@@ -2485,7 +2489,15 @@ impl Scheduler {
             Some(_) => cap.min(self.next_iface_check.saturating_duration_since(now)),
             None => cap,
         };
-        match next_retry_at(&self.conn) {
+        // Nouvelles tentatives : seulement celles qui échoient après la dernière recherche
+        // des tâches à démarrer. Une tâche échue qui n'a pas pu partir (file pleine ou
+        // fermée, réseau absent…) attend un changement, qui réveille la boucle de toute
+        // façon ; la compter rendrait un délai nul et ferait tourner la boucle à vide
+        // (audit P1). Pendant l'arrêt, plus rien ne démarre.
+        if self.shutdown.is_some() {
+            return cap;
+        }
+        match next_retry_at(&self.conn, self.runnable_scan_ms) {
             Ok(Some(at)) => {
                 Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
                     .min(cap)
@@ -2614,7 +2626,9 @@ impl Scheduler {
 
     /// Démarre les tâches prêtes, tant que leur file a de la place (F-14).
     fn start_runnable(&mut self) {
-        let candidates = match runnable_tasks(&self.conn, now_ms()) {
+        let now = now_ms();
+        self.runnable_scan_ms = now;
+        let candidates = match runnable_tasks(&self.conn, now) {
             Ok(c) => c,
             Err(_) => return,
         };

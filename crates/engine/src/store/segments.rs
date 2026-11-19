@@ -301,6 +301,22 @@ pub fn reset_segments(
     Ok(())
 }
 
+/// Reprise sans plages (SPEC §7.4 et §7.13) : le flux repart du début, et un flux entier
+/// ne se demande que depuis l'octet 0. Le découpage, quel qu'il soit (tâche découpée
+/// avant qu'« Actualiser l'adresse » ne mène à un serveur sans plages), devient un seul
+/// segment vide `[0, total − 1]`, calculé par `segmenter`, dans une seule transaction.
+pub fn restart_whole(conn: &mut Connection, task_id: &str, total: u64) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    clear(&tx, task_id)?;
+    for s in segmenter::initial_split(total, 1, total.max(1)) {
+        insert_segment(&tx, task_id, &s)?;
+    }
+    refresh_done_bytes(&tx, task_id)?;
+    check_task_coverage(&tx, task_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Source qui télécharge le segment `idx` (SPEC §7.7) : notée quand une connexion le
 /// prend ; la dernière l'emporte. Sert à reconnaître la source d'un morceau faux (F-12).
 pub fn set_source(

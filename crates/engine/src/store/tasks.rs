@@ -1382,11 +1382,13 @@ pub fn count_pending(conn: &Connection, queue_id: &str) -> Result<u64, StoreErro
     Ok(n.unsigned_abs())
 }
 
-/// Date de la prochaine nouvelle tentative (millisecondes Unix), s'il y en a une.
-pub fn next_retry_at(conn: &Connection) -> Result<Option<i64>, StoreError> {
+/// Date de la prochaine nouvelle tentative (millisecondes Unix) postérieure à `after`, s'il
+/// y en a une : celles d'avant ont déjà été essayées par le planificateur.
+pub fn next_retry_at(conn: &Connection, after: i64) -> Result<Option<i64>, StoreError> {
     Ok(conn.query_row(
-        "SELECT MIN(next_retry_at) FROM tasks WHERE state = 'retry_wait' AND parent_id IS NULL",
-        [],
+        "SELECT MIN(next_retry_at) FROM tasks
+         WHERE state = 'retry_wait' AND parent_id IS NULL AND next_retry_at > ?1",
+        [after],
         |r| r.get(0),
     )?)
 }

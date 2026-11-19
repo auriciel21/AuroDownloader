@@ -899,6 +899,76 @@ async fn an_announced_state_is_already_recorded() {
     scheduler.begin_shutdown(None);
 }
 
+/// Audit P1 : une nouvelle tentative échue qui ne peut pas partir (ici, réseau
+/// inutilisable ; de même file pleine ou fermée) ne rend pas un délai nul. Avant le
+/// correctif, la boucle se réveillait sans arrêt et relisait la base à chaque tour.
+#[tokio::test]
+async fn a_due_retry_that_cannot_start_does_not_spin_the_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let conn = store::open(&config.db_path).unwrap();
+    let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
+    let (events, _announced) = broadcast::channel(16);
+    let (prepared, _) = mpsc::unbounded_channel();
+    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue, None, prepared);
+    let id = scheduler
+        .add(add("http://127.0.0.1:1/f", dir.path()))
+        .unwrap();
+    // Un échec passé : nouvelle tentative échue depuis une seconde.
+    tasks::change_state(&mut scheduler.conn, &id, &Change::to(TaskState::Active)).unwrap();
+    tasks::change_state(
+        &mut scheduler.conn,
+        &id,
+        &Change {
+            to: TaskState::RetryWait,
+            pause_reason: None,
+            error: Some(("NET_UNREACHABLE", "essai")),
+            next_retry_at: Some(now_ms() - 1000),
+        },
+    )
+    .unwrap();
+    scheduler.network_usable = false;
+    // Un tour de la boucle, sans attendre (`Scheduler::run`).
+    scheduler.recheck_disk();
+    scheduler.check_interface();
+    scheduler.refresh_schedules(false);
+    scheduler.check_end_action();
+    scheduler.start_runnable();
+    assert!(
+        scheduler.running.is_empty(),
+        "réseau inutilisable : rien ne part"
+    );
+    assert_eq!(
+        load_task(&scheduler.conn, &id).unwrap().state,
+        TaskState::RetryWait
+    );
+    let wake = scheduler.next_wake();
+    assert!(wake >= Duration::from_secs(1), "délai {wake:?}");
+
+    // Une tentative à venir réveille la boucle à sa date.
+    let soon = scheduler
+        .add(add("http://127.0.0.1:1/g", dir.path()))
+        .unwrap();
+    tasks::change_state(&mut scheduler.conn, &soon, &Change::to(TaskState::Active)).unwrap();
+    tasks::change_state(
+        &mut scheduler.conn,
+        &soon,
+        &Change {
+            to: TaskState::RetryWait,
+            pause_reason: None,
+            error: Some(("NET_UNREACHABLE", "essai")),
+            next_retry_at: Some(now_ms() + 5_000),
+        },
+    )
+    .unwrap();
+    let wake = scheduler.next_wake();
+    assert!(
+        wake > Duration::from_secs(3) && wake <= Duration::from_secs(5),
+        "délai {wake:?}"
+    );
+    scheduler.begin_shutdown(None);
+}
+
 /// Planification (F-16, SPEC §7.11) : plages horaires et action de fin.
 mod planning {
     use std::sync::atomic::{AtomicI64, Ordering};

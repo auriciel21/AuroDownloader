@@ -46,7 +46,7 @@ use crate::store::claims::ClaimKind;
 use crate::store::headers::{self as stored_headers, Stored, StoredHeader};
 use crate::store::logins::{self, LoginRow};
 use crate::store::segments::{
-    check_task_coverage, load_segments, reset_segments, save_progress, save_split,
+    check_task_coverage, load_segments, reset_segments, restart_whole, save_progress, save_split,
 };
 use crate::store::tasks::{
     Change, PauseReason, Preparation, SourceRow, SourceState, TaskRow, TaskState, change_state,
@@ -282,6 +282,11 @@ enum Failure {
         count: usize,
         rounds: u32,
     },
+    /// Flux entier demandé pour un segment qui ne commence pas au début : ses octets,
+    /// lus depuis l'octet 0, iraient à une autre place. Garde ; la reprise l'empêche.
+    Misplaced {
+        first: u64,
+    },
 }
 
 impl Failure {
@@ -298,6 +303,7 @@ impl Failure {
             Failure::NoSpace { .. } => "DISK_FULL",
             Failure::Vault(_) => "SECRET_UNAVAILABLE",
             Failure::Checksum { .. } | Failure::Pieces { .. } => "CHECKSUM_MISMATCH",
+            Failure::Misplaced { .. } => "INTERNAL",
         }
     }
 
@@ -322,7 +328,8 @@ impl Failure {
             Failure::Io(_)
             | Failure::NoSpace { .. }
             | Failure::Checksum { .. }
-            | Failure::Pieces { .. } => false,
+            | Failure::Pieces { .. }
+            | Failure::Misplaced { .. } => false,
             Failure::Truncated => true,
             Failure::Vault(_) => true,
         }
@@ -362,6 +369,9 @@ impl Failure {
                  de reprise",
                 algo.label()
             ),
+            Failure::Misplaced { first } => {
+                format!("flux entier demandé à partir de l'octet {first} : refusé (fichier gardé)")
+            }
             Failure::NoSpace { needed, free, keep } => format!(
                 "espace disque insuffisant : {} encore à écrire et {} à laisser libres, \
                  {} libres",
@@ -1251,19 +1261,14 @@ fn resume_part(
     // Tous les segments finis, donc vidés (règle 1) : le `.part` est complet, même sans
     // plages (arrêt pendant le calcul de l'empreinte, F-11).
     let complete = size >= total && segments.iter().all(|s| s.state == SegmentState::Done);
-    let lost = if complete {
-        Vec::new()
-    } else if source.accepts_ranges == Some(true) {
-        segments_beyond(size, &segments)
-    } else {
-        // Sans plages, aucune reprise : le flux repart du début.
-        segments
-            .iter()
-            .filter(|s| s.written > 0)
-            .map(|s| s.idx)
-            .collect()
-    };
-    reset_segments(conn, task_id, &lost)?;
+    if !complete && source.accepts_ranges == Some(true) {
+        reset_segments(conn, task_id, &segments_beyond(size, &segments))?;
+    } else if !complete {
+        // Sans plages, aucune reprise : le flux repart du début, en un seul segment, même
+        // si la tâche était découpée (nouvelle adresse sans plages, SPEC §7.13). Garder
+        // le découpage écrirait le début du fichier à la place de chaque segment.
+        restart_whole(conn, task_id, total)?;
+    }
     check_task_coverage(conn, task_id)?;
     let todo = load_segments(conn, task_id)?
         .into_iter()
@@ -2265,6 +2270,11 @@ async fn pump(
 ) -> Result<(), Failure> {
     while writer.remaining() > 0 {
         let first = start + writer.accepted();
+        // Un flux entier commence toujours à l'octet 0 : ailleurs, ses octets iraient à
+        // une place qui n'est pas la leur.
+        if matches!(fetch, Fetch::Whole { .. }) && first != 0 {
+            return Err(Failure::Misplaced { first });
+        }
         let last = first + writer.remaining() - 1;
         let request = async {
             match fetch {
