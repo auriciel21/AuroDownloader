@@ -177,6 +177,7 @@ mod tests {
             &new,
             &["https://b.exemple/f.iso".into()],
             Some(&pieces),
+            Default::default(),
         )
         .unwrap();
         let done = |idx, start, end: u64| Segment {

@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use rusqlite::Connection;
 use tokio::time::Instant;
 
 use super::{EngineError, Event, PendingEnd, ScheduleView, Scheduler};
@@ -34,14 +35,14 @@ impl Scheduler {
         (self.config.planning.clock)(&self.conn)
     }
 
-    fn view(schedule: Schedule, now: LocalNow) -> ScheduleView {
+    fn view(conn: &Connection, schedule: Schedule, now: LocalNow) -> ScheduleView {
         let local = now.local_ms();
         let open = !schedule.enabled || schedule.rules.is_open(local);
         let next_change_at = schedule
             .enabled
             .then(|| schedule.rules.next_change(local))
             .flatten()
-            .map(|at| at - now.offset_ms);
+            .map(|at| now.utc_of(conn, at));
         ScheduleView {
             schedule,
             open,
@@ -54,7 +55,7 @@ impl Scheduler {
         let now = self.now_local();
         Ok(schedules::list_schedules(&self.conn)?
             .into_iter()
-            .map(|s| Self::view(s, now))
+            .map(|s| Self::view(&self.conn, s, now))
             .collect())
     }
 
@@ -95,7 +96,10 @@ impl Scheduler {
             // les plages (il repartait aussitôt, revérifiant tout son disque toutes les 15 s,
             // audit P2) ; une vérification ou une commande de fin va jusqu'au bout (P3).
             if self.planning.closed.contains(&run.queue_id) {
-                run.requeue_unless(&[TaskState::Seeding, TaskState::Verifying]);
+                run.requeue_unless(
+                    &[TaskState::Seeding, TaskState::Verifying],
+                    tasks::PauseReason::Schedule,
+                );
             }
         }
     }
@@ -128,7 +132,7 @@ impl Scheduler {
                 .ok_or_else(|| EngineError::ScheduleNotFound(schedule_id.unwrap_or_default()))?;
         let schedule = schedules::load_schedule(&self.conn, &id)?
             .ok_or_else(|| EngineError::ScheduleNotFound(id.clone()))?;
-        let view = Self::view(schedule, self.now_local());
+        let view = Self::view(&self.conn, schedule, self.now_local());
         // Annoncée ici : le contrôle qui suit ne la redit pas.
         self.planning.open.insert(id, view.open);
         let announced = view.clone();
@@ -199,6 +203,13 @@ impl Scheduler {
         }
     }
 
+    /// L'utilisateur arrête (pause, annulation) une tâche de la file : l'action de fin
+    /// armée se désarme, sinon la file vidée par ses pauses éteignait la machine (audit P5,
+    /// décision 4). Une autre tâche qui se termine d'elle-même la réarme.
+    pub(super) fn disarm_end_action(&mut self, queue_id: &str) {
+        self.planning.armed.remove(queue_id);
+    }
+
     /// La file a-t-elle encore à télécharger ? En cas de doute (base illisible), oui. Un
     /// partage de torrent n'est pas un téléchargement : il ne retient pas l'action de fin
     /// (SPEC §7.11 ; sinon, avec un ratio jamais atteint, la machine ne s'éteignait jamais,
@@ -226,13 +237,14 @@ impl Scheduler {
             {
                 self.planning.pending = None;
                 self.planning.deadline = None;
-                let error = (self.config.planning.power)(pending.action)
-                    .err()
-                    .map(|e| e.to_string());
-                self.emit(|rev| Event::EndAction {
-                    rev,
-                    pending: None,
-                    error,
+                // Hors de la boucle (audit P6) : la mise en veille ne rend la main qu'au
+                // réveil, et la boucle doit continuer de servir ses clients jusque-là. Son
+                // issue revient par une note, que la boucle annonce.
+                let (power, action) = (self.config.planning.power, pending.action);
+                let notes = self.prepared.clone();
+                tokio::task::spawn_blocking(move || {
+                    let error = power(action).err().map(|e| e.to_string());
+                    let _ = notes.send((0, super::RunNote::EndActionDone(error)));
                 });
             }
             return;

@@ -35,6 +35,7 @@ pub struct NewTorrent<'a> {
 pub fn create_torrent_task(
     conn: &mut Connection,
     new: &NewTorrent<'_>,
+    start: super::tasks::Start,
 ) -> Result<String, StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (task_id, now) = (new_id(), now_ms());
@@ -68,6 +69,7 @@ pub fn create_torrent_task(
         "INSERT INTO torrents (task_id, info_hash, magnet, metainfo) VALUES (?1, ?2, ?3, ?4)",
         params![task_id, new.info_hash, new.magnet, new.metainfo],
     )?;
+    super::tasks::apply_start(&tx, &task_id, start)?;
     tx.commit()?;
     Ok(task_id)
 }
@@ -354,7 +356,7 @@ mod tests {
     fn a_torrent_task_has_its_magnet_as_source_and_a_torrents_row() {
         let mut conn = db();
         let queue = ensure_queue(&conn, "principale").unwrap();
-        let id = create_torrent_task(&mut conn, &new(&queue, None)).unwrap();
+        let id = create_torrent_task(&mut conn, &new(&queue, None), Default::default()).unwrap();
         let task = load_task(&conn, &id).unwrap();
         assert_eq!(task.kind, TaskKind::Torrent);
         assert_eq!(task.state, TaskState::Queued);
@@ -379,7 +381,8 @@ mod tests {
     fn preparation_records_the_name_size_and_files() {
         let mut conn = db();
         let queue = ensure_queue(&conn, "principale").unwrap();
-        let id = create_torrent_task(&mut conn, &new(&queue, Some(b"x"))).unwrap();
+        let id =
+            create_torrent_task(&mut conn, &new(&queue, Some(b"x")), Default::default()).unwrap();
         let files = [
             TorrentFile {
                 index: 0,

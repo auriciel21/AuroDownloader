@@ -499,6 +499,19 @@ impl Command {
         if !Path::new(&program).is_absolute() || program.chars().any(char::is_control) {
             return Err("actions.command.program : un chemin absolu".into());
         }
+        // Windows lance un `.bat` ou un `.cmd` par `cmd.exe`, un shell qui interpréterait les
+        // arguments (nom du fichier venu du serveur compris) : refusé partout, la règle est
+        // « jamais de shell » (SPEC §7.21, audit P18, décision 9).
+        let extension = Path::new(&program)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        if matches!(extension.as_deref(), Some("bat" | "cmd")) {
+            return Err(
+                "actions.command.program : un script .bat ou .cmd passe par cmd.exe (un \
+                 shell) ; donner un programme, par exemple powershell.exe avec -File"
+                    .into(),
+            );
+        }
         let args = match obj.get("args") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(list)) => list

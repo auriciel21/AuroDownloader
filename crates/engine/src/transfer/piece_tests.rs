@@ -90,6 +90,7 @@ impl Case {
             },
             &[],
             Some(&pieces()),
+            Default::default(),
         )
         .unwrap();
         Case { conn, task_id, dir }

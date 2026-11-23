@@ -354,6 +354,35 @@ pub struct NewTask<'a> {
     pub public_only: bool,
 }
 
+/// Départ d'une tâche créée, enregistré dans la transaction de sa création (audit P14 :
+/// un arrêt entre les deux la laissait partir sans pause, ou hors des règles).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Start {
+    /// `task.add` avec `paused` : en pause (cause `user`) dès sa création.
+    pub paused: bool,
+    /// Ajoutée sans dossier choisi : les règles la rangeront (`rule_base`, SPEC §7.21).
+    pub ruled: bool,
+}
+
+/// Applique `start` à une tâche que la transaction `tx` vient de créer.
+pub(crate) fn apply_start(tx: &Connection, task_id: &str, start: Start) -> Result<(), StoreError> {
+    if start.ruled {
+        tx.execute(
+            "UPDATE tasks SET rule_base = dest_dir WHERE id = ?1",
+            [task_id],
+        )?;
+    }
+    if start.paused {
+        // Créée en pause : comme `queued` suivi de la pause de l'utilisateur (SPEC §5.5),
+        // en une seule écriture.
+        tx.execute(
+            "UPDATE tasks SET state = 'paused', pause_reason = 'user' WHERE id = ?1",
+            [task_id],
+        )?;
+    }
+    Ok(())
+}
+
 /// Crée une tâche `queued` et sa source ; renvoie leurs identifiants.
 pub fn create_task(
     conn: &mut Connection,
@@ -370,7 +399,7 @@ pub fn create_task_with_mirrors(
     new: &NewTask<'_>,
     mirrors: &[String],
 ) -> Result<(String, String), StoreError> {
-    create_task_with_pieces(conn, new, mirrors, None)
+    create_task_with_pieces(conn, new, mirrors, None, Start::default())
 }
 
 /// [`create_task_with_mirrors`], avec les empreintes de morceaux d'un Metalink (F-12,
@@ -380,6 +409,7 @@ pub fn create_task_with_pieces(
     new: &NewTask<'_>,
     mirrors: &[String],
     pieces: Option<&crate::pieces::Pieces>,
+    start: Start,
 ) -> Result<(String, String), StoreError> {
     if 1 + mirrors.len() > super::sources::MAX_SOURCES {
         return Err(StoreError::BadValue(format!(
@@ -425,6 +455,7 @@ pub fn create_task_with_pieces(
     if let Some(pieces) = pieces {
         super::pieces::save_in(&tx, &task_id, pieces)?;
     }
+    apply_start(&tx, &task_id, start)?;
     tx.commit()?;
     Ok((task_id, source_id))
 }
@@ -1115,6 +1146,19 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
     )?;
     tx.commit()?;
     Ok(task.state)
+}
+
+/// Tâche interne d'une vidéo (`parent_id`, SPEC §7.17) ? Une tâche absente ne l'est pas :
+/// l'appelant dira qu'elle n'existe pas.
+pub fn is_internal(conn: &Connection, task_id: &str) -> Result<bool, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT parent_id IS NOT NULL FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
 }
 
 /// Note si la préparation de la tâche a suivi une redirection de HTTPS vers HTTP (SPEC §8.1).

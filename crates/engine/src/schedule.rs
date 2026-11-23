@@ -71,11 +71,38 @@ pub struct Schedule {
 pub struct LocalNow {
     pub utc_ms: i64,
     pub offset_ms: i64,
+    pub zone: Zone,
+}
+
+/// Fuseau de l'heure locale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    /// Celui de la machine : le décalage change avec l'heure d'été.
+    Machine,
+    /// Décalage fixe (horloges des tests).
+    Fixed,
 }
 
 impl LocalNow {
     pub fn local_ms(self) -> i64 {
         self.utc_ms + self.offset_ms
+    }
+
+    /// Instant UTC d'une heure locale, avec le décalage de ce moment-là : de l'autre côté
+    /// d'un changement d'heure, celui d'aujourd'hui donnait une heure de trop ou de moins
+    /// (audit P19). Lu par SQLite pour le fuseau de la machine.
+    pub fn utc_of(self, conn: &Connection, local_ms: i64) -> i64 {
+        let fixed = local_ms - self.offset_ms;
+        if self.zone == Zone::Fixed {
+            return fixed;
+        }
+        conn.query_row(
+            "SELECT CAST(strftime('%s', ?1, 'unixepoch', 'utc') AS INTEGER)",
+            [local_ms.div_euclid(1000)],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|s| s * 1000 + local_ms.rem_euclid(1000))
+        .unwrap_or(fixed)
     }
 }
 
@@ -92,6 +119,7 @@ pub fn local_now(conn: &Connection) -> LocalNow {
     LocalNow {
         utc_ms,
         offset_ms: offset_s * 1000,
+        zone: Zone::Machine,
     }
 }
 
@@ -326,5 +354,40 @@ mod tests {
         // Aucun fuseau ne s'écarte de plus de 14 h de l'heure universelle.
         assert!(now.offset_ms.abs() <= 14 * 3_600_000, "{now:?}");
         assert_eq!(now.offset_ms % 60_000, 0);
+    }
+
+    /// Audit P19 : la prochaine ouverture, de l'autre côté d'un changement d'heure, tombe
+    /// à l'heure locale prévue. Le samedi 28 mars 2026, veille du passage à l'heure d'été
+    /// en Europe ; sur une machine sans heure d'été, le cas est trivial.
+    #[test]
+    fn the_next_change_across_a_clock_change_keeps_its_local_hour() {
+        let conn = Connection::open_in_memory().unwrap();
+        let utc_ms: i64 = 1_774_699_200_000;
+        let offset_s: i64 = conn
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1, 'unixepoch', 'localtime') AS INTEGER) - ?1",
+                [utc_ms / 1000],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let now = LocalNow {
+            utc_ms,
+            offset_ms: offset_s * 1000,
+            zone: Zone::Machine,
+        };
+        let rules = Rules::from_json(
+            &json!({"windows": [{"days": [1], "start": "09:00", "end": "10:00"}]}),
+        )
+        .unwrap();
+        let local = rules.next_change(now.local_ms()).unwrap();
+        let utc = now.utc_of(&conn, local);
+        let shown: String = conn
+            .query_row(
+                "SELECT strftime('%w %H:%M', ?1, 'unixepoch', 'localtime')",
+                [utc / 1000],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(shown, "1 09:00", "lundi 9 h, heure locale");
     }
 }

@@ -71,6 +71,7 @@ pub async fn run(
     ctx: &Context<'_>,
     task_id: &str,
     mut stop: watch::Receiver<bool>,
+    cause: &crate::transfer::StopCause,
     on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Outcome, TransferError> {
     let task = load_task(conn, task_id)?;
@@ -109,16 +110,21 @@ pub async fn run(
     } else {
         download(conn, ctx, &status, task_id, &mut stop, on_progress).await?
     };
-    record(conn, task_id, end)
+    record(conn, task_id, end, cause)
 }
 
 /// Enregistre l'issue, comme `transfer::run` pour une tâche HTTP.
-fn record(conn: &mut Connection, task_id: &str, end: End) -> Result<Outcome, TransferError> {
+fn record(
+    conn: &mut Connection,
+    task_id: &str,
+    end: End,
+    cause: &crate::transfer::StopCause,
+) -> Result<Outcome, TransferError> {
     match end {
         End::Completed(path) => Ok(Outcome::Completed(path)),
         End::Stopped => {
             let change = Change {
-                pause_reason: Some(PauseReason::User),
+                pause_reason: Some(cause.get()),
                 ..Change::to(TaskState::Paused)
             };
             change_state(conn, task_id, &change)?;
@@ -136,7 +142,7 @@ fn record(conn: &mut Connection, task_id: &str, end: End) -> Result<Outcome, Tra
         End::RetryLater { code, detail } => {
             let task = load_task(conn, task_id)?;
             if task.retry_count + 1 >= MAX_FAILURES {
-                return record(conn, task_id, End::Failed { code, detail });
+                return record(conn, task_id, End::Failed { code, detail }, cause);
             }
             let delay = retry_delay(task.retry_count, None, Duration::ZERO);
             let at_ms =

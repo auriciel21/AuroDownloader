@@ -63,6 +63,9 @@ pub const DEFAULT_QUEUE: &str = "default";
 
 /// Tailles lues en même temps par `linkscan.probe` (SPEC §7.18).
 pub const LINK_PROBES: usize = 4;
+/// Nouvel essai d'une remise en file refusée (audit P11).
+const REQUEUE_RETRY: Duration = Duration::from_secs(1);
+
 /// Intervalle de vérification de la place libre pour les tâches en pause `disk_full`
 /// (SPEC §7.10).
 pub const DISK_RECHECK: Duration = Duration::from_secs(30);
@@ -2354,6 +2357,11 @@ struct Running {
     /// Torrent, lancé à cette génération de l'interface (`Scheduler::iface_generation`) ;
     /// `None` : téléchargement HTTP.
     torrent: Option<u64>,
+    /// Numéro de l'exécution : une note d'une exécution précédente de la même tâche ne
+    /// s'applique pas à celle-ci (audit P7).
+    run: u64,
+    /// Cause que l'exécution enregistre si elle s'arrête sur demande (audit P10).
+    cause: transfer::StopCause,
 }
 
 impl Running {
@@ -2363,7 +2371,7 @@ impl Running {
     /// Une tâche que l'utilisateur arrête ou annule garde sa suite. Seul chemin de ces
     /// remises en file, pour qu'elles ne divergent plus (audit P23, d'où venaient P2, P3 et
     /// P21). Vrai si l'exécution est arrêtée.
-    fn requeue_unless(&mut self, spare: &[TaskState]) -> bool {
+    fn requeue_unless(&mut self, spare: &[TaskState], cause: PauseReason) -> bool {
         if self.then != Then::Keep
             || *self.stop.borrow()
             || self.shown == TaskState::PostProcessing
@@ -2372,6 +2380,7 @@ impl Running {
             return false;
         }
         self.then = Then::Requeue;
+        self.cause.set(cause);
         let _ = self.stop.send(true);
         true
     }
@@ -2391,6 +2400,9 @@ enum RunNote {
     Seeding(String),
     /// Passage d'une vidéo à `post_processing` (fusion) enregistré (SPEC §7.17).
     PostProcessing(String),
+    /// Action de fin exécutée hors de la boucle (audit P6), avec son erreur éventuelle ;
+    /// numéro d'exécution 0.
+    EndActionDone(Option<String>),
 }
 
 struct Scheduler {
@@ -2407,6 +2419,9 @@ struct Scheduler {
     /// Tâches dont l'exécution a échoué sans issue enregistrable : jamais relancées
     /// avant le prochain démarrage, pour ne pas boucler.
     broken: HashSet<String>,
+    /// Tâches arrêtées pour être remises en file, dont la remise a échoué (base occupée) :
+    /// réessayée à chaque tour, sinon elles restaient en pause pour toujours (audit P11).
+    requeue_later: HashSet<String>,
     /// Arrêt demandé : à prévenir quand la dernière exécution est finie.
     shutdown: Option<oneshot::Sender<()>>,
     limits: Limits,
@@ -2414,7 +2429,10 @@ struct Scheduler {
     next_disk_check: Instant,
     /// Les exécutions y signalent leur préparation enregistrée ; la boucle l'annonce
     /// (`Event::Prepared`), car elle seule augmente la révision.
-    prepared: mpsc::UnboundedSender<RunNote>,
+    prepared: mpsc::UnboundedSender<(u64, RunNote)>,
+    /// Numéro de la dernière exécution lancée : chaque note porte celui de la sienne
+    /// (audit P7).
+    last_run: u64,
     /// Plages horaires et action de fin (F-16).
     planning: planning::State,
     /// Les copies vers un autre volume (SPEC §7.12) y signalent leur fin.
@@ -2459,7 +2477,7 @@ impl Scheduler {
         rev: Arc<AtomicU64>,
         default_queue: String,
         download_limit: Option<u64>,
-        prepared: mpsc::UnboundedSender<RunNote>,
+        prepared: mpsc::UnboundedSender<(u64, RunNote)>,
     ) -> Self {
         let (moved, moved_rx) = mpsc::unbounded_channel();
         let network_usable = config.planning.network_usable;
@@ -2501,6 +2519,7 @@ impl Scheduler {
             runs: JoinSet::new(),
             run_ids: HashMap::new(),
             broken: HashSet::new(),
+            requeue_later: HashSet::new(),
             shutdown: None,
             limits: Limits {
                 global: Bucket::new(download_limit),
@@ -2509,6 +2528,7 @@ impl Scheduler {
             },
             next_disk_check: Instant::now(),
             prepared,
+            last_run: 0,
             planning: planning::State::default(),
             moved,
             moved_rx: Some(moved_rx),
@@ -2527,7 +2547,7 @@ impl Scheduler {
     async fn run(
         mut self,
         mut inbox: mpsc::Receiver<Command>,
-        mut prepared: mpsc::UnboundedReceiver<RunNote>,
+        mut prepared: mpsc::UnboundedReceiver<(u64, RunNote)>,
     ) {
         let mut moved = self
             .moved_rx
@@ -2539,6 +2559,7 @@ impl Scheduler {
                 self.check_interface();
                 self.refresh_schedules(false);
                 self.check_end_action();
+                self.retry_requeues();
                 self.start_runnable();
             } else if self.running.is_empty() {
                 break;
@@ -2560,7 +2581,7 @@ impl Scheduler {
                         Err(e) => self.forget_panicked(e),
                     }
                 }
-                Some(note) = prepared.recv() => self.noted(note),
+                Some((number, note)) = prepared.recv() => self.noted(number, note),
                 Some((task_id, result)) = moved.recv() => self.moved(&task_id, result),
                 _ = tokio::time::sleep(wake), if self.shutdown.is_none() => {}
             }
@@ -2590,12 +2611,37 @@ impl Scheduler {
         if self.shutdown.is_some() {
             return cap;
         }
+        let cap = if self.requeue_later.is_empty() {
+            cap
+        } else {
+            cap.min(REQUEUE_RETRY)
+        };
         match next_retry_at(&self.conn, self.runnable_scan_ms) {
             Ok(Some(at)) => {
                 Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
                     .min(cap)
             }
             _ => cap,
+        }
+    }
+
+    /// Remises en file qui avaient échoué (audit P11) : réessayées ; une tâche qui n'est
+    /// plus en pause (reprise, annulée, retirée entre-temps) sort de la liste.
+    fn retry_requeues(&mut self) {
+        for task_id in std::mem::take(&mut self.requeue_later) {
+            match load_task(&self.conn, &task_id) {
+                Ok(task) if task.state == TaskState::Paused => {
+                    if let Err(e) = self.set_state(&task_id, &Change::to(TaskState::Queued)) {
+                        tracing::warn!(tache = %task_id, erreur = %e, "remise en file encore refusée");
+                        self.requeue_later.insert(task_id);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(tache = %task_id, erreur = %e, "remise en file : tâche illisible");
+                    self.requeue_later.insert(task_id);
+                }
+            }
         }
     }
 
@@ -2631,13 +2677,18 @@ impl Scheduler {
         let _ = self.events.send(event(rev));
     }
 
-    fn noted(&mut self, note: RunNote) {
+    fn noted(&mut self, number: u64, note: RunNote) {
         match note {
             RunNote::Prepared(task_id) => self.announce_prepared(&task_id),
+            RunNote::EndActionDone(error) => self.emit(|rev| Event::EndAction {
+                rev,
+                pending: None,
+                error,
+            }),
             // Arrivé après la fin de l'exécution : son issue, déjà annoncée depuis
             // `active`, suffit.
             RunNote::Verifying(task_id) => {
-                let Some(run) = self.running.get_mut(&task_id) else {
+                let Some(run) = self.running.get_mut(&task_id).filter(|r| r.run == number) else {
                     return;
                 };
                 if run.shown == TaskState::Active {
@@ -2646,7 +2697,7 @@ impl Scheduler {
                 }
             }
             RunNote::Redownloading(task_id) => {
-                let Some(run) = self.running.get_mut(&task_id) else {
+                let Some(run) = self.running.get_mut(&task_id).filter(|r| r.run == number) else {
                     return;
                 };
                 if run.shown == TaskState::Verifying {
@@ -2655,12 +2706,18 @@ impl Scheduler {
                 }
             }
             RunNote::Seeding(task_id) => {
-                let Some(run) = self.running.get_mut(&task_id) else {
+                let Some(run) = self.running.get_mut(&task_id).filter(|r| r.run == number) else {
                     return;
                 };
                 // Après la commande de fin d'un torrent aussi (SPEC §7.21).
                 if matches!(run.shown, TaskState::Active | TaskState::PostProcessing) {
                     let from = std::mem::replace(&mut run.shown, TaskState::Seeding);
+                    // Une pause demandée pendant le téléchargement, qui arrive au partage :
+                    // c'est une pause du partage, la tâche se termine (audit P7 ; elle
+                    // restait `seeding` et repartait au démarrage suivant).
+                    if run.then == Then::Keep && *run.stop.borrow() {
+                        run.then = Then::Complete;
+                    }
                     let queue_id = run.queue_id.clone();
                     self.changed(&task_id, from, TaskState::Seeding);
                     // Téléchargement fini : l'action de fin de la file peut suivre, le
@@ -2671,7 +2728,7 @@ impl Scheduler {
             // Fusion d'une vidéo, ou commande de fin (SPEC §7.21) : depuis `active`, ou
             // `verifying` après une empreinte juste.
             RunNote::PostProcessing(task_id) => {
-                let Some(run) = self.running.get_mut(&task_id) else {
+                let Some(run) = self.running.get_mut(&task_id).filter(|r| r.run == number) else {
                     return;
                 };
                 if matches!(run.shown, TaskState::Active | TaskState::Verifying) {
@@ -2816,7 +2873,7 @@ impl Scheduler {
         if !resumed
             && change_state(&mut self.conn, &task_id, &Change::to(TaskState::Active)).is_err()
         {
-            self.broken.insert(task_id);
+            self.set_aside(&task_id);
             return;
         }
         let shown = match from {
@@ -2828,6 +2885,9 @@ impl Scheduler {
         let throttle = self.throttle_for(&task_id, &queue_id);
         let (stop, stopped) = watch::channel(false);
         let (live_tx, live) = watch::channel(Arc::from([]));
+        self.last_run += 1;
+        let run = self.last_run;
+        let cause = transfer::StopCause::default();
         self.running.insert(
             task_id.clone(),
             Running {
@@ -2837,11 +2897,14 @@ impl Scheduler {
                 live,
                 shown,
                 torrent: (kind == TaskKind::Torrent).then_some(self.iface_generation),
+                run,
+                cause: cause.clone(),
             },
         );
         self.changed(&task_id, from, shown);
         let mut config = self.config.clone();
         config.transfer.throttle = throttle;
+        config.transfer.stop_cause = cause;
         // Le réglage, dans la limite de la configuration (les bancs peuvent l'interdire).
         config.transfer.preallocate &=
             settings::flag(&self.conn, Flag::Preallocate).unwrap_or(true);
@@ -2862,7 +2925,7 @@ impl Scheduler {
                 stopped,
                 events,
                 rev,
-                prepared,
+                (run, prepared),
                 live_tx,
             )
             .await;
@@ -2904,37 +2967,59 @@ impl Scheduler {
         bucket
     }
 
+    /// Une tâche que les clients peuvent désigner : pas une tâche interne d'une vidéo
+    /// (`parent_id`), que seule sa vidéo pilote (SPEC §7.17, audit P20) ; pour eux, elle
+    /// n'existe pas.
+    fn visible(&self, task_id: &str) -> Result<(), EngineError> {
+        if tasks::is_internal(&self.conn, task_id)? {
+            return Err(StoreError::TaskNotFound {
+                task_id: task_id.to_owned(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     fn handle(&mut self, command: Command) {
         match command {
             Command::Add(task, reply) => {
                 let _ = reply.send(self.add(*task));
             }
             Command::Pause(task_id, reply) => {
-                let _ = reply.send(self.pause(&task_id));
+                let _ = reply.send(self.visible(&task_id).and_then(|()| self.pause(&task_id)));
             }
             Command::Resume(task_id, reply) => {
-                let _ = reply.send(self.resume(&task_id));
+                let _ = reply.send(self.visible(&task_id).and_then(|()| self.resume(&task_id)));
             }
             Command::Cancel {
                 task_id,
                 delete_files,
                 reply,
             } => {
-                let _ = reply.send(self.cancel(&task_id, delete_files));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.cancel(&task_id, delete_files)),
+                );
             }
             Command::Remove {
                 task_id,
                 delete_files,
                 reply,
             } => {
-                let _ = reply.send(self.remove(&task_id, delete_files));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.remove(&task_id, delete_files)),
+                );
             }
             Command::Restart {
                 task_id,
                 delete_files,
                 reply,
             } => {
-                let _ = reply.send(self.restart(&task_id, delete_files));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.restart(&task_id, delete_files)),
+                );
             }
             Command::Relocate {
                 task_id,
@@ -2943,7 +3028,10 @@ impl Scheduler {
                 remote,
                 reply,
             } => {
-                let _ = reply.send(self.relocate(&task_id, dest_dir, file_name, remote));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.relocate(&task_id, dest_dir, file_name, remote)),
+                );
             }
             Command::CheckSource {
                 task_id,
@@ -2951,7 +3039,10 @@ impl Scheduler {
                 link_headers,
                 reply,
             } => {
-                let _ = reply.send(self.check_source(&task_id, &url, link_headers));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.check_source(&task_id, &url, link_headers)),
+                );
             }
             Command::ReplaceUrl {
                 task_id,
@@ -2961,7 +3052,9 @@ impl Scheduler {
                 link_headers,
                 reply,
             } => {
-                let replaced = self.replace_url(&task_id, &url, facts, public_only, link_headers);
+                let replaced = self.visible(&task_id).and_then(|()| {
+                    self.replace_url(&task_id, &url, facts, public_only, link_headers)
+                });
                 let _ = reply.send(replaced);
             }
             Command::CheckMirror {
@@ -2969,7 +3062,10 @@ impl Scheduler {
                 url,
                 reply,
             } => {
-                let _ = reply.send(self.check_mirror(&task_id, &url));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.check_mirror(&task_id, &url)),
+                );
             }
             Command::CheckWithinDownloads { task_id, reply } => {
                 let checked = load_task(&self.conn, &task_id)
@@ -2984,13 +3080,22 @@ impl Scheduler {
                 public_only,
                 reply,
             } => {
-                let _ = reply.send(self.add_mirror(&task_id, &url, facts, public_only));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.add_mirror(&task_id, &url, facts, public_only)),
+                );
             }
             Command::Get(task_id, reply) => {
-                let _ = reply.send(load_task(&self.conn, &task_id).map_err(Into::into));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| load_task(&self.conn, &task_id).map_err(Into::into)),
+                );
             }
             Command::Details(task_id, include, reply) => {
-                let _ = reply.send(self.details(&task_id, include));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.details(&task_id, include)),
+                );
             }
             Command::ListSchedules(reply) => {
                 let _ = reply.send(self.schedule_views());
@@ -3071,7 +3176,10 @@ impl Scheduler {
                 update,
                 reply,
             } => {
-                let _ = reply.send(self.update_task(&task_id, update));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.update_task(&task_id, update)),
+                );
             }
             Command::CreateQueue {
                 name,
@@ -3165,7 +3273,10 @@ impl Scheduler {
                 let _ = reply.send(self.set_remote_tls(files));
             }
             Command::SetFiles(task_id, selected, reply) => {
-                let _ = reply.send(self.set_files(&task_id, &selected));
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.set_files(&task_id, &selected)),
+                );
             }
             Command::SetFlag(flag, on, reply) => {
                 let result = settings::set_flag(&self.conn, flag, on);
@@ -3364,10 +3475,17 @@ impl Scheduler {
                     "empreinte : une vidéo est assemblée sur place, sans empreinte publiée".into(),
                 ));
             }
-            if matches!(
-                task.state,
-                TaskState::Verifying | TaskState::Completed | TaskState::Cancelled
-            ) {
+            // Fichier déjà sous son nom final (commande de fin en cours, ou en échec) :
+            // l'empreinte ne serait jamais vérifiée, et `{sha256}` la donnerait à la commande
+            // (audit P9).
+            let renamed = task.state == TaskState::PostProcessing
+                || task.error_code.as_deref() == Some("POSTPROCESS_FAILED");
+            if renamed
+                || matches!(
+                    task.state,
+                    TaskState::Verifying | TaskState::Completed | TaskState::Cancelled
+                )
+            {
                 return Err(Self::invalid(&task, "changement d'empreinte"));
             }
             tasks::set_checksum(&self.conn, task_id, checksum.as_ref(), None)?;
@@ -3475,18 +3593,26 @@ impl Scheduler {
         {
             return Ok(existing);
         }
-        // Sans dossier choisi : les règles pourront la ranger à sa préparation
-        // (SPEC §7.21). Elle ne part qu'à un prochain passage de la boucle, après.
-        let ruled = task.dest_dir.is_none() && task.sub_dir.is_empty();
-        let task_id = self.add_new(task)?;
-        if ruled {
-            store::rules::set_rule_base(&self.conn, &task_id)?;
+        self.add_new(task)
+    }
+
+    /// Créée en pause : le changement d'état s'annonce comme avant, après `task.added`, pour
+    /// les clients qui le suivent.
+    fn announce_start(&self, task_id: &str, start: tasks::Start) {
+        if start.paused {
+            self.changed(task_id, TaskState::Queued, TaskState::Paused);
         }
-        Ok(task_id)
     }
 
     fn add_new(&mut self, task: AddTask) -> Result<String, EngineError> {
         let mut task = task;
+        // Pause demandée, et sans dossier choisi : les règles pourront la ranger à sa
+        // préparation (SPEC §7.21). Enregistrés avec la tâche, dans la transaction qui la
+        // crée (audit P14).
+        let start = tasks::Start {
+            paused: task.start_paused,
+            ruled: task.dest_dir.is_none() && task.sub_dir.is_empty(),
+        };
         if !task.sub_dir.is_empty() {
             task.dest_dir = Some(self.resolve_sub_dir(&task)?);
             task.sub_dir.clear();
@@ -3504,7 +3630,7 @@ impl Scheduler {
                     "un torrent n'a qu'une source : pas de miroir".into(),
                 ));
             }
-            return self.add_torrent(task);
+            return self.add_torrent(task, start);
         }
         if task.media.is_some() {
             if !task.mirrors.is_empty() {
@@ -3512,7 +3638,7 @@ impl Scheduler {
                     "une vidéo n'a qu'une source : pas de miroir".into(),
                 ));
             }
-            return self.add_media(task);
+            return self.add_media(task, start);
         }
         net::check_task_url(&task.url)?;
         if net::is_file_transfer(&task.url) {
@@ -3593,6 +3719,7 @@ impl Scheduler {
             },
             &task.mirrors,
             task.pieces.as_ref(),
+            start,
         );
         let (task_id, _) = match created {
             Ok(created) => created,
@@ -3606,9 +3733,7 @@ impl Scheduler {
         }
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
-        if task.start_paused {
-            self.set_state(&task_id, &user_pause())?;
-        }
+        self.announce_start(&task_id, start);
         Ok(task_id)
     }
 
@@ -3668,7 +3793,7 @@ impl Scheduler {
     /// Ajout d'un torrent (SPEC §7.16) : lien magnet dans `url`, ou fichier `.torrent`.
     /// Ajoute une vidéo (SPEC §7.17) : les outils doivent être là ; tout est vérifié avant
     /// la création.
-    fn add_media(&mut self, task: AddTask) -> Result<String, EngineError> {
+    fn add_media(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {
         let request = task.media.clone().unwrap_or_default();
         let tools = self.tools.as_ref().ok_or_else(|| {
             EngineError::CapabilityMissing(
@@ -3730,16 +3855,15 @@ impl Scheduler {
                 subtitles: &request.subtitles,
                 public_only: task.public_only,
             },
+            start,
         )?;
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
-        if task.start_paused {
-            self.set_state(&task_id, &user_pause())?;
-        }
+        self.announce_start(&task_id, start);
         Ok(task_id)
     }
 
-    fn add_torrent(&mut self, task: AddTask) -> Result<String, EngineError> {
+    fn add_torrent(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {
         if !task.headers.is_empty() || task.checksum.is_some() || task.max_connections.is_some() {
             return Err(EngineError::BadRequest(
                 "headers, checksum et maxConnections ne s'appliquent pas à un torrent".into(),
@@ -3774,12 +3898,11 @@ impl Scheduler {
                 idempotency_key: task.idempotency_key.as_deref(),
                 requested_name: task.file_name.as_deref(),
             },
+            start,
         )?;
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
-        if task.start_paused {
-            self.set_state(&task_id, &user_pause())?;
-        }
+        self.announce_start(&task_id, start);
         Ok(task_id)
     }
 
@@ -4079,10 +4202,18 @@ impl Scheduler {
     }
 
     fn pause(&mut self, task_id: &str) -> Result<(), EngineError> {
+        if let Some(queue_id) = self.queue_of(task_id) {
+            self.disarm_end_action(&queue_id);
+        }
         if let Some(run) = self.running.get_mut(task_id) {
             // Fusion ou commande de fin (SPEC §7.21) : le fichier est fait, elle va jusqu'au
             // bout (ou jusqu'à son délai).
             if run.shown == TaskState::PostProcessing {
+                return Ok(());
+            }
+            // Annulation déjà demandée : une pause ne la rétrograde pas (sinon la tâche
+            // restait en pause et son `.part` n'était pas effacé, audit P8).
+            if matches!(run.then, Then::Cancel { .. }) {
                 return Ok(());
             }
             // Pause d'un partage : il s'arrête, et la tâche est terminée (SPEC §7.16).
@@ -4100,6 +4231,14 @@ impl Scheduler {
             TaskState::Paused => Ok(()),
             TaskState::Seeding => self.stop_sharing(task_id),
             _ => Err(Self::invalid(&task, "mise en pause")),
+        }
+    }
+
+    /// File d'une tâche, qu'elle tourne ou non.
+    fn queue_of(&self, task_id: &str) -> Option<String> {
+        match self.running.get(task_id) {
+            Some(run) => Some(run.queue_id.clone()),
+            None => load_task(&self.conn, task_id).ok().map(|t| t.queue_id),
         }
     }
 
@@ -4147,8 +4286,13 @@ impl Scheduler {
                 }) && net::ftp::default_port(&u) == Some(port)
             });
             if same && !resumed.contains(&id) {
-                self.resume(&id)?;
-                resumed.push(id);
+                // Une tâche qui ne repart pas n'arrête pas les suivantes (audit P15).
+                match self.resume(&id) {
+                    Ok(()) => resumed.push(id),
+                    Err(e) => {
+                        tracing::warn!(tache = %id, erreur = %e, "clé acceptée : tâche non relancée");
+                    }
+                }
             }
         }
         Ok(resumed)
@@ -4194,6 +4338,9 @@ impl Scheduler {
     }
 
     fn cancel(&mut self, task_id: &str, delete_files: bool) -> Result<(), EngineError> {
+        if let Some(queue_id) = self.queue_of(task_id) {
+            self.disarm_end_action(&queue_id);
+        }
         if let Some(run) = self.running.get_mut(task_id) {
             // Commande de fin ou fusion : le fichier est fait, elle va jusqu'au bout (une
             // fusion l'a toujours fait : elle n'écoute pas l'arrêt).
@@ -4505,7 +4652,22 @@ impl Scheduler {
                         );
                         None
                     }
-                    Err(e) => Some(e.to_string()),
+                    Err(e) => {
+                        // Copie faite, base qui refuse : le journal reste, et le démarrage
+                        // suivant finit le déplacement (`moves::recover`) au lieu de laisser
+                        // une copie orpheline (audit P17). La tâche reste en déplacement
+                        // jusque-là.
+                        tracing::error!(
+                            tache = %task_id,
+                            erreur = %e,
+                            "déplacement copié mais non enregistré : fini au prochain démarrage"
+                        );
+                        let error = format!(
+                            "{e} ; le déplacement se terminera au prochain démarrage du moteur"
+                        );
+                        let _ = self.relocated(task_id, Some(error));
+                        return;
+                    }
                 }
             }
             Err(e) => {
@@ -4638,7 +4800,10 @@ impl Scheduler {
         // Le miroir sert dès la reprise ; une vérification ou une commande de fin en cours
         // ne recommence pas pour lui (audit P21).
         if let Some(run) = self.running.get_mut(task_id) {
-            run.requeue_unless(&[TaskState::Verifying, TaskState::Seeding]);
+            run.requeue_unless(
+                &[TaskState::Verifying, TaskState::Seeding],
+                PauseReason::User,
+            );
         }
         Ok(source_id)
     }
@@ -4668,11 +4833,6 @@ impl Scheduler {
         // Nom tiré de l'adresse, tant que ni le serveur ni l'utilisateur n'en ont donné.
         let display_name = (task.file_name.is_none() && task.requested_name.is_none())
             .then(|| transfer::display_name_for(url));
-        // Les cookies de l'ancien hôte n'iront pas au nouveau (référence effacée avant le
-        // secret, SPEC §5.1).
-        if check.other_host {
-            self.drop_secrets(task_id);
-        }
         let revalidation = facts.as_ref().map(|f| tasks::Revalidation {
             accepts_ranges: f.accepts_ranges,
             etag: f.etag.as_deref(),
@@ -4686,6 +4846,13 @@ impl Scheduler {
             revalidation.as_ref(),
             display_name.as_deref(),
         )?;
+        // Les cookies de l'ancien hôte n'iront pas au nouveau (référence effacée avant le
+        // secret, SPEC §5.1) ; seulement une fois la nouvelle adresse enregistrée : une
+        // écriture refusée les laissait perdus pour l'ancienne (audit P16). Entre les deux,
+        // `net` ne les envoie de toute façon qu'à leur origine (audit T7).
+        if check.other_host {
+            self.drop_secrets(task_id);
+        }
         let task = load_task(&self.conn, task_id)?;
         let (id, name) = (task.id.clone(), task.display_name.clone());
         self.emit(|rev| Event::SourceChanged {
@@ -4751,7 +4918,7 @@ impl Scheduler {
             .set_state(task_id, &paused)
             .and_then(|()| self.set_state(task_id, &Change::to(TaskState::Queued)));
         if requeued.is_err() {
-            self.broken.insert(task_id.to_owned());
+            self.set_aside(task_id);
         }
     }
 
@@ -4784,7 +4951,7 @@ impl Scheduler {
         for run in self.running.values_mut().filter(|r| r.torrent.is_some()) {
             // Un partage aussi : il reprendra sur la nouvelle interface ; jamais une
             // commande de fin (audit P3).
-            run.requeue_unless(&[]);
+            run.requeue_unless(&[], PauseReason::Network);
         }
         let up = self.interface_up();
         if up != was_up {
@@ -4985,7 +5152,7 @@ impl Scheduler {
             // suite ; un partage arrêté reste `seeding` et reprendra.
             let stops = !usable || (metered && run.shown == TaskState::Seeding);
             if stops {
-                run.requeue_unless(&[TaskState::Verifying]);
+                run.requeue_unless(&[TaskState::Verifying], PauseReason::Network);
             }
         }
         self.emit(|rev| Event::NetworkChanged {
@@ -5034,7 +5201,8 @@ impl Scheduler {
             self.warn_missing_subtitles(&task);
         }
         let stopped_here = matches!(result, Ok(Outcome::Paused));
-        let _ = match then {
+        let requeue = matches!(then, Then::Requeue) && stopped_here;
+        let applied = match then {
             Then::Keep => Ok(()),
             Then::Requeue if stopped_here => {
                 self.set_state(task_id, &Change::to(TaskState::Queued))
@@ -5043,6 +5211,16 @@ impl Scheduler {
             Then::Cancel { delete_files } => match task.state {
                 TaskState::Paused | TaskState::RetryWait => self
                     .set_state(task_id, &Change::to(TaskState::Cancelled))
+                    .and_then(|()| match delete_files {
+                        true => delete_part(&self.conn, &task),
+                        false => Ok(()),
+                    }),
+                // L'exécution a échoué pendant qu'elle s'arrêtait : l'annulation demandée
+                // s'applique quand même (audit P13), par `queued` (la table de la SPEC §5.5
+                // ne mène pas de `failed` à `cancelled`), dans le même tour de la boucle.
+                TaskState::Failed => self
+                    .set_state(task_id, &Change::to(TaskState::Queued))
+                    .and_then(|()| self.set_state(task_id, &Change::to(TaskState::Cancelled)))
                     .and_then(|()| match delete_files {
                         true => delete_part(&self.conn, &task),
                         false => Ok(()),
@@ -5060,6 +5238,13 @@ impl Scheduler {
             Then::Complete if task.state == TaskState::Seeding => self.stop_sharing(task_id),
             Then::Complete => Ok(()),
         };
+        // Jamais en silence (audit P11) ; une remise en file se réessaie.
+        if let Err(e) = applied {
+            tracing::warn!(tache = %task_id, erreur = %e, "suite d'une exécution non appliquée");
+            if requeue {
+                self.requeue_later.insert(task_id.to_owned());
+            }
+        }
     }
 
     /// Vidéo terminée sans certains des sous-titres demandés (F-24, SPEC §7.17) : absents
@@ -5087,14 +5272,48 @@ impl Scheduler {
     /// sans enregistrer d'issue : la tâche passe en `failed`, code `INTERNAL`, et ne repart
     /// pas d'elle-même. Si même cela échoue, elle est écartée jusqu'au prochain démarrage.
     fn record_internal_error(&mut self, task_id: &str, error: &TransferError) {
+        tracing::error!(tache = %task_id, erreur = %error, "exécution arrêtée par une erreur du moteur");
+        // Un partage : ses fichiers sont faits, la tâche se termine (la table de la
+        // SPEC §5.5 ne mène pas de `seeding` à `failed`, audit P12). L'appelant annonce le
+        // changement d'état.
+        if load_task(&self.conn, task_id).is_ok_and(|t| t.state == TaskState::Seeding)
+            && torrent::finish_sharing(&mut self.conn, task_id).is_ok()
+        {
+            self.drop_secrets(task_id);
+            return;
+        }
         let detail = error.to_string();
         let change = Change {
             error: Some(("INTERNAL", &detail)),
             ..Change::to(TaskState::Failed)
         };
         if change_state(&mut self.conn, task_id, &change).is_err() {
-            self.broken.insert(task_id.to_owned());
+            self.set_aside(task_id);
         }
+    }
+
+    /// Une tâche qui ne peut plus changer d'état (base occupée ou abîmée) reste de côté
+    /// jusqu'au prochain démarrage : jamais en silence (audit P12), journal et
+    /// `engine.warning` `TASK_SET_ASIDE`.
+    fn set_aside(&mut self, task_id: &str) {
+        if !self.broken.insert(task_id.to_owned()) {
+            return;
+        }
+        tracing::error!(tache = %task_id, "tâche écartée jusqu'au prochain démarrage");
+        let name = load_task(&self.conn, task_id)
+            .map(|t| t.display_name)
+            .unwrap_or_default();
+        let message = format!(
+            "« {name} » ne peut pas changer d'état (base occupée ou abîmée) : elle reste de \
+             côté jusqu'au prochain démarrage du moteur"
+        );
+        let id = Some(task_id.to_owned());
+        self.emit(|rev| Event::Warning {
+            rev,
+            code: "TASK_SET_ASIDE",
+            message,
+            task_id: id,
+        });
     }
 
     /// Une exécution a paniqué : sa tâche est enregistrée en échec `INTERNAL`, comme pour
@@ -5304,7 +5523,7 @@ async fn execute(
     stop: watch::Receiver<bool>,
     events: broadcast::Sender<Event>,
     rev: Arc<AtomicU64>,
-    prepared: mpsc::UnboundedSender<RunNote>,
+    (run, prepared): (u64, mpsc::UnboundedSender<(u64, RunNote)>),
     live: watch::Sender<Arc<[LiveSegment]>>,
 ) -> Result<Outcome, TransferError> {
     let mut conn = store::open(&config.db_path)?;
@@ -5315,10 +5534,10 @@ async fn execute(
     let (mut first, mut verifying, mut seeding, mut merging) = (true, false, false, false);
     let mut on_progress = |progress: Progress| {
         if std::mem::take(&mut first) {
-            let _ = prepared.send(RunNote::Prepared(task_id.to_owned()));
+            let _ = prepared.send((run, RunNote::Prepared(task_id.to_owned())));
         }
         if progress.verified.is_some() && !std::mem::replace(&mut verifying, true) {
-            let _ = prepared.send(RunNote::Verifying(task_id.to_owned()));
+            let _ = prepared.send((run, RunNote::Verifying(task_id.to_owned())));
         }
         // Un téléchargement après la vérification : des morceaux faux (F-12). La
         // vérification suivante sera annoncée de nouveau.
@@ -5327,15 +5546,15 @@ async fn execute(
             && !progress.merging
             && std::mem::take(&mut verifying)
         {
-            let _ = prepared.send(RunNote::Redownloading(task_id.to_owned()));
+            let _ = prepared.send((run, RunNote::Redownloading(task_id.to_owned())));
         }
         // Un torrent passe au partage (SPEC §7.16) : annoncé comme `verifying`.
         if progress.seeding && !std::mem::replace(&mut seeding, true) {
-            let _ = prepared.send(RunNote::Seeding(task_id.to_owned()));
+            let _ = prepared.send((run, RunNote::Seeding(task_id.to_owned())));
         }
         // Une vidéo passe à la fusion (SPEC §7.17).
         if progress.merging && !std::mem::replace(&mut merging, true) {
-            let _ = prepared.send(RunNote::PostProcessing(task_id.to_owned()));
+            let _ = prepared.send((run, RunNote::PostProcessing(task_id.to_owned())));
         }
         live.send_replace(Arc::clone(&progress.segments));
         let _ = events.send(Event::Progress {
@@ -5359,7 +5578,15 @@ async fn execute(
     } else {
         match task.kind {
             TaskKind::Torrent => {
-                torrent::run(&mut conn, torrents, task_id, stop.clone(), &mut on_progress).await?
+                torrent::run(
+                    &mut conn,
+                    torrents,
+                    task_id,
+                    stop.clone(),
+                    &config.transfer.stop_cause,
+                    &mut on_progress,
+                )
+                .await?
             }
             // Vidéo (SPEC §7.17) : ses flux directs passent par `transfer::run`.
             TaskKind::Media => {
@@ -5368,7 +5595,15 @@ async fn execute(
                     opts: &config.transfer,
                     tools,
                 };
-                media::run::run(&mut conn, &ctx, task_id, stop.clone(), &mut on_progress).await?
+                media::run::run(
+                    &mut conn,
+                    &ctx,
+                    task_id,
+                    stop.clone(),
+                    &config.transfer.stop_cause,
+                    &mut on_progress,
+                )
+                .await?
             }
             TaskKind::Http => {
                 transfer::run(
@@ -5392,7 +5627,7 @@ async fn execute(
             return Ok(outcome);
         }
         let path = path.clone();
-        let _ = prepared.send(RunNote::PostProcessing(task_id.to_owned()));
+        let _ = prepared.send((run, RunNote::PostProcessing(task_id.to_owned())));
         match crate::postproc::run(&mut conn, task_id, &mut command_stop).await? {
             crate::postproc::Ran::Failed(failed) => return Ok(failed),
             crate::postproc::Ran::Stopped => return Ok(Outcome::PostProcessing),
@@ -5401,9 +5636,15 @@ async fn execute(
                 if !torrent::after_command(&mut conn, task_id)? {
                     return Ok(Outcome::Completed(path));
                 }
-                outcome =
-                    torrent::run(&mut conn, torrents, task_id, stop.clone(), &mut on_progress)
-                        .await?;
+                outcome = torrent::run(
+                    &mut conn,
+                    torrents,
+                    task_id,
+                    stop.clone(),
+                    &config.transfer.stop_cause,
+                    &mut on_progress,
+                )
+                .await?;
             }
             crate::postproc::Ran::Done => return crate::postproc::complete(&mut conn, task_id),
         }

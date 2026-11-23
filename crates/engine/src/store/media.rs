@@ -28,7 +28,11 @@ pub struct NewMedia<'a> {
 
 /// Crée une tâche vidéo `queued`, sa source (l'adresse de la page) et sa ligne
 /// `media_jobs` ; renvoie l'identifiant de la tâche.
-pub fn create_media_task(conn: &mut Connection, new: &NewMedia<'_>) -> Result<String, StoreError> {
+pub fn create_media_task(
+    conn: &mut Connection,
+    new: &NewMedia<'_>,
+    start: super::tasks::Start,
+) -> Result<String, StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (task_id, now) = (new_id(), now_ms());
     let limit = new
@@ -63,6 +67,7 @@ pub fn create_media_task(conn: &mut Connection, new: &NewMedia<'_>) -> Result<St
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![task_id, new.page_url, new.format, new.container, subtitles],
     )?;
+    super::tasks::apply_start(&tx, &task_id, start)?;
     tx.commit()?;
     Ok(task_id)
 }

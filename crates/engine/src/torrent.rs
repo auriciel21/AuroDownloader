@@ -662,6 +662,7 @@ pub async fn run(
     torrents: &Torrents,
     task_id: &str,
     mut stop: watch::Receiver<bool>,
+    cause: &crate::transfer::StopCause,
     on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Outcome, TransferError> {
     let task = load_task(conn, task_id)?;
@@ -701,7 +702,7 @@ pub async fn run(
         End::Completed(path) => Ok(Outcome::Completed(path)),
         End::Stopped => {
             let change = Change {
-                pause_reason: Some(PauseReason::User),
+                pause_reason: Some(cause.get()),
                 ..Change::to(TaskState::Paused)
             };
             change_state(conn, task_id, &change)?;

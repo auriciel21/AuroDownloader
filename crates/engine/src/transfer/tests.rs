@@ -464,6 +464,35 @@ async fn stop_request_pauses_then_the_task_resumes() {
     assert_eq!(task.state, TaskState::Paused);
     assert_eq!(task.pause_reason.as_deref(), Some("user"));
 
+    // Audit P10 : arrêtée pour le réseau, la pause en porte la cause (SPEC §7.15).
+    crate::store::tasks::change_state(
+        &mut case.conn,
+        &case.task_id,
+        &Change::to(TaskState::Queued),
+    )
+    .unwrap();
+    let network = opts();
+    network.stop_cause.set(PauseReason::Network);
+    let (stop_tx, stop) = watch::channel(true);
+    assert_eq!(case.run_opts(&network, stop).await, Outcome::Paused);
+    drop(stop_tx);
+    assert_eq!(case.task().pause_reason.as_deref(), Some("network"));
+    crate::store::tasks::change_state(
+        &mut case.conn,
+        &case.task_id,
+        &Change::to(TaskState::Queued),
+    )
+    .unwrap();
+    crate::store::tasks::change_state(
+        &mut case.conn,
+        &case.task_id,
+        &Change {
+            pause_reason: Some(PauseReason::User),
+            ..Change::to(TaskState::Paused)
+        },
+    )
+    .unwrap();
+
     // Une pause ne s'exécute pas : elle repasse d'abord par la file.
     let (_, stop) = watch::channel(false);
     assert!(matches!(

@@ -557,6 +557,83 @@ async fn a_redirect_from_https_to_http_is_noted_and_announced() {
     engine.shutdown().await;
 }
 
+/// Audit P14 : la pause demandée et la base des règles s'enregistrent dans la transaction
+/// qui crée la tâche : si l'une échoue, aucune tâche n'est créée à moitié (avant, elle
+/// partait sans pause, ou hors des règles).
+#[tokio::test]
+async fn an_added_task_starts_paused_and_ruled_in_one_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(config(dir.path())).unwrap();
+    // Sans dossier choisi : celui des téléchargements du moteur (une machine de test peut
+    // ne pas avoir de dossier « Téléchargements »).
+    let downloads = dir.path().to_str().unwrap().to_owned();
+    engine.set_download_dir(Some(downloads)).await.unwrap();
+    let paused = AddTask {
+        url: "http://127.0.0.1:1/p.bin".into(),
+        start_paused: true,
+        ..AddTask::default()
+    };
+    let id = engine.add(paused.clone()).await.unwrap();
+    let row = task(dir.path(), &id);
+    assert_eq!(row.state, TaskState::Paused);
+    assert_eq!(row.pause_reason.as_deref(), Some("user"));
+    engine.shutdown().await;
+
+    let conn = store::open(&dir.path().join("auro.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER refuse BEFORE UPDATE OF rule_base ON tasks
+         BEGIN SELECT RAISE(ABORT, 'refusé'); END;",
+    )
+    .unwrap();
+    drop(conn);
+    let engine = Engine::start(config(dir.path())).unwrap();
+    assert!(engine.add(paused).await.is_err());
+    let count: i64 = store::open(&dir.path().join("auro.db"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "aucune tâche créée à moitié");
+    engine.shutdown().await;
+}
+
+/// Audit P20 : une tâche interne d'une vidéo n'existe pas pour les commandes des clients ;
+/// seule sa vidéo la pilote.
+#[tokio::test]
+async fn internal_tasks_are_out_of_reach() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let queue = engine.default_queue().to_owned();
+    engine.shutdown().await;
+    let mut conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let new = |parent_id| NewTask {
+        queue_id: &queue,
+        url: "http://127.0.0.1:1/flux.bin",
+        display_name: "flux.bin",
+        dest_dir: dir.path().to_str().unwrap(),
+        max_connections: None,
+        speed_limit_bps: None,
+        idempotency_key: None,
+        requested_name: None,
+        checksum: None,
+        headers: &[],
+        parent_id,
+        public_only: false,
+    };
+    let (parent, _) = tasks::create_task(&mut conn, &new(None)).unwrap();
+    let (child, _) = tasks::create_task(&mut conn, &new(Some(&parent))).unwrap();
+    drop(conn);
+
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let absent = |r: &Result<_, EngineError>| {
+        matches!(r, Err(EngineError::Store(StoreError::TaskNotFound { .. })))
+    };
+    assert!(absent(&engine.get(&child).await.map(|_| ())));
+    assert!(absent(&engine.pause(&child).await));
+    assert!(absent(&engine.cancel(&child, true).await));
+    assert!(engine.get(&parent).await.is_ok());
+    engine.shutdown().await;
+}
+
 /// Audit S8 : contrôle de couverture au démarrage (SPEC §5.6, règle 2). Une tâche en
 /// attente d'une nouvelle tentative, dont les segments enregistrés ont un trou, échoue
 /// tout de suite (`INTERNAL`) au lieu d'attendre son tour avec eux.
@@ -1059,6 +1136,36 @@ async fn a_fresh_plugin_link_keeps_its_own_cookies_on_another_host() {
         0,
         "pas de secret vers une autre origine"
     );
+
+    // Audit P16 : une adresse que la base refuse d'enregistrer garde ses cookies (ils
+    // étaient effacés avant l'écriture).
+    let refused = engine
+        .add(paused("http://127.0.0.1:1/h.bin"))
+        .await
+        .unwrap();
+    let id = refused.clone();
+    engine
+        .ask(|reply| Command::ReplaceHeaders(id, cookies(), reply))
+        .await
+        .unwrap();
+    store::open(&dir.path().join("auro.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse BEFORE UPDATE OF url ON sources
+             BEGIN SELECT RAISE(ABORT, 'refusé'); END;",
+        )
+        .unwrap();
+    assert!(
+        engine
+            .set_url(&refused, "http://127.0.0.2:2/h.bin")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        secret_count(&refused),
+        1,
+        "cookie gardé pour l'ancienne adresse"
+    );
     crate::testing::stop(&engine).await;
 }
 
@@ -1155,7 +1262,7 @@ mod planning {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::schedule::{EndAction, LocalNow, Rules};
+    use crate::schedule::{EndAction, LocalNow, Rules, Zone};
 
     /// Lundi 2026-11-02, minuit, en heure locale.
     const MONDAY: i64 = 20_759 * 86_400_000;
@@ -1203,6 +1310,7 @@ mod planning {
         LocalNow {
             utc_ms: WINDOW_CLOCK.load(Ordering::SeqCst),
             offset_ms: 0,
+            zone: Zone::Fixed,
         }
     }
 
@@ -1287,6 +1395,7 @@ mod planning {
         LocalNow {
             utc_ms: monday(15, 0),
             offset_ms: 0,
+            zone: Zone::Fixed,
         }
     }
 
@@ -1339,6 +1448,8 @@ mod planning {
                     live,
                     shown: *shown,
                     torrent: None,
+                    run: 0,
+                    cause: transfer::StopCause::default(),
                 },
             );
             stops.push(stopped);
@@ -1367,6 +1478,11 @@ mod planning {
             let requeued = scheduler.running[*id].then == Then::Requeue;
             assert_eq!(requeued, expected, "{id} ({shown:?})");
         }
+        // Audit P10 : la pause enregistrée porte la cause de la plage.
+        assert_eq!(
+            scheduler.running["telechargement"].cause.get(),
+            PauseReason::Schedule
+        );
         scheduler.running.clear();
     }
 
@@ -1383,6 +1499,330 @@ mod planning {
         let pending = scheduler.planning.pending.clone().expect("action annoncée");
         assert_eq!(pending.action, EndAction::Sleep);
         scheduler.running.clear();
+    }
+
+    /// Une tâche en base dans la file par défaut, passée par `states`.
+    fn db_task(scheduler: &mut Scheduler, states: &[Change<'_>]) -> String {
+        let queue = scheduler.default_queue.clone();
+        let new = NewTask {
+            queue_id: &queue,
+            url: "http://127.0.0.1:1/f.bin",
+            display_name: "f.bin",
+            dest_dir: "/dl",
+            max_connections: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            requested_name: None,
+            checksum: None,
+            headers: &[],
+            parent_id: None,
+            public_only: false,
+        };
+        let (id, _) = tasks::create_task(&mut scheduler.conn, &new).unwrap();
+        for change in states {
+            change_state(&mut scheduler.conn, &id, change).unwrap();
+        }
+        id
+    }
+
+    /// Audit P5 (décision 4) : une file armée que l'utilisateur vide par ses pauses ne
+    /// lance plus l'action de fin ; une tâche qui se termine d'elle-même la réarme.
+    #[tokio::test]
+    async fn a_user_pause_disarms_the_end_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) =
+            closed_queue_with_runs(dir.path(), "shutdown", &[("reste", TaskState::Active)]);
+        let queue = scheduler.default_queue.clone();
+        scheduler.arm_end_action(&queue);
+        scheduler.pause("reste").unwrap();
+        scheduler.running.clear();
+        scheduler.check_end_action();
+        assert!(
+            scheduler.planning.pending.is_none(),
+            "désarmée par la pause"
+        );
+        scheduler.arm_end_action(&queue);
+        scheduler.check_end_action();
+        assert!(scheduler.planning.pending.is_some(), "réarmée par une fin");
+    }
+
+    /// Audit P8 : une pause pendant l'arrêt d'une annulation ne la rétrograde pas.
+    #[tokio::test]
+    async fn a_pause_keeps_a_cancel_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) =
+            closed_queue_with_runs(dir.path(), "none", &[("t", TaskState::Active)]);
+        scheduler.cancel("t", true).unwrap();
+        scheduler.pause("t").unwrap();
+        assert_eq!(
+            scheduler.running["t"].then,
+            Then::Cancel { delete_files: true }
+        );
+        scheduler.running.clear();
+    }
+
+    /// Audit P7 : une note d'une exécution précédente ne s'applique pas à la suivante ; une
+    /// pause demandée pendant le téléchargement vaut pour le partage qui suit.
+    #[tokio::test]
+    async fn run_notes_belong_to_their_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) =
+            closed_queue_with_runs(dir.path(), "none", &[("t", TaskState::Active)]);
+        scheduler.running.get_mut("t").unwrap().run = 2;
+        scheduler.noted(1, RunNote::Seeding("t".into()));
+        assert_eq!(
+            scheduler.running["t"].shown,
+            TaskState::Active,
+            "note ancienne"
+        );
+        scheduler.pause("t").unwrap();
+        scheduler.noted(2, RunNote::Seeding("t".into()));
+        let run = &scheduler.running["t"];
+        assert_eq!(run.shown, TaskState::Seeding);
+        assert_eq!(run.then, Then::Complete, "pause du partage");
+        scheduler.running.clear();
+    }
+
+    /// Audit P13 : une annulation demandée pendant que l'exécution échoue s'applique.
+    #[tokio::test]
+    async fn a_cancel_survives_a_failure_at_the_same_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let failed = Change {
+            error: Some(("HTTP_STATUS", "404")),
+            ..Change::to(TaskState::Failed)
+        };
+        let id = db_task(&mut scheduler, &[Change::to(TaskState::Active), failed]);
+        let (stop, _stopped) = watch::channel(true);
+        let (_, live) = watch::channel::<Arc<[LiveSegment]>>(Arc::from(Vec::new()));
+        let queue_id = scheduler.default_queue.clone();
+        scheduler.running.insert(
+            id.clone(),
+            Running {
+                queue_id,
+                stop,
+                then: Then::Cancel {
+                    delete_files: false,
+                },
+                live,
+                shown: TaskState::Active,
+                torrent: None,
+                run: 1,
+                cause: transfer::StopCause::default(),
+            },
+        );
+        let outcome = Outcome::Failed {
+            code: "HTTP_STATUS",
+            detail: "404".into(),
+        };
+        scheduler.finished(&id, Ok(outcome));
+        let task = load_task(&scheduler.conn, &id).unwrap();
+        assert_eq!(task.state, TaskState::Cancelled);
+    }
+
+    /// Audit P11 : une remise en file refusée (base occupée) se réessaie, au lieu de
+    /// laisser la tâche en pause pour toujours.
+    #[tokio::test]
+    async fn a_refused_requeue_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let paused = Change {
+            pause_reason: Some(PauseReason::Schedule),
+            ..Change::to(TaskState::Paused)
+        };
+        let id = db_task(&mut scheduler, &[Change::to(TaskState::Active), paused]);
+        let (stop, _stopped) = watch::channel(true);
+        let (_, live) = watch::channel::<Arc<[LiveSegment]>>(Arc::from(Vec::new()));
+        let queue_id = scheduler.default_queue.clone();
+        scheduler.running.insert(
+            id.clone(),
+            Running {
+                queue_id,
+                stop,
+                then: Then::Requeue,
+                live,
+                shown: TaskState::Active,
+                torrent: None,
+                run: 1,
+                cause: transfer::StopCause::default(),
+            },
+        );
+        scheduler
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER occupee BEFORE UPDATE OF state ON tasks
+                 WHEN NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'occupée'); END;",
+            )
+            .unwrap();
+        scheduler.finished(&id, Ok(Outcome::Paused));
+        assert_eq!(
+            load_task(&scheduler.conn, &id).unwrap().state,
+            TaskState::Paused
+        );
+        scheduler
+            .conn
+            .execute_batch("DROP TRIGGER occupee")
+            .unwrap();
+        scheduler.retry_requeues();
+        assert_eq!(
+            load_task(&scheduler.conn, &id).unwrap().state,
+            TaskState::Queued
+        );
+    }
+
+    /// Audit P12 : un partage arrêté par une erreur du moteur se termine (pas de passage
+    /// `seeding` → `failed`, hors de la table) ; une tâche écartée est annoncée.
+    #[tokio::test]
+    async fn set_aside_tasks_are_announced_and_sharing_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let id = db_task(
+            &mut scheduler,
+            &[
+                Change::to(TaskState::Active),
+                Change::to(TaskState::Seeding),
+            ],
+        );
+        let error = TransferError::Store(StoreError::BadValue("essai".into()));
+        scheduler.record_internal_error(&id, &error);
+        assert_eq!(
+            load_task(&scheduler.conn, &id).unwrap().state,
+            TaskState::Completed
+        );
+
+        let mut events = scheduler.events.subscribe();
+        let other = db_task(&mut scheduler, &[]);
+        scheduler.set_aside(&other);
+        match events.try_recv() {
+            Ok(Event::Warning { code, task_id, .. }) => {
+                assert_eq!(code, "TASK_SET_ASIDE");
+                assert_eq!(task_id.as_deref(), Some(other.as_str()));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(scheduler.broken.contains(&other));
+    }
+
+    /// Audit P17 : une copie vers un autre volume finie que la base refuse d'enregistrer
+    /// garde son journal (le démarrage suivant la termine) au lieu de laisser une copie
+    /// orpheline.
+    #[tokio::test]
+    async fn a_copy_the_base_refuses_keeps_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let id = db_task(&mut scheduler, &[]);
+        let (from, to) = (dir.path().join("a.bin"), dir.path().join("b.bin"));
+        std::fs::write(&from, b"x").unwrap();
+        std::fs::write(&to, b"x").unwrap();
+        let journal = store::moves::FileMove {
+            task_id: id.clone(),
+            from_path: from.to_string_lossy().into_owned(),
+            to_path: to.to_string_lossy().into_owned(),
+            temp_path: Some(dir.path().join("b.tmp").to_string_lossy().into_owned()),
+            dest_dir: dir.path().to_string_lossy().into_owned(),
+            file_name: "b.bin".into(),
+            phase: store::moves::Phase::Moving,
+        };
+        store::moves::begin(&scheduler.conn, &journal).unwrap();
+        scheduler
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE UPDATE OF phase ON file_moves
+                 BEGIN SELECT RAISE(ABORT, 'refusé'); END;",
+            )
+            .unwrap();
+        scheduler.moved(&id, Ok(()));
+        assert!(
+            store::moves::load(&scheduler.conn, &id).unwrap().is_some(),
+            "journal gardé"
+        );
+        assert!(
+            from.exists(),
+            "original gardé jusqu'à la fin du déplacement"
+        );
+    }
+
+    /// Audit P9 : l'empreinte d'un fichier déjà sous son nom final (commande de fin en
+    /// cours ou en échec) ne change plus.
+    #[tokio::test]
+    async fn the_checksum_of_a_renamed_file_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let id = db_task(
+            &mut scheduler,
+            &[
+                Change::to(TaskState::Active),
+                Change::to(TaskState::PostProcessing),
+            ],
+        );
+        let checksum = crate::io::checksum::Checksum::parse("sha256", &"a".repeat(64)).unwrap();
+        let update = TaskUpdate {
+            checksum: Some(Some(checksum)),
+            ..TaskUpdate::default()
+        };
+        assert!(scheduler.update_task(&id, update.clone()).is_err());
+        let failed = Change {
+            error: Some(("POSTPROCESS_FAILED", "code 1")),
+            ..Change::to(TaskState::Failed)
+        };
+        change_state(&mut scheduler.conn, &id, &failed).unwrap();
+        assert!(scheduler.update_task(&id, update).is_err());
+    }
+
+    fn slow_power(_: EndAction) -> std::io::Result<()> {
+        POWER_STARTED.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(3));
+        POWER_DONE.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    static POWER_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    static POWER_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Audit P6 : la veille (qui ne rend la main qu'au réveil) part hors de la boucle :
+    /// le moteur répond pendant ce temps, puis annonce l'issue.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_loop_answers_while_the_end_action_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, server) = fast_site(SIZE);
+        let engine = Engine::start(planning_config(
+            dir.path(),
+            crate::schedule::local_now,
+            slow_power,
+        ))
+        .unwrap();
+        let mut events = engine.subscribe();
+        attach(
+            &engine,
+            json!({
+                "windows": [{"days": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "00:00"}],
+                "onDone": "sleep",
+            }),
+        )
+        .await;
+        engine
+            .add(add(&server.url("/a.bin"), dir.path()))
+            .await
+            .unwrap();
+        assert!(end_action(&mut events).await.0.is_some(), "annonce");
+        timeout(WAIT, async {
+            while !POWER_STARTED.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("action lancée");
+        // Répondu avant la fin de l'action (une veille ne rend la main qu'au réveil). Ni
+        // délai ni durée : le test peut tourner sur le fil même de la boucle.
+        engine.snapshot().await.unwrap();
+        assert!(
+            !POWER_DONE.load(Ordering::SeqCst),
+            "boucle bloquée par l'action de fin"
+        );
+        let (pending, error) = end_action(&mut events).await;
+        assert_eq!((pending, error), (None, None));
+        engine.shutdown().await;
     }
 
     static CALLS: Mutex<Vec<EndAction>> = Mutex::new(Vec::new());
@@ -1523,6 +1963,7 @@ mod planning {
         LocalNow {
             utc_ms: CLOSED_CLOCK.load(Ordering::SeqCst),
             offset_ms: 0,
+            zone: Zone::Fixed,
         }
     }
 

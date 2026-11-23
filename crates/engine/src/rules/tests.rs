@@ -273,6 +273,9 @@ fn bad_rules_are_refused() {
         json!({"actions": {"command": {"program": ABS, "timeoutS": 0}}}),
         json!({"actions": {"command": {"program": ABS, "timeoutS": 86_401}}}),
         json!({"actions": {"command": {"program": ABS, "shell": true}}}),
+        // Audit P18 : un script lancé par `cmd.exe`, un shell.
+        json!({"actions": {"command": {"program": SCRIPT_BAT}}}),
+        json!({"actions": {"command": {"program": SCRIPT_CMD}}}),
     ];
     for value in bad {
         assert!(Rule::from_json(&value).is_err(), "acceptée : {value}");
@@ -283,6 +286,15 @@ fn bad_rules_are_refused() {
 const ELSEWHERE: &str = r"D:\Ailleurs";
 #[cfg(not(windows))]
 const ELSEWHERE: &str = "/ailleurs";
+
+#[cfg(windows)]
+const SCRIPT_BAT: &str = r"C:\Outils\analyse.bat";
+#[cfg(not(windows))]
+const SCRIPT_BAT: &str = "/usr/bin/analyse.bat";
+#[cfg(windows)]
+const SCRIPT_CMD: &str = r"C:\Outils\Analyse.CMD";
+#[cfg(not(windows))]
+const SCRIPT_CMD: &str = "/usr/bin/Analyse.CMD";
 
 #[cfg(windows)]
 const ABS: &str = r"C:\Outils\analyse.exe";

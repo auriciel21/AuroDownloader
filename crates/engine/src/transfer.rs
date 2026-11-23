@@ -117,6 +117,31 @@ pub struct Options {
     pub torrent: crate::torrent::Options,
     /// Outils de la vidéo (SPEC §7.17).
     pub media: crate::media::Options,
+    /// Cause qu'enregistre la pause d'un arrêt demandé : `user` par défaut ; le
+    /// planificateur la règle avant d'arrêter l'exécution pour une plage ou le réseau.
+    pub stop_cause: StopCause,
+}
+
+/// Cause de la pause d'un arrêt demandé (SPEC §7.15 : `network` quand le réseau manque,
+/// `schedule` quand la plage se ferme ; audit P10 : tout était `user`). Partagée entre le
+/// planificateur, qui la règle avant d'envoyer l'arrêt, et l'exécution, qui l'enregistre.
+#[derive(Debug, Clone, Default)]
+pub struct StopCause(Arc<std::sync::Mutex<Option<PauseReason>>>);
+
+impl StopCause {
+    pub fn set(&self, reason: PauseReason) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
+
+    pub fn get(&self) -> PauseReason {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(PauseReason::User)
+    }
 }
 
 impl Default for Options {
@@ -138,6 +163,7 @@ impl Default for Options {
             neighbor_checksum: false,
             torrent: crate::torrent::Options::default(),
             media: crate::media::Options::default(),
+            stop_cause: StopCause::default(),
         }
     }
 }
@@ -444,7 +470,7 @@ pub async fn run(
         Ok(path) => Ok(Outcome::Completed(path)),
         Err(Stop::User) => {
             let change = Change {
-                pause_reason: Some(PauseReason::User),
+                pause_reason: Some(opts.stop_cause.get()),
                 ..Change::to(TaskState::Paused)
             };
             change_state(conn, task_id, &change)?;
