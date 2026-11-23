@@ -463,3 +463,49 @@ async fn public_only_refuses_the_local_network() {
     assert!(matches!(e, NetError::AddressForbidden), "{e}");
     assert_eq!(site.accepted(), 0);
 }
+
+/// Audit F8 : une connexion de commande au repos se ferme à la fin de son repos, même si
+/// plus rien ne passe par la réserve.
+#[tokio::test]
+async fn idle_command_connections_close_after_their_rest() {
+    let site = FtpSite::start(FtpOptions::default()).await;
+    site.put("f.bin", &content(1000));
+    let client = client();
+    client.probe(&site.url("f.bin"), &[]).await.unwrap();
+    let shared = Arc::clone(client.ftp().shared);
+    assert_eq!(shared.idle_count(), 1);
+    tokio::time::pause();
+    tokio::time::advance(POOL_IDLE + Duration::from_secs(2)).await;
+    // Le minuteur de la réserve se déclenche pendant cette attente (horloge du test).
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(shared.idle_count(), 0);
+}
+
+/// Audit F10 : seul un refus d'`EPSV` fait passer la connexion en `PASV`.
+#[test]
+fn only_an_epsv_refusal_falls_back_to_pasv() {
+    use suppaftp::Status;
+    use suppaftp::types::Response;
+    let reply =
+        |status, text: &str| FtpError::UnexpectedResponse(Response::new(status, text.into()));
+    assert!(epsv_refused(&reply(
+        Status::BadCommand,
+        "500 Unknown command"
+    )));
+    assert!(epsv_refused(&reply(
+        Status::NotImplemented,
+        "502 Not implemented"
+    )));
+    assert!(epsv_refused(&reply(
+        Status::BadArguments,
+        "501 EPSV not allowed"
+    )));
+    assert!(!epsv_refused(&reply(
+        Status::BadArguments,
+        "501 Invalid file name"
+    )));
+    assert!(!epsv_refused(&reply(
+        Status::FileUnavailable,
+        "550 No such file"
+    )));
+}

@@ -129,6 +129,11 @@ pub fn find_in(text: &str, algo: Algo, names: &[&str], alone: bool) -> Option<Ch
 /// trouvée, dans l'ordre de [`CANDIDATES`], et le nom du fichier voisin qui la donne.
 pub async fn find(client: &Client, url: &str, names: &[&str]) -> Option<(Checksum, String)> {
     let url = Url::parse(url).ok()?;
+    // HTTP(S) seulement (SPEC §7.9) : en FTP et SFTP, les requêtes sans identifiants
+    // n'aboutiraient qu'en anonyme, et `fetch_small` ne parle que HTTP (audit T14).
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
     let own = filename::name_from_url(&url)?;
     let mut all: Vec<String> = vec![own.clone()];
     all.extend(

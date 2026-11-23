@@ -138,27 +138,39 @@ async fn read_range(
     last: u64,
     total: u64,
 ) -> Result<Vec<u8>, NetError> {
-    let request = RangeRequest {
-        first,
-        last,
-        total,
-        if_range: side.if_range,
-    };
-    let mut body = client
-        .get_range_as(side.url, side.headers, &request, side.auth)
-        .await?;
-    let mut bytes = Vec::with_capacity((last - first + 1) as usize);
-    while let Some(chunk) = body.chunk().await? {
-        bytes.extend_from_slice(&chunk);
-        if bytes.len() as u64 > last - first + 1 {
-            return Err(NetError::BadResponse("plage plus longue que demandée"));
+    let want = last - first + 1;
+    let mut bytes = Vec::with_capacity(usize::try_from(want).unwrap_or(0));
+    // Un `206` peut porter moins que demandé (RFC 9110) : la suite se redemande, au lieu
+    // d'écarter le miroir pour toujours (audit T13). Chaque réponse doit avancer.
+    for _ in 0..MAX_PARTIALS {
+        let request = RangeRequest {
+            first: first + bytes.len() as u64,
+            last,
+            total,
+            if_range: side.if_range,
+        };
+        let mut body = client
+            .get_range_as(side.url, side.headers, &request, side.auth)
+            .await?;
+        let before = bytes.len();
+        while let Some(chunk) = body.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() as u64 > want {
+                return Err(NetError::BadResponse("plage plus longue que demandée"));
+            }
+        }
+        if bytes.len() as u64 == want {
+            return Ok(bytes);
+        }
+        if bytes.len() == before {
+            break;
         }
     }
-    if bytes.len() as u64 != last - first + 1 {
-        return Err(NetError::BadResponse("plage incomplète"));
-    }
-    Ok(bytes)
+    Err(NetError::BadResponse("plage incomplète"))
 }
+
+/// Réponses partielles au plus pour lire un échantillon.
+const MAX_PARTIALS: usize = 16;
 
 /// En-têtes de la tâche envoyés à une source (SPEC §7.7) : tous vers la même origine que la
 /// référence (protocole, hôte, port) ; ailleurs, le seul `User-Agent` (ni cookie, ni

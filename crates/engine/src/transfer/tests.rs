@@ -304,6 +304,82 @@ async fn cut_connections_resume_where_they_stopped() {
     }
 }
 
+/// Audit C3 : sous Windows, un fichier reçu porte la marque du Web (`Zone.Identifier`,
+/// zone 3), comme pris par un navigateur, sans l'adresse.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_finished_file_carries_the_mark_of_the_web() {
+    let data = content(1000);
+    let (_, server) = site(data.clone());
+    let mut case = new_case(&server.url("/f.bin?jeton=secret"));
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "f.bin", &data);
+    let mut stream = case.dir.path().join("f.bin").into_os_string();
+    stream.push(":Zone.Identifier");
+    let mark = std::fs::read_to_string(&stream).expect("marque du Web");
+    assert!(mark.contains("ZoneId=3"), "{mark}");
+    assert!(!mark.contains("secret"), "{mark}");
+}
+
+/// Audit S3 : une préparation que la base refuse d'enregistrer défait sa réservation :
+/// ni `.part` orphelin, ni nom suffixé au nouvel essai.
+#[tokio::test]
+async fn a_preparation_that_cannot_be_saved_undoes_its_claim() {
+    let data = content(1000);
+    let (_, server) = site(data.clone());
+    let mut case = new_case(&server.url("/f.bin"));
+    case.conn
+        .execute_batch(
+            "CREATE TRIGGER refuse BEFORE UPDATE OF file_name ON tasks
+             WHEN NEW.file_name IS NOT NULL BEGIN SELECT RAISE(ABORT, 'refusé'); END;",
+        )
+        .unwrap();
+    let (_, stop) = watch::channel(false);
+    let got = run(
+        &mut case.conn,
+        &client(),
+        &case.task_id,
+        &opts(),
+        stop,
+        &mut |_| {},
+    )
+    .await;
+    assert!(got.is_err(), "enregistrement refusé");
+    assert_eq!(case.count("name_claims"), 0, "réservation défaite");
+    assert!(
+        !case.dir.path().join("f.bin.part").exists(),
+        "`.part` effacé"
+    );
+
+    case.conn.execute_batch("DROP TRIGGER refuse").unwrap();
+    let outcome = case.run().await;
+    assert_completed(&case, &outcome, "f.bin", &data);
+}
+
+/// Audit T8 : l'hôte d'une adresse FTP atteint les règles (critère « domaine », variable
+/// `{host}` du modèle de nom) ; il était lu par `parse_url`, qui ne connaît que HTTP(S). Le
+/// serveur de test n'a qu'une adresse IP, que le critère « domaine » refuse : le modèle de
+/// nom le montre.
+#[tokio::test]
+async fn the_host_of_an_ftp_task_reaches_the_rules() {
+    use crate::testing::ftp::{FtpOptions, FtpSite};
+    let ftp = FtpSite::start(FtpOptions::default()).await;
+    let data = content(5000);
+    ftp.put("pub/f.bin", &data);
+    let mut case = new_case(&ftp.url("pub/f.bin"));
+    crate::store::rules::set_rule_base(&case.conn, &case.task_id).unwrap();
+    let rule = crate::rules::Rule::from_json(&serde_json::json!({
+        "ruleId": "r",
+        "actions": {"folder": "Rangé", "rename": "{host} {name}.{ext}"},
+    }))
+    .unwrap();
+    crate::store::rules::replace_all(&mut case.conn, &[rule]).unwrap();
+    let outcome = case.run().await;
+    assert!(matches!(outcome, Outcome::Completed(_)), "{outcome:?}");
+    let placed = case.dir.path().join("Rangé").join("127.0.0.1 f.bin");
+    assert_eq!(std::fs::read(&placed).unwrap(), data);
+}
+
 /// Audit T1 : une tâche découpée dont la nouvelle adresse (« Actualiser l'adresse »,
 /// SPEC §7.13) mène à un serveur sans plages repart du début en un seul flux. Avant le
 /// correctif, chaque segment recevait le début du fichier à sa place.
@@ -508,6 +584,9 @@ fn retry_delays_double_up_to_the_cap() {
         retry_delay(5, asked, Duration::from_millis(300)),
         Duration::from_secs(90)
     );
+    // Audit T5 : `Retry-After` d'un an ramené au plafond.
+    let year = Some(Duration::from_secs(365 * 24 * 3600));
+    assert_eq!(retry_delay(0, year, none), RETRY_AFTER_MAX);
 }
 
 #[test]

@@ -247,6 +247,14 @@ pub fn serve_paced(
     serve_with(handler, pace, None)
 }
 
+/// Comme [`serve`], en HTTPS avec le certificat de `tls`.
+pub fn serve_tls(
+    handler: impl Fn(&Request) -> Reply + Send + Sync + 'static,
+    tls: &TestTls,
+) -> Server {
+    serve_with(handler, None, Some(tls))
+}
+
 /// Serveur en clair, ou en HTTPS avec le certificat de `tls`.
 fn serve_with(
     handler: impl Fn(&Request) -> Reply + Send + Sync + 'static,
@@ -397,6 +405,9 @@ pub struct FileSite {
     pub corrupt_responses: usize,
     /// Plages servies aux requêtes `GET` (premier et dernier octet), dans l'ordre.
     pub served: Vec<(u64, u64)>,
+    /// Un `206` porte au plus ce nombre d'octets, même si la plage demandée est plus longue
+    /// (RFC 9110 le permet) ; `None` : toute la plage.
+    pub max_range: Option<u64>,
 }
 
 impl FileSite {
@@ -418,6 +429,7 @@ impl FileSite {
             corrupt: Vec::new(),
             corrupt_responses: 0,
             served: Vec::new(),
+            max_range: None,
         }
     }
 }
@@ -587,6 +599,7 @@ pub fn file_handler(
             }
             Some((first, last)) => {
                 let last = last.min(total - 1);
+                let last = site.max_range.map_or(last, |max| last.min(first + max - 1));
                 headers.push((
                     "Content-Range".into(),
                     format!("bytes {first}-{last}/{total}"),

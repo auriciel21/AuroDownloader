@@ -511,6 +511,109 @@ async fn tasks_interrupted_by_a_crash_resume_at_start() {
     engine.shutdown().await;
 }
 
+/// Audit T11 : une redirection de HTTPS vers HTTP est notée dans la tâche et annoncée
+/// (SPEC §8.1) ; le téléchargement va au bout.
+#[tokio::test]
+async fn a_redirect_from_https_to_http_is_noted_and_announced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, plain) = fast_site(SIZE);
+    let target = plain.url("/clair.bin");
+    let tls = crate::testing::TestTls::new();
+    let secure = crate::testing::serve_tls(
+        move |_| crate::testing::reply("302 Found", &[("Location", &target)], b""),
+        &tls,
+    );
+    let mut cfg = config(dir.path());
+    cfg.client = Client::with_extra_roots(tls.ca_pem.as_bytes()).unwrap();
+    let engine = Engine::start(cfg).unwrap();
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(add(&secure.url("/clair.bin"), dir.path()))
+        .await
+        .unwrap();
+    let warned = timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Ok(Event::Warning {
+                    code: "INSECURE_REDIRECT",
+                    task_id,
+                    ..
+                }) => {
+                    return task_id;
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => panic!("moteur arrêté"),
+            }
+        }
+    })
+    .await
+    .expect("avertissement INSECURE_REDIRECT");
+    assert_eq!(warned.as_deref(), Some(id.as_str()));
+    if task(dir.path(), &id).state != TaskState::Completed {
+        wait_state(&mut events, &id, TaskState::Completed).await;
+    }
+    assert!(task(dir.path(), &id).insecure_redirect);
+    assert_file(dir.path(), "clair.bin", SIZE);
+    engine.shutdown().await;
+}
+
+/// Audit S8 : contrôle de couverture au démarrage (SPEC §5.6, règle 2). Une tâche en
+/// attente d'une nouvelle tentative, dont les segments enregistrés ont un trou, échoue
+/// tout de suite (`INTERNAL`) au lieu d'attendre son tour avec eux.
+#[tokio::test]
+async fn broken_segments_are_found_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let queue = engine.default_queue().to_owned();
+    engine.shutdown().await;
+    let mut conn = store::open(&dir.path().join("auro.db")).unwrap();
+    let new = NewTask {
+        queue_id: &queue,
+        url: "http://127.0.0.1:1/trou.bin",
+        display_name: "trou.bin",
+        dest_dir: dir.path().to_str().unwrap(),
+        max_connections: None,
+        speed_limit_bps: None,
+        idempotency_key: None,
+        requested_name: None,
+        checksum: None,
+        headers: &[],
+        parent_id: None,
+        public_only: false,
+    };
+    let (id, source_id) = tasks::create_task(&mut conn, &new).unwrap();
+    let prep = tasks::Preparation {
+        source_id: &source_id,
+        accepts_ranges: true,
+        etag: Some("\"v\""),
+        last_modified: None,
+        total_bytes: Some(1000),
+        file_name: "trou.bin",
+    };
+    let split = crate::segmenter::initial_split(1000, 2, 1);
+    tasks::save_preparation(&mut conn, &id, &prep, &split).unwrap();
+    change_state(&mut conn, &id, &Change::to(TaskState::Active)).unwrap();
+    let later = Change {
+        error: Some(("NET_TIMEOUT", "essai")),
+        next_retry_at: Some(now_ms() + 3_600_000),
+        ..Change::to(TaskState::RetryWait)
+    };
+    change_state(&mut conn, &id, &later).unwrap();
+    // Un trou, écrit hors de `store::segments` comme le ferait une base abîmée.
+    conn.execute(
+        "DELETE FROM segments WHERE task_id = ?1 AND start_offset > 0",
+        [&id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let row = task(dir.path(), &id);
+    assert_eq!(row.state, TaskState::Failed);
+    assert_eq!(row.error_code.as_deref(), Some("INTERNAL"));
+    engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn shutdown_keeps_running_tasks_for_the_next_start() {
     let dir = tempfile::tempdir().unwrap();

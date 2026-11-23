@@ -188,6 +188,47 @@ async fn empty_file_answers_416_with_its_size() {
     assert_eq!(probe.file_name, "vide.txt");
 }
 
+/// Audit T10 : un `416` qui annonce une taille non nulle contredit le refus de l'octet 0 ;
+/// ce n'est pas un fichier de cette taille.
+#[tokio::test]
+async fn a_416_with_a_size_is_not_taken_for_that_file() {
+    let server = serve(|r| match r.method.as_str() {
+        "HEAD" => reply("501 Not Implemented", &[("Content-Length", "0")], b""),
+        _ => reply(
+            "416 Range Not Satisfiable",
+            &[("Content-Range", "bytes */5000"), ("Content-Length", "0")],
+            b"",
+        ),
+    });
+    let err = client()
+        .probe(&server.url("/f.bin"), &[])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NetError::Status { status: 416, .. }),
+        "{err:?}"
+    );
+}
+
+/// Audit T12 : un `HEAD` coupé sans réponse laisse le `GET bytes=0-0` trancher (SPEC §7.1).
+#[tokio::test]
+async fn a_head_cut_short_falls_back_to_a_get() {
+    let server = serve(|r| match r.method.as_str() {
+        "HEAD" => crate::testing::Reply {
+            head: Vec::new(),
+            body: crate::testing::Body::Bytes(Vec::new()),
+            cut_after: Some(0),
+        },
+        _ => reply(
+            "206 Partial Content",
+            &[("Content-Range", "bytes 0-0/10"), ("Content-Length", "1")],
+            b"x",
+        ),
+    });
+    let probe = client().probe(&server.url("/a.bin"), &[]).await.unwrap();
+    assert_eq!((probe.total_bytes, probe.accepts_ranges), (Some(10), true));
+}
+
 #[tokio::test]
 async fn compressed_body_gives_no_size_and_no_ranges() {
     let server = serve(|r| match r.method.as_str() {

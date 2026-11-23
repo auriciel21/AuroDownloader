@@ -1359,6 +1359,7 @@ fn seal(path: &Path) -> std::io::Result<()> {
         Ok(file) => {
             file.sync_all()?;
             drop(file);
+            crate::io::mark_from_internet(&part);
             std::fs::rename(&part, path)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

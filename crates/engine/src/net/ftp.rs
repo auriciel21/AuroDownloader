@@ -30,7 +30,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use base64::Engine as _;
 use bytes::{Bytes, BytesMut};
@@ -303,6 +305,23 @@ fn is_reply(error: &FtpError, codes: &[u32]) -> bool {
     matches!(error, FtpError::UnexpectedResponse(r) if codes.contains(&r.status.code()))
 }
 
+/// Le refus vient-il d'`EPSV` (audit F10) ? `500` et `502` : commande inconnue, ce que
+/// `RETR` (obligatoire, RFC 959) ne peut pas être. `501` (paramètres) vise le chemin de
+/// `RETR`, sauf si la réponse nomme `EPSV` : la connexion ne passe pas en `PASV` pour rien
+/// (ce qui échouerait en IPv6).
+fn epsv_refused(error: &FtpError) -> bool {
+    match error {
+        FtpError::UnexpectedResponse(r) => match r.status.code() {
+            500 | 502 => true,
+            501 => String::from_utf8_lossy(&r.body)
+                .to_ascii_uppercase()
+                .contains("EPSV"),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 async fn within<T>(
     limit: Duration,
     future: impl Future<Output = Result<T, NetError>>,
@@ -410,12 +429,9 @@ impl Shared {
 
     /// Rend une connexion ; `returned` : elle était comptée parmi celles qui reviennent
     /// ([`Shared::returning`]), et `conn` vaut `None` si le serveur ne l'a pas rendue.
-    fn put(&self, key: String, conn: Option<AsyncRustlsFtpStream>, returned: bool) {
+    fn put(self: &Arc<Self>, key: String, conn: Option<AsyncRustlsFtpStream>, returned: bool) {
         let mut pool = self.pool.lock().unwrap_or_else(PoisonError::into_inner);
-        pool.retain(|_, idle| {
-            idle.conns.retain(|(since, _)| since.elapsed() < POOL_IDLE);
-            !idle.conns.is_empty() || idle.returning > 0
-        });
+        Self::purge_in(&mut pool);
         let idle = pool.entry(key).or_default();
         if returned {
             idle.returning = idle.returning.saturating_sub(1);
@@ -424,7 +440,42 @@ impl Shared {
             && idle.conns.len() < POOL_PER_KEY
         {
             idle.conns.push((Instant::now(), conn));
+            // Fermée à la fin de son repos même si plus rien ne passe par la réserve : le
+            // serveur ne la garde pas ouverte pour rien (audit F8).
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let shared = Arc::downgrade(self);
+                let due = Instant::now() + POOL_IDLE + Duration::from_secs(1);
+                runtime.spawn(async move {
+                    tokio::time::sleep_until(due).await;
+                    if let Some(shared) = shared.upgrade() {
+                        shared.purge();
+                    }
+                });
+            }
         }
+    }
+
+    /// Ferme les connexions au repos depuis plus de [`POOL_IDLE`].
+    fn purge(&self) {
+        Self::purge_in(&mut self.pool.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    fn purge_in(pool: &mut HashMap<String, Idle>) {
+        pool.retain(|_, idle| {
+            idle.conns.retain(|(since, _)| since.elapsed() < POOL_IDLE);
+            !idle.conns.is_empty() || idle.returning > 0
+        });
+    }
+
+    /// Connexions au repos, tous serveurs confondus.
+    #[cfg(test)]
+    fn idle_count(&self) -> usize {
+        self.pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|i| i.conns.len())
+            .sum()
     }
 
     /// Le serveur `host:port` est-il sans TLS ? `mark` : le noter.
@@ -530,8 +581,9 @@ impl Context<'_> {
                 let connector = AsyncRustlsConnector::from(tokio_rustls::TlsConnector::from(
                     self.shared.tls()?,
                 ));
+                // Chaque adresse à son tour, comme en clair (audit F7).
                 let mut conn = AsyncRustlsFtpStream::connect_secure_implicit(
-                    addrs[0],
+                    &addrs[..],
                     connector,
                     &server.tls_name,
                 )
@@ -606,14 +658,15 @@ impl Context<'_> {
         conn.passive_stream_builder(move |announced: SocketAddr| {
             let (route, host) = (route.clone(), host.clone());
             // Tâche à part : le futur rendu doit être `Sync`, ce que la connexion n'est pas.
-            let task = tokio::spawn(async move {
+            // Arrêtée avec lui s'il est abandonné (délai de la commande dépassé, audit F5).
+            let mut task = AbortOnDrop(tokio::spawn(async move {
                 // En direct, l'adresse annoncée est déjà celle de la commande (`EPSV`, ou
                 // `PASV` corrigé) ; par SOCKS5, c'est celle du proxy : le port seul compte.
                 let peer = matches!(route, Route::Direct { .. }).then_some(announced);
                 dial(&route, &host, announced.port(), peer).await
-            });
+            }));
             Box::pin(async move {
-                match task.await {
+                match (&mut task.0).await {
                     Ok(Ok(stream)) => Ok(stream),
                     Ok(Err(e)) => Err(FtpError::ConnectionError(std::io::Error::other(
                         e.to_string(),
@@ -784,13 +837,22 @@ impl Context<'_> {
             let _ = session.conn.resume_transfer(offset).await;
             match session.conn.retr_as_stream(path).await {
                 Ok(stream) => return Ok(stream),
-                Err(e) if !session.passive && is_reply(&e, &[500, 501, 502]) => {
+                Err(e) if !session.passive && epsv_refused(&e) => {
                     session.passive = true;
                     session.conn.set_mode(Mode::Passive);
                 }
                 Err(e) => return Err(ftp_error(e, session.anonymous)),
             }
         }
+    }
+}
+
+/// Tâche arrêtée quand sa poignée est abandonnée.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

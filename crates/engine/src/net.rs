@@ -744,13 +744,21 @@ impl Client {
         }
         let extra = header_map(task_headers)?;
 
-        let head = self.send(Method::HEAD, &url, &extra, None, auth).await?;
-        let head_url = head.url().clone();
-        let from_head = head
-            .status()
-            .is_success()
-            .then(|| Observed::from_headers(head.headers()));
-        drop(head);
+        // Un `HEAD` qui échoue en chemin (délai, connexion coupée : serveurs qui le
+        // traitent mal) laisse le `GET` trancher, comme un `HEAD` refusé (SPEC §7.1, audit
+        // T12). Un serveur injoignable le reste pour le `GET` : inutile de l'attendre deux
+        // fois.
+        let (head_url, from_head) = match self.send(Method::HEAD, &url, &extra, None, auth).await {
+            Ok(head) => (
+                head.url().clone(),
+                head.status()
+                    .is_success()
+                    .then(|| Observed::from_headers(head.headers())),
+            ),
+            Err(NetError::Timeout(_) | NetError::ReadTimeout(_)) => (url.clone(), None),
+            Err(NetError::Unreachable(e)) if !e.is_connect() => (url.clone(), None),
+            Err(e) => return Err(e),
+        };
 
         if let Some(h) = &from_head {
             match (h.accept_ranges, h.file_length()) {
@@ -787,11 +795,12 @@ impl Client {
                 _ => (fallback.and_then(Observed::file_length), false),
             },
             StatusCode::RANGE_NOT_SATISFIABLE => match g.content_range {
-                // Fichier vide : l'octet 0 n'existe pas.
+                // Fichier vide : l'octet 0 n'existe pas. Une autre taille contredit le refus
+                // de `bytes=0-0` : rien n'est prouvé (audit T10).
                 Some(headers::ContentRange {
                     range: None,
-                    total: Some(total),
-                }) => (Some(total), true),
+                    total: Some(0),
+                }) => (Some(0), true),
                 _ => {
                     return Err(NetError::Status {
                         status: status.as_u16(),

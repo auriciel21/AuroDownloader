@@ -167,6 +167,8 @@ pub fn task_json(t: &TaskRow) -> Value {
         "moving": t.moving,
         // Ajoutée ou modifiée par une connexion à jeton : réseau public seulement (SPEC §7.19).
         "publicOnly": t.public_only,
+        // Préparée en suivant une redirection de HTTPS vers HTTP (SPEC §8.1).
+        "insecureRedirect": t.insecure_redirect,
         "checksum": checksum_json(t.checksum.as_ref(), t.checksum_source.as_deref()),
     })
 }

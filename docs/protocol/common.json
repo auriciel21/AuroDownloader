@@ -215,6 +215,10 @@
         "publicOnly": {
           "type": "boolean"
         },
+        "insecureRedirect": {
+          "description": "Sa préparation a suivi une redirection de HTTPS vers HTTP (SPEC 8.1, depuis le 2026-11-23).",
+          "type": "boolean"
+        },
         "checksum": {
           "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksum"
         }

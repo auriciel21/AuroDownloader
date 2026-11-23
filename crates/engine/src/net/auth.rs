@@ -30,6 +30,11 @@ pub struct Site {
 }
 
 impl Site {
+    /// Hôte du site, seul (pour les journaux).
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     /// Lit un site tel que l'utilisateur l'écrit : adresse complète ou nom d'hôte.
     pub fn parse(text: &str) -> Result<Site, String> {
         let text = text.trim();

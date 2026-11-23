@@ -3,6 +3,7 @@
 //! (SPEC §7.19). Les connexions HTTP passent par reqwest ([`super::proxy::apply`]).
 
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use reqwest::Url;
 use tokio::net::TcpStream;
@@ -178,9 +179,29 @@ pub(crate) async fn connect_any(addrs: &[SocketAddr]) -> Result<TcpStream, NetEr
     ))
 }
 
+/// Délai d'ouverture d'une connexion, poignée de main SOCKS5 comprise : un proxy ou un
+/// serveur muet ne garde ni socket ni tâche (audit F5).
+const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Ouvre une connexion TCP vers `host:port` par `route`. `peer` : adresse déjà joignable
 /// (connexion de données en direct, celle de la connexion de commande).
 pub(crate) async fn dial(
+    route: &Route,
+    host: &str,
+    port: u16,
+    peer: Option<SocketAddr>,
+) -> Result<TcpStream, NetError> {
+    tokio::time::timeout(DIAL_TIMEOUT, dial_now(route, host, port, peer))
+        .await
+        .unwrap_or_else(|_| {
+            Err(NetError::Socket {
+                connect: true,
+                text: "délai dépassé".into(),
+            })
+        })
+}
+
+async fn dial_now(
     route: &Route,
     host: &str,
     port: u16,
@@ -202,20 +223,50 @@ pub(crate) async fn dial(
             local,
             public_only,
         } => {
-            let target = if *local {
-                let addrs = resolve(host, port, *public_only).await?;
-                SocksTarget::Addr(addrs[0])
+            // Résolution locale : chaque adresse à son tour, comme en direct (audit F7).
+            let targets: Vec<SocksTarget> = if *local {
+                resolve(host, port, *public_only)
+                    .await?
+                    .into_iter()
+                    .map(SocksTarget::Addr)
+                    .collect()
             } else {
-                SocksTarget::Name(host.to_owned(), port)
+                vec![SocksTarget::Name(host.to_owned(), port)]
             };
-            let stream = TcpStream::connect(proxy.as_str())
-                .await
-                .map_err(|e| NetError::Proxy(format!("proxy SOCKS5 injoignable : {e}")))?;
             let login = login.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
-            socks::handshake(stream, &target, login)
-                .await
-                .map_err(|e| net_error(e, true))
+            let mut last = None;
+            for target in &targets {
+                // Proxy injoignable : passager, la tâche réessaie (audit F3).
+                let stream =
+                    TcpStream::connect(proxy.as_str())
+                        .await
+                        .map_err(|e| NetError::Socket {
+                            connect: true,
+                            text: format!("proxy SOCKS5 injoignable : {e}"),
+                        })?;
+                match socks::handshake(stream, target, login).await {
+                    Ok(stream) => return Ok(stream),
+                    Err(e) => match socks_error(e) {
+                        // Le proxy lui-même refuse : une autre adresse n'y changera rien.
+                        refused @ NetError::Proxy(_) => return Err(refused),
+                        other => last = Some(other),
+                    },
+                }
+            }
+            Err(last.unwrap_or(NetError::BadResponse("nom d'hôte introuvable")))
         }
+    }
+}
+
+/// Erreur d'une poignée de main SOCKS5. Le proxy refuse (identifiant, méthode, règles) ou
+/// répond n'importe quoi : définitif, les réglages sont à corriger. Le reste (destination
+/// injoignable, coupure) est passager (audit F3 : c'était l'inverse).
+fn socks_error(error: std::io::Error) -> NetError {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidData => {
+            NetError::Proxy(error.to_string())
+        }
+        _ => net_error(error, true),
     }
 }
 
@@ -223,5 +274,58 @@ pub(crate) async fn dial(
 pub(crate) fn route_public(route: &Route) -> bool {
     match route {
         Route::Direct { public_only } | Route::Socks { public_only, .. } => *public_only,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::proxies::socks5_proxy;
+
+    fn socks(proxy: String, login: Option<(&str, &str)>) -> Route {
+        Route::Socks {
+            proxy,
+            login: login.map(|(u, p)| (u.to_owned(), p.to_owned())),
+            local: true,
+            public_only: false,
+        }
+    }
+
+    /// Audit F3 : un proxy injoignable est passager (la tâche réessaie), un identifiant
+    /// refusé est définitif (c'était l'inverse).
+    #[tokio::test]
+    async fn proxy_errors_are_classed_by_who_refuses() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let e = dial(&socks(closed.to_string(), None), "127.0.0.1", 9, None)
+            .await
+            .unwrap_err();
+        assert!(e.retryable(), "proxy injoignable : passager ({e:?})");
+
+        let proxy = socks5_proxy(Some(("moi", "secret")));
+        let route = socks(proxy.addr.to_string(), Some(("moi", "faux")));
+        let e = dial(&route, "127.0.0.1", 9, None).await.unwrap_err();
+        assert!(!e.retryable(), "identifiant refusé : définitif ({e:?})");
+    }
+
+    /// Audit F7 : en résolution locale, chaque adresse à son tour. `localhost` donne
+    /// souvent `::1` d'abord, où rien n'écoute ici.
+    #[tokio::test]
+    async fn socks_with_local_resolution_tries_each_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+        let proxy = socks5_proxy(None);
+        let found = resolve("localhost", port, false).await.unwrap();
+        let stream = dial(
+            &socks(proxy.addr.to_string(), None),
+            "localhost",
+            port,
+            None,
+        )
+        .await;
+        assert!(stream.is_ok(), "{found:?} : {:?}", stream.err());
     }
 }

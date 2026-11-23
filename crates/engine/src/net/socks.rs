@@ -17,11 +17,17 @@ pub enum Target {
     Addr(SocketAddr),
 }
 
+/// Refus du proxy lui-même (méthode, identifiant) : définitif ([`super::dial`]).
 fn refused(text: &str) -> Error {
     Error::new(
-        ErrorKind::ConnectionRefused,
+        ErrorKind::PermissionDenied,
         format!("proxy SOCKS5 : {text}"),
     )
+}
+
+/// Réponse qui n'est pas du SOCKS5 : définitif aussi.
+fn garbled() -> Error {
+    Error::new(ErrorKind::InvalidData, "proxy SOCKS5 : réponse illisible")
 }
 
 /// Demande au proxy déjà joint par `stream` une connexion vers `target`. `login` :
@@ -41,7 +47,7 @@ pub async fn handshake(
     let mut chosen = [0u8; 2];
     stream.read_exact(&mut chosen).await?;
     if chosen[0] != 5 {
-        return Err(refused("réponse illisible"));
+        return Err(garbled());
     }
     match (chosen[1], login) {
         (0, _) => {}
@@ -57,6 +63,10 @@ pub async fn handshake(
             stream.write_all(&message).await?;
             let mut status = [0u8; 2];
             stream.read_exact(&mut status).await?;
+            // RFC 1929 : version 1 de la sous-négociation, puis 0 pour « accepté ».
+            if status[0] != 1 {
+                return Err(garbled());
+            }
             if status[1] != 0 {
                 return Err(refused("identifiant refusé"));
             }
@@ -94,7 +104,7 @@ pub async fn handshake(
     let mut reply = [0u8; 4];
     stream.read_exact(&mut reply).await?;
     if reply[0] != 5 {
-        return Err(refused("réponse illisible"));
+        return Err(garbled());
     }
     if reply[1] != 0 {
         let kind = match reply[1] {
@@ -118,7 +128,7 @@ pub async fn handshake(
             stream.read_exact(&mut len).await?;
             usize::from(len[0])
         }
-        _ => return Err(refused("réponse illisible")),
+        _ => return Err(garbled()),
     };
     let mut bound = vec![0u8; skip + 2];
     stream.read_exact(&mut bound).await?;

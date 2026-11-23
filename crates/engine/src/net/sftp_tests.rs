@@ -241,3 +241,27 @@ async fn public_only_refuses_the_local_network() {
     assert!(matches!(e, NetError::AddressForbidden), "{e}");
     assert_eq!(site.accepted(), 0);
 }
+
+/// Audit F6 : une clé en attente part quand la bonne revient, ou quand l'utilisateur oublie
+/// l'hôte ; la table des clés en attente reste bornée.
+#[test]
+fn pending_keys_leave_and_stay_bounded() {
+    let keys = HostKeys::default();
+    keys.set_accepted([("h".to_owned(), 22, "SHA256:bon".to_owned())]);
+    let check = |host: &str, fingerprint: &str| {
+        keys.check(host, 22, "ssh-ed25519".into(), fingerprint.into())
+    };
+    assert!(matches!(check("h", "SHA256:faux"), Verdict::Refused(_)));
+    assert_eq!(keys.pending().len(), 1);
+    assert!(matches!(check("h", "SHA256:bon"), Verdict::Trusted));
+    assert!(keys.pending().is_empty(), "la bonne clé est revenue");
+
+    assert!(matches!(check("autre", "SHA256:x"), Verdict::Refused(_)));
+    keys.forget("autre", 22);
+    assert!(keys.pending().is_empty(), "hôte oublié");
+
+    for i in 0..MAX_PENDING + 50 {
+        let _ = check(&format!("h{i}"), "SHA256:x");
+    }
+    assert_eq!(keys.pending().len(), MAX_PENDING);
+}

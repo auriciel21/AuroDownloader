@@ -58,6 +58,19 @@ async fn the_same_file_elsewhere_is_accepted() {
     }
 }
 
+/// Audit T13 : un miroir qui rend ses plages en plusieurs fois (`206` plus court que
+/// demandé, permis par la RFC 9110) est accepté : la suite de chaque échantillon se
+/// redemande.
+#[tokio::test]
+async fn a_mirror_that_sends_short_ranges_is_accepted() {
+    let reference = site(|_| {});
+    let mirror = site(|s| s.max_range = Some(4096));
+    match check(&reference, &mirror.url("/miroir/f.iso"), LEN).await {
+        Verdict::Accepted(facts) => assert_eq!(facts.content_length, LEN),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn another_file_is_refused() {
     let reference = site(|_| {});

@@ -917,6 +917,19 @@ impl Engine {
         crate::moves::recover(&mut conn)?;
         // Noms réservés sans être enregistrés, avant un arrêt (SPEC §5.6, règle 7).
         crate::claims::recover(&conn)?;
+        // Couverture des segments (SPEC §5.6, règle 2 ; audit S8), avant toute reprise : une
+        // tâche qui peut échouer passe en `failed` `INTERNAL` (un retéléchargement la
+        // relance) ; une tâche en file ou en pause sera arrêtée par le même contrôle à sa
+        // reprise, sans jamais écrire sur ces segments.
+        for (task_id, error) in store::segments::find_coverage_errors(&conn)? {
+            tracing::error!(tache = %task_id, erreur = %error, "segments incohérents au démarrage");
+            let detail = error.to_string();
+            let change = Change {
+                error: Some(("INTERNAL", &detail)),
+                ..Change::to(TaskState::Failed)
+            };
+            let _ = change_state(&mut conn, &task_id, &change);
+        }
         let default_queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE)?;
         let download_limit = settings::download_limit(&conn)?;
         // Les secrets de cette base seulement (voir `secrets`).
@@ -2676,6 +2689,20 @@ impl Scheduler {
         let Ok(task) = load_task(&self.conn, task_id) else {
             return;
         };
+        if task.insecure_redirect {
+            let message = format!(
+                "« {} » : le serveur a redirigé de HTTPS vers HTTP, le fichier arrive sans \
+                 chiffrement",
+                task.display_name
+            );
+            let id = Some(task.id.clone());
+            self.emit(|rev| Event::Warning {
+                rev,
+                code: "INSECURE_REDIRECT",
+                message,
+                task_id: id,
+            });
+        }
         let found_checksum = task.checksum.zip(task.checksum_source);
         self.emit(|rev| Event::Prepared {
             rev,

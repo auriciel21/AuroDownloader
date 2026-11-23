@@ -118,6 +118,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "sftp",
         sql: include_str!("../migrations/0014_sftp.sql"),
     },
+    Migration {
+        version: 15,
+        name: "insecure_redirect",
+        sql: include_str!("../migrations/0015_insecure_redirect.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

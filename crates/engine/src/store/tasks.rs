@@ -181,6 +181,9 @@ pub struct TaskRow {
     /// Ajoutée par une connexion à jeton : réseau public seulement, pour toute sa vie
     /// (SPEC §7.19).
     pub public_only: bool,
+    /// Sa préparation a suivi une redirection de HTTPS vers HTTP : le fichier arrive sans
+    /// chiffrement (SPEC §8.1, migration 15).
+    pub insecure_redirect: bool,
 }
 
 /// Une source de téléchargement : la référence (rang 0) ou un miroir (SPEC §7.7).
@@ -430,7 +433,7 @@ const TASK_COLUMNS: &str = "id, state, display_name, dest_dir, file_name, total_
      done_bytes, retry_count, pause_reason, error_code, error_detail, max_connections, \
      queue_id, priority, speed_limit_bps, created_at, finished_at, requested_name, \
      EXISTS (SELECT 1 FROM file_moves m WHERE m.task_id = tasks.id), checksum_algo, \
-     checksum_value, checksum_source, kind, public_only";
+     checksum_value, checksum_source, kind, public_only, insecure_redirect";
 
 /// Ligne `tasks` telle que SQLite la rend, avant vérification des valeurs.
 struct RawTask {
@@ -458,6 +461,7 @@ struct RawTask {
     checksum_source: Option<String>,
     kind: String,
     public_only: bool,
+    insecure_redirect: bool,
 }
 
 fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
@@ -486,6 +490,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         checksum_source: row.get(21)?,
         kind: row.get(22)?,
         public_only: row.get(23)?,
+        insecure_redirect: row.get(24)?,
     })
 }
 
@@ -504,6 +509,7 @@ impl TryFrom<RawTask> for TaskRow {
         Ok(TaskRow {
             checksum_source: raw.checksum_source.filter(|_| checksum.is_some()),
             public_only: raw.public_only,
+            insecure_redirect: raw.insecure_redirect,
             checksum,
             kind: TaskKind::from_sql(&raw.kind).ok_or_else(|| bad("type inconnu"))?,
             state: TaskState::from_sql(&raw.state).ok_or_else(|| bad("état inconnu"))?,
@@ -1092,6 +1098,10 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
     )?;
     tx.execute(
         "UPDATE tasks SET state = 'queued', file_name = NULL, total_bytes = NULL,
+           -- Rangée par une règle : de nouveau sous la base des règles, que la préparation
+           -- range encore ; sans règle qui s'applique, la base elle-même, pas le dossier
+           -- de l'ancienne règle (SPEC §7.21, audit S7).
+           dest_dir = COALESCE(rule_base, dest_dir), insecure_redirect = 0,
            done_bytes = 0, pause_reason = NULL, error_code = NULL, error_detail = NULL,
            retry_count = 0, next_retry_at = NULL, started_at = NULL, finished_at = NULL,
            -- Une empreinte lue dans un fichier voisin a pu changer avec le fichier (F-11) ;
@@ -1105,6 +1115,19 @@ pub fn restart_task(conn: &mut Connection, task_id: &str) -> Result<TaskState, S
     )?;
     tx.commit()?;
     Ok(task.state)
+}
+
+/// Note si la préparation de la tâche a suivi une redirection de HTTPS vers HTTP (SPEC §8.1).
+pub fn set_insecure_redirect(
+    conn: &Connection,
+    task_id: &str,
+    insecure: bool,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE tasks SET insecure_redirect = ?2 WHERE id = ?1",
+        params![task_id, insecure],
+    )?;
+    Ok(())
 }
 
 /// Retire une tâche finie (`completed`, `failed` ou `cancelled`) : sa ligne et, en
@@ -1124,14 +1147,18 @@ pub fn remove_task(conn: &mut Connection, task_id: &str) -> Result<(), StoreErro
             to: "retirée",
         });
     }
-    let recorded: bool = tx
-        .query_row(
-            "SELECT 1 FROM history WHERE task_id = ?1",
-            [task_id],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
+    // Une fin `completed` a écrit sa ligne (`complete_task`) ; un échec ou une annulation,
+    // jamais : une ligne plus ancienne est celle d'une fin d'avant un retéléchargement, et
+    // celle-ci manquait à l'historique (audit S5).
+    let recorded: bool = task.state == TaskState::Completed
+        && tx
+            .query_row(
+                "SELECT 1 FROM history WHERE task_id = ?1",
+                [task_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
     if !recorded {
         let url: Option<String> = tx
             .query_row(
@@ -1770,6 +1797,26 @@ mod tests {
             };
             assert_eq!((left("sources"), left("segments")), (0, 0));
         }
+
+        // Audit S5 : terminée, retéléchargée puis annulée : l'annulation a sa ligne à côté
+        // de la fin d'avant.
+        let (again, source_id) = new_http_task(&mut conn);
+        let prep = Preparation {
+            source_id: &source_id,
+            accepts_ranges: true,
+            etag: None,
+            last_modified: None,
+            total_bytes: Some(10),
+            file_name: "h.iso",
+        };
+        save_preparation(&mut conn, &again, &prep, &initial_split(10, 1, 1)).unwrap();
+        change_state(&mut conn, &again, &Change::to(TaskState::Active)).unwrap();
+        complete_task(&mut conn, &again, "/dl/h.iso", 10).unwrap();
+        restart_task(&mut conn, &again).unwrap();
+        change_state(&mut conn, &again, &Change::to(TaskState::Cancelled)).unwrap();
+        remove_task(&mut conn, &again).unwrap();
+        let states: Vec<String> = history(&conn, &again).into_iter().map(|h| h.0).collect();
+        assert_eq!(states, ["completed", "cancelled"]);
         assert!(load_task(&conn, &busy).is_ok(), "les autres restent");
     }
 
@@ -1817,6 +1864,26 @@ mod tests {
         restart_task(&mut conn, &id).unwrap();
         let task = load_task(&conn, &id).unwrap();
         assert_eq!((task.state, task.error_code), (TaskState::Queued, None));
+
+        // Audit S7 : rangée par une règle, elle revient sous la base des règles (la
+        // préparation la range de nouveau, ou l'y laisse si plus aucune règle ne la prend).
+        conn.execute(
+            "UPDATE tasks SET rule_base = '/dl', dest_dir = '/dl/Rangé' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+        change_state(&mut conn, &id, &Change::to(TaskState::Cancelled)).unwrap();
+        restart_task(&mut conn, &id).unwrap();
+        assert_eq!(load_task(&conn, &id).unwrap().dest_dir, "/dl");
+        // Ajoutée avec un dossier choisi : il reste.
+        conn.execute(
+            "UPDATE tasks SET rule_base = NULL, dest_dir = '/choisi' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+        change_state(&mut conn, &id, &Change::to(TaskState::Cancelled)).unwrap();
+        restart_task(&mut conn, &id).unwrap();
+        assert_eq!(load_task(&conn, &id).unwrap().dest_dir, "/choisi");
 
         // Sans adresse (tâche terminée avant qu'elle ne soit gardée) : refusé.
         conn.execute("DELETE FROM sources WHERE task_id = ?1", [&id])

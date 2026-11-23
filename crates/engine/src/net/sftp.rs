@@ -92,6 +92,9 @@ pub struct HostKeys {
     pending: Mutex<HashMap<(String, u16), PendingKey>>,
 }
 
+/// Clés en attente d'une décision, au plus.
+const MAX_PENDING: usize = 256;
+
 impl HostKeys {
     /// Remplace les clés acceptées (au démarrage).
     pub fn set_accepted(&self, keys: impl IntoIterator<Item = (String, u16, String)>) {
@@ -115,10 +118,14 @@ impl HostKeys {
             .insert(key, fingerprint.to_owned());
     }
 
-    /// Oublie la clé acceptée de `host:port`.
+    /// Oublie la clé acceptée de `host:port`, et celle qui attendait (audit F6).
     pub fn forget(&self, host: &str, port: u16) {
         let key = (host.to_ascii_lowercase(), port);
         self.accepted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
@@ -156,24 +163,35 @@ impl HostKeys {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
             .cloned();
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         if known.as_deref() == Some(fingerprint.as_str()) {
+            // La bonne clé est revenue : celle qui attendait n'est plus à décider (audit F6).
+            pending.remove(&key);
             return Verdict::Trusted;
         }
         let changed = known.is_some();
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                key,
-                PendingKey {
-                    host: host.to_ascii_lowercase(),
-                    port,
-                    algorithm: algorithm.clone(),
-                    fingerprint: fingerprint.clone(),
-                    changed,
-                    seen_at: crate::store::now_ms(),
-                },
-            );
+        // Table bornée : un serveur qui change de clé à chaque connexion, ou beaucoup
+        // d'hôtes inconnus, ne la font pas grossir sans fin ; la plus ancienne part.
+        if pending.len() >= MAX_PENDING && !pending.contains_key(&key) {
+            let oldest = pending
+                .iter()
+                .min_by_key(|(_, p)| p.seen_at)
+                .map(|(k, _)| k.clone());
+            if let Some(oldest) = oldest {
+                pending.remove(&oldest);
+            }
+        }
+        pending.insert(
+            key,
+            PendingKey {
+                host: host.to_ascii_lowercase(),
+                port,
+                algorithm: algorithm.clone(),
+                fingerprint: fingerprint.clone(),
+                changed,
+                seen_at: crate::store::now_ms(),
+            },
+        );
         let host = host.to_ascii_lowercase();
         if changed {
             Verdict::Refused(NetError::HostKeyChanged {

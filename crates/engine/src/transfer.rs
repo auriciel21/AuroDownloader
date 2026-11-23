@@ -70,6 +70,8 @@ pub const MAX_FAILURES: u32 = 10;
 /// Délai de reprise : base et plafond (SPEC §7.8).
 pub const RETRY_BASE: Duration = Duration::from_secs(2);
 pub const RETRY_CAP: Duration = Duration::from_secs(5 * 60);
+/// Plus long délai `Retry-After` suivi avant une nouvelle tentative (SPEC §7.8).
+pub const RETRY_AFTER_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// Place que le moteur laisse toujours libre sur le disque de destination (SPEC §7.10).
 pub const KEEP_FREE: u64 = 64 * 1024 * 1024;
@@ -396,10 +398,11 @@ fn fail<T>(failure: Failure) -> Step<T> {
 }
 
 /// Délai avant la nouvelle tentative `n` (à partir de 0) : `min(plafond, base × 2^n)`
-/// plus `jitter`, sauf si le serveur a fixé le sien (`Retry-After`, SPEC §7.8).
+/// plus `jitter`, sauf si le serveur a fixé le sien (`Retry-After`, SPEC §7.8), dans la
+/// limite de [`RETRY_AFTER_MAX`] (audit T5 : un serveur pouvait repousser la tâche d'un an).
 pub fn retry_delay(n: u32, retry_after: Option<Duration>, jitter: Duration) -> Duration {
     if let Some(asked) = retry_after {
-        return asked;
+        return asked.min(RETRY_AFTER_MAX);
     }
     let factor = 1u32.checked_shl(n).unwrap_or(u32::MAX);
     RETRY_BASE.saturating_mul(factor).min(RETRY_CAP) + jitter
@@ -568,6 +571,8 @@ async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Aut
         return Ok(Ok(None));
     };
     let (vault, id) = (vault.clone(), login.secret_ref.clone());
+    // L'hôte seul dans le journal, jamais le protocole, le port ni le chemin (audit T9).
+    let host = site.host().to_owned();
     match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
         Ok(Some(password)) => Ok(Ok(Some(
             Auth::new(Login {
@@ -579,7 +584,7 @@ async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Aut
             .with_key(login.key_path),
         ))),
         Ok(None) => {
-            tracing::warn!(host = %login.site, "mot de passe absent du coffre, non envoyé");
+            tracing::warn!(host = %host, "mot de passe absent du coffre, non envoyé");
             Ok(Ok(None))
         }
         Err(e) => fail(Failure::Vault(e)),
@@ -637,6 +642,16 @@ async fn execute(
                 Err(stop) => return Ok(Err(stop)),
             },
         };
+        // Redirection de HTTPS vers HTTP : notée dans la tâche, annoncée à sa préparation
+        // (SPEC §8.1, audit T11).
+        if probe.downgraded {
+            tracing::warn!(
+                tache = %task_id,
+                host = host_of(&source.url).unwrap_or_default(),
+                "redirection de HTTPS vers HTTP : fichier reçu sans chiffrement"
+            );
+        }
+        crate::store::tasks::set_insecure_redirect(conn, task_id, probe.downgraded)?;
         // Empreinte lue dans un fichier voisin (F-11, SPEC §7.9), enregistrée avant la
         // préparation : après un arrêt entre les deux, la recherche n'est pas refaite.
         if opts.neighbor_checksum && task.checksum.is_none() {
@@ -663,9 +678,9 @@ async fn execute(
         // Le nom choisi par l'utilisateur passe avant celui du serveur (SPEC §7.12).
         let named = task.requested_name.as_deref().unwrap_or(&probe.file_name);
         // Règles de rangement (SPEC §7.21) : dossier et nom, avant de prendre le nom.
-        let host = crate::net::parse_url(&source.url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_owned));
+        // Toute adresse de tâche, FTP et SFTP compris (audit T8 : `parse_url` ne lit que
+        // HTTP(S), et le critère « domaine » n'était jamais vrai pour elles).
+        let host = host_of(&source.url);
         let subject = crate::rules::Subject {
             url: &source.url,
             host: host.as_deref(),
@@ -719,7 +734,16 @@ async fn execute(
             file_name: &name,
         };
         let placed = crate::store::rules::Placed::of(&placement, &dest_dir);
-        save_preparation_placed(conn, task_id, &prep, &segments, &placed)?;
+        if let Err(e) = save_preparation_placed(conn, task_id, &prep, &segments, &placed) {
+            // Le nom n'est pas enregistré : la réservation est défaite (`.part` vide, puis
+            // la ligne), sinon le nouvel essai prenait un nom suffixé à côté d'un `.part`
+            // orphelin (audit S3). Si la base refuse encore, `claims::recover` le fera au
+            // prochain démarrage.
+            if std::fs::remove_file(io::part_path(&dir.join(&name))).is_ok() {
+                let _ = crate::store::claims::delete(conn, &dest_dir, &name);
+            }
+            return Err(e.into());
+        }
     }
     // Un tour de plus quand la vérification trouve des morceaux faux (F-12, SPEC §7.9) :
     // leurs segments rouverts se téléchargent, puis le fichier se vérifie de nouveau.

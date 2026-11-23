@@ -12,7 +12,11 @@ fn parse_u64(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    text.parse().ok()
+    // Une taille ou une position au-delà d'`i64::MAX` ne s'enregistre pas en base : refusée
+    // dès la lecture, comme une valeur illisible (audit S3).
+    text.parse()
+        .ok()
+        .filter(|&n: &u64| i64::try_from(n).is_ok())
 }
 
 /// `Content-Length`.
@@ -232,6 +236,13 @@ mod tests {
         assert_eq!(content_length("-1"), None);
         assert_eq!(content_length("4 2"), None);
         assert_eq!(content_length("+42"), None);
+        // Audit S3 : au-delà d'`i64::MAX`, la base ne pourrait pas l'enregistrer.
+        assert_eq!(
+            content_length("9223372036854775807"),
+            Some(9_223_372_036_854_775_807)
+        );
+        assert_eq!(content_length("9223372036854775808"), None);
+        assert_eq!(content_range("bytes 0-0/18446744073709551615"), None);
     }
 
     #[test]

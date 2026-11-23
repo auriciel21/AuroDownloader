@@ -665,6 +665,7 @@ fn write_subtitle(
         let part = part_path(&path);
         std::fs::write(&part, text.as_bytes())?;
         let size = sync_file(&part)?;
+        crate::io::mark_from_internet(&part);
         std::fs::rename(&part, &path)?;
         sync_parent_dir(&path).map_err(std::io::Error::other)?;
         Ok((name, size))
@@ -1085,6 +1086,7 @@ async fn finish(
         let (produced, final_path, part) = (produced.clone(), final_path.clone(), part.clone());
         move || -> std::io::Result<u64> {
             let len = sync_file(&produced)?;
+            crate::io::mark_from_internet(&produced);
             std::fs::rename(&produced, &final_path)?;
             // Le `.part` réservé au nom final, s'il reste (flux seul gardé tel quel).
             let _ = std::fs::remove_file(&part);

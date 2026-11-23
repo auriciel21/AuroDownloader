@@ -102,10 +102,13 @@ pub fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Deux noms désignent-ils le même fichier ? Sous Windows, les noms ne tiennent pas compte
-/// de la casse.
+/// Les noms de fichier ignorent-ils la casse ? Sous Windows (NTFS), et sous Android, dont
+/// le stockage partagé (`Download/AuroDownloader`) l'ignore aussi (audit S6).
+pub(crate) const CASE_INSENSITIVE_NAMES: bool = cfg!(any(windows, target_os = "android"));
+
+/// Deux noms désignent-ils le même fichier ([`CASE_INSENSITIVE_NAMES`]) ?
 pub(crate) fn same_name(a: &str, b: &str) -> bool {
-    if cfg!(windows) {
+    if CASE_INSENSITIVE_NAMES {
         a.to_lowercase() == b.to_lowercase()
     } else {
         a == b
@@ -469,10 +472,29 @@ impl SealedPart {
         if dest.try_exists().map_err(file_error(&dest))? {
             return Err(IoError::DestinationExists(dest));
         }
+        mark_from_internet(&part);
         std::fs::rename(&part, &dest).map_err(file_error(&part))?;
         sync_parent_dir(&dest)?;
         Ok(dest)
     }
+}
+
+/// Marque du Web (Windows, audit C3) : le fichier vient d'Internet, comme s'il avait été
+/// pris par un navigateur (flux `Zone.Identifier`, zone 3) ; SmartScreen et le Mode
+/// protégé d'Office s'appliquent. Écrite sur le `.part` avant son renommage, qu'elle suit.
+/// Ailleurs, rien. Au mieux : un volume sans flux nommés (FAT32, exFAT) ou un refus ne fait
+/// pas échouer la tâche. L'adresse n'y est pas écrite : elle peut porter un jeton.
+pub fn mark_from_internet(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut stream = path.as_os_str().to_os_string();
+        stream.push(":Zone.Identifier");
+        if let Err(e) = std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n") {
+            tracing::debug!(erreur = %e, "marque du Web non écrite");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
 }
 
 /// Rend durable une création ou un renommage dans le dossier de `path`. Sous Windows, le
@@ -871,7 +893,11 @@ mod tests {
         assert_eq!(available_name(dir.path(), "b.iso", &reserved), "b (2).iso");
         assert_eq!(available_name(dir.path(), "c.iso", &reserved), "c.iso");
         let other_case = vec!["B.ISO".to_owned()];
-        let expected = if cfg!(windows) { "b (1).iso" } else { "b.iso" };
+        let expected = if CASE_INSENSITIVE_NAMES {
+            "b (1).iso"
+        } else {
+            "b.iso"
+        };
         assert_eq!(available_name(dir.path(), "b.iso", &other_case), expected);
     }
 
