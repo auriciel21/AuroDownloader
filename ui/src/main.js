@@ -4780,36 +4780,52 @@ function wire() {
 async function signIn() {
   const fromHash = host.tokenFromHash();
   if (fromHash) await host.login(fromHash).catch(() => null);
-  let who = await host.session();
+  const who = await host.session();
+  if (who) return who.scope;
   const dialog = $("remote-login");
+  const field = $("rl-token");
+  const box = $("rl-error");
   dialog.addEventListener("cancel", (event) => event.preventDefault());
-  while (!who) {
-    dialog.returnValue = "";
+  // La boîte reste ouverte jusqu'à la connexion : une erreur se montre liée au champ, sans
+  // fermer puis rouvrir la boîte (leçon A15 de docs/ACCESSIBILITE.md, audit W5).
+  const found = await new Promise((resolve) => {
+    let busy = false;
+    $("rl-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (busy) return;
+      const pasted = field.value;
+      const token = pastedToken(pasted);
+      field.value = "";
+      const fail = (text) => {
+        fieldError(field, text, box);
+        field.focus();
+      };
+      // Un texte sans jeton complet n'est pas envoyé : le dire, sans le montrer.
+      if (!isToken(token)) {
+        fail(t("Pas de jeton dans le texte collé ({0} caractères) : un jeton commence par auro_, suivi de 43 lettres, chiffres, - ou _.", pasted.length));
+        return;
+      }
+      busy = true;
+      try {
+        const session = await host.login(token);
+        clearFieldErrors(dialog);
+        box.hidden = true;
+        dialog.close();
+        resolve(session);
+      } catch (e) {
+        fail(e.code === "TOO_MANY_ATTEMPTS"
+          ? t("Trop d'essais refusés : réessayez dans une minute.")
+          : e.code === "UNAUTHORIZED"
+            ? t("Jeton inconnu du moteur, ou révoqué.")
+            : refused(e));
+      } finally {
+        busy = false;
+      }
+    });
     dialog.showModal();
-    $("rl-token").focus();
-    await new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
-    const pasted = $("rl-token").value;
-    const token = pastedToken(pasted);
-    $("rl-token").value = "";
-    // Un texte sans jeton complet n'est pas envoyé : le dire, sans le montrer.
-    if (!isToken(token)) {
-      $("rl-error").textContent = t("Pas de jeton dans le texte collé ({0} caractères) : un jeton commence par auro_, suivi de 43 lettres, chiffres, - ou _.", pasted.length);
-      $("rl-error").hidden = false;
-      continue;
-    }
-    try {
-      who = await host.login(token);
-      $("rl-error").hidden = true;
-    } catch (e) {
-      $("rl-error").textContent = e.code === "TOO_MANY_ATTEMPTS"
-        ? t("Trop d'essais refusés : réessayez dans une minute.")
-        : e.code === "UNAUTHORIZED"
-          ? t("Jeton inconnu du moteur, ou révoqué.")
-          : refused(e);
-      $("rl-error").hidden = false;
-    }
-  }
-  return who.scope;
+    field.focus();
+  });
+  return found.scope;
 }
 
 async function start() {

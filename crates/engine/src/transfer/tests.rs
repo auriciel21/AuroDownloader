@@ -727,22 +727,29 @@ mod auto {
         );
     }
 
+    /// Audit T4 : avec un nombre de connexions imposé, un refus (`503`) ne fait plus échouer
+    /// l'exécution entière : le segment attend son tour depuis ses octets enregistrés, et
+    /// le téléchargement va au bout, même face à un serveur qui accepte moins de connexions
+    /// que demandé (décision de l'utilisateur, comme en automatique).
     #[tokio::test]
-    async fn imposed_connections_do_not_adapt() {
+    async fn imposed_connections_wait_out_a_refusal() {
         let len = 2 * 1024 * 1024;
         let (site, server) = paced_site(len);
         site.lock().unwrap().busy_responses = 1;
         let mut case = new_case(&server.url("/gros.bin"));
         let outcome = case.run().await;
+        assert_completed(&case, &outcome, "gros.bin", &content(len as usize));
+
+        // Quatre connexions imposées, trois acceptées.
+        let (site, server) = paced_site(len);
+        site.lock().unwrap().max_concurrent = Some(3);
+        let mut case = new_case(&server.url("/plafond.bin"));
+        let outcome = case.run().await;
+        assert_completed(&case, &outcome, "plafond.bin", &content(len as usize));
         assert!(
-            matches!(
-                outcome,
-                Outcome::RetryLater {
-                    code: "HTTP_STATUS",
-                    ..
-                }
-            ),
-            "{outcome:?}"
+            server.peak_connections() <= 4,
+            "{}",
+            server.peak_connections()
         );
     }
 }

@@ -8,7 +8,7 @@ aurod \- AuroDownloader : moteur de téléchargement
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH SYNOPSIS
-\fBaurod\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fB\-\-db\fR] [\fB\-\-endpoint\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-simulate\-power\fR] [\fB\-\-torrent\-peers\fR] [\fB\-\-media\-ytdlp\fR] [\fB\-\-media\-ffmpeg\fR] [\fB\-\-media\-ffprobe\fR] 
+\fBaurod\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fB\-\-db\fR] [\fB\-\-endpoint\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-simulate\-power\fR] [\fB\-\-torrent\-peers\fR] [\fB\-\-media\-ytdlp\fR] [\fB\-\-media\-ffmpeg\fR] [\fB\-\-media\-ffprobe\fR] [\fB\-\-erase\-secrets\fR] 
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH DESCRIPTION
@@ -46,3 +46,6 @@ Essais : ce ffmpeg, pris tel quel
 .TP
 \fB\-\-media\-ffprobe\fR \fI<FICHIER>\fR
 Essais : ce ffprobe, pris tel quel
+.TP
+\fB\-\-erase\-secrets\fR
+Désinstallation : efface du coffre du système les secrets de la base (cookies, mots de passe des sites et du proxy), sans toucher à ceux d\*(Aqune autre base, puis sort ; moteur arrêté

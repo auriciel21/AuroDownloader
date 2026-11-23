@@ -837,7 +837,6 @@ async fn download(
         checks,
         fetch,
         plan,
-        host: host_of(&source.url),
         opts,
         dir,
         part: Arc::clone(&part),
@@ -1517,8 +1516,6 @@ struct Pool<'a> {
     checks: Vec<PendingCheck>,
     fetch: Fetch,
     plan: Plan,
-    /// Hôte de la source, pour le plafond appris d'un serveur qui résiste.
-    host: Option<String>,
     opts: &'a Options,
     /// Dossier de destination, dont l'espace libre est contrôlé.
     dir: &'a Path,
@@ -1611,12 +1608,16 @@ struct Slot {
     measures: u32,
     /// Octets reçus à la dernière mesure.
     last_received: u64,
+    /// Plafond de connexions appris de ses refus (`429`, `503`) : il ne vaut que pour elle
+    /// (audit T3) ; `None` : celui de l'exécution.
+    cap: Option<usize>,
 }
 
 impl Slot {
     fn new(target: Arc<Target>) -> Slot {
         Slot {
             target,
+            cap: None,
             state: SlotState::Usable,
             connections: 0,
             strikes: 0,
@@ -1655,6 +1656,24 @@ impl Slot {
 /// Morceaux faux (F-12, SPEC §7.9) : seules les sources qui en ont envoyé le moins sont
 /// choisies, parmi celles qui reçoivent des segments ; les autres servent quand celles-ci
 /// ne le peuvent plus (écartées, au repos).
+/// Plus aucune source rapide (référence écartée, ou au repos) : les lentes reçoivent de
+/// nouveau des segments. Une source lente garde ses connexions (SPEC §7.7) ; seule, elle
+/// doit finir la tâche, qui sinon s'arrêtait en `INTERNAL` avec des segments à faire (audit
+/// T2). Rend les sources remises en service.
+fn revive_slow(slots: &mut [Slot]) -> Vec<usize> {
+    if slots.iter().any(|s| s.state == SlotState::Usable) {
+        return Vec::new();
+    }
+    let mut revived = Vec::new();
+    for (i, slot) in slots.iter_mut().enumerate() {
+        if slot.state == SlotState::Slow {
+            slot.state = SlotState::Usable;
+            revived.push(i);
+        }
+    }
+    revived
+}
+
 fn pick_slot(slots: &[Slot], width: usize) -> Option<usize> {
     let measured: Vec<f64> = slots
         .iter()
@@ -1671,6 +1690,7 @@ fn pick_slot(slots: &[Slot], width: usize) -> Option<usize> {
         .iter()
         .enumerate()
         .filter(|(_, s)| {
+            let width = s.cap.map_or(width, |cap| cap.min(width));
             s.state == SlotState::Usable && s.connections < width && s.target.bad_pieces == fewest
         })
         .map(|(i, s)| {
@@ -1831,6 +1851,9 @@ async fn pool(
                 save_slot(conn, slot, None)?;
             }
         }
+        for i in revive_slow(&mut slots) {
+            save_slot(conn, &slots[i], None)?;
+        }
         // Après un refus, pas de nouvelle connexion avant la fin de la pause.
         let held = hold.filter(|t| Instant::now() < *t);
         // Le nombre de connexions (`width`) vaut pour chaque source, comme les connexions
@@ -1967,13 +1990,13 @@ async fn pool(
                     // Le serveur refuse une connexion alors que d'autres tournent : elles
                     // deviennent la cible et le plafond retenu pour l'hôte, et le segment
                     // attend son tour depuis ses octets enregistrés (SPEC §7.3).
+                    // Avec un nombre de connexions fixé aussi : un serveur qui en accepte
+                    // moins que demandé ne fait plus échouer l'exécution entière (audit T4).
                     Err(Failure::Net(e))
                         if e.is_overload()
                             && failure.is_none()
-                            && (!running.is_empty() || strikes + 1 < REFUSALS_TO_LOWER)
-                            && auto.is_some() =>
+                            && (!running.is_empty() || strikes + 1 < REFUSALS_TO_LOWER) =>
                     {
-                        let a = auto.as_mut().expect("mode automatique");
                         let now = Instant::now();
                         // Un nouvel épisode de refus : le premier, ou un refus d'une connexion
                         // ouverte après la pause du précédent. Ceux qui arrivent pendant la
@@ -1993,9 +2016,24 @@ async fn pool(
                             n if n >= REFUSALS_TO_LOWER => slots[end.slot].connections,
                             _ => slots[end.slot].connections.max(slots[end.slot].target.peak()),
                         };
-                        let cap = a.on_overload(u32::try_from(keep).unwrap_or(u32::MAX));
-                        width = a.width() as usize;
-                        if let Some(host) = &ctx.host {
+                        let keep = u32::try_from(keep.max(1)).unwrap_or(u32::MAX);
+                        // Le plafond vaut pour la source qui refuse, et pour son hôte : un
+                        // miroir qui n'accepte que 2 connexions ne plafonne ni la référence,
+                        // ni l'hôte de celle-ci (audit T3). La référence, en automatique,
+                        // règle aussi la montée de toute l'exécution (SPEC §7.3).
+                        let host = host_of(&slots[end.slot].target.url);
+                        let cap = match auto.as_mut() {
+                            Some(a) if end.slot == 0 => {
+                                let cap = a.on_overload(keep);
+                                width = a.width() as usize;
+                                cap
+                            }
+                            _ => {
+                                slots[end.slot].cap = Some(keep as usize);
+                                keep
+                            }
+                        };
+                        if let Some(host) = &host {
                             ctx.client.limit_host(host, cap);
                         }
                         requeue(handle, written, end.idx, &mut todo);

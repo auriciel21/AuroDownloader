@@ -53,7 +53,8 @@ On Android, install the new APK over the old one.
 
 - **Windows**: Settings, Apps, AuroDownloader, Uninstall. Your downloaded files are never
   touched. The download list, the history and the preferences are kept, unless you tick
-  "delete the data".
+  "delete the data": it also deletes the logs, the plugins, the video tools, the remote
+  access certificate, and the cookies and passwords kept in the Windows vault.
 - **Linux**: `sudo apt remove auro-downloader` for the `.deb`; simply delete the AppImage
   file.
 - **Android**: like any application. Files already downloaded stay in

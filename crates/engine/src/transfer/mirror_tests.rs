@@ -318,6 +318,13 @@ fn the_best_rate_per_connection_gets_the_next_one() {
     assert_eq!(pick_slot(&slots, 4), Some(1));
     slots[1].state = SlotState::Slow;
     assert_eq!(pick_slot(&slots, 4), None);
+    // Tant qu'une source rapide reste, la lente n'est pas remise en service.
+    assert!(revive_slow(&mut slots).is_empty());
+    // Audit T2 : la rapide écartée (fichier changé), la lente seule finit la tâche.
+    slots[0].state = SlotState::Dropped;
+    assert_eq!(revive_slow(&mut slots), [1]);
+    assert_eq!(slots[1].state, SlotState::Usable);
+    assert_eq!(pick_slot(&slots, 4), Some(1));
 }
 
 #[test]

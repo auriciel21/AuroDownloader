@@ -554,14 +554,17 @@ fn same_streams(streams: &[StreamRow], resolution: &Resolution) -> bool {
             .all(|(a, b)| a.format_id == b.format_id)
 }
 
-/// Codes d'une tâche HTTP qui disent que le site refuse le fichier : pour un sous-titre,
-/// la vidéo se termine sans lui (décision du 2026-11-09).
-const REFUSED: [&str; 4] = [
-    "HTTP_STATUS",
-    "AUTH_REQUIRED",
-    "AUTH_FAILED",
-    "FILE_CHANGED",
-];
+/// Un échec définitif d'un sous-titre : la vidéo se termine sans lui (décision du
+/// 2026-11-09), quelle qu'en soit la cause côté site ou réseau (refus, adresse interdite à
+/// une tâche à jeton, TLS, plages, redirections) ; avant, seuls quatre codes l'étaient, et
+/// les autres mettaient en échec une vidéo aux flux complets, à chaque essai (audit V5).
+/// Seuls le disque et le moteur lui-même arrêtent la vidéo : ils la toucheraient aussi.
+fn subtitle_given_up(code: &str) -> bool {
+    !matches!(
+        code,
+        "DISK_IO" | "DEST_PERMISSION" | "INTERNAL" | "SECRET_UNAVAILABLE"
+    )
+}
 
 /// Les sous-titres de la vidéo (F-24), une fois ses flux complets. Un sous-titre que la
 /// page ne propose plus, ou que le site refuse (après une nouvelle résolution, comme un
@@ -625,7 +628,7 @@ async fn subtitles(
                     }
                 }
                 Step::Refresh => break,
-                Step::End(End::Failed { code, .. }) if REFUSED.contains(&code) => break,
+                Step::End(End::Failed { code, .. }) if subtitle_given_up(code) => break,
                 Step::End(end) => return Ok(Some(end)),
             }
         }

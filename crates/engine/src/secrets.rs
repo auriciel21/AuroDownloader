@@ -40,6 +40,15 @@ pub const MAX_SECRET: usize = 32 * 1024;
 #[error("coffre du système : {0}")]
 pub struct VaultError(pub String);
 
+/// Échec de l'effacement des secrets d'une base ([`Vault::erase_base`]).
+#[derive(Debug, thiserror::Error)]
+pub enum EraseError {
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
+    #[error(transparent)]
+    Vault(#[from] VaultError),
+}
+
 /// Un coffre : écrit, lit, efface et énumère les secrets d'un espace de noms.
 pub trait Backend: Send + Sync {
     /// Nom du coffre, pour le journal.
@@ -153,6 +162,29 @@ impl Vault {
         self.backend.ids(&self.namespace)
     }
 
+    /// Désinstallation (« Supprimer aussi les données », audit C4) : efface du coffre tous
+    /// les secrets de la base `db`, c'est-à-dire de son espace de noms, sans toucher à ceux
+    /// d'une autre base. Base absente : rien. Le moteur doit être arrêté (verrou de la
+    /// base). Rend le nombre de secrets effacés.
+    pub fn erase_base(&self, db: &std::path::Path) -> Result<usize, EraseError> {
+        if !db.exists() {
+            return Ok(0);
+        }
+        let _lock = crate::store::lock::acquire(db)?;
+        let conn = crate::store::open(db)?;
+        let namespace = crate::store::settings::vault_namespace(&conn)?;
+        // Un espace de noms vide désignerait les secrets de toutes les bases.
+        if namespace.is_empty() {
+            return Err(EraseError::Vault(VaultError("espace de noms vide".into())));
+        }
+        let scoped = self.scoped(&namespace);
+        let ids = scoped.ids()?;
+        for id in &ids {
+            scoped.delete(id)?;
+        }
+        Ok(ids.len())
+    }
+
     /// Efface les secrets `ids` hors de la boucle appelante ; une erreur est sans gravité
     /// (le ramassage du prochain démarrage les retrouvera).
     pub fn forget(&self, ids: Vec<String>) {
@@ -218,6 +250,27 @@ impl Backend for Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C4 : la désinstallation efface les secrets de la base, et seulement eux ; une
+    /// base absente n'est pas créée.
+    #[test]
+    fn erasing_a_base_removes_its_secrets_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auro.db");
+        let vault = Vault::memory();
+        assert_eq!(vault.erase_base(&db).unwrap(), 0);
+        assert!(!db.exists(), "base absente : pas créée");
+        let conn = crate::store::open(&db).unwrap();
+        let mine = vault.scoped(&crate::store::settings::vault_namespace(&conn).unwrap());
+        drop(conn);
+        mine.put("session=1").unwrap();
+        mine.put("mot de passe").unwrap();
+        let other = vault.scoped("une-autre-base");
+        let kept = other.put("à garder").unwrap();
+        assert_eq!(vault.erase_base(&db).unwrap(), 2);
+        assert!(mine.ids().unwrap().is_empty());
+        assert_eq!(other.ids().unwrap(), [kept]);
+    }
 
     /// Écrit, relit, énumère et efface dans `vault`, limité à un espace de noms neuf.
     pub(super) fn round_trip(vault: &Vault) {

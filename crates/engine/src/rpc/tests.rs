@@ -4675,6 +4675,65 @@ async fn a_refused_fresh_link_leaves_no_cookie_on_the_old_address() {
     crate::testing::stop(&engine).await;
 }
 
+/// Audit F1 : une adresse qui ne porte que le nom (`sftp://moi@hôte/f`) prend le mot de
+/// passe de l'identifiant du site pour ce nom ; avant le correctif, un en-tête au mot de
+/// passe vide le masquait et la tâche échouait en `AUTH_FAILED`.
+#[tokio::test]
+async fn an_sftp_address_with_a_user_only_takes_the_site_password() {
+    use crate::testing::sftp::{SftpOptions, SftpSite};
+    const LEN: usize = 100_000;
+    let dir = tempfile::tempdir().unwrap();
+    let site = SftpSite::start(SftpOptions {
+        password: Some(("moi", "s3cr3t-ssh")),
+        ..SftpOptions::default()
+    })
+    .await;
+    site.put("pub/f.bin", &crate::testing::content(LEN));
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result("events.subscribe", json!({"topics": ["tasks"]}))
+        .await;
+    c.result(
+        "login.set",
+        json!({"site": format!("sftp://{}", site.addr), "username": "moi", "password": "s3cr3t-ssh"}),
+    )
+    .await;
+    let url = format!("sftp://moi@{}/pub/f.bin", site.addr);
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": url}], "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id.as_str() && p["to"] == "failed"
+    })
+    .await;
+    let keys = c.result("hostkey.list", json!({})).await;
+    let pending = &keys["pending"][0];
+    c.result(
+        "hostkey.accept",
+        json!({"host": pending["host"], "port": pending["port"], "fingerprint": site.fingerprint()}),
+    )
+    .await;
+    let end = c
+        .notification("task.stateChanged", |p| {
+            p["taskId"] == id.as_str() && matches!(p["to"].as_str(), Some("completed" | "failed"))
+        })
+        .await;
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(end["to"], "completed", "{task}");
+    assert_eq!(
+        std::fs::read(dir.path().join("f.bin")).unwrap(),
+        crate::testing::content(LEN)
+    );
+    crate::testing::stop(&engine).await;
+}
+
 /// SFTP (F-08, SPEC §7.22) : une clé de serveur inconnue arrête la tâche ; `hostkey.list`
 /// la montre, `hostkey.accept` l'enregistre et relance la tâche, qui finit ; une clé qui
 /// change ensuite bloque de nouveau. Les identifiants de l'adresse vont au coffre.

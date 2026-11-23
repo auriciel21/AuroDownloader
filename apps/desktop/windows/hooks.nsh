@@ -67,13 +67,26 @@
     nsExec::Exec /TIMEOUT=10000 '"$INSTDIR\${MAINBINARYNAME}.exe" --unregister-links'
     Pop $0
   ${EndIf}
+  ; « Supprimer aussi les données » : les secrets de la base (cookies, mots de passe des
+  ; sites et du proxy) sont au coffre du système, sous l'espace de noms de cette base, que
+  ; seul le moteur connaît. Effacés par `aurod` tant qu'il est encore là (audit C4).
+  !ifdef AURO_REAL
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+  ${AndIf} ${FileExists} "$INSTDIR\aurod.exe"
+    nsExec::Exec /TIMEOUT=20000 '"$INSTDIR\aurod.exe" --erase-secrets'
+    Pop $0
+  ${EndIf}
+  !endif
 !macroend
 
 ; Case « Supprimer aussi les données » (décochée par défaut) : Tauri efface les
 ; préférences et le cache de la page (%APPDATA% et %LOCALAPPDATA%\<identifiant>) ; on y
-; ajoute la base du moteur et son journal (paths::data_dir), fichier par fichier : ce
-; dossier peut aussi être celui du programme, et rien d'autre n'y est touché. Les fichiers
-; téléchargés ne le sont jamais.
+; ajoute les données du moteur (paths::data_dir), fichier par fichier et dossier par
+; dossier nommés : la base, son verrou, ses copies et son journal ; les journaux (logs), les
+; plugins installés, les outils de la vidéo (tools) ; le certificat de l'accès à distance et
+; sa clé privée (audit C4). Ce dossier peut aussi être celui du programme : rien d'autre n'y
+; est touché. Les fichiers téléchargés ne le sont jamais.
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $UpdateMode <> 1
     !insertmacro AURO_UNREGISTER "${AURO_CHROME}" "relay-chromium.json"
@@ -89,7 +102,14 @@
     Delete "$LOCALAPPDATA\AuroDownloader\auro.db-shm"
     Delete "$LOCALAPPDATA\AuroDownloader\auro.db-journal"
     Delete "$LOCALAPPDATA\AuroDownloader\auro.db.bak-v*"
+    Delete "$LOCALAPPDATA\AuroDownloader\auro.db.lock"
     Delete "$LOCALAPPDATA\AuroDownloader\aurod.log"
+    Delete "$LOCALAPPDATA\AuroDownloader\remote-cert.pem"
+    Delete "$LOCALAPPDATA\AuroDownloader\remote-key.pem"
+    Delete "$LOCALAPPDATA\AuroDownloader\torrent-dht.json"
+    RMDir /r "$LOCALAPPDATA\AuroDownloader\logs"
+    RMDir /r "$LOCALAPPDATA\AuroDownloader\plugins"
+    RMDir /r "$LOCALAPPDATA\AuroDownloader\tools"
     RMDir "$LOCALAPPDATA\AuroDownloader"
   ${EndIf}
   !endif

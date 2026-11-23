@@ -55,7 +55,9 @@ nouveau paquet comme le premier. Sous Android, installez le nouvel APK par-dessu
 
 - **Windows** : Paramètres, Applications, AuroDownloader, Désinstaller. Vos téléchargements
   ne sont jamais touchés. La liste des téléchargements, l'historique et les préférences sont
-  gardés, sauf si vous cochez « supprimer les données ».
+  gardés, sauf si vous cochez « supprimer les données » : elle efface aussi les journaux, les
+  plugins, les outils de la vidéo, le certificat de l'accès à distance, et les cookies et mots
+  de passe rangés dans le coffre de Windows.
 - **Linux** : `sudo apt remove auro-downloader` pour le `.deb` ; supprimez simplement le
   fichier AppImage.
 - **Android** : comme toute application. Les fichiers déjà téléchargés restent dans

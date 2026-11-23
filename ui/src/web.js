@@ -6,7 +6,7 @@
 //
 // En plus : `remote` (vrai), `session()`, `login(token)`, `logout()`, `tokenFromHash()`.
 
-import { sessionError, takeHashToken } from "./model.js";
+import { scopeAllows, sessionError, takeHashToken } from "./model.js";
 
 // Intervalle de l'avancement demandé au moteur : un peu plus large que celui du bureau, le
 // réseau est peut-être celui d'un téléphone.
@@ -104,10 +104,15 @@ export function webHost() {
           client: { name: "auro-web", version: "1.0" },
           protocol: { min: "1.0", max: "1.0" },
         });
-        await request("events.subscribe", {
-          topics: ["tasks", "queues", "progress"],
-          progressIntervalMs: PROGRESS_INTERVAL_MS,
-        });
+        // Un jeton « Ajouter seulement » n'a pas le droit de suivre les événements : sans
+        // cette garde, le refus fermait la connexion et la page se reconnectait sans fin
+        // (audit W2). La page fait alors sans état des tâches (`caps.read`).
+        if (scopeAllows(engine.scope ?? "admin", "read")) {
+          await request("events.subscribe", {
+            topics: ["tasks", "queues", "progress"],
+            progressIntervalMs: PROGRESS_INTERVAL_MS,
+          });
+        }
         retry = RETRY_FIRST_MS;
         setStatus({ state: "up", engine });
         const held = early;

@@ -71,6 +71,12 @@ struct Args {
     /// Essais : ce ffprobe, pris tel quel
     #[arg(long, value_name = "FICHIER", requires = "media_ytdlp")]
     media_ffprobe: Option<PathBuf>,
+
+    /// Désinstallation : efface du coffre du système les secrets de la base (cookies, mots
+    /// de passe des sites et du proxy), sans toucher à ceux d'une autre base, puis sort ;
+    /// moteur arrêté
+    #[arg(long)]
+    erase_secrets: bool,
 }
 
 fn main() -> Result<()> {
@@ -83,6 +89,14 @@ fn main() -> Result<()> {
         Some(db) => db,
         None => paths::database().context("dossier de données introuvable ; préciser --db")?,
     };
+    // Désinstallation (« Supprimer aussi les données », audit C4) : rien d'autre.
+    if args.erase_secrets {
+        let erased = Vault::system()
+            .erase_base(&db)
+            .with_context(|| format!("secrets de la base {}", db.display()))?;
+        eprintln!("aurod : {erased} secrets effacés du coffre");
+        return Ok(());
+    }
     if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("impossible de créer {}", dir.display()))?;

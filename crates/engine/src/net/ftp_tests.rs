@@ -63,6 +63,9 @@ fn credentials_leave_the_address() {
     assert_eq!(found, Some(("moi".into(), "s@cret".into())));
     let (same, none) = split_credentials("ftp://h/f.iso").unwrap();
     assert_eq!((same.as_str(), none), ("ftp://h/f.iso", None));
+    // Audit F1 : le nom seul reste dans l'adresse ; aucun en-tête au mot de passe vide.
+    let (kept, none) = split_credentials("sftp://moi@h/f.iso").unwrap();
+    assert_eq!((kept.as_str(), none), ("sftp://moi@h/f.iso", None));
     let header = basic_header("moi", "s@cret");
     let headers = vec![("Authorization".to_owned(), header)];
     assert_eq!(
@@ -92,6 +95,16 @@ fn credentials_come_from_the_task_then_the_address_then_the_site() {
         ("site".into(), "s".into(), false)
     );
     assert!(pick("ftp://autre/f", &[], Some(&site)).2);
+    // Audit F1 : le nom seul dans l'adresse prend le mot de passe du site s'il est pour ce
+    // nom, aucun sinon.
+    assert_eq!(
+        pick("ftp://site@h/f", &[], Some(&site)),
+        ("site".into(), "s".into(), false)
+    );
+    assert_eq!(
+        pick("ftp://autre@h/f", &[], Some(&site)),
+        ("autre".into(), String::new(), false)
+    );
     assert!(pick("ftp://anonymous:x@h/f", &[], None).2);
     // Audit F4 : `ftp` avec un vrai mot de passe est un vrai compte (NAS), jamais en clair
     // sans autorisation ; vide ou de forme adresse, l'accès anonyme habituel.

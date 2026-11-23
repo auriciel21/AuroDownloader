@@ -748,6 +748,9 @@ enum Command {
     CheckSource {
         task_id: String,
         url: String,
+        /// Les en-têtes de la tâche sont déjà ceux de la nouvelle adresse (lien neuf d'un
+        /// plugin, audit D3) : gardés même vers un autre hôte.
+        link_headers: bool,
         reply: Reply<SourceCheck>,
     },
     ReplaceUrl {
@@ -755,6 +758,7 @@ enum Command {
         url: String,
         facts: Option<SourceFacts>,
         public_only: bool,
+        link_headers: bool,
         reply: Reply<TaskRow>,
     },
     CheckMirror {
@@ -1542,6 +1546,18 @@ impl Engine {
     /// est d'abord interrogée : elle doit donner un fichier de même taille. Les cookies de
     /// la tâche ne suivent pas vers un autre hôte.
     pub async fn set_url(&self, task_id: &str, url: &str) -> Result<TaskRow, EngineError> {
+        self.set_url_with(task_id, url, false).await
+    }
+
+    /// [`Self::set_url`] ; `link_headers` : les en-têtes de la tâche viennent d'être
+    /// remplacés par ceux de la nouvelle adresse (lien neuf d'un plugin), qui les suivent
+    /// même vers un autre hôte. Sinon, les secrets de l'ancien hôte n'iraient pas au nouveau.
+    async fn set_url_with(
+        &self,
+        task_id: &str,
+        url: &str,
+        link_headers: bool,
+    ) -> Result<TaskRow, EngineError> {
         net::check_url(url)?;
         if self.public_only {
             check_public_literal(url)?;
@@ -1552,6 +1568,7 @@ impl Engine {
             .ask(|reply| Command::CheckSource {
                 task_id: id,
                 url: address,
+                link_headers,
                 reply,
             })
             .await?;
@@ -1587,6 +1604,7 @@ impl Engine {
             url,
             facts,
             public_only: self.public_only,
+            link_headers,
             reply,
         })
         .await
@@ -2204,7 +2222,7 @@ impl Engine {
             true => self.public_network()?,
             false => self.clone(),
         };
-        if let Err(e) = checker.set_url(task_id, &fresh.url).await {
+        if let Err(e) = checker.set_url_with(task_id, &fresh.url, true).await {
             // Lien neuf refusé : la tâche garde son ancienne adresse, qui ne doit pas
             // recevoir les cookies du lien neuf (revue de sécurité, étape 5). Seuls les
             // en-têtes en clair restent.
@@ -2323,6 +2341,27 @@ struct Running {
     /// Torrent, lancé à cette génération de l'interface (`Scheduler::iface_generation`) ;
     /// `None` : téléchargement HTTP.
     torrent: Option<u64>,
+}
+
+impl Running {
+    /// Arrête l'exécution pour la remettre en file (plage fermée, interface changée, miroir
+    /// ajouté, réseau perdu), sauf ce qui ne s'interrompt pas pour cela : une commande de
+    /// fin (`post_processing`, qui va jusqu'au bout, SPEC §5.5) et les états de `spare`.
+    /// Une tâche que l'utilisateur arrête ou annule garde sa suite. Seul chemin de ces
+    /// remises en file, pour qu'elles ne divergent plus (audit P23, d'où venaient P2, P3 et
+    /// P21). Vrai si l'exécution est arrêtée.
+    fn requeue_unless(&mut self, spare: &[TaskState]) -> bool {
+        if self.then != Then::Keep
+            || *self.stop.borrow()
+            || self.shown == TaskState::PostProcessing
+            || spare.contains(&self.shown)
+        {
+            return false;
+        }
+        self.then = Then::Requeue;
+        let _ = self.stop.send(true);
+        true
+    }
 }
 
 /// Ce qu'une exécution signale à la boucle, en plus de son issue.
@@ -2609,7 +2648,11 @@ impl Scheduler {
                 // Après la commande de fin d'un torrent aussi (SPEC §7.21).
                 if matches!(run.shown, TaskState::Active | TaskState::PostProcessing) {
                     let from = std::mem::replace(&mut run.shown, TaskState::Seeding);
+                    let queue_id = run.queue_id.clone();
                     self.changed(&task_id, from, TaskState::Seeding);
+                    // Téléchargement fini : l'action de fin de la file peut suivre, le
+                    // partage ne la retient pas (SPEC §7.11, audit P4).
+                    self.arm_end_action(&queue_id);
                 }
             }
             // Fusion d'une vidéo, ou commande de fin (SPEC §7.21) : depuis `active`, ou
@@ -2878,18 +2921,21 @@ impl Scheduler {
             Command::CheckSource {
                 task_id,
                 url,
+                link_headers,
                 reply,
             } => {
-                let _ = reply.send(self.check_source(&task_id, &url));
+                let _ = reply.send(self.check_source(&task_id, &url, link_headers));
             }
             Command::ReplaceUrl {
                 task_id,
                 url,
                 facts,
                 public_only,
+                link_headers,
                 reply,
             } => {
-                let _ = reply.send(self.replace_url(&task_id, &url, facts, public_only));
+                let replaced = self.replace_url(&task_id, &url, facts, public_only, link_headers);
+                let _ = reply.send(replaced);
             }
             Command::CheckMirror {
                 task_id,
@@ -4450,11 +4496,17 @@ impl Scheduler {
 
     /// Avant d'interroger une nouvelle adresse (SPEC §7.13) : la taille à retrouver et les
     /// en-têtes à envoyer.
-    fn check_source(&self, task_id: &str, url: &str) -> Result<SourceCheck, EngineError> {
+    fn check_source(
+        &self,
+        task_id: &str,
+        url: &str,
+        link_headers: bool,
+    ) -> Result<SourceCheck, EngineError> {
         let task = self.idle(task_id, "changement d'adresse")?;
         let old = tasks::primary_source(&self.conn, task_id)?;
-        // Une autre origine (hôte, protocole ou port) ne reçoit pas les secrets (audit T6).
-        let other_host = !net::same_origin(&old.url, url);
+        // Une autre origine (hôte, protocole ou port) ne reçoit pas les secrets (audit T6),
+        // sauf les en-têtes donnés avec la nouvelle adresse elle-même (audit D3).
+        let other_host = !link_headers && !net::same_origin(&old.url, url);
         let headers: Vec<StoredHeader> = headers::load(&self.conn, task_id)?
             .into_iter()
             .filter(|(_, s)| !other_host || matches!(s, Stored::Plain(_)))
@@ -4556,12 +4608,10 @@ impl Scheduler {
             };
             store::sources::set_checked(&self.conn, &source_id, &checked)?;
         }
-        if let Some(run) = self.running.get_mut(task_id)
-            && run.then == Then::Keep
-            && !*run.stop.borrow()
-        {
-            run.then = Then::Requeue;
-            let _ = run.stop.send(true);
+        // Le miroir sert dès la reprise ; une vérification ou une commande de fin en cours
+        // ne recommence pas pour lui (audit P21).
+        if let Some(run) = self.running.get_mut(task_id) {
+            run.requeue_unless(&[TaskState::Verifying, TaskState::Seeding]);
         }
         Ok(source_id)
     }
@@ -4574,8 +4624,9 @@ impl Scheduler {
         url: &str,
         facts: Option<SourceFacts>,
         public_only: bool,
+        link_headers: bool,
     ) -> Result<TaskRow, EngineError> {
-        let check = self.check_source(task_id, url)?;
+        let check = self.check_source(task_id, url, link_headers)?;
         if check.expect_bytes != facts.as_ref().map(|f| f.total_bytes) {
             return Err(EngineError::BadRequest(format!(
                 "la tâche {task_id} a changé pendant la vérification de l'adresse : réessayer"
@@ -4703,11 +4754,10 @@ impl Scheduler {
     fn rebind(&mut self, binding: Option<torrent::Binding>, was_up: bool) {
         self.iface_binding = binding;
         self.iface_generation += 1;
-        for run in self.running.values_mut() {
-            if run.torrent.is_some() && run.then == Then::Keep && !*run.stop.borrow() {
-                run.then = Then::Requeue;
-                let _ = run.stop.send(true);
-            }
+        for run in self.running.values_mut().filter(|r| r.torrent.is_some()) {
+            // Un partage aussi : il reprendra sur la nouvelle interface ; jamais une
+            // commande de fin (audit P3).
+            run.requeue_unless(&[]);
         }
         let up = self.interface_up();
         if up != was_up {
@@ -4907,14 +4957,8 @@ impl Scheduler {
             // torrents (SPEC §7.16). Une tâche que l'utilisateur arrête ou annule garde sa
             // suite ; un partage arrêté reste `seeding` et reprendra.
             let stops = !usable || (metered && run.shown == TaskState::Seeding);
-            if stops
-                && run.shown != TaskState::Verifying
-                && run.shown != TaskState::PostProcessing
-                && run.then == Then::Keep
-                && !*run.stop.borrow()
-            {
-                run.then = Then::Requeue;
-                let _ = run.stop.send(true);
+            if stops {
+                run.requeue_unless(&[TaskState::Verifying]);
             }
         }
         self.emit(|rev| Event::NetworkChanged {

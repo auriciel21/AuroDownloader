@@ -630,13 +630,24 @@ impl SftpBody {
             return Ok(None);
         }
         let mut buf = BytesMut::zeroed(want);
-        let n = tokio::time::timeout(self.read, file.read(&mut buf))
-            .await
-            .map_err(|_| NetError::ReadTimeout(self.read))?
-            .map_err(|e| NetError::Socket {
-                connect: false,
-                text: e.to_string(),
-            })?;
+        let read = tokio::time::timeout(self.read, file.read(&mut buf)).await;
+        // Après un délai dépassé ou une erreur, la session ne revient pas à la réserve :
+        // bloquée sans être fermée (NAT, pare-feu), elle ferait attendre tout un délai au
+        // segment suivant (audit F2).
+        let n = match read {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                self.abandon();
+                return Err(NetError::Socket {
+                    connect: false,
+                    text: e.to_string(),
+                });
+            }
+            Err(_) => {
+                self.abandon();
+                return Err(NetError::ReadTimeout(self.read));
+            }
+        };
         if n == 0 {
             if self.remaining.is_some_and(|r| r > 0) {
                 self.file = None;
@@ -661,6 +672,12 @@ impl SftpBody {
         if let Some(session) = self.session.take() {
             self.shared.put(session);
         }
+    }
+
+    /// Lecture en échec : fichier et session lâchés, la session fermée avec eux.
+    fn abandon(&mut self) {
+        self.file = None;
+        self.session = None;
     }
 }
 

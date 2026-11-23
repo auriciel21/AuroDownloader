@@ -108,7 +108,10 @@ pub fn file_path(url: &Url) -> Result<String, NetError> {
 /// range le mot de passe au coffre (en-tête `Authorization`), jamais en base.
 pub fn split_credentials(url: &str) -> Result<(String, Option<(String, String)>), NetError> {
     let mut parsed = Url::parse(url).map_err(|e| NetError::InvalidUrl(e.to_string()))?;
-    if parsed.username().is_empty() && parsed.password().is_none() {
+    // Le nom seul (`sftp://moi@hôte/f`) n'est pas un secret : il reste dans l'adresse, et
+    // le mot de passe ou la clé de l'identifiant du site pour ce nom servira. En faire un
+    // en-tête au mot de passe vide masquait celui du site (audit F1).
+    if parsed.password().is_none() {
         return Ok((url.to_owned(), None));
     }
     let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
@@ -176,14 +179,21 @@ fn is_anonymous(user: &str, pass: &str) -> bool {
 }
 
 fn credentials(url: &Url, task_headers: &[(String, String)], auth: Option<&Auth>) -> Creds {
+    let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
     let found = basic_credentials(task_headers)
         .or_else(|| {
-            (!url.username().is_empty()).then(|| {
-                let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
-                (
-                    decode(url.username()),
-                    url.password().map(decode).unwrap_or_default(),
-                )
+            if url.username().is_empty() {
+                return None;
+            }
+            let user = decode(url.username());
+            Some(match url.password() {
+                Some(pass) => (user, decode(pass)),
+                // Nom seul dans l'adresse : le mot de passe du site, s'il est pour ce nom
+                // (audit F1) ; sinon aucun.
+                None => match auth.and_then(|a| a.credentials_for(url)) {
+                    Some((site_user, pass)) if site_user == user => (user, pass),
+                    _ => (user, String::new()),
+                },
             })
         })
         .or_else(|| auth.and_then(|a| a.credentials_for(url)));

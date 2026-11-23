@@ -947,6 +947,36 @@ async fn subtitles_are_kept_beside_the_video_and_missing_ones_reported() {
     crate::testing::stop(&s.engine).await;
 }
 
+/// Audit V5 : un sous-titre en échec définitif pour une autre cause qu'un refus du site
+/// (ici, `TLS_INVALID_CERT` : un serveur dont l'autorité n'est pas reconnue) ne met plus en
+/// échec une vidéo aux flux complets ; elle se termine, le sous-titre signalé manquant.
+#[tokio::test]
+async fn a_subtitle_failing_for_any_reason_is_reported_missing() {
+    let server = site(None);
+    let tls = crate::testing::TestTls::new();
+    let untrusted = crate::testing::serve_file_tls(
+        std::sync::Arc::new(std::sync::Mutex::new(crate::testing::FileSite::new(100))),
+        None,
+        &tls,
+    );
+    let mut answer: serde_json::Value =
+        serde_json::from_str(&resolution(&server, "", false)).unwrap();
+    answer["subtitles"] =
+        serde_json::json!({"en": [{"ext": "vtt", "url": untrusted.url("/en.vtt")}]});
+    let answer = answer.to_string();
+    let s = setup(&[&answer], true);
+    let mut events = s.engine.subscribe();
+    let mut add = add_video(&s, "https://exemple.org/page");
+    add.media.as_mut().unwrap().subtitles = vec!["en".into()];
+    let id = s.engine.add(add).await.unwrap();
+    let end = wait_end(&mut events, &id).await;
+    let task = s.engine.get(&id).await.unwrap();
+    assert_eq!(end, TaskState::Completed, "{task:?}");
+    let (message, _) = wait_warning(&mut events, "SUBTITLES_MISSING").await;
+    assert!(message.ends_with(": en"), "{message}");
+    crate::testing::stop(&s.engine).await;
+}
+
 /// Essai réel (Internet) : vidéos sous licence libre téléchargées jusqu'au bout par le
 /// moteur, avec les vrais yt-dlp et ffmpeg de `AURO_TOOLS_DIR` (installés s'ils manquent).
 /// Formats légers choisis (une centaine de Mio en tout) : flux direct seul (PeerTube de

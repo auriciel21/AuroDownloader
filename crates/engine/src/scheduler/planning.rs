@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::{EngineError, Event, PendingEnd, ScheduleView, Scheduler, Then};
+use super::{EngineError, Event, PendingEnd, ScheduleView, Scheduler};
 use crate::schedule::{EndAction, LocalNow, Rules, Schedule};
-use crate::store::tasks::{self, count_pending};
+use crate::store::tasks::{self, TaskState, count_pending};
 use crate::store::{now_ms, schedules};
 
 /// État de la planification, tenu par la boucle.
@@ -91,13 +91,11 @@ impl Scheduler {
             .collect();
         self.planning.open = open;
         for run in self.running.values_mut() {
-            // Une tâche que l'utilisateur arrête ou annule garde sa suite.
-            if self.planning.closed.contains(&run.queue_id)
-                && run.then == Then::Keep
-                && !*run.stop.borrow()
-            {
-                run.then = Then::Requeue;
-                let _ = run.stop.send(true);
+            // Une file fermée arrête ses téléchargements. Un partage de torrent ne suit pas
+            // les plages (il repartait aussitôt, revérifiant tout son disque toutes les 15 s,
+            // audit P2) ; une vérification ou une commande de fin va jusqu'au bout (P3).
+            if self.planning.closed.contains(&run.queue_id) {
+                run.requeue_unless(&[TaskState::Seeding, TaskState::Verifying]);
             }
         }
     }
@@ -201,9 +199,14 @@ impl Scheduler {
         }
     }
 
-    /// La file a-t-elle encore à télécharger ? En cas de doute (base illisible), oui.
+    /// La file a-t-elle encore à télécharger ? En cas de doute (base illisible), oui. Un
+    /// partage de torrent n'est pas un téléchargement : il ne retient pas l'action de fin
+    /// (SPEC §7.11 ; sinon, avec un ratio jamais atteint, la machine ne s'éteignait jamais,
+    /// audit P4).
     fn has_work(&self, queue_id: &str) -> bool {
-        self.running.values().any(|r| r.queue_id == queue_id)
+        self.running
+            .values()
+            .any(|r| r.queue_id == queue_id && r.shown != TaskState::Seeding)
             || count_pending(&self.conn, queue_id).map_or(true, |n| n > 0)
     }
 

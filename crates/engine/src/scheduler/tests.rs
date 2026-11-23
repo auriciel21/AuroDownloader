@@ -454,7 +454,9 @@ async fn a_task_added_paused_waits_for_resume() {
 async fn a_busy_server_is_retried_automatically() {
     let dir = tempfile::tempdir().unwrap();
     let (site, server) = fast_site(SIZE);
-    site.lock().unwrap().busy_responses = 1;
+    // Un refus isolé s'attend dans l'exécution (audit T4) : seul un serveur qui refuse
+    // encore après trois épisodes fait échouer l'exécution, que le planificateur reprend.
+    site.lock().unwrap().busy_responses = usize::MAX;
     let engine = Engine::start(config(dir.path())).unwrap();
     let mut events = engine.subscribe();
     let id = engine
@@ -466,6 +468,7 @@ async fn a_busy_server_is_retried_automatically() {
         task(dir.path(), &id).error_code.as_deref(),
         Some("HTTP_STATUS")
     );
+    site.lock().unwrap().busy_responses = 0;
     // Nouvelle tentative après 2 à 3 s (SPEC §7.8), sans intervention.
     wait_state(&mut events, &id, TaskState::Completed).await;
     assert_file(dir.path(), "busy.bin", SIZE);
@@ -899,6 +902,63 @@ async fn an_announced_state_is_already_recorded() {
     scheduler.begin_shutdown(None);
 }
 
+/// Audit D3 : le lien neuf d'un plugin, sur un autre hôte (CDN), garde les cookies qui
+/// viennent d'être rangés avec lui ; une adresse changée à la main vers une autre origine,
+/// elle, ne garde pas les secrets de l'ancienne.
+#[tokio::test]
+async fn a_fresh_plugin_link_keeps_its_own_cookies_on_another_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::start(config(dir.path())).unwrap();
+    let paused = |url: &str| AddTask {
+        start_paused: true,
+        ..add(url, dir.path())
+    };
+    let cookies = || vec![("Cookie".to_owned(), "session=1".to_owned())];
+    let secret_count = |id: &str| {
+        let conn = store::open(&dir.path().join("auro.db")).unwrap();
+        headers::load(&conn, id)
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| matches!(s, Stored::Secret(_)))
+            .count()
+    };
+
+    let link = engine
+        .add(paused("http://127.0.0.1:1/f.bin"))
+        .await
+        .unwrap();
+    let id = link.clone();
+    engine
+        .ask(|reply| Command::ReplaceHeaders(id, cookies(), reply))
+        .await
+        .unwrap();
+    engine
+        .set_url_with(&link, "http://127.0.0.2:2/f.bin", true)
+        .await
+        .unwrap();
+    assert_eq!(secret_count(&link), 1, "le cookie du lien neuf reste");
+
+    let manual = engine
+        .add(paused("http://127.0.0.1:1/g.bin"))
+        .await
+        .unwrap();
+    let id = manual.clone();
+    engine
+        .ask(|reply| Command::ReplaceHeaders(id, cookies(), reply))
+        .await
+        .unwrap();
+    engine
+        .set_url(&manual, "http://127.0.0.2:2/g.bin")
+        .await
+        .unwrap();
+    assert_eq!(
+        secret_count(&manual),
+        0,
+        "pas de secret vers une autre origine"
+    );
+    crate::testing::stop(&engine).await;
+}
+
 /// Audit R2 : un second moteur sur la même base est refusé avant toute reprise ; quand le
 /// premier s'arrête, la base se rouvre.
 #[tokio::test]
@@ -1117,6 +1177,109 @@ mod planning {
             Err(EngineError::ScheduleNotFound(_))
         ));
         engine.shutdown().await;
+    }
+
+    /// Lundi 15:00 : après la plage 13:00-14:00 des tests suivants.
+    fn after_the_window(_: &Connection) -> LocalNow {
+        LocalNow {
+            utc_ms: monday(15, 0),
+            offset_ms: 0,
+        }
+    }
+
+    /// Une boucle dont la file par défaut suit une plage fermée (lundi 13:00-14:00), avec
+    /// `on_done` à la fin, et des exécutions factices dans les états donnés.
+    fn closed_queue_with_runs(
+        dir: &Path,
+        on_done: &str,
+        runs: &[(&str, TaskState)],
+    ) -> (Scheduler, Vec<watch::Receiver<bool>>) {
+        let config = planning_config(dir, after_the_window, crate::power::unplugged);
+        let conn = store::open(&config.db_path).unwrap();
+        let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
+        let (events, _) = broadcast::channel(64);
+        let (prepared, _) = mpsc::unbounded_channel();
+        let mut scheduler = Scheduler::new(
+            conn,
+            config,
+            events,
+            Arc::default(),
+            queue.clone(),
+            None,
+            prepared,
+        );
+        let rules = Rules::from_json(&json!({
+            "windows": [{"days": [1], "start": "13:00", "end": "14:00"}],
+            "onDone": on_done,
+        }))
+        .unwrap();
+        let view = scheduler.set_schedule(None, "Essai", true, rules).unwrap();
+        scheduler
+            .update_queue(
+                &queue,
+                QueueChange {
+                    schedule_id: Some(Some(view.schedule.id.clone())),
+                    ..QueueChange::default()
+                },
+            )
+            .unwrap();
+        let mut stops = Vec::new();
+        for (id, shown) in runs {
+            let (stop, stopped) = watch::channel(false);
+            let (_, live) = watch::channel::<Arc<[LiveSegment]>>(Arc::from(Vec::new()));
+            scheduler.running.insert(
+                (*id).to_owned(),
+                Running {
+                    queue_id: queue.clone(),
+                    stop,
+                    then: Then::Keep,
+                    live,
+                    shown: *shown,
+                    torrent: None,
+                },
+            );
+            stops.push(stopped);
+        }
+        (scheduler, stops)
+    }
+
+    /// Audit P2, P3 (aide commune P23) : une plage qui se ferme arrête les téléchargements
+    /// de sa file, mais ni un partage de torrent (relancé toutes les 15 s avec une
+    /// revérification complète), ni une vérification, ni une commande de fin (tuée puis
+    /// relancée depuis le début).
+    #[tokio::test]
+    async fn a_closing_window_stops_downloads_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = [
+            ("telechargement", TaskState::Active),
+            ("partage", TaskState::Seeding),
+            ("verification", TaskState::Verifying),
+            ("commande", TaskState::PostProcessing),
+        ];
+        let (mut scheduler, stops) = closed_queue_with_runs(dir.path(), "none", &runs);
+        scheduler.refresh_schedules(true);
+        for ((id, shown), stopped) in runs.iter().zip(&stops) {
+            let expected = *id == "telechargement";
+            assert_eq!(*stopped.borrow(), expected, "{id} ({shown:?})");
+            let requeued = scheduler.running[*id].then == Then::Requeue;
+            assert_eq!(requeued, expected, "{id} ({shown:?})");
+        }
+        scheduler.running.clear();
+    }
+
+    /// Audit P4 : un partage ne retient pas l'action de fin de sa file (SPEC §7.11) ;
+    /// sinon, avec un ratio jamais atteint, la machine ne s'éteignait jamais.
+    #[tokio::test]
+    async fn sharing_does_not_hold_the_end_action_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) =
+            closed_queue_with_runs(dir.path(), "sleep", &[("partage", TaskState::Seeding)]);
+        let queue = scheduler.default_queue.clone();
+        scheduler.arm_end_action(&queue);
+        scheduler.check_end_action();
+        let pending = scheduler.planning.pending.clone().expect("action annoncée");
+        assert_eq!(pending.action, EndAction::Sleep);
+        scheduler.running.clear();
     }
 
     static CALLS: Mutex<Vec<EndAction>> = Mutex::new(Vec::new());
