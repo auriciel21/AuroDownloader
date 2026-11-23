@@ -798,6 +798,7 @@ enum Command {
         name: String,
         max_active: u32,
         speed_limit_bps: Option<u64>,
+        schedule_id: Option<String>,
         reply: Reply<String>,
     },
     UpdateQueue {
@@ -869,8 +870,9 @@ enum Command {
     PluginOrigin(String, Reply<Option<(String, String)>>),
     /// En-têtes d'une tâche remplacés (lien neuf rendu par un plugin).
     ReplaceHeaders(String, Vec<(String, String)>, Reply<()>),
-    /// Secrets relevés dans le coffre au démarrage, pour le ramassage.
-    CollectSecrets(Vec<String>),
+    /// Secrets relevés dans le coffre au démarrage, pour le ramassage, et l'instant du
+    /// démarrage (millisecondes Unix).
+    CollectSecrets(Vec<String>, i64),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -990,10 +992,11 @@ impl Engine {
         // Ramassage des secrets orphelins : le relevé du coffre, hors de la boucle, puis
         // la comparaison avec la base, dans la boucle.
         let collect = commands.clone();
+        let started = now_ms();
         tokio::spawn(async move {
             match tokio::task::spawn_blocking(move || vault.ids()).await {
                 Ok(Ok(found)) if !found.is_empty() => {
-                    let _ = collect.send(Command::CollectSecrets(found)).await;
+                    let _ = collect.send(Command::CollectSecrets(found, started)).await;
                 }
                 Ok(Err(e)) => tracing::warn!(erreur = %e, "relevé du coffre impossible"),
                 _ => {}
@@ -1124,11 +1127,25 @@ impl Engine {
         max_active: u32,
         speed_limit_bps: Option<u64>,
     ) -> Result<String, EngineError> {
+        self.create_queue_with(name, max_active, speed_limit_bps, None)
+            .await
+    }
+
+    /// Comme [`Engine::create_queue`], la planification `schedule_id` attachée dans la même
+    /// commande ; inconnue, rien n'est créé (`SCHEDULE_NOT_FOUND`).
+    pub async fn create_queue_with(
+        &self,
+        name: &str,
+        max_active: u32,
+        speed_limit_bps: Option<u64>,
+        schedule_id: Option<String>,
+    ) -> Result<String, EngineError> {
         let name = name.to_owned();
         self.ask(|reply| Command::CreateQueue {
             name,
             max_active,
             speed_limit_bps,
+            schedule_id,
             reply,
         })
         .await
@@ -3154,7 +3171,7 @@ impl Scheduler {
             Command::ReplaceHeaders(id, headers, reply) => {
                 let _ = reply.send(self.replace_headers(&id, headers));
             }
-            Command::CollectSecrets(found) => self.collect_secrets(found),
+            Command::CollectSecrets(found, started) => self.collect_secrets(found, started),
             Command::List(filter, reply) => {
                 let rows = tasks::find_tasks(&self.conn, &filter);
                 let _ = reply.send(rows.map(|r| (r, self.current_rev())).map_err(Into::into));
@@ -3185,9 +3202,11 @@ impl Scheduler {
                 name,
                 max_active,
                 speed_limit_bps,
+                schedule_id,
                 reply,
             } => {
-                let _ = reply.send(self.create_queue(&name, max_active, speed_limit_bps));
+                let created = self.create_queue(&name, max_active, speed_limit_bps, schedule_id);
+                let _ = reply.send(created);
             }
             Command::UpdateQueue {
                 queue_id,
@@ -3514,7 +3533,13 @@ impl Scheduler {
         name: &str,
         max_active: u32,
         speed_limit_bps: Option<u64>,
+        schedule_id: Option<String>,
     ) -> Result<String, EngineError> {
+        if let Some(id) = &schedule_id
+            && schedules::load_schedule(&self.conn, id)?.is_none()
+        {
+            return Err(EngineError::ScheduleNotFound(id.clone()));
+        }
         Self::check_queue_limit(max_active)?;
         Self::check_speed_limit(speed_limit_bps)?;
         if name.trim().is_empty() {
@@ -3529,6 +3554,9 @@ impl Scheduler {
             )));
         }
         let queue_id = tasks::create_queue(&self.conn, name, max_active, speed_limit_bps)?;
+        if let Some(schedule_id) = schedule_id {
+            self.attach_schedule(&queue_id, Some(&schedule_id))?;
+        }
         let id = queue_id.clone();
         self.emit(|rev| Event::QueueUpdated { rev, queue_id: id });
         Ok(queue_id)
@@ -4172,11 +4200,17 @@ impl Scheduler {
     /// Ramassage (voir `secrets`) : efface du coffre les secrets `found` dont la base n'a
     /// pas la référence. `found` a été relevé avant ce tour de boucle : un ajout qui a
     /// rangé un secret avant ce relevé a aussi enregistré sa référence, dans le même tour.
-    fn collect_secrets(&mut self, found: Vec<String>) {
+    fn collect_secrets(&mut self, found: Vec<String>, started: i64) {
         let Ok(known) = headers::all_secret_refs(&self.conn) else {
             return;
         };
-        let orphans: Vec<String> = found.into_iter().filter(|id| !known.contains(id)).collect();
+        // Un secret rangé depuis le démarrage (vidéo reprise, ajout) peut précéder de peu
+        // sa référence en base (le secret d'abord, SPEC §5.1) : jamais orphelin ici (audit
+        // R7). Sa référence est un UUID v7, qui porte sa date.
+        let orphans: Vec<String> = found
+            .into_iter()
+            .filter(|id| !known.contains(id) && created_ms(id).is_none_or(|at| at < started))
+            .collect();
         if !orphans.is_empty() {
             tracing::info!(
                 secrets = orphans.len(),
@@ -5101,14 +5135,17 @@ impl Scheduler {
             settings: change.settings.clone(),
             password,
         };
-        let applied = self
-            .config
-            .client
-            .set_proxy(effective)
-            .map_err(|e| EngineError::BadRequest(e.to_string()))
+        // La base d'abord, puis le client : une écriture refusée ne laisse plus un proxy en
+        // service que la base ne connaît pas (audit R15). Un client qui refuse remet
+        // l'ancien réglage.
+        let (previous, _) = settings::proxy(&self.conn)?;
+        let applied = settings::set_proxy(&self.conn, &change.settings, secret.as_deref())
+            .map_err(EngineError::from)
             .and_then(|()| {
-                settings::set_proxy(&self.conn, &change.settings, secret.as_deref())
-                    .map_err(EngineError::from)
+                self.config.client.set_proxy(effective).map_err(|e| {
+                    let _ = settings::set_proxy(&self.conn, &previous, old.as_deref());
+                    EngineError::BadRequest(e.to_string())
+                })
             });
         if let Err(e) = applied {
             if let Some(id) = fresh {
@@ -5334,6 +5371,15 @@ impl Scheduler {
     }
 }
 
+/// Date de création d'une référence de secret (UUID v7), en millisecondes Unix.
+fn created_ms(id: &str) -> Option<i64> {
+    let (seconds, nanos) = uuid::Uuid::parse_str(id).ok()?.get_timestamp()?.to_unix();
+    i64::try_from(seconds)
+        .ok()?
+        .checked_mul(1000)?
+        .checked_add(i64::from(nanos / 1_000_000))
+}
+
 /// Références des secrets parmi des en-têtes enregistrés.
 fn secret_ids(stored: Vec<StoredHeader>) -> Vec<String> {
     stored
@@ -5451,7 +5497,7 @@ fn check_public_literal(url: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
+pub(crate) fn check_dest_dir(dir: &str) -> Result<(), EngineError> {
     let path = Path::new(dir);
     if !path.is_absolute() || !path.is_dir() {
         return Err(EngineError::DestDir(format!(

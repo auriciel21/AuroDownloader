@@ -1742,6 +1742,55 @@ mod planning {
         );
     }
 
+    /// Audit R7 : le ramassage du démarrage n'efface pas un secret rangé depuis (vidéo
+    /// reprise, ajout) dont la référence n'est pas encore en base.
+    #[tokio::test]
+    async fn the_secret_collection_spares_fresh_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        let id = scheduler.vault().put("session=1").unwrap();
+        // L'effacement se fait en tâche de fond : attendu un moment.
+        let settle = || tokio::time::sleep(Duration::from_millis(200));
+        scheduler.collect_secrets(vec![id.clone()], now_ms() - 60_000);
+        settle().await;
+        assert!(scheduler.vault().get(&id).unwrap().is_some(), "gardé");
+        scheduler.collect_secrets(vec![id.clone()], now_ms() + 60_000);
+        timeout(WAIT, async {
+            while scheduler.vault().get(&id).unwrap().is_some() {
+                settle().await;
+            }
+        })
+        .await
+        .expect("orphelin d'avant effacé");
+    }
+
+    /// Audit R15 : un proxy que la base refuse d'enregistrer n'entre pas en service.
+    #[tokio::test]
+    async fn a_proxy_the_base_refuses_is_not_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scheduler, _stops) = closed_queue_with_runs(dir.path(), "none", &[]);
+        scheduler
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON settings
+                 BEGIN SELECT RAISE(ABORT, 'refusé'); END;
+                 CREATE TRIGGER refuse_maj BEFORE UPDATE ON settings
+                 BEGIN SELECT RAISE(ABORT, 'refusé'); END;",
+            )
+            .unwrap();
+        let change = ProxyChange {
+            settings: net::proxy::Settings {
+                mode: net::proxy::Mode::None,
+                ..net::proxy::Settings::default()
+            },
+            password: None,
+        };
+        let before = scheduler.config.client.proxy().settings.mode;
+        assert!(scheduler.set_proxy(change).is_err());
+        assert_eq!(scheduler.config.client.proxy().settings.mode, before);
+        assert_ne!(before, net::proxy::Mode::None);
+    }
+
     /// Audit P9 : l'empreinte d'un fichier déjà sous son nom final (commande de fin en
     /// cours ou en échec) ne change plus.
     #[tokio::test]

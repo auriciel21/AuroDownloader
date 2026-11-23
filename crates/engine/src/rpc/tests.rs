@@ -510,6 +510,25 @@ async fn malformed_messages_get_standard_errors() {
         "INVALID_PARAMS"
     );
     assert_eq!(c.error_code("task.get", json!({})).await, "INVALID_PARAMS");
+    // Audit R17 : une page vide n'a pas de sens.
+    assert_eq!(
+        c.error_code("task.list", json!({"limit": 0})).await,
+        "INVALID_PARAMS"
+    );
+    // Audit R6 : un dossier refusé ne laisse pas les autres réglages changés.
+    let before =
+        c.result("settings.get", json!({})).await["values"]["downloads.preallocate"].clone();
+    assert!(
+        !c.error_code(
+            "settings.set",
+            json!({"values": {"downloads.preallocate": before == false, "downloads.dir": "relatif"}}),
+        )
+        .await
+        .is_empty()
+    );
+    let after =
+        c.result("settings.get", json!({})).await["values"]["downloads.preallocate"].clone();
+    assert_eq!(after, before, "réglage changé malgré le refus");
     assert_eq!(
         c.error_code("task.get", json!({"taskId": "inconnue"}))
             .await,
@@ -521,6 +540,29 @@ async fn malformed_messages_get_standard_errors() {
         .await;
     let reply = c.call("sync.snapshot", json!({})).await;
     assert!(reply["result"]["rev"].is_u64());
+
+    // Audit R8 : une requête invalide, même sans `id`, reçoit -32600 avec `id` à null.
+    c.send_raw(r#"{"method": "task.list"}"#).await;
+    let reply = c.reply().await;
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+    assert_eq!(reply["id"], Value::Null);
+    c.send_raw(r#"{"jsonrpc": "2.0", "id": {"objet": 1}, "method": "task.list"}"#)
+        .await;
+    let reply = c.reply().await;
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+    assert_eq!(
+        reply["id"],
+        Value::Null,
+        "un id illisible n'est pas renvoyé"
+    );
+
+    // Audit R11 : de l'UTF-8 invalide est illisible (-32700), jamais corrigé en silence.
+    c.writer
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"task.get\",\"params\":{\"taskId\":\"\xff\"}}\n")
+        .await
+        .unwrap();
+    let reply = c.reply().await;
+    assert_eq!(reply["error"]["code"], -32700, "{reply}");
     crate::testing::stop(&engine).await;
 }
 
@@ -590,6 +632,49 @@ async fn an_added_task_is_followed_to_completion() {
         std::fs::metadata(dir.path().join("f.bin")).unwrap().len(),
         512 * 1024
     );
+    crate::testing::stop(&engine).await;
+}
+
+/// Audit R4 : le dernier avancement d'une tâche part juste avant son changement d'état,
+/// au lieu d'être perdu (fin) ou de suivre l'état (pause). Avancement envoyé toutes les
+/// 10 min ici : seul ce départ anticipé peut le faire arriver.
+#[tokio::test]
+async fn the_last_progress_comes_before_the_state_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = site(512 * 1024);
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    c.result("engine.hello", hello()).await;
+    c.result(
+        "events.subscribe",
+        json!({"topics": ["tasks", "progress"], "progressIntervalMs": 600_000}),
+    )
+    .await;
+    let id = c
+        .result(
+            "task.add",
+            json!({"sources": [{"url": server.url("/f.bin")}], "destDir": dir_text(dir.path())}),
+        )
+        .await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut previous = Value::Null;
+    loop {
+        let message = c.read().await.expect("connexion ouverte");
+        if message["method"] == "task.stateChanged"
+            && message["params"]["taskId"] == id.as_str()
+            && message["params"]["to"] == "completed"
+        {
+            assert_eq!(previous["method"], "task.progress", "{previous}");
+            let item = &previous["params"]["items"][0];
+            assert_eq!(item["taskId"], id.as_str());
+            assert_eq!(item["doneBytes"], 512 * 1024);
+            assert!(previous["params"]["rev"].as_u64() < message["params"]["rev"].as_u64());
+            break;
+        }
+        previous = message;
+    }
     crate::testing::stop(&engine).await;
 }
 
@@ -3871,6 +3956,69 @@ async fn a_token_connection_reaches_only_the_public_network_and_the_download_fol
     )
     .await;
     assert!(late.read().await.is_none(), "jeton révoqué servi");
+    crate::testing::stop(&engine).await;
+}
+
+/// Audit R13 : la révocation d'un jeton coupe aussi un appel en cours (ici une analyse de
+/// page vers un serveur qui ne répond qu'au bout de 20 s).
+#[tokio::test]
+async fn a_revoked_token_cuts_a_call_in_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let slow = crate::testing::serve(|_| {
+        std::thread::sleep(Duration::from_secs(20));
+        crate::testing::reply(
+            "200 OK",
+            &[("Content-Type", "text/html"), ("Content-Length", "0")],
+            b"",
+        )
+    });
+    let mut local = TestClient::connect(&engine);
+    local.result("engine.hello", hello()).await;
+    local
+        .result(
+            "settings.set",
+            json!({"values": {"remote.allowPrivate": true}}),
+        )
+        .await;
+    let token = local
+        .result("token.create", json!({"name": "tél", "scope": "control"}))
+        .await;
+    let token_id = token["id"].as_str().unwrap().to_owned();
+    let mut remote = TestClient::connect_as(
+        &engine,
+        super::Peer::token(&token_id, super::Scope::Control),
+    );
+    remote.result("engine.hello", hello()).await;
+    remote
+        .send_raw(
+            &json!({"jsonrpc": "2.0", "id": 7, "method": "linkscan.run",
+                    "params": {"pageUrl": slow.url("/page.html")}})
+            .to_string(),
+        )
+        .await;
+    // L'appel est parti vers le serveur lent.
+    timeout(WAIT, async {
+        while slow.requests().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("analyse lancée");
+    let asked = std::time::Instant::now();
+    local
+        .result("token.revoke", json!({"tokenId": token_id}))
+        .await;
+    while let Some(message) = remote.read().await {
+        assert!(
+            message.get("method").is_some(),
+            "réponse servie : {message}"
+        );
+    }
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "connexion fermée après l'appel seulement"
+    );
     crate::testing::stop(&engine).await;
 }
 

@@ -60,7 +60,6 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "engine.hello" => return None,
         "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list"
         | "settings.get" | "events.subscribe" | "events.unsubscribe" | "sync.snapshot"
-        | "engine.stats"
         | "history.list"
         // État des outils de la vidéo (SPEC §7.17).
         | "media.tools" => Scope::Read,
@@ -81,12 +80,10 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "task.remove"
         | "task.restart"
         | "task.update"
-        | "task.move"
         | "task.addSource"
         | "task.setFiles"
         | "queue.create"
         | "queue.update"
-        | "queue.delete"
         | "limits.set"
         | "engine.cancelEndAction"
         | "engine.setNetwork"

@@ -153,7 +153,7 @@ Quinze exigences encadrent la qualité du produit. Les chiffres sont des cibles 
 | N-09 | Accessibilité | Utilisation sans souris et avec lecteur d'écran | Conformité visée WCAG 2.2 niveau AA pour l'interface graphique |
 | N-10 | Langues | Interface traduisible | Textes externalisés, UTF-8 partout ; français et anglais livrés en v1 |
 | N-11 | Licence | Logiciel libre | GPL-3.0 ou ultérieure pour le moteur et les clients (décision de l'utilisateur du 2026-11-09 ; texte dans `LICENSE`, champ `license` des paquets Cargo) |
-| N-12 | Observabilité | Journaux | Journaux structurés avec niveaux et rotation ; export de diagnostic sans adresses ni identifiants. Fait le 2026-11-12 (phase 7, étape 2, décisions de l'utilisateur) : événements en lignes JSON (`tracing`), dans `logs/` à côté de la base, 5 fichiers de 5 Mio au plus ; niveau `info`, réglage `logs.level` sans redémarrer, variable `AURO_LOG` qui l'impose ; seuls les modules du projet y écrivent (les bibliothèques, librqbit compris, peuvent nommer des pairs) ; jamais une adresse complète ni un en-tête, un hôte au plus ; `engine.diagnostic`, `auro diagnostic --save`, « Exporter un diagnostic… » du bureau, contenu montré avant l'enregistrement |
+| N-12 | Observabilité | Journaux | Journaux structurés avec niveaux et rotation ; export de diagnostic sans adresses ni identifiants. Fait le 2026-11-12 (phase 7, étape 2, décisions de l'utilisateur) : événements en lignes JSON (`tracing`), dans `logs/` à côté de la base, 5 fichiers de 5 Mio au plus (une rotation impossible n'empêche pas d'écrire : l'événement va au fichier courant, la rotation se retente une minute plus tard, audit R16) ; niveau `info`, réglage `logs.level` sans redémarrer, variable `AURO_LOG` qui l'impose ; seuls les modules du projet y écrivent (les bibliothèques, librqbit compris, peuvent nommer des pairs) ; jamais une adresse complète ni un en-tête, un hôte au plus (le diagnostic réduit aussi `socks5://`, `ws://`, `file://`… à leur protocole, et masque les chemins réseau `\\serveur\partage` et `\\?\`, depuis le 2026-11-23, audit R10 ; l'erreur des outils de la vidéo y est nettoyée, audit R9) ; `engine.diagnostic`, `auro diagnostic --save`, « Exporter un diagnostic… » du bureau, contenu montré avant l'enregistrement |
 | N-13 | Maintenabilité | Qualité du code | Intégration continue sur les trois plateformes ; tests de reprise et d'intégrité bloquants |
 | N-14 | Mises à jour | Distribution | Mise à jour signée ; sur Android, mise à jour par les boutiques et F-Droid, pas de mise à jour silencieuse |
 | N-15 | Vie privée | Données personnelles | Aucune télémétrie ; historique stocké localement et effaçable |
@@ -823,23 +823,21 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | Méthode | Paramètres principaux | Résultat |
 | --- | --- | --- |
 | `engine.hello` | `client`, `protocol`, `scope` | Version retenue, capacités, `rev`, `scope` |
-| `engine.stats` | aucun | Débit global, tâches actives, espace disque |
 | `engine.shutdown` | `graceful` | Arrêt après sauvegarde de l'état |
 | `task.add` | `sources[]`, `queueId`, `destDir`, `subDir`, `fileName`, `maxConnections`, `speedLimitBps`, `checksum`, `headers`, `startPaused`, `idempotencyKey`, `plugin` (faux : l'adresse telle quelle même pour un site d'un plugin, section 7.20) | `taskId` |
 | `task.addBatch` | `items[]` de paramètres `task.add` (1 000 au plus) | `tasks[]` (`index`, `taskId`), `errors[]` (`index`, `code`, `message`) |
 | `task.get` | `taskId`, `include` (`segments`, `sources`, `files`) | Tâche complète ; pour une tâche venue d'un plugin, `plugin` : `page`, `pluginId`, `name` (null si le plugin a été retiré) (section 7.20, depuis le 2026-11-12) ; pour une tâche aux empreintes de morceaux, `pieces` : `count`, `length`, `algo`, `redone` (morceaux retéléchargés), `rounds` (tours depuis la dernière relance) ; chaque source a `badPieces` (section 7.9, depuis le 2026-11-17) |
-| `task.list` | `queueId`, `states[]`, `limit`, `cursor` | `items[]`, `nextCursor`, `rev` |
+| `task.list` | `queueId`, `states[]`, `limit` (au moins 1), `cursor` | `items[]`, `nextCursor`, `rev` |
 | `task.pause` / `task.resume` | `taskIds[]` | Liste des tâches modifiées |
 | `task.cancel` | `taskIds[]`, `deleteFiles` | Liste des tâches modifiées |
 | `task.remove` | `taskIds[]`, `deleteFiles` | Nombre de tâches retirées |
 | `task.restart` | `taskIds[]`, `deleteFiles` | Tâches reparties de zéro, et refus (`errors`) |
 | `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `url`, `checksum` | Tâche modifiée |
-| `task.move` | `taskIds[]`, `queueId`, `position`, `priority` | Liste des tâches modifiées |
 | `task.addSource` | `taskId`, `url`, `rank` | `sourceId` |
 | `task.setFiles` | `taskId`, `selected[]` (torrent) | Tâche modifiée |
 | `metalink.read` | `data` (base64) ou `url` | Fichiers décrits, fichiers écartés (section 7.7) |
 | `metalink.add` | `data` ou `url`, `select[]`, `destDir`, `subDir`, `queueId`, `maxConnections`, `speedLimitBps`, `startPaused`, `idempotencyKey` | `tasks[]`, `errors[]` |
-| `queue.list` / `queue.create` / `queue.update` / `queue.delete` | `name`, `maxActive`, `speedLimitBps`, `scheduleId` | File ou liste de files |
+| `queue.list` / `queue.create` / `queue.update` | `name`, `maxActive`, `speedLimitBps`, `scheduleId` | File ou liste de files (une file ne se supprime pas en v1 ; `engine.stats` et `task.move`, prévues à l'origine, ne sont pas servies non plus : retirées le 2026-11-23, audit R18, décision 13) |
 | `limits.get` / `limits.set` | `downloadBps`, `uploadBps` | Limites globales |
 | `schedule.list` / `schedule.set` / `schedule.delete` | `scheduleId`, `name`, `enabled`, `rules` | Planification, avec son ouverture (section 7.11) |
 | `login.list` / `login.set` / `login.delete` | `loginId`, `site`, `username`, `password`, `allowPlain`, `keyPath` | Identifiants de sites, sans mot de passe (section 7.14, depuis le 2026-11-08) ; `allowPlain` : FTP sans chiffrement permis (section 7.22, depuis le 2026-11-17) ; `keyPath` : fichier de clé privée SFTP (même jour) |
@@ -887,7 +885,6 @@ Un client abonné reçoit ces notifications, sans y répondre. Chacune porte la 
 | `schedule.updated` | Planification créée, modifiée, ou dont l'ouverture vient de changer, comme `schedule.list` la décrit (depuis le 2026-11-07) |
 | `schedule.removed` | `scheduleId` (depuis le 2026-11-07) |
 | `engine.endAction` | `pending` : action de fin annoncée (`queueId`, `action`, `at`), ou `null` quand elle est exécutée ou annulée ; `error` : refus du système (depuis le 2026-11-07) |
-| `engine.stats` | Débit global, toutes les secondes |
 | `engine.warning` | `code`, `message`, `taskId` facultatif (la tâche concernée) (disque presque plein, nouvelle version de yt-dlp disponible ; `SUBTITLES_MISSING` : vidéo terminée sans certains sous-titres ; `INSECURE_REDIRECT` : préparation qui a suivi une redirection de HTTPS vers HTTP, depuis le 2026-11-23, section 8.1 ; `TASK_SET_ASIDE` : tâche qui ne peut plus changer d'état, laissée de côté jusqu'au prochain démarrage, depuis le 2026-11-23, section 5.5 ; `EVENTS_LOST` : client trop lent, des notifications ont été perdues, appeler `sync.snapshot`) |
 
 Sujets d'abonnement : `tasks` (`task.added`, `task.stateChanged`, `task.updated`, `task.removed`), `queues` (`queue.updated`, `limits.updated`, `settings.updated`, `schedule.updated`, `schedule.removed`, `engine.endAction`), `progress` (`task.progress`). Dans `task.progress`, `doneBytes` compte les octets reçus, pas forcément vidés sur disque ; `bps` est mesuré sur les 6 dernières secondes, entre les instants où les octets ont augmenté, et décroît jusqu'à zéro quand rien n'arrive plus ; `etaS` en découle (depuis le 2026-11-07 ; d'un envoi à l'autre auparavant, ce qui donnait, avec des octets arrivés par blocs, tantôt zéro, tantôt le double du vrai débit). Le moteur mesure l'avancement toutes les 500 ms : un intervalle plus court n'apporte rien de plus.
@@ -1040,7 +1037,7 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 
 | Code | `data.code` | Cas |
 | --- | --- | --- |
-| -32700 à -32600 | (standard JSON-RPC) | Message mal formé, méthode inconnue, paramètres invalides |
+| -32700 à -32600 | (standard JSON-RPC) | Message mal formé, méthode inconnue, paramètres invalides. Depuis le 2026-11-23 : un message qui n'est pas de l'UTF-8 valide est illisible (-32700, audit R11) ; une requête invalide reçoit toujours -32600, `id` à `null` s'il manque ou ne se lit pas (audit R8) |
 | -32001 | `UNAUTHORIZED` | Jeton absent, invalide ou sans la portée requise |
 | -32002 | `PROTOCOL_UNSUPPORTED` | Aucune version de protocole commune |
 | -32010 | `TASK_NOT_FOUND` | Identifiant de tâche inconnu |
@@ -1112,20 +1109,21 @@ SFTP (même section) : un statut d'erreur du serveur devient `HTTP_STATUS` avec 
 
 | Portée | Autorise | Typiquement donnée à |
 | --- | --- | --- |
-| `read` | Méthodes `*.list`, `*.get`, `engine.stats`, abonnements | Un tableau de bord en lecture seule |
+| `read` | Méthodes `*.list`, `*.get`, abonnements | Un tableau de bord en lecture seule |
 | `add` | `task.add`, `task.addBatch`, `media.probe`, `linkscan.run`, `linkscan.probe`, `metalink.read`, `metalink.add` | L'extension navigateur, un partage Android |
 | `control` | Tout ce que fait `add`, plus `task.*` et `queue.*` | L'application de bureau, la CLI, l'interface web |
 | `admin` | Tout, dont `settings.set`, `engine.shutdown` et la gestion des jetons | Le propriétaire de la machine |
 
 Mise en œuvre (décision du 2026-11-07, phase 3) :
 - **Canal local** : une connexion a d'emblée la portée `admin`, le système réservant le canal à l'utilisateur (section 6.2). Un client peut se restreindre à l'ouverture (`engine.hello`, paramètre `scope`), jamais s'élargir. Le relais de l'extension se limite ainsi à `add`. Aucun jeton : un programme qui pourrait lire celui du relais pourrait aussi bien se connecter lui-même au canal.
-- **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6). Depuis le 2026-11-11 (section 7.19) : un jeton a la portée `read`, `add` ou `control`, jamais `admin` (décision de l'utilisateur) ; une connexion à jeton passe par la poignée restreinte du moteur (dossier des téléchargements, réseau public), et se ferme quand son jeton est révoqué.
+- **Jetons** : réservés aux transports réseau (WebSocket, HTTP), avec l'interface distante (F-39, phase 6). Depuis le 2026-11-11 (section 7.19) : un jeton a la portée `read`, `add` ou `control`, jamais `admin` (décision de l'utilisateur) ; une connexion à jeton passe par la poignée restreinte du moteur (dossier des téléchargements, réseau public), et se ferme quand son jeton est révoqué, appel en cours compris (depuis le 2026-11-23, audit R13 : elle attendait la fin de l'appel).
 - **Portées exigées** :
   - aucune : `engine.hello` ;
-  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `engine.stats`, `media.tools` ;
-  - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run`, `linkscan.probe` (depuis le 2026-11-11), `metalink.read` et `metalink.add` (depuis le 2026-11-11) ;
-  - `control` : les autres méthodes `task.*` et `queue.*`, `limits.set`, `engine.cancelEndAction`, `engine.setNetwork`, `history.clear` ;
-  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14) ; `hostkey.list`, `hostkey.accept` et `hostkey.remove` (clés des serveurs SSH, section 7.22) ; `media.installTools` (installation de programmes, section 7.17) ; `token.create`, `token.list` et `token.revoke` (jetons, section 7.19).
+  - `read` : `task.get`, `task.list`, `queue.list`, `limits.get`, `settings.get`, `schedule.list`, `history.list`, `events.subscribe`, `events.unsubscribe`, `sync.snapshot`, `media.tools`, `rules.list` (sans les commandes pour un jeton) ;
+  - `add` : `task.add`, `task.addBatch`, `media.probe`, `linkscan.run`, `linkscan.probe` (depuis le 2026-11-11), `metalink.read` et `metalink.add` (depuis le 2026-11-11), `plugin.match`, `plugin.resolve` et `plugin.add` (section 7.20) ;
+  - `control` : `task.pause`, `task.resume`, `task.cancel`, `task.remove`, `task.restart`, `task.update`, `task.addSource`, `task.setFiles`, `queue.create` et `queue.update` sans `scheduleId`, `limits.set`, `engine.cancelEndAction`, `engine.setNetwork`, `history.clear` ;
+  - `admin` : `engine.shutdown`, `settings.set`, `schedule.set`, `schedule.delete`, et `queue.create` ou `queue.update` qui portent `scheduleId` (une planification peut éteindre la machine) ; `login.list`, `login.set` et `login.delete` (identifiants de sites, section 7.14) ; `hostkey.list`, `hostkey.accept` et `hostkey.remove` (clés des serveurs SSH, section 7.22) ; `media.installTools` (installation de programmes, section 7.17) ; `torrent.interfaces` (section 7.16) ; `token.create`, `token.list`, `token.revoke` et `remote.status` (jetons, section 7.19) ; `engine.diagnostic` ; `proxy.get` et `proxy.set` ; `rules.set` (section 7.21) ; `plugin.inspect`, `plugin.install`, `plugin.list`, `plugin.remove` et `plugin.enable` (section 7.20).
+  - Liste complétée le 2026-11-23 (audit R18, décision 13). Une méthode qui n'a pas de portée n'est jamais exécutée : seul `engine.hello` s'en passe, toute autre répond « méthode inconnue » (audit R5).
 - `read` et `add` ne se contiennent pas l'une l'autre ; `control` contient les deux ; `admin` contient tout.
 - Refus : `UNAUTHORIZED`, avec la portée demandée et celle de la connexion.
 
@@ -1133,6 +1131,7 @@ Mise en œuvre (décision du 2026-11-07, phase 3) :
 
 - Les messages d'une même connexion arrivent dans l'ordre.
 - Les changements d'état ne sont jamais abandonnés ; seules les notifications `task.progress` peuvent être regroupées ou sautées si le client est lent.
+- Le dernier avancement d'une tâche, s'il attend l'envoi groupé, part juste avant son `task.stateChanged`, avec la révision précédente (depuis le 2026-11-23, audit R4 : à la fin d'une tâche, il était perdu ; à une pause, il suivait l'état).
 - La révision `rev` augmente de 1 à chaque changement d'état ; les notifications de progression portent la révision courante sans l'augmenter, si bien qu'en sauter une ne crée aucun trou. Un client qui constate un trou dans les révisions, ou qui se reconnecte, appelle `sync.snapshot` et repart de cet état complet. La révision repart de 0 à chaque démarrage du moteur.
 - Pour ne rien manquer, un client s'abonne d'abord, puis appelle `sync.snapshot`. Il ignore ensuite les notifications de révision inférieure ou égale à celle de l'instantané.
 - Le moteur ne suppose jamais qu'un client est présent : les téléchargements continuent sans interface ouverte.

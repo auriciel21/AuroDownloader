@@ -194,14 +194,19 @@ impl Params {
 
 /// Appelle `method` ; les méthodes inconnues répondent « méthode inconnue ».
 pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<Value, RpcError> {
-    if let Some(need) = scope::required(method, &params)
-        && !ctx.scope.allows(need)
-    {
-        return Err(RpcError::unauthorized(format!(
-            "{method} demande la portée {}, cette connexion a la portée {}",
-            need.as_str(),
-            ctx.scope.as_str()
-        )));
+    match scope::required(method, &params) {
+        Some(need) if !ctx.scope.allows(need) => {
+            return Err(RpcError::unauthorized(format!(
+                "{method} demande la portée {}, cette connexion a la portée {}",
+                need.as_str(),
+                ctx.scope.as_str()
+            )));
+        }
+        Some(_) => {}
+        // Seul `engine.hello` est permis à tous ; une méthode sans portée, même servie par
+        // oubli, n'est jamais exécutée (audit R5).
+        None if method == "engine.hello" => {}
+        None => return Err(RpcError::method_not_found(method)),
     }
     let p = Params::new(params)?;
     match method {
@@ -329,25 +334,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let max_active = p.u32("maxActive")?.unwrap_or(3);
             let limit = p.limit("speedLimitBps")?.flatten();
             let schedule_id = p.nullable_str("scheduleId")?.flatten();
-            // Vérifiée avant : une planification inconnue ne laisse pas de file créée.
-            if let Some(id) = &schedule_id
-                && !ctx
-                    .engine
-                    .schedules()
-                    .await?
-                    .iter()
-                    .any(|v| &v.schedule.id == id)
-            {
-                return Err(EngineError::ScheduleNotFound(id.clone()).into());
-            }
-            let id = ctx.engine.create_queue(&name, max_active, limit).await?;
-            if let Some(schedule_id) = schedule_id {
-                let change = QueueChange {
-                    schedule_id: Some(Some(schedule_id)),
-                    ..QueueChange::default()
-                };
-                ctx.engine.update_queue(&id, change).await?;
-            }
+            // Une seule commande : la planification est vérifiée et attachée avec la création
+            // (audit R14 : supprimée entre deux commandes, elle laissait une file sans elle).
+            let id = ctx
+                .engine
+                .create_queue_with(&name, max_active, limit, schedule_id)
+                .await?;
             queue_by_id(ctx, &id).await
         }
         "queue.update" => {
@@ -626,10 +618,12 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                     Some(_) => return Err(Params::wrong(flag.key(), "booléen")),
                 }
             }
-            if let Some(value) = values.get(DOWNLOAD_DIR)
-                && !matches!(value, Value::Null | Value::String(_))
-            {
-                return Err(Params::wrong(DOWNLOAD_DIR, "texte ou null"));
+            match values.get(DOWNLOAD_DIR) {
+                None | Some(Value::Null) => {}
+                // Le dossier aussi, comme le moteur le vérifiera : un dossier refusé ne laisse
+                // pas les autres réglages changés (audit R6).
+                Some(Value::String(dir)) => crate::scheduler::check_dest_dir(dir)?,
+                Some(_) => return Err(Params::wrong(DOWNLOAD_DIR, "texte ou null")),
             }
             for (flag, on) in flags {
                 ctx.engine.set_flag(flag, on).await?;
@@ -843,7 +837,17 @@ async fn diagnostic(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         flags.insert(flag.key().to_owned(), json!(on));
     }
     let remote = engine.remote_state();
-    let tools = engine.media_tools().ok();
+    let download_dir = engine.download_dir().await?;
+    let masks = crate::logs::Masks::of_machine(Some(engine.data_dir()), download_dir.as_deref());
+    // L'erreur des outils est un texte libre (chemins, adresses) : nettoyée comme les
+    // journaux (audit R9).
+    let tools = engine.media_tools().ok().map(|status| {
+        let mut json = tools_json(&status);
+        if let Some(error) = &status.error {
+            json["error"] = json!(crate::logs::scrub_text(error, &masks));
+        }
+        json
+    });
     let plugins = engine.plugins().await?;
     let report = json!({
         "generatedAt": crate::store::now_ms(),
@@ -893,10 +897,8 @@ async fn diagnostic(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             "generatedCertificate": remote.certificate.as_ref().map(|c| c.generated),
             "hosts": remote.hosts.len(),
         },
-        "media": tools.as_ref().map(tools_json),
+        "media": tools,
     });
-    let download_dir = engine.download_dir().await?;
-    let masks = crate::logs::Masks::of_machine(Some(engine.data_dir()), download_dir.as_deref());
     let dir = crate::logs::installed_dir()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| engine.data_dir().join(crate::logs::DIR));
@@ -1831,6 +1833,10 @@ async fn task_list(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     let limit = p.u32("limit")?;
+    // Comme `history.list` : une page vide n'a pas de sens (audit R17).
+    if limit == Some(0) {
+        return Err(RpcError::invalid_params("limit : au moins 1"));
+    }
     let filter = TaskFilter {
         queue_id: p.str("queueId")?,
         states,

@@ -101,7 +101,12 @@ struct RotatingState {
     size: u64,
     max: u64,
     keep: usize,
+    /// Rotation ratée : pas de nouvel essai avant cet instant.
+    retry_at: Option<std::time::Instant>,
 }
+
+/// Délai avant de retenter une rotation ratée.
+const ROTATE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl RotatingState {
     /// Le fichier courant devient `aurod.1.jsonl`, et ainsi de suite ; le plus ancien part.
@@ -140,14 +145,24 @@ impl Rotating {
                 size,
                 max,
                 keep: keep.max(1),
+                retry_at: None,
             }),
         })
     }
 
     fn write_event(&self, buf: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.size > 0 && state.size + buf.len() as u64 > state.max {
-            state.rotate()?;
+        let due = state
+            .retry_at
+            .is_none_or(|at| std::time::Instant::now() >= at);
+        if state.size > 0 && state.size + buf.len() as u64 > state.max && due {
+            // Rotation impossible (fichier tenu par un autre programme, dossier en lecture
+            // seule) : l'événement s'écrit quand même dans le fichier courant, et la rotation
+            // se retente plus tard (audit R16 : tous les suivants étaient perdus).
+            state.retry_at = match state.rotate() {
+                Ok(()) => None,
+                Err(_) => Some(std::time::Instant::now() + ROTATE_RETRY),
+            };
         }
         state.file.write_all(buf)?;
         state.size += buf.len() as u64;
@@ -374,9 +389,20 @@ fn replace_ignoring_case(text: &str, from: &str, to: &str) -> String {
     out
 }
 
-/// Protocoles d'adresse remplacés par leur seul nom.
-const SCHEMES: [&str; 6] = [
-    "https://", "http://", "ftps://", "ftp://", "sftp://", "magnet:",
+/// Protocoles d'adresse remplacés par leur seul nom (proxys, WebSocket et fichiers
+/// locaux depuis l'audit R10).
+const SCHEMES: [&str; 11] = [
+    "https://",
+    "http://",
+    "ftps://",
+    "ftp://",
+    "sftp://",
+    "magnet:",
+    "socks5h://",
+    "socks5://",
+    "wss://",
+    "ws://",
+    "file://",
 ];
 
 /// Nettoie un texte pour le diagnostic : adresses réduites à leur protocole, jetons de
@@ -453,7 +479,9 @@ fn cut_paths(text: &str) -> String {
             && bytes[1] == b':'
             && matches!(bytes[2], b'\\' | b'/');
         let unix = c == '/' && rest[1..end_of(rest).max(1)].contains('/');
-        if boundary && (drive || unix) {
+        // Chemins réseau et étendus de Windows : `\\serveur\partage`, `\\?\C:\…` (audit R10).
+        let unc = rest.starts_with("\\\\");
+        if boundary && (drive || unix || unc) {
             out.push_str("<chemin>");
             rest = &rest[end_of(rest)..];
             boundary = false;
@@ -593,6 +621,29 @@ mod tests {
         );
     }
 
+    /// Audit R16 : une rotation impossible (ici, un dossier à la place du fichier suivant)
+    /// ne fait perdre aucun événement : ils restent dans le fichier courant.
+    #[test]
+    fn a_failed_rotation_keeps_the_events() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(file_at(dir.path(), 1)).unwrap();
+        let log = Rotating::open(dir.path(), 100, 2).unwrap();
+        for i in 0..10 {
+            writeln!(
+                log.make_writer(),
+                "{{\"n\":{i},\"remplissage\":\"0123456789\"}}"
+            )
+            .unwrap();
+        }
+        let current = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        for i in 0..10 {
+            assert!(
+                current.contains(&format!("\"n\":{i},")),
+                "{i} perdu : {current}"
+            );
+        }
+    }
+
     #[test]
     fn levels_are_read_and_written() {
         for level in Level::ALL {
@@ -664,6 +715,19 @@ mod tests {
             ),
             ("dossier=/var/lib/x", "dossier=<chemin>"),
             ("ratio 3/4 et http://h/x", "ratio 3/4 et http://…"),
+            // Audit R10 : chemins réseau et étendus de Windows, proxys, WebSocket, fichiers.
+            (r"lu \\nas\partage\film.mkv puis", "lu <chemin> puis"),
+            (r"ouvert \\?\C:\très\long\f.iso", "ouvert <chemin>"),
+            (
+                "proxy socks5://moi:secret@p:1080 refusé",
+                "proxy socks5://… refusé",
+            ),
+            (
+                "par socks5h://p:1080 et wss://h/ws",
+                "par socks5h://… et wss://…",
+            ),
+            ("ws://h:7380/ws coupé", "ws://… coupé"),
+            ("voir file:///home/x/f.iso", "voir file://…"),
         ] {
             assert_eq!(scrub_text(text, &masks), expected, "{text}");
         }

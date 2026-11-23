@@ -216,7 +216,12 @@ pub async fn serve_messages(
             }
             Some(Incoming::Message(line)) => line,
         };
-        if let Some(reply) = handle(&mut ctx, &line).await
+        // La révocation d'un jeton coupe aussi un appel en cours (audit R13).
+        let reply = tokio::select! {
+            reply = handle(&mut ctx, &line) => reply,
+            () = async { revoked.as_mut().expect("suivi").await }, if revoked.is_some() => break,
+        };
+        if let Some(reply) = reply
             && out.send(reply.to_string()).await.is_err()
         {
             break;
@@ -267,11 +272,17 @@ async fn write_all<W: AsyncWrite + Unpin>(mut writer: W, mut outgoing: mpsc::Rec
 /// Un message reçu : requête, notification ou lot (SPEC §6.1). Renvoie la réponse à
 /// écrire, s'il y en a une.
 async fn handle(ctx: &mut Ctx, line: &[u8]) -> Option<Value> {
-    let text = String::from_utf8_lossy(line);
+    // UTF-8 invalide : refusé comme illisible, jamais corrigé en silence (audit R11).
+    let Ok(text) = std::str::from_utf8(line) else {
+        return Some(response(
+            &Value::Null,
+            Err(RpcError::parse("UTF-8 invalide")),
+        ));
+    };
     if text.trim().is_empty() {
         return None;
     }
-    let message: Value = match serde_json::from_str(&text) {
+    let message: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => return Some(response(&Value::Null, Err(RpcError::parse(e.to_string())))),
     };
@@ -319,9 +330,17 @@ async fn one(ctx: &mut Ctx, message: Value) -> Option<Value> {
             let params = fields.remove("params").unwrap_or(Value::Null);
             methods::call(ctx, &method, params).await
         }
-        _ => Err(RpcError::invalid_request(
-            "jsonrpc « 2.0 », method et id valides attendus",
-        )),
+        // Requête invalide : toujours une réponse, `id` à `null` s'il manque ou ne se lit
+        // pas (JSON-RPC 2.0, §5 ; audit R8 : sans `id`, elle restait sans réponse).
+        _ => {
+            let id = if valid_id { reply_id } else { Value::Null };
+            return Some(response(
+                &id,
+                Err(RpcError::invalid_request(
+                    "jsonrpc « 2.0 », method et id valides attendus",
+                )),
+            ));
+        }
     };
     // Une notification du client ne reçoit pas de réponse, même en erreur.
     id.is_some().then(|| response(&reply_id, result))
@@ -341,10 +360,23 @@ async fn forward(
     loop {
         let message = tokio::select! {
             event = events.recv() => match event {
-                Ok(event) => match describe(&engine, event, topics, &mut progress).await {
+                Ok(event) => {
+                    // Le dernier avancement d'une tâche part avant son changement d'état,
+                    // sinon une pause gardait l'avancement d'avant, ou une fin le perdait
+                    // (audit R4). Révision juste antérieure : la page ne l'écarte pas.
+                    if let Event::StateChanged { rev, task_id, .. } = &event
+                        && topics.progress
+                        && progress.has(task_id)
+                        && let Some(early) = progress.flush(rev.saturating_sub(1))
+                        && out.send(early.to_string()).await.is_err()
+                    {
+                        break;
+                    }
+                    match describe(&engine, event, topics, &mut progress).await {
                     Some(message) => message,
                     None => continue,
-                },
+                    }
+                }
                 Err(broadcast::error::RecvError::Lagged(lost)) => notification(
                     "engine.warning",
                     json!({
@@ -674,6 +706,11 @@ struct ProgressBatch {
 }
 
 impl ProgressBatch {
+    /// Un avancement de cette tâche attend l'envoi.
+    fn has(&self, task_id: &str) -> bool {
+        self.latest.contains_key(task_id)
+    }
+
     fn forget(&mut self, task_id: &str) {
         self.latest.remove(task_id);
         self.sent.remove(task_id);
