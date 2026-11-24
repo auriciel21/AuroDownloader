@@ -2319,13 +2319,14 @@ impl Engine {
         }
     }
 
-    /// Ouvre une session de navigateur pour ce jeton ; rend la valeur du cookie.
-    pub async fn open_session(&self, token_id: &str) -> Result<String, EngineError> {
+    /// Ouvre une session de navigateur pour ce jeton, valable `ttl_ms` ; rend la valeur du
+    /// cookie.
+    pub async fn open_session(&self, token_id: &str, ttl_ms: i64) -> Result<String, EngineError> {
         let secret = crate::remote::new_secret();
         let op = crate::remote::TokenOp::OpenSession {
             digest: crate::remote::digest(&secret),
             token_id: token_id.to_owned(),
-            expires_at: store::now_ms() + crate::remote::SESSION_TTL_MS,
+            expires_at: store::now_ms() + ttl_ms,
         };
         self.token_op(op).await?;
         Ok(secret)

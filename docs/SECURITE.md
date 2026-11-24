@@ -36,7 +36,7 @@ compte de l'utilisateur. Ils ont de toute façon tous ses droits.
 | Point | Ce qui est fait | Vérifié par |
 |---|---|---|
 | Jetons | 32 octets de l'aléa du système ; seule leur empreinte SHA-256 est en base ; rendus une seule fois ; jamais la portée `admin` | `remote::tests`, `store::remote::tests` |
-| Sessions | Cookie aléatoire (empreinte en base), `HttpOnly`, `SameSite=Strict`, `Secure` en TLS, 30 jours ; supprimé avec son jeton | `server_tests` |
+| Sessions | Cookie aléatoire (empreinte en base), `HttpOnly`, `SameSite=Strict`, `Secure` en TLS, 30 jours (12 heures sans TLS, D13) ; supprimé avec son jeton | `server_tests` |
 | Révocation | Ferme aussitôt les connexions en cours du jeton (WebSocket compris), même après des événements perdus | `rpc::tests` (jeton révoqué) |
 | Authentification | `Bearer` partout ; cookie seulement pour le WebSocket, `/session` et `/logout`, avec un `Origin` de même origine ; jamais pour `POST /rpc` (CSRF) | `server_tests` |
 | `Host` | Adresse IP écrite telle quelle, ou nom connu, avec le bon port (DNS rebinding) | `server_tests`, fuzzing |
@@ -246,6 +246,15 @@ Constats de sécurité de l'audit, corrigés avec un test qui échouait avant le
   NAT64 local `64:ff9b:1::/48` est toujours refusé ; D11 : un cookie `Secure` ne repart
   qu'en HTTPS, une date `Expires` passée l'efface ; D12 : la réponse d'`auro.fetch` est
   bornée à 12 Mio une fois encodée.
+- **D13, session sans TLS (lot 5e, 2026-11-24).** Sans TLS, l'écoute ne s'ouvre que sur
+  la boucle locale, mais le cookie de session, en clair, part vers tout port de l'hôte :
+  un autre service local pouvait le recevoir. La session y dure 12 heures au lieu de
+  30 jours, en base comme dans `Max-Age`. Test étendu :
+  `a_browser_session_opens_the_websocket_from_its_own_origin_only` (et 30 jours en TLS :
+  `the_network_listener_serves_tls_with_its_certificate`).
+- **D14, chargement d'un plugin.** La lecture du fichier et le contrôle de son empreinte
+  se font hors des fils de l'exécuteur (`spawn_blocking`) ; le contrôle lui-même est
+  inchangé (sans test dédié : les tests des plugins couvrent fichier absent et modifié).
 
 ## 5. Vérifications
 

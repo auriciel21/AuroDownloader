@@ -692,14 +692,16 @@ async fn login(
         }
         Err(_) => return plain(StatusCode::SERVICE_UNAVAILABLE, "moteur indisponible"),
     };
-    let Ok(cookie) = shared.engine.open_session(&row.id).await else {
+    // Sans TLS, cookie en clair envoyé à tout port de l'hôte : session courte (D13).
+    let ttl_ms = super::session_ttl_ms(shared.scheme == "https");
+    let Ok(cookie) = shared.engine.open_session(&row.id, ttl_ms).await else {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "moteur indisponible");
     };
     let mut reply = json_reply(
         StatusCode::OK,
         json!({"name": row.name, "scope": row.scope}).to_string(),
     );
-    let max_age = super::SESSION_TTL_MS / 1000;
+    let max_age = ttl_ms / 1000;
     let value = format!(
         "{COOKIE}={cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{}",
         shared.secure_flag()

@@ -35,8 +35,21 @@ pub const TOKEN_PREFIX: &str = "auro_";
 /// Octets aléatoires d'un jeton ou d'une session.
 const SECRET_BYTES: usize = 32;
 
-/// Durée d'une session de navigateur (SPEC §7.19) : 30 jours.
+/// Durée d'une session de navigateur servie en TLS (SPEC §7.19) : 30 jours.
 pub const SESSION_TTL_MS: i64 = 30 * 24 * 3600 * 1000;
+
+/// Durée d'une session servie sans TLS (boucle locale seulement) : 12 heures. Son cookie,
+/// en clair, part vers tout port de l'hôte (audit D13, décision du 2026-11-24).
+pub const SESSION_TTL_PLAIN_MS: i64 = 12 * 3600 * 1000;
+
+/// Durée d'une session selon que le serveur parle TLS ou non.
+pub fn session_ttl_ms(tls: bool) -> i64 {
+    if tls {
+        SESSION_TTL_MS
+    } else {
+        SESSION_TTL_PLAIN_MS
+    }
+}
 
 /// Un nouveau secret : `auro_` suivi de 32 octets aléatoires en base64url (43 caractères).
 pub fn new_secret() -> String {

@@ -58,6 +58,18 @@ pub fn digest_of(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Le fichier `path` du plugin `id`, seulement s'il a l'empreinte `digest` (fil bloquant).
+fn load_checked(path: &Path, digest: &str, id: &str) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|_| format!("fichier du plugin {id} introuvable : le réinstaller"))?;
+    if digest_of(&bytes) != digest {
+        return Err(format!(
+            "fichier du plugin {id} modifié depuis son installation : le réinstaller"
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Lit et vérifie un fichier de plugin : manifeste, puis WebAssembly servable (imports et
 /// exports de l'interface). Calcul court (compilation par wasmi), sans réseau.
 pub fn inspect(bytes: &[u8]) -> Result<Inspected, String> {
@@ -247,17 +259,14 @@ impl Plugins {
         let _ = std::fs::remove_file(self.file(digest));
     }
 
-    /// Le fichier d'un plugin installé, son empreinte revérifiée.
-    pub fn load(&self, row: &PluginRow) -> Result<Vec<u8>, String> {
-        let bytes = std::fs::read(self.file(&row.digest))
-            .map_err(|_| format!("fichier du plugin {} introuvable : le réinstaller", row.id))?;
-        if digest_of(&bytes) != row.digest {
-            return Err(format!(
-                "fichier du plugin {} modifié depuis son installation : le réinstaller",
-                row.id
-            ));
-        }
-        Ok(bytes)
+    /// Le fichier d'un plugin installé, son empreinte revérifiée, lu hors de l'exécuteur :
+    /// lecture et calcul de quelques Mio ne bloquent pas ses fils (audit D14).
+    pub async fn load(&self, row: &PluginRow) -> Result<Vec<u8>, String> {
+        let path = self.file(&row.digest);
+        let (digest, id) = (row.digest.clone(), row.id.clone());
+        tokio::task::spawn_blocking(move || load_checked(&path, &digest, &id))
+            .await
+            .map_err(|_| format!("lecture du plugin {} interrompue", row.id))?
     }
 
     /// Impose l'adresse d'un nom aux requêtes des plugins (tests : serveur local).
@@ -295,7 +304,7 @@ impl Plugins {
 
     /// Lance le plugin `row` sur la page `page`, dans le bac à sable.
     pub async fn run(&self, row: &PluginRow, page: &str) -> Result<Resolution, String> {
-        let bytes = self.load(row)?;
+        let bytes = self.load(row).await?;
         let http = self.http()?;
         let _permit = self
             .slots

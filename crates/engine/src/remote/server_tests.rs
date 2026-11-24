@@ -357,6 +357,19 @@ async fn a_browser_session_opens_the_websocket_from_its_own_origin_only() {
     );
     let session = set_cookie.split(';').next().unwrap().trim().to_owned();
     assert!(session.starts_with(&format!("{COOKIE}=auro_")), "{session}");
+    // Sans TLS, la session ne dure que 12 heures, dans le cookie comme en base (D13).
+    assert!(set_cookie.contains("; Max-Age=43200"), "{set_cookie}");
+    let expires: i64 = rusqlite::Connection::open(dir.path().join("auro.db"))
+        .unwrap()
+        .query_row("SELECT MAX(expires_at) FROM remote_sessions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let left = expires - crate::store::now_ms();
+    assert!(
+        left <= 12 * 3600 * 1000 && left > 11 * 3600 * 1000,
+        "{left}"
+    );
 
     // Cookie sans `Origin`, ou d'une autre origine : refusé (CSWSH).
     let status = refused_with(websocket(addr, &[("Cookie", session.as_str())]).await);
@@ -681,6 +694,8 @@ async fn the_network_listener_serves_tls_with_its_certificate() {
     assert_eq!(answer.status, 200, "{}", answer.body);
     let set_cookie = answer.header("Set-Cookie").unwrap();
     assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    // En TLS, la session dure 30 jours (D13).
+    assert!(set_cookie.contains("; Max-Age=2592000"), "{set_cookie}");
     let session = set_cookie.split(';').next().unwrap().to_owned();
 
     // WebSocket chiffré, ouvert par le cookie depuis la page.

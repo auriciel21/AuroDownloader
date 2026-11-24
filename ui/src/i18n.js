@@ -750,8 +750,8 @@ export const EN = {
   "Sous-dossier refusé : « . » et « .. » ne sont pas permis.":
     "Subfolder refused: “.” and “..” are not allowed.",
   "Connexion à AuroDownloader": "Sign in to AuroDownloader",
-  "Collez un jeton créé sur la machine du moteur (Options du bureau, ou auro token create). Il n'est envoyé qu'une fois, puis ce navigateur garde une session de 30 jours.":
-    "Paste a token created on the engine's machine (desktop Options, or auro token create). It is sent only once; this browser then keeps a 30-day session.",
+  "Collez un jeton créé sur la machine du moteur (Options du bureau, ou auro token create). Il n'est envoyé qu'une fois, puis ce navigateur garde une session : 30 jours en HTTPS, 12 heures sinon.":
+    "Paste a token created on the engine's machine (desktop Options, or auro token create). It is sent only once; this browser then keeps a session: 30 days over HTTPS, 12 hours otherwise.",
   "Jeton": "Token",
   "Se connecter": "Sign in",
   "Jeton inconnu du moteur, ou révoqué.": "Token unknown to the engine, or revoked.",
