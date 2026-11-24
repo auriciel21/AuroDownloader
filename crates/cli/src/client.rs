@@ -94,7 +94,10 @@ impl Rpc {
         self.writer.flush().await?;
         loop {
             let message = self.read().await?;
-            if message.get("id") != Some(&json!(id)) {
+            // Une erreur sans identifiant (`id` nul) : le moteur n'a pas pu lire la requête,
+            // qui n'aura jamais de réponse ; une seule requête attend à la fois (audit C13).
+            let unread = message.get("id").is_some_and(Value::is_null);
+            if message.get("id") != Some(&json!(id)) && !unread {
                 self.pending.push_back(message);
                 continue;
             }
@@ -107,6 +110,10 @@ impl Rpc {
                     message: error["message"].as_str().unwrap_or("erreur").to_owned(),
                 }
                 .into());
+            }
+            if unread {
+                self.pending.push_back(message);
+                continue;
             }
             return Ok(message["result"].clone());
         }
@@ -160,6 +167,18 @@ pub async fn connect(target: &Target) -> Result<Rpc> {
     wait_for(&target.endpoint).await
 }
 
+/// Un `aurod` démarré sur un point d'accès d'essai exige sa base : sans elle, il refuse de
+/// démarrer, et l'attendre ne mènerait qu'à « ne répond pas » au bout de 10 s (audit C7).
+pub fn check_start(endpoint: &str, db: Option<&Path>) -> Result<()> {
+    if db.is_none() && endpoint != auro_engine::paths::default_endpoint() {
+        bail!(
+            "un point d'accès d'essai se démarre avec sa base : « auro --endpoint {endpoint} \
+             engine start --db <base> »"
+        );
+    }
+    Ok(())
+}
+
 /// Attend que le moteur réponde, dix secondes au plus.
 pub async fn wait_for(endpoint: &str) -> Result<Rpc> {
     wait_for_session(endpoint, &Session::CLI).await
@@ -185,4 +204,42 @@ pub async fn wait_for_session(endpoint: &str, session: &Session) -> Result<Rpc> 
 /// Lance `aurod` détaché (`auro_engine::launch`, commun avec l'application de bureau).
 pub fn start_daemon(endpoint: &str, db: Option<&Path>, ca_cert: Option<&Path>) -> Result<()> {
     Ok(launch::start_daemon(endpoint, db, ca_cert)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncBufReadExt;
+
+    /// Audit C13 : une requête que le moteur n'a pas pu lire reçoit une erreur à `id` nul ;
+    /// l'appel la rend au lieu d'attendre pour toujours.
+    #[tokio::test]
+    async fn an_error_without_id_ends_the_call() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(client);
+        let mut rpc = Rpc::new((Box::new(read), Box::new(write)));
+        let (server_read, mut server_write) = tokio::io::split(server);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let _request = lines.next_line().await.unwrap();
+            let refusal = json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {"code": -32600, "message": "requête illisible",
+                          "data": {"code": "INVALID_REQUEST"}},
+            });
+            server_write
+                .write_all(format!("{refusal}\n").as_bytes())
+                .await
+                .unwrap();
+            // Connexion gardée ouverte : sans le correctif, l'appel attendrait.
+            std::future::pending::<()>().await;
+        });
+        let answer = tokio::time::timeout(Duration::from_secs(5), rpc.call("task.list", json!({})))
+            .await
+            .expect("l'appel ne doit pas attendre pour toujours");
+        let refused = answer.unwrap_err();
+        let refused = refused.downcast_ref::<EngineRefused>().unwrap();
+        assert_eq!(refused.code, "INVALID_REQUEST");
+    }
 }

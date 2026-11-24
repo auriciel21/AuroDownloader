@@ -106,13 +106,26 @@ fn metalink_of(arg: &str) -> Result<Option<Value>> {
     Ok(Some(json!({"data": encoded})))
 }
 
-/// Ajoute les fichiers d'un Metalink (`metalink.add`) : une tâche par fichier ; rend
-/// l'identifiant et le chemin de chacune. Un fichier refusé est signalé, les autres restent.
+/// Fichiers d'un Metalink ajoutés : identifiant et chemin de chaque tâche, et nombre de
+/// fichiers refusés (déjà signalés un par un).
+struct MetalinkAdded {
+    tasks: Vec<(String, String)>,
+    refused: usize,
+}
+
+/// Erreur de fin d'une commande qui a ajouté le reste d'un Metalink (code de sortie 1,
+/// audit C12).
+fn refused_files(refused: usize) -> anyhow::Error {
+    anyhow::anyhow!("{refused} fichier(s) du Metalink refusé(s) ; les autres sont ajoutés")
+}
+
+/// Ajoute les fichiers d'un Metalink (`metalink.add`) : une tâche par fichier. Un fichier
+/// refusé est signalé, les autres restent.
 async fn add_metalink(
     rpc: &mut Rpc,
     mut params: Value,
     opts: &AddOptions<'_>,
-) -> Result<Vec<(String, String)>> {
+) -> Result<MetalinkAdded> {
     if opts.checksum.is_some() || !opts.mirrors.is_empty() || !opts.headers.is_empty() {
         bail!(
             "--checksum, --mirror et --header ne valent pas pour un Metalink : il donne lui-même \
@@ -155,7 +168,10 @@ async fn add_metalink(
     if tasks.is_empty() {
         bail!("aucun fichier du Metalink n'a été ajouté");
     }
-    Ok(tasks)
+    Ok(MetalinkAdded {
+        tasks,
+        refused: errors.len(),
+    })
 }
 
 /// Contenu d'un Metalink (`auro metalink`) : rang, chemin, taille, empreinte et sources de
@@ -281,19 +297,28 @@ fn tools_hint(e: anyhow::Error) -> anyhow::Error {
 }
 
 pub async fn add(rpc: &mut Rpc, urls: &[String], opts: &AddOptions<'_>) -> Result<()> {
+    let mut refused = 0;
     for url in urls {
         // Un Metalink : une tâche par fichier (SPEC §7.7).
         if let Some(source) = metalink_of(url)? {
-            for (id, path) in add_metalink(rpc, source, opts).await? {
+            let added = add_metalink(rpc, source, opts).await?;
+            for (id, path) in added.tasks {
                 println!("{id}  {path}");
             }
+            refused += added.refused;
             continue;
         }
         if opts.select.is_some() {
-            bail!("--select : seulement pour un fichier Metalink ({url})");
+            bail!(
+                "--select : seulement pour un fichier Metalink ({})",
+                shown(url)
+            );
         }
         let id = add_one(rpc, url, opts).await?;
-        println!("{id}  {url}");
+        println!("{id}  {}", shown(url));
+    }
+    if refused > 0 {
+        return Err(refused_files(refused));
     }
     Ok(())
 }
@@ -340,7 +365,7 @@ async fn add_video(rpc: &mut Rpc, page: &str, opts: &VideoOptions<'_>) -> Result
 pub async fn video_add(rpc: &mut Rpc, pages: &[String], opts: &VideoOptions<'_>) -> Result<()> {
     for page in pages {
         let id = add_video(rpc, page, opts).await?;
-        println!("{id}  {page}");
+        println!("{id}  {}", shown(page));
     }
     Ok(())
 }
@@ -357,19 +382,27 @@ pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
     // Abonné avant l'ajout : aucun événement de la tâche ne peut manquer. Seule la tâche
     // ajoutée est suivie.
     let mut follow = Follow::start(&mut rpc, Some(HashSet::new())).await?;
+    let mut refused = 0;
     let ids = match new {
         // Un Metalink : ses fichiers, suivis ensemble (SPEC §7.7).
         NewTask::File(url, opts) => match metalink_of(url)? {
-            Some(source) => add_metalink(&mut rpc, source, opts)
-                .await?
-                .into_iter()
-                .map(|(id, path)| {
-                    println!("Tâche {id}  {path}");
-                    id
-                })
-                .collect(),
+            Some(source) => {
+                let added = add_metalink(&mut rpc, source, opts).await?;
+                refused = added.refused;
+                added
+                    .tasks
+                    .into_iter()
+                    .map(|(id, path)| {
+                        println!("Tâche {id}  {path}");
+                        id
+                    })
+                    .collect()
+            }
             None if opts.select.is_some() => {
-                bail!("--select : seulement pour un fichier Metalink ({url})")
+                bail!(
+                    "--select : seulement pour un fichier Metalink ({})",
+                    shown(url)
+                )
             }
             None => {
                 let id = add_one(&mut rpc, url, opts).await?;
@@ -397,7 +430,18 @@ pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
             first_error.get_or_insert(e);
         }
     }
-    first_error.map_or(Ok(()), Err)
+    // Codes de sortie (audit C12) : une tâche en échec, puis des fichiers refusés (1) ;
+    // sinon un Ctrl-C (130).
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+    if refused > 0 {
+        return Err(refused_files(refused));
+    }
+    if follow.interrupted {
+        return Err(Interrupted.into());
+    }
+    Ok(())
 }
 
 /// Bilan d'une tâche suivie jusqu'à son arrêt.
@@ -546,11 +590,24 @@ pub async fn act(rpc: &mut Rpc, method: &str, ids: &[String], extra: Value) -> R
 pub async fn watch(rpc: &mut Rpc, ids: &[String]) -> Result<()> {
     let only = (!ids.is_empty()).then(|| ids.iter().cloned().collect());
     let mut follow = Follow::start(rpc, only).await?;
+    // Un identifiant inconnu ne s'arrêterait jamais (audit C9).
+    let unknown: Vec<&str> = ids
+        .iter()
+        .filter(|id| !follow.tasks.contains_key(*id))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        bail!("tâche inconnue : {}", unknown.join(", "));
+    }
     if follow.targets.is_empty() {
         println!("Aucune tâche en cours.");
         return Ok(());
     }
-    follow.run(rpc, false).await
+    follow.run(rpc, false).await?;
+    if follow.interrupted {
+        return Err(Interrupted.into());
+    }
+    Ok(())
 }
 
 /// Une file, sur une ligne.
@@ -890,6 +947,28 @@ pub async fn status(rpc: &mut Rpc, endpoint: &str) -> Result<()> {
     Ok(())
 }
 
+/// Suivi arrêté par Ctrl-C : la commande sort avec le code 130 (audit C12), sans autre
+/// message que ceux du suivi.
+#[derive(Debug)]
+pub struct Interrupted;
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("interrompu")
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
+/// Une adresse telle qu'affichée : sans nom ni mot de passe (`ftp://moi:secret@…`, audit
+/// C11) ; une adresse illisible reste telle quelle, le moteur la refusera.
+pub fn shown(url: &str) -> String {
+    match auro_engine::net::ftp::split_credentials(url) {
+        Ok((clean, Some(_))) => clean,
+        _ => url.to_owned(),
+    }
+}
+
 /// Une tâche suivie.
 struct Followed {
     name: String,
@@ -910,6 +989,8 @@ struct Follow {
     rev: u64,
     tasks: BTreeMap<String, Followed>,
     status: Status,
+    /// Ctrl-C reçu pendant le suivi.
+    interrupted: bool,
 }
 
 /// Tâche qui n'a pas fini de recevoir : la fusion d'une vidéo (`post_processing`) en fait
@@ -935,15 +1016,31 @@ impl Follow {
             rev: 0,
             tasks: BTreeMap::new(),
             status: Status::new(),
+            interrupted: false,
         };
         follow.refresh(rpc).await?;
         Ok(follow)
     }
 
-    /// Repart d'un instantané complet.
+    /// Repart d'un instantané complet ; une tâche qui n'y est plus a été retirée.
     async fn refresh(&mut self, rpc: &mut Rpc) -> Result<()> {
         let snapshot = rpc.call("sync.snapshot", json!({})).await?;
         self.rev = snapshot["rev"].as_u64().unwrap_or(0);
+        let present: HashSet<&str> = snapshot["tasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["taskId"].as_str())
+            .collect();
+        let gone: Vec<String> = self
+            .tasks
+            .keys()
+            .filter(|id| !present.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in gone {
+            self.forget(&id);
+        }
         for t in snapshot["tasks"].as_array().into_iter().flatten() {
             let id = t["taskId"].as_str().unwrap_or_default().to_owned();
             let state = t["state"].as_str().unwrap_or_default().to_owned();
@@ -963,6 +1060,18 @@ impl Follow {
             entry.state = state;
         }
         Ok(())
+    }
+
+    /// Une tâche retirée : plus suivie, et dit si elle l'était (audit C9).
+    fn forget(&mut self, id: &str) {
+        let Some(task) = self.tasks.remove(id) else {
+            return;
+        };
+        if self.targets.remove(id) {
+            self.render();
+            self.status.finish();
+            eprintln!("{} : retirée", task.name);
+        }
     }
 
     fn done(&self) -> bool {
@@ -1010,6 +1119,7 @@ impl Follow {
                 _ = tokio::signal::ctrl_c() => None,
             };
             let Some((method, params)) = event else {
+                self.interrupted = true;
                 if !pause_on_interrupt || interrupted {
                     break;
                 }
@@ -1054,6 +1164,10 @@ impl Follow {
                             eprintln!("{name} : {to}");
                         }
                     }
+                }
+                "task.removed" if rev > self.rev => {
+                    let id = params["taskId"].as_str().unwrap_or_default().to_owned();
+                    self.forget(&id);
                 }
                 // Préparation : le nom du fichier, ou le titre d'une vidéo.
                 "task.updated" if rev > self.rev => {

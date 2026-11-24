@@ -42,6 +42,13 @@ auro diagnostic --save diag.zip
 auro engine stop
 ```
 
+## Exit codes
+
+`auro` returns 0 when everything is done, 1 after an error or when part of the request
+was refused (for instance one file of a Metalink, the others being added), 2 for a
+mistyped command, and 130 when Ctrl-C stops a follow-up (`get` then pauses its tasks).
+A displayed address never shows its password.
+
 ## The engine alone
 
 `aurod` is the engine, without a window. For a server or a NAS, it runs on its own, and is

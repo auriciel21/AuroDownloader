@@ -221,6 +221,8 @@ auro history [text] [--csv]
 auro config ; auro config torrent.ratioLimit 1.5
 auro diagnostic --save diag.zip
 auro engine stop</code></pre>
+<h3 id="guide-12-command-line-exit-codes" tabindex="-1">Exit codes</h3>
+<p><code>auro</code> returns 0 when everything is done, 1 after an error or when part of the request was refused (for instance one file of a Metalink, the others being added), 2 for a mistyped command, and 130 when Ctrl-C stops a follow-up (<code>get</code> then pauses its tasks). A displayed address never shows its password.</p>
 <h3 id="guide-12-command-line-the-engine-alone" tabindex="-1">The engine alone</h3>
 <p><code>aurod</code> is the engine, without a window. For a server or a NAS, it runs on its own, and is used through <code>auro</code> or through <a href="#guide-11-remote-access">remote access</a>.</p>
 </section>

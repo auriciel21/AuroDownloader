@@ -108,12 +108,18 @@ impl Host {
     }
 
     /// Arrête le moteur : ses tâches sont enregistrées, en pause, et reprendront au
-    /// prochain démarrage (SPEC §7.4).
+    /// prochain démarrage (SPEC §7.4). Rend la main base fermée et verrou rendu : un
+    /// moteur redémarré aussitôt dans le processus l'ouvre (vu par la campagne du
+    /// 2026-11-24 : « base déjà ouverte par un autre moteur »).
     pub fn stop(mut self) {
         if let Some(runtime) = self.runtime.take() {
             let engine = self.engine.clone();
             runtime.block_on(async {
-                let _ = tokio::time::timeout(SHUTDOWN, engine.shutdown()).await;
+                let stopped = async {
+                    engine.shutdown().await;
+                    engine.stopped().await;
+                };
+                let _ = tokio::time::timeout(SHUTDOWN, stopped).await;
             });
             runtime.shutdown_timeout(Duration::from_secs(2));
         }

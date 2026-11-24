@@ -961,3 +961,143 @@ async fn plugins_are_shown_installed_used_and_removed() {
     );
     auro_engine::testing::stop(&engine).await;
 }
+
+/// Audit C7, C9, C11, C12 : refus immédiats, adresse affichée sans mot de passe, tâche
+/// retirée pendant le suivi, codes de sortie.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refusals_addresses_and_exit_codes() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use auro_engine::testing::{FileSite, serve_file};
+    let dir = tempfile::tempdir().unwrap();
+
+    // C7 : un point d'accès d'essai sans base est refusé tout de suite, sans attendre
+    // `aurod` (qui refuserait de démarrer).
+    let lonely = endpoint(dir.path(), "sans-base");
+    let started = Instant::now();
+    let out = auro(&lonely, &["engine", "start"]).await;
+    let (_, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("engine start --db <base>"), "{stderr}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+
+    let (engine, ep) = serve(dir.path(), "codes", Options::default()).await;
+    let dest = dir.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    let dest = dest.to_str().unwrap();
+
+    // C9 : un identifiant inconnu est refusé au lieu d'être attendu pour toujours.
+    let (status, stderr) = ended(watcher(&ep, "inconnue")).await;
+    assert_eq!(status, Some(1), "{stderr}");
+    assert!(stderr.contains("tâche inconnue : inconnue"), "{stderr}");
+
+    // C11 : le mot de passe d'une adresse n'est jamais affiché.
+    let added = ok(
+        &ep,
+        &[
+            "add",
+            "ftp://moi:secret@127.0.0.1:9/f.bin",
+            "-o",
+            dest,
+            "--paused",
+        ],
+    )
+    .await;
+    assert!(!added.contains("secret"), "{added}");
+    assert!(added.contains("ftp://127.0.0.1:9/f.bin"), "{added}");
+
+    // C12 : un Metalink en partie refusé ajoute le reste, et sort en échec (1).
+    let site = serve_file(Arc::new(Mutex::new(FileSite::new(1000))));
+    std::fs::write(Path::new(dest).join("pris"), b"un fichier, pas un dossier").unwrap();
+    let doc = format!(
+        r#"<?xml version="1.0"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="a.bin"><url>{}</url></file>
+  <file name="pris/b.bin"><url>{}</url></file>
+</metalink>"#,
+        site.url("/a.bin"),
+        site.url("/b.bin"),
+    );
+    let file = dir.path().join("part.meta4");
+    std::fs::write(&file, doc).unwrap();
+    let out = auro(
+        &ep,
+        &["add", file.to_str().unwrap(), "-o", dest, "--paused"],
+    )
+    .await;
+    let (stdout, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(stdout.contains("a.bin"), "{stdout}");
+    assert!(stderr.contains("refusé : pris/b.bin"), "{stderr}");
+    assert!(
+        stderr.contains("1 fichier(s) du Metalink refusé(s)"),
+        "{stderr}"
+    );
+
+    // Une tâche annulée pendant le suivi l'arrête normalement (code 0). Adresse
+    // injoignable : la tâche reste en cours (nouvelles tentatives).
+    let added = ok(&ep, &["add", "http://127.0.0.1:9/attente.bin", "-o", dest]).await;
+    let id = added.split_whitespace().next().unwrap().to_owned();
+    let watch = watcher(&ep, &id);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let cancelled = auro(&ep, &["cancel", &id]).await;
+    let (status, stderr) = ended(watch).await;
+    assert!(cancelled.status.success(), "{:?}", text(&cancelled));
+    assert_eq!(status, Some(0), "{stderr}");
+    assert!(stderr.contains("cancelled"), "{stderr}");
+
+    // C12 : Ctrl-C (SIGINT) pendant le suivi : code 130.
+    #[cfg(unix)]
+    {
+        let added = ok(&ep, &["add", "http://127.0.0.1:9/ctrl-c.bin", "-o", dest]).await;
+        let id = added.split_whitespace().next().unwrap().to_owned();
+        let child = watcher(&ep, &id);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let sent = std::process::Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let (status, stderr) = ended(child).await;
+        assert_eq!(status, Some(130), "{stderr}");
+    }
+    auro_engine::testing::stop(&engine).await;
+}
+
+/// `auro watch <id>` lancé à part, sa sortie d'erreur gardée.
+fn watcher(ep: &str, id: &str) -> std::process::Child {
+    std::process::Command::new(env!("CARGO_BIN_EXE_auro"))
+        .args(["--endpoint", ep, "--no-start", "watch", id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// Code de sortie et sortie d'erreur d'un suivi ; jamais d'attente sans fin : au-delà de
+/// 20 s, il est tué (code absent) et le test échoue sur son code.
+async fn ended(mut child: std::process::Child) -> (Option<i32>, String) {
+    use std::io::Read;
+    let mut status = None;
+    for _ in 0..200 {
+        status = child.try_wait().unwrap();
+        if status.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    (status.and_then(|s| s.code()), stderr)
+}

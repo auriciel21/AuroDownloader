@@ -34,10 +34,17 @@ use crate::client::{self, EngineRefused, Rpc, Session};
 /// Nom de l'hôte déclaré aux navigateurs.
 pub const HOST_NAME: &str = "org.aurodownloader.relay";
 
-/// Plus long message accepté de l'extension : un `.torrent` de 16 Mio en base64 y tient
-/// (la limite d'un message du moteur, SPEC §6.3) ; le navigateur n'en enverrait pas plus
-/// de 64 Mio.
-pub const MAX_INCOMING: usize = 24 << 20;
+/// Plus long message accepté de l'extension : un `.torrent` de 16 Mio en base64 y tient ;
+/// le navigateur n'en enverrait pas plus de 64 Mio. Sous la limite d'un message du moteur
+/// (SPEC §6.3) d'une marge pour l'enveloppe de la requête qui le porte : à la même
+/// limite, un message accepté ici pouvait faire fermer la connexion au moteur (audit C13).
+pub const MAX_INCOMING: usize = auro_engine::rpc::MAX_MESSAGE - ENVELOPE;
+
+/// Place gardée pour l'enveloppe JSON-RPC (méthode, identifiant, autres champs).
+const ENVELOPE: usize = 64 << 10;
+
+// Un `.torrent` de 16 Mio, en base64 avec son message, tient toujours.
+const _: () = assert!(MAX_INCOMING >= (16 << 20) * 4 / 3 + 4096);
 
 /// Plus long message que le navigateur accepte de l'hôte (Chrome, Firefox).
 pub const MAX_OUTGOING: usize = 1 << 20;

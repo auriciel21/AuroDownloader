@@ -43,6 +43,13 @@ auro diagnostic --save diag.zip
 auro engine stop
 ```
 
+## Codes de sortie
+
+`auro` rend 0 quand tout est fait, 1 après une erreur ou quand une partie a été refusée
+(par exemple un fichier d'un Metalink, les autres étant ajoutés), 2 pour une commande
+mal écrite, et 130 quand Ctrl-C arrête un suivi (`get` met alors ses tâches en pause).
+Une adresse affichée ne montre jamais son mot de passe.
+
 ## Le moteur seul
 
 `aurod` est le moteur, sans fenêtre. Pour un serveur ou un NAS, il se lance seul, et l'on

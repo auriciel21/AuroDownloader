@@ -913,7 +913,21 @@ enum DirectAction {
     List,
 }
 
-fn main() -> Result<()> {
+/// Codes de sortie (audit C12) : 0 tout fait ; 1 erreur, ou une partie refusée ; 2 usage
+/// (clap) ; 130 suivi arrêté par Ctrl-C.
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) if e.is::<remote::Interrupted>() => std::process::ExitCode::from(130),
+        Err(e) => {
+            // Même forme que `main` qui rend un `Result` : la chaîne des causes.
+            eprintln!("Error: {e:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let target = Target {
         endpoint: cli.endpoint.clone().unwrap_or_else(paths::endpoint),
@@ -1415,6 +1429,7 @@ async fn engine(action: EngineAction, target: &Target) -> Result<()> {
                 println!("Le moteur tourne déjà sur {endpoint}.");
                 return Ok(());
             }
+            client::check_start(endpoint, db.as_deref())?;
             client::start_daemon(endpoint, db.as_deref(), target.ca_cert.as_deref())?;
             client::wait_for(endpoint).await?;
             println!("Moteur démarré sur {endpoint}.");
