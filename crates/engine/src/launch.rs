@@ -40,14 +40,7 @@ pub fn start_daemon(endpoint: &str, db: Option<&Path>, ca_cert: Option<&Path>) -
             .and_then(|db| db.parent().map(Path::to_path_buf)),
         None => paths::data_dir(),
     };
-    let log = log_dir.and_then(|dir| {
-        std::fs::create_dir_all(&dir).ok()?;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("aurod.log"))
-            .ok()
-    });
+    let log = log_dir.and_then(|dir| open_log(&dir));
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -89,6 +82,25 @@ pub fn start_daemon(endpoint: &str, db: Option<&Path>, ca_cert: Option<&Path>) -
     })
 }
 
+/// Taille au-delà de laquelle `aurod.log` passe en `aurod.log.1` à un lancement.
+const LOG_MAX: u64 = 1 << 20;
+
+/// `aurod.log` de `dir`, ouvert en ajout ; trop gros, il devient `aurod.log.1` (l'ancien
+/// effacé) et un neuf commence : relancé sans fin, `aurod` ne remplit plus le disque
+/// (audit C8). Il ne reçoit que les erreurs de démarrage ; les journaux sont dans `logs/`.
+fn open_log(dir: &Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(dir).ok()?;
+    let path = dir.join("aurod.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
+        let _ = std::fs::rename(&path, dir.join("aurod.log.1"));
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 /// Rend non héritables les entrée et sorties de ce processus. Sinon `aurod`, qui vit
 /// plus longtemps que lui, en garde une copie : un programme qui lit la sortie de la CLI
 /// (tube de PowerShell, script) attendrait sa fin indéfiniment.
@@ -107,5 +119,29 @@ fn keep_own_handles() {
                 SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    #[test]
+    fn a_large_log_is_set_aside_at_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("aurod.log");
+        std::fs::write(&log, vec![b'a'; super::LOG_MAX as usize + 1]).unwrap();
+        std::fs::write(dir.path().join("aurod.log.1"), b"ancien").unwrap();
+        let mut file = super::open_log(dir.path()).unwrap();
+        file.write_all(b"neuf").unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(&log).unwrap(), b"neuf");
+        let kept = std::fs::read(dir.path().join("aurod.log.1")).unwrap();
+        assert_eq!(kept.len(), super::LOG_MAX as usize + 1);
+        // Petit, il est gardé et complété.
+        let mut file = super::open_log(dir.path()).unwrap();
+        file.write_all(b" et suite").unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(&log).unwrap(), b"neuf et suite");
     }
 }

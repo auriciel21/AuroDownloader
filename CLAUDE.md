@@ -248,7 +248,8 @@ téléchargement.
   l'utilisateur : la construire avec l'identifiant d'essai (`cargo tauri build --no-bundle
   --config tauri.essai.json`), qui a sa propre instance unique et ne se met jamais à jour
   (clé publique vide dans `tauri.essai.json`, même en installateur d'essai : sinon il
-  installerait la vraie version par-dessus). Ne jamais arrêter les
+  installerait la vraie version par-dessus). Depuis le 2026-11-24 (audit C23), elle refuse
+  de démarrer sans `--endpoint`, `--db` et `--prefs`. Ne jamais arrêter les
   processus `aurodownloader` ou `aurod` par leur nom : seulement ceux de `target\` ou du
   dossier d'essai (celui de l'utilisateur porte le même nom).
 - L'utilisateur se sert de l'application installée (depuis le 2026-11-07) : instance

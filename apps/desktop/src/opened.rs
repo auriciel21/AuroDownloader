@@ -9,6 +9,36 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use serde::Serialize;
 
+/// Fichiers que la page peut faire lire (`read_torrent`, `read_plugin`, `read_list`) :
+/// seulement ceux choisis par l'utilisateur dans un sélecteur ou reçus du système (audit
+/// C14). Une page détournée ne fait lire aucun autre fichier.
+#[derive(Default)]
+pub struct Granted(std::sync::Mutex<std::collections::HashSet<PathBuf>>);
+
+impl Granted {
+    pub fn grant(&self, path: impl Into<PathBuf>) {
+        self.0.lock().unwrap().insert(path.into());
+    }
+
+    /// Accorde les fichiers de ce qui a été ouvert avec l'application.
+    pub fn grant_opened(&self, opened: &[Opened]) {
+        for o in opened {
+            if let Opened::Torrent { path } | Opened::Metalink { path } = o {
+                self.grant(path);
+            }
+        }
+    }
+
+    /// Le chemin a été accordé, tel quel.
+    pub fn check(&self, path: &str) -> Result<(), String> {
+        if self.0.lock().unwrap().contains(Path::new(path)) {
+            Ok(())
+        } else {
+            Err("fichier non choisi par l'utilisateur : refusé".into())
+        }
+    }
+}
+
 /// Taille maximale d'un fichier `.torrent` lu pour le moteur : un garde-fou (le moteur a le
 /// sien).
 pub const MAX_TORRENT_FILE: u64 = 16 << 20;
@@ -210,6 +240,27 @@ pub fn read_list(path: &str) -> Result<ListFile, String> {
 
 #[cfg(test)]
 mod tests {
+    /// Audit C14 : seuls les fichiers choisis ou reçus peuvent être lus pour la page.
+    #[test]
+    fn only_granted_files_may_be_read() {
+        let granted = super::Granted::default();
+        assert!(granted.check("/etc/passwd").is_err());
+        assert!(granted.check(r"C:\Users\moi\secret.txt").is_err());
+        granted.grant("/home/moi/liste.txt");
+        assert!(granted.check("/home/moi/liste.txt").is_ok());
+        assert!(granted.check("/home/moi/autre.txt").is_err());
+        granted.grant_opened(&[
+            super::Opened::Torrent {
+                path: "/tmp/a.torrent".into(),
+            },
+            super::Opened::Magnet {
+                link: "magnet:?xt=urn:btih:00".into(),
+            },
+        ]);
+        assert!(granted.check("/tmp/a.torrent").is_ok());
+        assert!(granted.check("magnet:?xt=urn:btih:00").is_err());
+    }
+
     #[test]
     fn a_list_is_read_as_text_within_limits() {
         let dir = tempfile::tempdir().unwrap();

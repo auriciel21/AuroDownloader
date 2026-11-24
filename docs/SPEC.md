@@ -344,7 +344,10 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
     qui recule : refaite) ; l'heure est notée même en cas d'échec. Une version trouvée est
     proposée par la boîte « Nouvelle version » (notes de la publication montrées en texte,
     jamais en HTML), par-dessus les Options (« Rechercher maintenant ») ou à la fermeture de
-    la boîte ouverte ; « Installer et redémarrer » (NSIS en mode passif, AppImage) ou
+    la boîte ouverte ; « Installer et redémarrer » (NSIS en mode passif, AppImage : le
+    moteur lancé depuis l'ancienne image est arrêté après la vérification du paquet, et
+    l'application ne le relance pas avant son redémarrage, audit C6 ; un échec garde la
+    version proposée, audit C22) ou
     « Ouvrir la page de la version » (`.deb`). Avis du premier lancement, une fois, avec
     « Ne pas rechercher ». Type d'installation lu dans le binaire (`bundle_type` de Tauri) :
     une construction sans paquet (`cargo run`, variante d'essai) ne cherche jamais ; clé
@@ -1982,7 +1985,7 @@ Un gestionnaire de téléchargement écrit sur le disque des fichiers venus d'ai
 | Nom de fichier piégé | `Content-Disposition` contenant `../../` ou un nom réservé du système | Nettoyage du nom, résolution du chemin final, refus de tout chemin qui sort du dossier de destination |
 | Redirection dangereuse | Un lien HTTPS renvoie vers `file://` ou vers une adresse interne | Liste blanche de schémas, rétrogradation HTTPS vers HTTP signalée à l'utilisateur : par la CLI à la préparation, et depuis le 2026-11-23 notée dans la tâche (`tasks.insecure_redirect`, `insecureRedirect` de `task.get`) et annoncée par `engine.warning` `INSECURE_REDIRECT` (audit T11) |
 | Requêtes vers le réseau interne (SSRF) | Un client distant demande au moteur d'un NAS de récupérer une adresse du réseau local | Adresses privées, de boucle locale et de lien local refusées pour les jetons distants, sauf réglage explicite |
-| Fichier malveillant | Un exécutable téléchargé | Aucune ouverture ni exécution automatique ; avertissement sur les extensions exécutables ; commande externe (F-34) pour brancher un antivirus ; sous Windows, marque du Web sur chaque fichier reçu (flux `Zone.Identifier`, zone 3, sans l'adresse ; SmartScreen et le Mode protégé d'Office s'appliquent ; depuis le 2026-11-23, audit C3, décision de l'utilisateur) |
+| Fichier malveillant | Un exécutable téléchargé | Aucune ouverture ni exécution automatique ; avertissement sur les extensions exécutables ; le bureau n'ouvre jamais un programme, un script, un raccourci ni une image de disque (`.iso`, `.img`, `.vhd`, `.vhdx`, que Windows monte), il les montre dans leur dossier (`apps/desktop/src/files.rs`, liste complétée le 2026-11-24 d'après celles d'Outlook et de Windows, audit C5) ; commande externe (F-34) pour brancher un antivirus ; sous Windows, marque du Web sur chaque fichier reçu (flux `Zone.Identifier`, zone 3, sans l'adresse ; SmartScreen et le Mode protégé d'Office s'appliquent ; depuis le 2026-11-23, audit C3, décision de l'utilisateur) |
 | Fuite de secrets | Mot de passe ou cookie dans la base ou les journaux | Secrets dans le coffre du système, masqués dans les journaux, adresses réduites au nom d'hôte par défaut |
 | Plugin malveillant | Un plugin qui lit des fichiers ou envoie des données | Exécution dans un bac à sable, permissions déclarées (domaines réseau, dossiers) et acceptées par l'utilisateur |
 | Mise à jour compromise | Faux installateur, faux yt-dlp | Mises à jour signées : `latest.json` et chaque paquet vérifiés par le greffon de Tauri avec la clé publique de la construction (la clé privée n'est que chez l'utilisateur et dans un secret GitHub), adresses HTTPS seulement, rien d'installé sans accord ; exécutables Windows signés par SignPath quand il est configuré (facultatif, décision du 2026-11-18) ; yt-dlp téléchargé depuis la source du projet avec contrôle de l'empreinte qu'elle publie |

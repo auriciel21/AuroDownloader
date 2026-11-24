@@ -16,14 +16,16 @@
 //! `AURO_UPDATE_ENDPOINT` remplace l'adresse de `latest.json` ; la signature reste vérifiée
 //! avec la clé de la construction.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::utils::config::BundleType;
 use tauri::{AppHandle, Emitter, Manager, Runtime, Url};
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::bridge::{Bridge, Starts, Status as BridgeStatus};
 
 /// Publications du projet.
 pub const RELEASES: &str = "https://github.com/aurodownloader/aurodownloader/releases";
@@ -210,8 +212,10 @@ struct Progress {
 
 /// Installe la version trouvée, sur accord de l'utilisateur. Windows : l'installateur NSIS
 /// (mode passif) remplace l'application, qui se ferme ; ses crochets arrêtent le moteur, et
-/// il relance l'application. AppImage : remplacée, puis relancée ici. Les téléchargements
-/// reprennent au redémarrage du moteur.
+/// il relance l'application. AppImage : le moteur, lancé depuis l'ancienne image, est
+/// arrêté et n'est plus relancé avant le remplacement (audit C6), puis l'application
+/// redémarre ici et lance le nouveau. Les téléchargements reprennent au redémarrage du
+/// moteur. Un échec garde la version proposée : « Installer » la retrouve (audit C22).
 pub async fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if kind() != Kind::Install {
         return Err(
@@ -227,24 +231,68 @@ pub async fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         updates.installing.store(false, Ordering::SeqCst);
         return Err("aucune version à installer".into());
     };
+    let result = download_and_install(app, &update).await;
+    match result {
+        Ok(()) => app.restart(),
+        Err(e) => {
+            {
+                let mut pending = updates.pending.lock().unwrap();
+                // Une recherche faite entre-temps a pu trouver plus récent.
+                if pending.is_none() {
+                    *pending = Some(update);
+                }
+            }
+            if let Some(starts) = app.try_state::<Arc<Starts>>() {
+                starts.hold(false);
+            }
+            updates.installing.store(false, Ordering::SeqCst);
+            Err(format!("installation impossible : {e}"))
+        }
+    }
+}
+
+/// Télécharge et vérifie la version, arrête le moteur s'il le faut, puis l'installe.
+async fn download_and_install<R: Runtime>(
+    app: &AppHandle<R>,
+    update: &Update,
+) -> Result<(), String> {
     let mut done = 0u64;
     let emitter = app.clone();
-    let result = update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk, total| {
                 done += chunk as u64;
                 let _ = emitter.emit_to("main", "update-progress", Progress { done, total });
             },
             || {},
         )
+        .await
+        .map_err(|e| e.to_string())?;
+    // Sous Windows, les crochets de l'installateur arrêtent le moteur.
+    if !cfg!(windows) {
+        stop_engine(app).await;
+    }
+    update.install(bytes).map_err(|e| e.to_string())
+}
+
+/// Arrête le moteur (enregistrement compris) et attend que la liaison le voie tomber, sans
+/// qu'il soit relancé ; 10 s au plus.
+async fn stop_engine<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(starts) = app.try_state::<Arc<Starts>>() {
+        starts.hold(true);
+    }
+    let Some(bridge) = app.try_state::<Arc<Bridge>>() else {
+        return;
+    };
+    let bridge = Arc::clone(&bridge);
+    let _ = bridge
+        .call("engine.shutdown", serde_json::json!({"graceful": true}))
         .await;
-    match result {
-        Ok(()) => app.restart(),
-        Err(e) => {
-            updates.installing.store(false, Ordering::SeqCst);
-            // La version reste proposée : un nouvel essai refait la recherche.
-            Err(format!("installation impossible : {e}"))
+    for _ in 0..100 {
+        if !matches!(bridge.status(), BridgeStatus::Up { .. }) {
+            break;
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

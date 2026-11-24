@@ -330,3 +330,43 @@ impl Outgoing {
         }
     }
 }
+
+/// Audit C8 : `aurod` n'est lancé que si personne n'écoute ; jamais pour un canal d'un
+/// autre utilisateur, un dossier refusé ou un canal occupé.
+#[test]
+fn only_an_absent_engine_is_started() {
+    use std::io::{Error, ErrorKind};
+    assert!(engine_absent(&Error::from(ErrorKind::NotFound)));
+    assert!(engine_absent(&Error::from(ErrorKind::ConnectionRefused)));
+    for kind in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::TimedOut,
+        ErrorKind::AddrInUse,
+        ErrorKind::Other,
+    ] {
+        assert!(!engine_absent(&Error::from(kind)), "{kind:?}");
+    }
+}
+
+/// Audit C8 et C6 : au plus trois lancements en dix minutes, aucun pendant une mise à jour.
+#[test]
+fn starts_are_limited_and_can_be_held() {
+    let starts = Starts::default();
+    let t0 = std::time::Instant::now();
+    for i in 0..3 {
+        assert!(starts.take(t0 + Duration::from_secs(i)).is_ok(), "{i}");
+    }
+    let refused = starts.take(t0 + Duration::from_secs(60)).unwrap_err();
+    assert!(refused.contains("aurod.log"), "{refused}");
+    // Dix minutes après le premier, une place se libère.
+    assert!(starts.take(t0 + Duration::from_secs(600)).is_ok());
+    assert!(starts.take(t0 + Duration::from_secs(601)).is_ok());
+    assert!(starts.take(t0 + Duration::from_secs(602)).is_ok());
+    assert!(starts.take(t0 + Duration::from_secs(603)).is_err());
+
+    let held = Starts::default();
+    held.hold(true);
+    assert!(held.take(t0).is_err(), "suspendu pendant une mise à jour");
+    held.hold(false);
+    assert!(held.take(t0).is_ok());
+}

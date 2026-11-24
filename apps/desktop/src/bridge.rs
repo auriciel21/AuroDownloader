@@ -5,14 +5,14 @@
 //! La liaison ne connaît pas Tauri : elle envoie tout à un [`Sink`], la fenêtre de
 //! l'application ou un test.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use auro_engine::rpc::local::{self, Halves};
 use serde::Serialize;
@@ -118,17 +118,80 @@ impl Default for Retry {
     }
 }
 
-/// Connexion au point d'accès local ; si personne ne répond et que `autostart` est vrai,
-/// lance `aurod` (avec `db` s'il est donné) et l'attend.
-pub fn local_connect(endpoint: String, db: Option<PathBuf>, autostart: bool) -> Connect {
+/// Lancements d'`aurod` permis au plus dans [`START_WINDOW`].
+const MAX_STARTS: usize = 3;
+const START_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Lancements d'`aurod` par l'application (audit C8) : au plus [`MAX_STARTS`] en
+/// [`START_WINDOW`] (un moteur qui meurt aussitôt n'est pas relancé sans fin), et aucun tant
+/// qu'ils sont suspendus (mise à jour en cours, audit C6).
+#[derive(Default)]
+pub struct Starts {
+    held: AtomicBool,
+    recent: Mutex<VecDeque<Instant>>,
+}
+
+impl Starts {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Starts::default())
+    }
+
+    /// Suspend (`true`) ou permet de nouveau les lancements.
+    pub fn hold(&self, held: bool) {
+        self.held.store(held, Ordering::SeqCst);
+    }
+
+    /// Un lancement est-il permis à `now` ? Noté s'il l'est.
+    pub fn take(&self, now: Instant) -> Result<(), String> {
+        if self.held.load(Ordering::SeqCst) {
+            return Err("moteur arrêté pour une mise à jour".into());
+        }
+        let mut recent = self.recent.lock().unwrap();
+        while recent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= START_WINDOW)
+        {
+            recent.pop_front();
+        }
+        if recent.len() >= MAX_STARTS {
+            return Err(format!(
+                "aurod lancé {MAX_STARTS} fois en 10 minutes sans répondre longtemps : voir \
+                 aurod.log ; nouvel essai plus tard"
+            ));
+        }
+        recent.push_back(now);
+        Ok(())
+    }
+}
+
+/// Personne n'écoute sur le point d'accès : seul cas où lancer `aurod`. Un canal d'un autre
+/// utilisateur, un dossier refusé ou un canal occupé ne lancent rien (audit C8).
+pub fn engine_absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Connexion au point d'accès local ; si personne n'y écoute et que `autostart` est vrai,
+/// lance `aurod` (avec `db` s'il est donné), dans la limite de `starts`, et l'attend.
+pub fn local_connect(
+    endpoint: String,
+    db: Option<PathBuf>,
+    autostart: bool,
+    starts: Arc<Starts>,
+) -> Connect {
     Box::new(move || {
-        let (endpoint, db) = (endpoint.clone(), db.clone());
+        let (endpoint, db, starts) = (endpoint.clone(), db.clone(), Arc::clone(&starts));
         Box::pin(async move {
             match local::connect(&endpoint).await {
                 Ok(halves) => return Ok(halves),
-                Err(e) if !autostart => return Err(e),
+                Err(e) if !autostart || !engine_absent(&e) => return Err(e),
                 Err(_) => {}
             }
+            starts
+                .take(Instant::now())
+                .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
             auro_engine::launch::start_daemon(&endpoint, db.as_deref(), None)?;
             let deadline = tokio::time::Instant::now() + START_WAIT;
             loop {

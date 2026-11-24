@@ -55,16 +55,34 @@ impl Prefs {
             .unwrap_or_default()
     }
 
-    /// Enregistre : écrit à côté, puis remplace d'un seul coup, pour ne jamais laisser un
-    /// fichier à moitié écrit.
+    /// Enregistre : écrit à côté, vidé sur disque, puis remplace d'un seul coup, pour ne
+    /// jamais laisser un fichier à moitié écrit. Le nom provisoire est propre à l'appel :
+    /// deux enregistrements simultanés ne se prennent pas leur fichier (audit C10) ; les
+    /// appelants les mettent en ordre sous le verrou des préférences.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("json.tmp");
+        let tmp = path.with_extension(format!(
+            "json.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, path)
+        let written = (|| {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&tmp, path)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
 
     /// Préférences envoyées par la page : tout sauf l'heure de la dernière recherche, que
@@ -117,7 +135,8 @@ mod tests {
         };
         prefs.save(&path).unwrap();
         assert_eq!(Prefs::load(&path), prefs);
-        assert!(!path.with_extension("json.tmp").exists());
+        let leftovers = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(leftovers, 1, "aucun fichier provisoire ne reste");
 
         // Fichier d'une autre version (dont l'ancien `destDir`, passé au moteur le
         // 2026-11-07), ou partiel : les champs connus sont gardés.
@@ -131,6 +150,30 @@ mod tests {
         assert!(loaded.check_updates);
         assert_eq!(loaded.last_update_check, None);
         assert!(!loaded.update_notice_shown);
+    }
+
+    /// Audit C10 : des enregistrements simultanés réussissent tous, et le fichier reste
+    /// lisible (avant : un nom provisoire commun, que l'un renommait sous l'autre).
+    #[test]
+    fn simultaneous_saves_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    for i in 0..50 {
+                        let prefs = Prefs {
+                            last_update_check: Some(t * 1000 + i),
+                            ..Prefs::default()
+                        };
+                        prefs.save(path).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(Prefs::load(&path).last_update_check.is_some());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

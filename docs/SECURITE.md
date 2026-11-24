@@ -255,6 +255,13 @@ Constats de sécurité de l'audit, corrigés avec un test qui échouait avant le
 - **D14, chargement d'un plugin.** La lecture du fichier et le contrôle de son empreinte
   se font hors des fils de l'exécuteur (`spawn_blocking`) ; le contrôle lui-même est
   inchangé (sans test dédié : les tests des plugins couvrent fichier absent et modifié).
+- **C14, fichiers lus pour la page (bureau, lot 5f2, 2026-11-24).** `read_torrent`,
+  `read_plugin` et `read_list` lisaient tout chemin absolu donné par la page (défense en
+  profondeur : une page détournée aurait fait lire un fichier de l'utilisateur). Elles ne
+  lisent plus que les fichiers choisis dans un sélecteur ou reçus du système (arguments,
+  glisser-déposer) : `opened::Granted`. Test : `only_granted_files_may_be_read`.
+- **C5, fichiers jamais ouverts.** Liste complétée (scripts Python, aide compilée, consoles,
+  raccourcis, images de disque montées par Windows). Test étendu.
 
 ## 5. Vérifications
 

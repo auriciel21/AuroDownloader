@@ -244,17 +244,65 @@ pub fn notifications_blocked(_app: &AppHandle) -> bool {
     false
 }
 
+/// Notifications attendues à la fois (Linux) : chacune tient un fil jusqu'à sa fermeture.
+#[cfg(any(test, target_os = "linux"))]
+const MAX_WAITING: usize = 4;
+
+/// Places des notifications attendues : un serveur qui ne les ferme jamais ne fait pas
+/// naître un fil par lien copié (audit C19).
+#[cfg(any(test, target_os = "linux"))]
+struct Waiting(std::sync::atomic::AtomicUsize);
+
+/// Une place prise, rendue quand le fil finit.
+#[cfg(any(test, target_os = "linux"))]
+struct Slot<'a>(&'a Waiting);
+
+#[cfg(any(test, target_os = "linux"))]
+impl Waiting {
+    const fn new() -> Self {
+        Waiting(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn take(&self) -> Option<Slot<'_>> {
+        use std::sync::atomic::Ordering;
+        let mut n = self.0.load(Ordering::SeqCst);
+        while n < MAX_WAITING {
+            match self
+                .0
+                .compare_exchange(n, n + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Some(Slot(self)),
+                Err(now) => n = now,
+            }
+        }
+        None
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn notify<C>(app: &AppHandle, link: String, lang: &str, chosen: C)
 where
     C: Fn(&AppHandle, String) + Send + Sync + Clone + 'static,
 {
+    static WAITING: Waiting = Waiting::new();
+    // Toutes les places prises : pas de notification, le lien reste dans le presse-papiers.
+    let Some(slot) = WAITING.take() else {
+        return;
+    };
     let (title, body, button) = texts(lang, &shown_name(&link));
     let app = app.clone();
     // `wait_for_action` attend la fermeture de la notification : un fil à part.
     let _ = std::thread::Builder::new()
         .name("notification".into())
         .spawn(move || {
+            let _slot = slot;
             let shown = notify_rust::Notification::new()
                 .appname("AuroDownloader")
                 .summary(&title)
@@ -282,6 +330,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C19 : au plus quatre notifications attendues à la fois ; une place revient
+    /// quand son fil finit.
+    #[test]
+    fn waiting_notifications_are_bounded() {
+        let waiting = Waiting::new();
+        let mut slots: Vec<_> = (0..MAX_WAITING).map(|_| waiting.take().unwrap()).collect();
+        assert!(waiting.take().is_none());
+        slots.pop();
+        let again = waiting.take();
+        assert!(again.is_some());
+        assert!(waiting.take().is_none());
+    }
 
     #[test]
     fn only_a_lone_file_address_or_a_magnet_link_is_proposed() {

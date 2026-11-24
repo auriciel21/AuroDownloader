@@ -46,6 +46,26 @@ struct Options {
     hidden: bool,
 }
 
+/// Identifiant de la variante d'essai (`tauri.essai.json`).
+const TRIAL_ID: &str = "org.aurodownloader.essai";
+
+/// Options d'essai qui manquent à la variante d'essai : sans elles, elle prendrait le
+/// moteur, la base ou les préférences réels de l'utilisateur (audit C23). Vide hors de la
+/// variante d'essai, ou si rien ne manque.
+fn missing_trial_options(identifier: &str, o: &Options) -> Vec<&'static str> {
+    if identifier != TRIAL_ID {
+        return Vec::new();
+    }
+    [
+        ("--endpoint", o.endpoint.is_none()),
+        ("--db", o.db.is_none()),
+        ("--prefs", o.prefs.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(name, missing)| missing.then_some(name))
+    .collect()
+}
+
 fn options() -> Options {
     let mut o = Options::default();
     let mut args = std::env::args().skip(1);
@@ -70,6 +90,8 @@ struct App {
     menu: Mutex<Option<TrayMenu>>,
     /// Liens et fichiers reçus du système, pas encore pris par la page.
     opened: Mutex<Vec<Opened>>,
+    /// Fichiers que la page peut faire lire : choisis ou reçus (audit C14).
+    granted: opened::Granted,
 }
 
 struct TrayMenu {
@@ -174,11 +196,16 @@ fn app_info(app: AppHandle, state: State<'_, App>) -> Info {
 /// Enregistre les préférences ; renvoie les informations mises à jour.
 #[tauri::command]
 fn save_prefs(app: AppHandle, state: State<'_, App>, prefs: Prefs) -> Result<Info, String> {
-    let prefs = Prefs::from_page(prefs, &state.prefs.lock().unwrap());
-    prefs
-        .save(&state.prefs_path)
-        .map_err(|e| format!("préférences non enregistrées : {e}"))?;
-    *state.prefs.lock().unwrap() = prefs;
+    // Verrou tenu de la lecture au remplacement : une heure de recherche notée entre-temps
+    // (`record_check`) n'est pas perdue, et les deux écritures ne se croisent pas (C10).
+    {
+        let mut current = state.prefs.lock().unwrap();
+        let prefs = Prefs::from_page(prefs, &current);
+        prefs
+            .save(&state.prefs_path)
+            .map_err(|e| format!("préférences non enregistrées : {e}"))?;
+        *current = prefs;
+    }
     let info = info(&app, &state);
     if let Some(menu) = state.menu.lock().unwrap().as_ref() {
         menu.translate(info.lang);
@@ -322,6 +349,7 @@ fn receive(app: &AppHandle, found: Vec<Opened>) {
         return;
     }
     if let Some(state) = app.try_state::<App>() {
+        state.granted.grant_opened(&found);
         state.opened.lock().unwrap().extend(found);
     }
     show(app);
@@ -331,13 +359,14 @@ fn receive(app: &AppHandle, found: Vec<Opened>) {
 /// Lit un fichier `.torrent` ou Metalink choisi ou reçu, pour `task.add` ou `metalink.read`
 /// (base64).
 #[tauri::command]
-fn read_torrent(path: String) -> Result<opened::TorrentFile, String> {
+fn read_torrent(state: State<'_, App>, path: String) -> Result<opened::TorrentFile, String> {
+    state.granted.check(&path)?;
     opened::read_torrent(&path)
 }
 
 /// Choix de fichiers `.torrent` ou Metalink ; aucun si l'utilisateur renonce.
 #[tauri::command]
-async fn pick_torrents(app: AppHandle) -> Vec<String> {
+async fn pick_torrents(app: AppHandle, state: State<'_, App>) -> Result<Vec<String>, ()> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -345,17 +374,22 @@ async fn pick_torrents(app: AppHandle) -> Vec<String> {
         .pick_files(move |files| {
             let _ = tx.send(files.unwrap_or_default());
         });
-    rx.await
+    let picked: Vec<String> = rx
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter_map(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().into_owned())
-        .collect()
+        .collect();
+    for path in &picked {
+        state.granted.grant(path);
+    }
+    Ok(picked)
 }
 
 /// Choix d'une liste de liens à importer (F-31) ; `None` si l'utilisateur renonce.
 #[tauri::command]
-async fn pick_list(app: AppHandle) -> Option<String> {
+async fn pick_list(app: AppHandle, state: State<'_, App>) -> Result<Option<String>, ()> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -364,11 +398,16 @@ async fn pick_list(app: AppHandle) -> Option<String> {
         .pick_file(move |file| {
             let _ = tx.send(file);
         });
-    rx.await
-        .ok()
-        .flatten()
+    Ok(granted(&state, rx.await.ok().flatten()))
+}
+
+/// Chemin d'un fichier choisi dans un sélecteur, accordé à la page (audit C14).
+fn granted(state: &App, file: Option<tauri_plugin_dialog::FilePath>) -> Option<String> {
+    let path = file
         .and_then(|f| f.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| p.to_string_lossy().into_owned())?;
+    state.granted.grant(&path);
+    Some(path)
 }
 
 /// QR code de l'accès à distance (étape 3d) : adresse de la page et jeton dans l'ancre.
@@ -420,7 +459,7 @@ async fn pick_key(app: AppHandle) -> Option<String> {
 
 /// Choix d'un fichier de plugin `.wasm` (SPEC §7.20) ; `None` si l'utilisateur renonce.
 #[tauri::command]
-async fn pick_plugin(app: AppHandle) -> Option<String> {
+async fn pick_plugin(app: AppHandle, state: State<'_, App>) -> Result<Option<String>, ()> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -428,17 +467,14 @@ async fn pick_plugin(app: AppHandle) -> Option<String> {
         .pick_file(move |file| {
             let _ = tx.send(file);
         });
-    rx.await
-        .ok()
-        .flatten()
-        .and_then(|f| f.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+    Ok(granted(&state, rx.await.ok().flatten()))
 }
 
 /// Lit un fichier de plugin choisi (base64), pour `plugin.inspect` et `plugin.install` ;
 /// le moteur le vérifie, rien n'en est exécuté par l'application.
 #[tauri::command]
-fn read_plugin(path: String) -> Result<opened::TorrentFile, String> {
+fn read_plugin(state: State<'_, App>, path: String) -> Result<opened::TorrentFile, String> {
+    state.granted.check(&path)?;
     opened::read_plugin(&path)
 }
 
@@ -471,7 +507,8 @@ async fn save_diagnostic(
 
 /// Lit une liste de liens choisie, comme un texte, pour `linkscan.run`.
 #[tauri::command]
-fn read_list(path: String) -> Result<opened::ListFile, String> {
+fn read_list(state: State<'_, App>, path: String) -> Result<opened::ListFile, String> {
+    state.granted.check(&path)?;
     opened::read_list(&path)
 }
 
@@ -671,6 +708,20 @@ fn main() {
             quit
         ])
         .setup(move |app| {
+            // Variante d'essai sans ses options : dit, puis fermée, sans rien toucher (C23).
+            let missing = missing_trial_options(&app.config().identifier, &options);
+            if !missing.is_empty() {
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(format!(
+                        "La variante d'essai exige ses options d'essai, pour ne jamais toucher au \
+                         moteur, à la base ni aux préférences réels. Manquent : {}.",
+                        missing.join(", ")
+                    ))
+                    .title("AuroDownloader Essai")
+                    .show(move |_| handle.exit(2));
+                return Ok(());
+            }
             let prefs_path = match options.prefs.clone() {
                 Some(path) => path,
                 None => app.path().app_config_dir()?.join("prefs.json"),
@@ -682,9 +733,12 @@ fn main() {
                 prefs_path,
                 tray,
                 menu: Mutex::new(menu),
+                granted: opened::Granted::default(),
                 // Pris par la page à son démarrage (`take_opened`).
-                opened: Mutex::new(first_opened),
+                opened: Mutex::new(Vec::new()),
             };
+            state.granted.grant_opened(&first_opened);
+            *state.opened.lock().unwrap() = first_opened;
             let lang = info(app.handle(), &state).lang;
             if let Some(menu) = state.menu.lock().unwrap().as_ref() {
                 menu.translate(lang);
@@ -720,7 +774,10 @@ fn main() {
             });
 
             let sink: Arc<dyn Sink> = Arc::new(WindowSink(app.handle().clone()));
-            let connect = bridge::local_connect(endpoint.clone(), db.clone(), true);
+            // Lancements d'`aurod` limités, et suspendus pendant une mise à jour (C6, C8).
+            let starts = bridge::Starts::new();
+            app.manage(Arc::clone(&starts));
+            let connect = bridge::local_connect(endpoint.clone(), db.clone(), true, starts);
             tauri::async_runtime::spawn(Arc::clone(&bridge).run(connect, sink, Retry::default()));
 
             if !(options.hidden && tray) {
@@ -748,4 +805,31 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("échec de l'application de bureau");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit C23 : la variante d'essai exige ses trois options ; la vraie application, aucune.
+    #[test]
+    fn the_trial_variant_needs_its_trial_options() {
+        let none = Options::default();
+        assert_eq!(
+            missing_trial_options(TRIAL_ID, &none),
+            ["--endpoint", "--db", "--prefs"]
+        );
+        assert!(missing_trial_options("org.aurodownloader.desktop", &none).is_empty());
+        let partial = Options {
+            endpoint: Some(r"\.\pipe\auro-essai".into()),
+            db: Some(PathBuf::from("essai.db")),
+            ..Options::default()
+        };
+        assert_eq!(missing_trial_options(TRIAL_ID, &partial), ["--prefs"]);
+        let all = Options {
+            prefs: Some(PathBuf::from("essai.json")),
+            ..partial
+        };
+        assert!(missing_trial_options(TRIAL_ID, &all).is_empty());
+    }
 }
