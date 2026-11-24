@@ -37,7 +37,7 @@ pub fn create_media_task(
     let (task_id, now) = (new_id(), now_ms());
     let limit = new
         .speed_limit_bps
-        .map(|l| i64::try_from(l).map_err(|_| StoreError::BadValue("limite de débit".into())))
+        .map(|l| super::to_i64(l, "limite de débit"))
         .transpose()?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
@@ -183,9 +183,7 @@ pub fn save_resolution(
         .filter(|s| !s.is_subtitle())
         .map(|s| s.size)
         .sum();
-    let total = total
-        .map(|t| i64::try_from(t).map_err(|_| StoreError::BadValue("taille".into())))
-        .transpose()?;
+    let total = total.map(|t| super::to_i64(t, "taille")).transpose()?;
     tx.execute(
         "UPDATE tasks SET display_name = ?2, file_name = ?3, total_bytes = ?4, updated_at = ?5
          WHERE id = ?1",

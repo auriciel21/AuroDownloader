@@ -67,8 +67,8 @@ struct Shared {
     engine: Engine,
     /// Valeurs de `Host` acceptées.
     hosts: HostRule,
-    /// `https` ou `http`.
-    scheme: &'static str,
+    /// En TLS (audit D20 : un booléen, le schéma s'en déduit).
+    https: bool,
     failures: Mutex<HashMap<IpAddr, Failures>>,
     /// Change (se ferme) quand l'écoute s'arrête : les WebSocket en cours se ferment avec
     /// elle.
@@ -171,7 +171,7 @@ pub(super) async fn serve_timed(
     let shared = Arc::new(Shared {
         engine,
         hosts: HostRule::new(addr.port(), tls.is_some(), listening.names),
-        scheme: if tls.is_some() { "https" } else { "http" },
+        https: tls.is_some(),
         failures: Mutex::default(),
         closed,
         timeout,
@@ -273,7 +273,7 @@ fn page_file(shared: &Shared, asset: &super::page::Asset, host: &str) -> Reply {
     );
     let mut reply = hardened(reply);
     if asset.path == "/index.html"
-        && let Ok(csp) = HeaderValue::from_str(&super::page::csp(host, shared.scheme == "https"))
+        && let Ok(csp) = HeaderValue::from_str(&super::page::csp(host, shared.https))
     {
         reply
             .headers_mut()
@@ -313,7 +313,7 @@ fn checked_host(shared: &Shared, headers: &HeaderMap) -> Option<String> {
 /// `Ok(true)` : `Origin` présent et de même origine ; `Ok(false)` : absent ; `Err` : une
 /// autre origine (ou `null`, ou plusieurs).
 fn checked_origin(shared: &Shared, headers: &HeaderMap, host: &str) -> Result<bool, ()> {
-    origin_matches(shared.scheme, headers, host)
+    origin_matches(shared.scheme(), headers, host)
 }
 
 /// Lecteur de `Origin` de [`checked_origin`], pour `scheme://host` (fuzzing).
@@ -351,13 +351,14 @@ pub(super) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
 }
 
 impl Shared {
+    /// `https` ou `http`.
+    fn scheme(&self) -> &'static str {
+        if self.https { "https" } else { "http" }
+    }
+
     /// Attribut `Secure` du cookie en TLS : jamais renvoyé en clair.
     fn secure_flag(&self) -> &'static str {
-        if self.scheme == "https" {
-            "; Secure"
-        } else {
-            ""
-        }
+        if self.https { "; Secure" } else { "" }
     }
 
     fn blocked(&self, ip: IpAddr) -> bool {
@@ -693,7 +694,7 @@ async fn login(
         Err(_) => return plain(StatusCode::SERVICE_UNAVAILABLE, "moteur indisponible"),
     };
     // Sans TLS, cookie en clair envoyé à tout port de l'hôte : session courte (D13).
-    let ttl_ms = super::session_ttl_ms(shared.scheme == "https");
+    let ttl_ms = super::session_ttl_ms(shared.https);
     let Ok(cookie) = shared.engine.open_session(&row.id, ttl_ms).await else {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "moteur indisponible");
     };

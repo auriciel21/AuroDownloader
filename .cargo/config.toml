@@ -7,3 +7,12 @@
 # source d'appoint utile surtout aux certifications FIPS (SPEC §8.1, docs/MESURES.md,
 # 2026-11-06, cinquième relevé).
 AWS_LC_SYS_NO_JITTER_ENTROPY = "1"
+
+# Android 15 et plus : bibliothèques natives alignées sur des pages de 16 Kio (exigé par les
+# appareils à pages de 16 Kio ; le NDK 27 lie encore sur 4 Kio par défaut). Trouvé à l'essai
+# sur Android 17 le 2026-11-24 (audit, lot 6b).
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

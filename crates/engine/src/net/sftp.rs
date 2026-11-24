@@ -30,8 +30,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::auth::{Auth, Secret};
-use super::dial::{Route, dial, route_for};
-use super::{NetError, Probe, RangeRequest, filename, proxy, reach};
+use super::dial::{Route, decode_userinfo, dial, route_for, server_host, within};
+use super::{NetError, Probe, RangeRequest, filename, reach};
 
 const POOL_PER_KEY: usize = 8;
 const POOL_IDLE: Duration = Duration::from_secs(30);
@@ -307,10 +307,9 @@ fn credentials(
         return Some((user, Login::Password(pass)));
     }
     if !url.username().is_empty() {
-        let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
-        let user = decode(url.username());
+        let user = decode_userinfo(url.username());
         if let Some(pass) = url.password() {
-            return Some((user, Login::Password(decode(pass))));
+            return Some((user, Login::Password(decode_userinfo(pass))));
         }
         // Nom seul dans l'adresse : le secret du site, s'il est pour ce nom.
         return match auth.and_then(|a| a.secret_for(url)) {
@@ -352,23 +351,8 @@ fn sftp_error(error: russh_sftp::client::error::Error) -> NetError {
     }
 }
 
-async fn within<T>(
-    limit: Duration,
-    future: impl Future<Output = Result<T, NetError>>,
-) -> Result<T, NetError> {
-    tokio::time::timeout(limit, future)
-        .await
-        .map_err(|_| NetError::ReadTimeout(limit))?
-}
-
-/// Ce que le client donne au module.
-pub(super) struct Context<'a> {
-    pub connect: Duration,
-    pub read: Duration,
-    pub proxy: proxy::Effective,
-    pub public_only: bool,
-    pub shared: &'a Arc<Shared>,
-}
+/// Ce que le client donne au module (audit F12).
+pub(super) type Context<'a> = super::dial::Context<'a, Shared>;
 
 /// Ce qu'il faut pour joindre un serveur.
 struct Server {
@@ -403,12 +387,7 @@ impl Context<'_> {
         if self.public_only && reach::literal_forbidden(url) {
             return Err(NetError::AddressForbidden);
         }
-        let host = url
-            .host_str()
-            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-            .filter(|h| !h.is_empty())
-            .ok_or(NetError::InvalidUrl("adresse SFTP sans hôte".into()))?
-            .to_ascii_lowercase();
+        let host = server_host(url, "SFTP")?;
         let port = super::ftp::default_port(url).unwrap_or(22);
         let (user, login) = credentials(url, task_headers, auth).ok_or(NetError::AuthRequired)?;
         let route = route_for(&self.proxy, self.public_only, &host);

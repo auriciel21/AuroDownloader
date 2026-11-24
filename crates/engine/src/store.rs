@@ -334,6 +334,13 @@ fn backup_before_upgrade(
 }
 
 /// Millisecondes Unix en UTC (SPEC §5.1).
+/// Un entier à enregistrer : SQLite ne connaît que des entiers signés de 64 bits (audit
+/// S11 : une seule conversion pour toute la base).
+pub(crate) fn to_i64(value: u64, what: &str) -> Result<i64, StoreError> {
+    i64::try_from(value)
+        .map_err(|_| StoreError::BadValue(format!("{what} {value} trop grand pour la base")))
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

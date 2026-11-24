@@ -30,12 +30,6 @@ fn state_from_sql(text: &str) -> Option<SegmentState> {
     }
 }
 
-/// SQLite ne connaît que des entiers signés de 64 bits.
-fn to_sql_int(value: u64, what: &str) -> Result<i64, StoreError> {
-    i64::try_from(value)
-        .map_err(|_| StoreError::BadValue(format!("{what} {value} trop grand pour la base")))
-}
-
 /// Segments enregistrés d'une tâche, triés par numéro.
 pub fn load_segments(conn: &Connection, task_id: &str) -> Result<Vec<Segment>, StoreError> {
     let mut stmt = conn.prepare_cached(
@@ -117,9 +111,9 @@ fn insert_segment(conn: &Connection, task_id: &str, s: &Segment) -> Result<(), S
         params![
             task_id,
             s.idx,
-            to_sql_int(s.start, "début")?,
-            to_sql_int(s.end, "fin")?,
-            to_sql_int(s.written, "octets écrits")?,
+            super::to_i64(s.start, "début")?,
+            super::to_i64(s.end, "fin")?,
+            super::to_i64(s.written, "octets écrits")?,
             state_to_sql(s.state),
         ],
     )?;
@@ -160,7 +154,7 @@ pub(super) fn set_size_and_segments(
             task_id: task_id.to_owned(),
         });
     }
-    let total = total.map(|t| to_sql_int(t, "taille")).transpose()?;
+    let total = total.map(|t| super::to_i64(t, "taille")).transpose()?;
     let updated = conn.execute(
         "UPDATE tasks SET total_bytes = ?2, updated_at = ?3 WHERE id = ?1",
         params![task_id, total, now_ms()],
@@ -199,7 +193,7 @@ pub fn save_split(
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let updated = tx.execute(
         "UPDATE segments SET end_offset = ?3 WHERE task_id = ?1 AND idx = ?2",
-        params![task_id, from.idx, to_sql_int(from.end, "fin")?],
+        params![task_id, from.idx, super::to_i64(from.end, "fin")?],
     )?;
     if updated == 0 {
         return Err(StoreError::SegmentNotFound {
@@ -243,7 +237,7 @@ pub fn save_progress(
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for p in progress {
-        let written = to_sql_int(p.written(), "octets écrits")?;
+        let written = super::to_i64(p.written(), "octets écrits")?;
         let size: Option<i64> = tx
             .query_row(
                 "SELECT end_offset - start_offset + 1 FROM segments
@@ -349,8 +343,8 @@ pub fn sources_over(
     let rows = stmt.query_map(
         params![
             task_id,
-            to_sql_int(start, "début")?,
-            to_sql_int(end, "fin")?
+            super::to_i64(start, "début")?,
+            super::to_i64(end, "fin")?
         ],
         |row| row.get(0),
     )?;

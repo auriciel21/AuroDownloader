@@ -31,8 +31,7 @@ pub(super) fn save_in(conn: &Connection, task_id: &str, pieces: &Pieces) -> Resu
         params![
             task_id,
             pieces.algo().as_sql(),
-            i64::try_from(pieces.length())
-                .map_err(|_| StoreError::BadValue("longueur de morceau trop grande".into()))?,
+            super::to_i64(pieces.length(), "longueur de morceau")?,
             pieces.to_sql()
         ],
     )?;

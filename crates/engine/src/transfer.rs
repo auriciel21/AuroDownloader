@@ -434,10 +434,29 @@ pub fn retry_delay(n: u32, retry_after: Option<Duration>, jitter: Duration) -> D
     RETRY_BASE.saturating_mul(factor).min(RETRY_CAP) + jitter
 }
 
-/// Aléa de 0 à 1 s, pour que des tâches échouées ensemble ne repartent pas ensemble.
-fn jitter() -> Duration {
+/// Aléa de 0 à 1 s, pour que des tâches échouées ensemble ne repartent pas ensemble ;
+/// torrents et vidéos compris (audit V26).
+pub(crate) fn jitter() -> Duration {
     let random = RandomState::new().build_hasher().finish();
     Duration::from_millis(random % 1000)
+}
+
+/// Arrêt demandé : valeur vraie, ou plus personne pour le demander (exécutions des
+/// torrents et des vidéos, audit V26).
+pub(crate) fn stopping(stop: &watch::Receiver<bool>) -> bool {
+    *stop.borrow() || stop.has_changed().is_err()
+}
+
+/// Attend un arrêt demandé (voir [`stopping`]).
+pub(crate) async fn wait_stop(stop: &mut watch::Receiver<bool>) {
+    loop {
+        if stopping(stop) {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Exécute la tâche `task_id` jusqu'à sa fin, un échec ou `stop`, et enregistre l'issue.
@@ -673,7 +692,7 @@ async fn execute(
         if probe.downgraded {
             tracing::warn!(
                 tache = %task_id,
-                host = host_of(&source.url).unwrap_or_default(),
+                host = crate::net::host_of(&source.url).unwrap_or_default(),
                 "redirection de HTTPS vers HTTP : fichier reçu sans chiffrement"
             );
         }
@@ -706,7 +725,7 @@ async fn execute(
         // Règles de rangement (SPEC §7.21) : dossier et nom, avant de prendre le nom.
         // Toute adresse de tâche, FTP et SFTP compris (audit T8 : `parse_url` ne lit que
         // HTTP(S), et le critère « domaine » n'était jamais vrai pour elles).
-        let host = host_of(&source.url);
+        let host = crate::net::host_of(&source.url);
         let subject = crate::rules::Subject {
             url: &source.url,
             host: host.as_deref(),
@@ -980,7 +999,7 @@ async fn promote_mirror(
         opts.vault.forget(forget);
         tracing::warn!(
             tache = task_id,
-            host = crate::transfer::host_of(&mirror.url).unwrap_or_default(),
+            host = crate::net::host_of(&mirror.url).unwrap_or_default(),
             "référence sans réponse, remplacée par un miroir"
         );
         let source = primary_source(conn, task_id)?;
@@ -1434,14 +1453,10 @@ enum Plan {
     Auto(AutoConnections),
 }
 
-pub(crate) fn host_of(url: &str) -> Option<String> {
-    reqwest::Url::parse(url).ok()?.host_str().map(str::to_owned)
-}
-
 /// Plafond automatique : celui des réglages, abaissé par ce que l'hôte a appris à la
 /// session (SPEC §7.3).
 fn auto_cap(client: &Client, url: &str, opts: &Options) -> u32 {
-    let cap = host_of(url)
+    let cap = crate::net::host_of(url)
         .and_then(|h| client.host_cap(&h))
         .map_or(opts.auto_max, |c| c.min(opts.auto_max));
     // FTP et SFTP (F-08, SPEC §7.22) : 4 au plus, beaucoup de serveurs limitant les
@@ -2071,7 +2086,7 @@ async fn pool(
                         // miroir qui n'accepte que 2 connexions ne plafonne ni la référence,
                         // ni l'hôte de celle-ci (audit T3). La référence, en automatique,
                         // règle aussi la montée de toute l'exécution (SPEC §7.3).
-                        let host = host_of(&slots[end.slot].target.url);
+                        let host = crate::net::host_of(&slots[end.slot].target.url);
                         let cap = match auto.as_mut() {
                             Some(a) if end.slot == 0 => {
                                 let cap = a.on_overload(keep);

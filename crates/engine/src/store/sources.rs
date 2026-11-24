@@ -73,7 +73,7 @@ pub fn set_checked(
 ) -> Result<(), StoreError> {
     let length = checked
         .content_length
-        .map(|l| i64::try_from(l).map_err(|_| StoreError::BadValue("taille".into())))
+        .map(|l| super::to_i64(l, "taille"))
         .transpose()?;
     conn.execute(
         "UPDATE sources SET state = 'ok', accepts_ranges = ?2, etag = ?3, last_modified = ?4,
@@ -183,7 +183,7 @@ pub fn promote(
         "UPDATE sources SET rank = ?2 WHERE id = ?1",
         params![next_id, old_rank],
     )?;
-    let forget = if crate::transfer::host_of(&old_url) == crate::transfer::host_of(&next_url) {
+    let forget = if crate::net::host_of(&old_url) == crate::net::host_of(&next_url) {
         Vec::new()
     } else {
         super::headers::keep_user_agent_in(&tx, task_id)?

@@ -46,8 +46,10 @@ use suppaftp::{FtpError, Mode};
 use tokio::io::AsyncReadExt;
 
 use super::auth::Auth;
-use super::dial::{Route, dial, net_error, resolve, route_for, route_public};
-use super::{NetError, Probe, RangeRequest, filename, proxy, reach};
+use super::dial::{
+    Route, decode_userinfo, dial, net_error, resolve, route_for, route_public, server_host, within,
+};
+use super::{NetError, Probe, RangeRequest, filename, reach};
 
 type Stream = suppaftp::tokio::TransferStream<AsyncRustlsStream>;
 
@@ -116,9 +118,8 @@ pub fn split_credentials(url: &str) -> Result<(String, Option<(String, String)>)
     if parsed.password().is_none() {
         return Ok((url.to_owned(), None));
     }
-    let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
-    let user = decode(parsed.username());
-    let pass = parsed.password().map(decode).unwrap_or_default();
+    let user = decode_userinfo(parsed.username());
+    let pass = parsed.password().map(decode_userinfo).unwrap_or_default();
     let _ = parsed.set_username("");
     let _ = parsed.set_password(None);
     Ok((parsed.to_string(), Some((user, pass))))
@@ -181,7 +182,7 @@ fn is_anonymous(user: &str, pass: &str) -> bool {
 }
 
 fn credentials(url: &Url, task_headers: &[(String, String)], auth: Option<&Auth>) -> Creds {
-    let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
+    let decode = decode_userinfo;
     let found = basic_credentials(task_headers)
         .or_else(|| {
             if url.username().is_empty() {
@@ -245,12 +246,7 @@ struct Server {
 
 impl Server {
     fn of(url: &Url, creds: Creds, allow_plain: bool) -> Result<Server, NetError> {
-        let host = url
-            .host_str()
-            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-            .filter(|h| !h.is_empty())
-            .ok_or(NetError::InvalidUrl("adresse FTP sans hôte".into()))?
-            .to_ascii_lowercase();
+        let host = server_host(url, "FTP")?;
         let tls_name = host.clone();
         let port = default_port(url).ok_or(NetError::InvalidUrl("port FTP".into()))?;
         let security = match (url.scheme(), creds.anonymous, allow_plain) {
@@ -320,15 +316,6 @@ fn epsv_refused(error: &FtpError) -> bool {
         },
         _ => false,
     }
-}
-
-async fn within<T>(
-    limit: Duration,
-    future: impl Future<Output = Result<T, NetError>>,
-) -> Result<T, NetError> {
-    tokio::time::timeout(limit, future)
-        .await
-        .map_err(|_| NetError::ReadTimeout(limit))?
 }
 
 /// Réglages FTP d'un client, partagés par ses copies.
@@ -496,14 +483,8 @@ impl Shared {
     }
 }
 
-/// Ce que le client donne au module : délais, proxy, réseau public, réglages partagés.
-pub(super) struct Context<'a> {
-    pub connect: Duration,
-    pub read: Duration,
-    pub proxy: proxy::Effective,
-    pub public_only: bool,
-    pub shared: &'a Arc<Shared>,
-}
+/// Ce que le client donne au module (audit F12).
+pub(super) type Context<'a> = super::dial::Context<'a, Shared>;
 
 /// Une connexion de commande ouverte et identifiée, et ce qu'il faut pour la rendre.
 struct Session {

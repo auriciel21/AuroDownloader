@@ -2622,6 +2622,18 @@ async fn a_large_torrent_file_fits_in_one_message() {
         .await;
     assert_eq!(task["displayName"], "gros.iso", "{task}");
 
+    // À la limite : exactement `MAX_MESSAGE` octets, puis la fin de ligne, qui ne compte
+    // pas (audit R22).
+    let mut limit = br#"{"jsonrpc": "2.0", "id": 98, "method": "task.list", "pad": ""#.to_vec();
+    limit.resize(super::MAX_MESSAGE - 2, b'x');
+    limit.extend_from_slice(br#""}"#);
+    assert_eq!(limit.len(), super::MAX_MESSAGE);
+    limit.push(b'\n');
+    c.writer.write_all(&limit).await.unwrap();
+    let reply = c.read().await.expect("réponse attendue");
+    assert_eq!(reply["id"], 98, "{reply}");
+    assert!(reply["result"].is_object(), "{reply}");
+
     // Trop long : refusé, puis la connexion se ferme. Exactement un octet de trop, sans fin
     // de ligne : le moteur lit tout ce qui est écrit avant de fermer.
     let mut long = br#"{"jsonrpc": "2.0", "id": 99, "method": "task.list", "pad": ""#.to_vec();

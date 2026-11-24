@@ -41,7 +41,7 @@ pub fn create_torrent_task(
     let (task_id, now) = (new_id(), now_ms());
     let limit = new
         .speed_limit_bps
-        .map(|l| i64::try_from(l).map_err(|_| StoreError::BadValue("limite de débit".into())))
+        .map(|l| super::to_i64(l, "limite de débit"))
         .transpose()?;
     tx.execute(
         "INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
@@ -191,7 +191,7 @@ pub fn save_preparation(
     files: &[TorrentFile],
     placed: &super::rules::Placed<'_>,
 ) -> Result<(), StoreError> {
-    let to_i64 = |v: u64| i64::try_from(v).map_err(|_| StoreError::BadValue("taille".into()));
+    let to_i64 = |v: u64| super::to_i64(v, "taille");
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Rangement des règles (SPEC §7.21), avec le nom pris dans ce dossier.
     super::rules::save_placement(&tx, task_id, placed)?;

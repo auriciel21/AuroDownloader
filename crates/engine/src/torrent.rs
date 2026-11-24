@@ -50,7 +50,9 @@ use crate::store::torrents::{
     TorrentFile, files_complete, load_files, load_torrent, save_file_progress, save_metainfo,
     save_preparation, save_progress, save_uploaded,
 };
-use crate::transfer::{MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
+use crate::transfer::{
+    MAX_FAILURES, Outcome, Progress, TransferError, jitter, retry_delay, stopping, wait_stop,
+};
 
 /// Plus gros fichier `.torrent` lu par le moteur à une adresse (`torrent.fetch`), comme
 /// ceux que lisent la CLI et l'application de bureau.
@@ -764,7 +766,7 @@ fn record_failure(
         return Ok(Outcome::DiskFull);
     }
     if matches!(failure, Failure::Session(_)) && task.retry_count + 1 < MAX_FAILURES {
-        let delay = retry_delay(task.retry_count, None, Duration::ZERO);
+        let delay = retry_delay(task.retry_count, None, jitter());
         let at_ms = now_ms().saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX));
         let change = Change {
             error,
@@ -784,11 +786,6 @@ fn record_failure(
     };
     change_state(conn, task_id, &change)?;
     Ok(Outcome::Failed { code, detail })
-}
-
-/// Arrêt demandé : valeur vraie, ou plus personne pour le demander.
-fn stopping(stop: &watch::Receiver<bool>) -> bool {
-    *stop.borrow() || stop.has_changed().is_err()
 }
 
 /// Avancement d'une exécution, d'un passage à l'autre.
@@ -1315,17 +1312,6 @@ async fn open_session(
         tokio::select! {
             _ = tokio::time::sleep(POLL) => {}
             _ = wait_stop(stop) => return Ok(None),
-        }
-    }
-}
-
-async fn wait_stop(stop: &mut watch::Receiver<bool>) {
-    loop {
-        if stopping(stop) {
-            return;
-        }
-        if stop.changed().await.is_err() {
-            return;
         }
     }
 }

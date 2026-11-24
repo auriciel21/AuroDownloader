@@ -1343,5 +1343,10 @@ fn header_map(list: &[(String, String)]) -> Result<HeaderMap, NetError> {
     Ok(map)
 }
 
+/// Hôte d'une adresse, tel quel ; `None` si elle ne se lit pas ou n'en a pas (audit T22).
+pub(crate) fn host_of(url: &str) -> Option<String> {
+    Url::parse(url).ok()?.host_str().map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests;

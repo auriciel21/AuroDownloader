@@ -248,16 +248,13 @@ fn to_u64(value: Option<i64>, what: &str) -> Result<Option<u64>, StoreError> {
         .transpose()
 }
 
-fn to_i64(value: u64, what: &str) -> Result<i64, StoreError> {
-    i64::try_from(value)
-        .map_err(|_| StoreError::BadValue(format!("{what} {value} trop grand pour la base")))
-}
-
 /// Limite de débit à enregistrer : strictement positive, ou absente.
 fn limit_to_sql(limit: Option<u64>) -> Result<Option<i64>, StoreError> {
     match limit {
         Some(0) => Err(StoreError::BadValue("limite de débit nulle".into())),
-        limit => limit.map(|l| to_i64(l, "limite de débit")).transpose(),
+        limit => limit
+            .map(|l| super::to_i64(l, "limite de débit"))
+            .transpose(),
     }
 }
 
@@ -730,7 +727,10 @@ pub fn save_preparation_placed(
 ) -> Result<(), StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     super::rules::save_placement(&tx, task_id, placed)?;
-    let length = prep.total_bytes.map(|t| to_i64(t, "taille")).transpose()?;
+    let length = prep
+        .total_bytes
+        .map(|t| super::to_i64(t, "taille"))
+        .transpose()?;
     let updated = tx.execute(
         "UPDATE sources SET accepts_ranges = ?3, etag = ?4, last_modified = ?5,
                             content_length = ?6, state = 'ok'
@@ -843,7 +843,10 @@ pub fn replace_url(
         params![source_id, url],
     )?;
     if let Some(check) = check {
-        let length = check.total_bytes.map(|t| to_i64(t, "taille")).transpose()?;
+        let length = check
+            .total_bytes
+            .map(|t| super::to_i64(t, "taille"))
+            .transpose()?;
         tx.execute(
             "UPDATE sources SET accepts_ranges = ?2, etag = ?3, last_modified = ?4,
                                 content_length = ?5, state = 'ok'
@@ -1002,7 +1005,7 @@ pub(super) fn change_state_in(
 /// Taille d'une tâche dont le fichier est complet (commande de fin en attente,
 /// SPEC §7.21) : tous ses octets sont là.
 pub fn set_finished_size(conn: &Connection, task_id: &str, total: u64) -> Result<(), StoreError> {
-    let total = to_i64(total, "taille")?;
+    let total = super::to_i64(total, "taille")?;
     conn.execute(
         "UPDATE tasks SET total_bytes = ?2, done_bytes = ?2, updated_at = ?3 WHERE id = ?1",
         params![task_id, total, now_ms()],
@@ -1036,7 +1039,7 @@ pub fn complete_task(
         from,
         TaskState::Active | TaskState::Verifying | TaskState::Seeding | TaskState::PostProcessing
     ));
-    let total = to_i64(total_bytes, "taille")?;
+    let total = super::to_i64(total_bytes, "taille")?;
     let now = now_ms();
 
     let url: Option<String> = tx

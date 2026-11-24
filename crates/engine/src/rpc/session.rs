@@ -150,7 +150,10 @@ async fn read_lines<R: AsyncRead + Unpin>(reader: R, incoming: mpsc::Sender<Inco
         if n == 0 {
             break;
         }
-        let message = if line.len() > MAX_MESSAGE {
+        // La fin de ligne ne compte pas : un message de `MAX_MESSAGE` octets passe (audit
+        // R22).
+        let content = line.len() - usize::from(line.last() == Some(&b'\n'));
+        let message = if content > MAX_MESSAGE {
             Incoming::TooLong
         } else {
             Incoming::Message(line)

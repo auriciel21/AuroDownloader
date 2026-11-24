@@ -98,7 +98,7 @@ pub fn literal_forbidden(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let bare = super::dial::bare(host);
     if let Ok(ip) = bare.parse::<IpAddr>() {
         return !is_public(ip);
     }

@@ -161,14 +161,19 @@ fn only_a_socks5_proxy_is_followed() {
 #[tokio::test]
 async fn anonymous_probe_ranges_and_whole_file() {
     let site = FtpSite::start(FtpOptions::default()).await;
-    let data = content(300_000);
+    // Assez gros pour qu'une plage du début soit interrompue (`ABOR`) pendant que le
+    // serveur envoie encore : avec un petit fichier, il a parfois déjà tout envoyé (tampons
+    // de la boucle locale, plusieurs Mio sous Linux), répond deux fois `226`, et la
+    // connexion, désaccordée, est jetée au `NOOP` suivant ; le test en voyait deux.
+    const TOTAL: u64 = 32 << 20;
+    let data = content(TOTAL as usize);
     site.put("pub/fichier.bin", &data);
     let client = client();
     let probe = client
         .probe(&site.url("pub/fichier.bin"), &[])
         .await
         .unwrap();
-    assert_eq!(probe.total_bytes, Some(300_000));
+    assert_eq!(probe.total_bytes, Some(TOTAL));
     assert!(probe.accepts_ranges);
     assert_eq!(probe.file_name, "fichier.bin");
     assert_eq!(probe.etag, None);
@@ -179,13 +184,13 @@ async fn anonymous_probe_ranges_and_whole_file() {
     for (first, last) in [
         (1000, 70_000),
         (70_001, 200_000),
-        (200_001, 299_999),
+        (TOTAL - 100_000, TOTAL - 1),
         (5, 5),
     ] {
         let req = RangeRequest {
             first,
             last,
-            total: 300_000,
+            total: TOTAL,
             if_range: Some(&modified),
         };
         let body = client
@@ -196,7 +201,7 @@ async fn anonymous_probe_ranges_and_whole_file() {
         assert_eq!(got, data[first as usize..=last as usize], "{first}-{last}");
     }
     let whole = client
-        .get_all(&site.url("pub/fichier.bin"), &[], Some(300_000))
+        .get_all(&site.url("pub/fichier.bin"), &[], Some(TOTAL))
         .await
         .unwrap();
     assert_eq!(read_all(whole).await.unwrap(), data);

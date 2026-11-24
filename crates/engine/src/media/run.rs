@@ -31,7 +31,9 @@ use crate::store::now_ms;
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, load_task, reserved_names,
 };
-use crate::transfer::{self, MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
+use crate::transfer::{
+    self, MAX_FAILURES, Outcome, Progress, TransferError, jitter, retry_delay, wait_stop,
+};
 
 /// Résolutions refaites dans une exécution pour une adresse refusée.
 pub const MAX_REFRESH: u32 = 3;
@@ -152,7 +154,7 @@ fn record(
             if task.retry_count + 1 >= MAX_FAILURES {
                 return record(conn, task_id, End::Failed { code, detail }, cause);
             }
-            let delay = retry_delay(task.retry_count, None, Duration::ZERO);
+            let delay = retry_delay(task.retry_count, None, jitter());
             let at_ms =
                 now_ms().saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX));
             let change = Change {
@@ -174,22 +176,6 @@ fn record(
             };
             change_state(conn, task_id, &change)?;
             Ok(Outcome::Failed { code, detail })
-        }
-    }
-}
-
-/// Arrêt demandé : valeur vraie, ou plus personne pour le demander.
-fn stopping(stop: &watch::Receiver<bool>) -> bool {
-    *stop.borrow() || stop.has_changed().is_err()
-}
-
-async fn wait_stop(stop: &mut watch::Receiver<bool>) {
-    loop {
-        if stopping(stop) {
-            return;
-        }
-        if stop.changed().await.is_err() {
-            return;
         }
     }
 }

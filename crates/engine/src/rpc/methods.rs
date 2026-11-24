@@ -140,6 +140,14 @@ impl Params {
         self.bool_or(name, false)
     }
 
+    /// Booléen obligatoire.
+    fn required_bool(&self, name: &str) -> Result<bool, RpcError> {
+        match self.get(name) {
+            Some(Value::Bool(b)) => Ok(*b),
+            _ => Err(Self::wrong(name, "booléen")),
+        }
+    }
+
     fn strings(&self, name: &str) -> Result<Option<Vec<String>>, RpcError> {
         self.get(name)
             .map(|v| {
@@ -241,12 +249,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             Ok(json!({}))
         }
         "plugin.enable" => {
-            let Some(Value::Bool(enabled)) = p.get("enabled") else {
-                return Err(Params::wrong("enabled", "booléen"));
-            };
+            let enabled = p.required_bool("enabled")?;
             let row = ctx
                 .engine
-                .enable_plugin(&p.required_str("pluginId")?, *enabled)
+                .enable_plugin(&p.required_str("pluginId")?, enabled)
                 .await?;
             Ok(plugin_json(&row))
         }
@@ -467,11 +473,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "torrent.interfaces" => Ok(json!({"items": crate::torrent::system_interfaces()})),
         "media.tools" => Ok(tools_json(&ctx.engine.media_tools()?)),
         "media.installTools" => {
-            let force = match p.get("force") {
-                None => false,
-                Some(Value::Bool(force)) => *force,
-                Some(_) => return Err(Params::wrong("force", "booléen")),
-            };
+            let force = p.bool("force")?;
             Ok(tools_json(&ctx.engine.install_media_tools(force).await?))
         }
         "settings.get" => settings(ctx).await,
@@ -734,12 +736,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
             let mode = p.required_str("mode")?;
             let mode = Mode::parse(&mode)
                 .ok_or_else(|| Params::wrong("mode", "system, none ou manual"))?;
-            let password = match p.0.get("password") {
-                None => None,
-                Some(Value::Null) => Some(None),
-                Some(Value::String(s)) => Some(Some(s.clone())),
-                Some(_) => return Err(Params::wrong("password", "texte ou null")),
-            };
+            let password = p.nullable_str("password")?;
             let change = crate::scheduler::ProxyChange {
                 settings: Settings {
                     mode,
@@ -780,10 +777,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         // Réseau utilisable ou non (SPEC §7.15, depuis le 2026-11-09) : dit par l'application.
         "engine.setNetwork" => {
-            let usable = match p.get("usable") {
-                Some(Value::Bool(usable)) => *usable,
-                _ => return Err(Params::wrong("usable", "booléen")),
-            };
+            let usable = p.required_bool("usable")?;
             // Réseau facturé au volume : pas de partage de torrents (SPEC §7.16).
             let metered = p.bool("metered")?;
             ctx.engine.set_network(usable, metered).await?;

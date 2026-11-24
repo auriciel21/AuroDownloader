@@ -197,7 +197,6 @@ async fn run(
         point = %endpoint,
         "moteur démarré"
     );
-    eprintln!("aurod : base {}, point d'accès {endpoint}", db.display());
     // Interface distante (SPEC §7.19) : ouverte seulement si `remote.enabled` ; suit ses
     // réglages jusqu'à l'arrêt du moteur.
     tokio::spawn(auro_engine::remote::run(engine.clone()));
@@ -211,14 +210,12 @@ async fn run(
         }
         _ = stop_signal() => {
             tracing::info!("arrêt demandé, enregistrement des tâches en cours");
-            eprintln!("aurod : arrêt demandé, enregistrement des tâches en cours…");
             engine.shutdown().await;
         }
         _ = engine.stopped() => {}
     }
     listening.await??;
     tracing::info!("moteur arrêté");
-    eprintln!("aurod : arrêté");
     Ok(())
 }
 

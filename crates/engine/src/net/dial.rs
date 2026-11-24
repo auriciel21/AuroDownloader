@@ -3,13 +3,55 @@
 //! (SPEC §7.19). Les connexions HTTP passent par reqwest ([`super::proxy::apply`]).
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
+use percent_encoding::percent_decode_str;
 use reqwest::Url;
 use tokio::net::TcpStream;
 
 use super::socks::{self, Target as SocksTarget};
 use super::{NetError, proxy, reach};
+
+/// Ce que le client donne aux modules FTP et SFTP : délais, proxy, réseau public, et
+/// réglages partagés par ses copies (`S`, propres au protocole ; audit F12).
+pub(crate) struct Context<'a, S> {
+    pub connect: Duration,
+    pub read: Duration,
+    pub proxy: proxy::Effective,
+    pub public_only: bool,
+    pub shared: &'a Arc<S>,
+}
+
+/// `future`, au plus pendant `limit` (audit F12).
+pub(crate) async fn within<T>(
+    limit: Duration,
+    future: impl Future<Output = Result<T, NetError>>,
+) -> Result<T, NetError> {
+    tokio::time::timeout(limit, future)
+        .await
+        .map_err(|_| NetError::ReadTimeout(limit))?
+}
+
+/// Un hôte sans les crochets d'une adresse IPv6 (audit F15).
+pub(crate) fn bare(host: &str) -> &str {
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+/// Hôte d'une adresse FTP ou SFTP, sans crochets et en minuscules ; `protocol` nomme le
+/// protocole dans l'erreur (audit F15).
+pub(crate) fn server_host(url: &Url, protocol: &str) -> Result<String, NetError> {
+    url.host_str()
+        .map(bare)
+        .filter(|h| !h.is_empty())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| NetError::InvalidUrl(format!("adresse {protocol} sans hôte")))
+}
+
+/// Nom ou mot de passe écrit dans une adresse, décodé (audit F14).
+pub(crate) fn decode_userinfo(text: &str) -> String {
+    percent_decode_str(text).decode_utf8_lossy().into_owned()
+}
 
 /// Chemin réseau des connexions vers un serveur.
 #[derive(Clone, PartialEq, Eq)]
@@ -105,10 +147,7 @@ pub(crate) fn route_for(effective: &proxy::Effective, public_only: bool, host: &
         return direct;
     };
     Route::Socks {
-        proxy: format!(
-            "{}:{port}",
-            proxy_host.trim_start_matches('[').trim_end_matches(']')
-        ),
+        proxy: format!("{}:{port}", bare(proxy_host)),
         login: effective
             .settings
             .username
