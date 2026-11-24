@@ -332,8 +332,10 @@ téléchargement.
   passés à `adb shell`.
   Liens d'essai : `am start -a android.intent.action.VIEW -d <adresse> -t
   application/octet-stream`, une adresse différente à chaque fois (paramètre `?essai=…`).
-  `cmd netpolicy set metered-network <SSID> true` simule « Wi-Fi seulement » : relever
-  avant (`cmd netpolicy list wifi-networks`) et remettre ensuite (`undefined`). adb ne peut
+  « Wi-Fi seulement » exige le Wi-Fi ou l'Ethernet, facturé ou non, depuis le 2026-11-24
+  (audit C17) : `cmd netpolicy set metered-network <SSID> true` ne le simule plus (un Wi-Fi
+  facturé passe) ; il s'essaie sur le téléphone en données mobiles, Wi-Fi coupé. Sinon,
+  relever avant (`cmd netpolicy list wifi-networks`) et remettre ensuite (`undefined`). adb ne peut
   pas envoyer `BOOT_COMPLETED` sur la tablette : vrai redémarrage par `adb reboot`, seulement
   avec l'accord de l'utilisateur ; l'annonce n'arrive qu'après son déverrouillage (code de
   l'utilisateur, jamais saisi par adb). « Tout mettre en pause » : `cmd statusbar

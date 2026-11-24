@@ -218,6 +218,7 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "task.add" => task_add(ctx, &p).await,
         // Fichiers Metalink (F-27, SPEC §7.7, depuis le 2026-11-11).
         "metalink.read" => metalink_read(ctx, &p).await,
+        "torrent.fetch" => torrent_fetch(ctx, &p).await,
         "metalink.add" => metalink_add(ctx, &p).await,
         // Plugins d'hébergeurs (F-41, SPEC §7.20, depuis le 2026-11-12).
         "plugin.inspect" => {
@@ -1448,6 +1449,14 @@ async fn metalink_read(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         result["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
     }
     Ok(result)
+}
+
+/// `torrent.fetch` : le fichier `.torrent` d'une adresse HTTP(S), lu par le moteur, rendu en
+/// base64 pour `task.add` (SPEC §7.16, audit C16).
+async fn torrent_fetch(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let url = p.required_str("url")?;
+    let bytes = ctx.engine.fetch_torrent(&url).await?;
+    Ok(json!({"data": base64::engine::general_purpose::STANDARD.encode(bytes)}))
 }
 
 fn metalink_json(doc: &Metalink) -> Value {

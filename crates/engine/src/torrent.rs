@@ -52,6 +52,10 @@ use crate::store::torrents::{
 };
 use crate::transfer::{MAX_FAILURES, Outcome, Progress, TransferError, retry_delay};
 
+/// Plus gros fichier `.torrent` lu par le moteur à une adresse (`torrent.fetch`), comme
+/// ceux que lisent la CLI et l'application de bureau.
+pub const MAX_TORRENT_FILE: usize = 16 << 20;
+
 /// Réglage du port d'écoute (SPEC §7.16) : tiré au hasard au premier démarrage de la
 /// session, puis gardé.
 pub const LISTEN_PORT: &str = "torrent.listenPort";

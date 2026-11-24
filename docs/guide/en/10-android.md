@@ -27,7 +27,8 @@ A download goes on when the application is closed: a notification shows the prog
 
 - **Download folder** (shown: `Download/AuroDownloader`) and **Global speed limit**.
 - **Look for the checksum next to the file**, **Reserve each file's space from the start**.
-- **Wi-Fi only**: no downloading on a metered connection (mobile data, hotspot).
+- **Wi-Fi only**: downloads only over Wi-Fi (or Ethernet), never over mobile data. A metered
+  Wi-Fi, such as a phone hotspot, counts as Wi-Fi.
 - **Resume after the device restarts**: unfinished downloads resume, or a notification offers
   to resume them (Android 14 and later).
 - **BitTorrent**: seeding after downloading, upload limit. Nothing is seeded on a metered

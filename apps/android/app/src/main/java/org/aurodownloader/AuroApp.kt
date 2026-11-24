@@ -16,8 +16,6 @@ import org.aurodownloader.engine.TorrentFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * Le processus de l'application : le moteur y démarre une fois (SPEC §4.4), avec un
@@ -81,23 +79,22 @@ class AuroApp : Application() {
     }
 
     /**
-     * Lit un fichier `.torrent` choisi ou ouvert (`content:` ou `file:`), ou le télécharge
-     * s'il est donné par une adresse `http(s)`, hors du fil principal ; [done] reçoit son
-     * contenu, sur le fil principal. Refusé au-delà de 16 Mio, ou s'il ne commence pas comme
-     * un dictionnaire bencode (une page d'erreur, par exemple).
+     * Lit un fichier `.torrent` choisi ou ouvert (`content:` ou `file:`) hors du fil
+     * principal ; une adresse `http(s)` est lue par le moteur (`torrent.fetch`), qui suit son
+     * proxy et « Wi-Fi seulement » (audit C16). [done] reçoit son contenu, sur le fil
+     * principal. Refusé au-delà de 16 Mio, ou s'il ne commence pas comme un dictionnaire
+     * bencode (une page d'erreur, par exemple).
      */
     fun readTorrent(uri: Uri, done: (Result<ByteArray>) -> Unit) {
+        if (uri.scheme == "http" || uri.scheme == "https") {
+            engine.call("torrent.fetch", JSONObject().put("url", uri.toString())) { reply ->
+                done(reply.mapCatching { Base64.decode(it.getString("data"), Base64.DEFAULT) })
+            }
+            return
+        }
         Thread {
             val result = runCatching {
-                val input = if (uri.scheme == "http" || uri.scheme == "https") {
-                    val connection = URL(uri.toString()).openConnection() as HttpURLConnection
-                    connection.connectTimeout = 15_000
-                    connection.readTimeout = 30_000
-                    if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
-                    connection.inputStream
-                } else {
-                    contentResolver.openInputStream(uri) ?: error(getString(R.string.torrent_unreadable))
-                }
+                val input = contentResolver.openInputStream(uri) ?: error(getString(R.string.torrent_unreadable))
                 val bytes = input.use { stream ->
                     val out = java.io.ByteArrayOutputStream()
                     val buffer = ByteArray(64 * 1024)
@@ -269,8 +266,10 @@ class AuroApp : Application() {
             listOf(top.path)
         }
         if (paths.isEmpty()) return
-        MediaScannerConnection.scanFile(this, paths.toTypedArray(), null) { path, uri ->
-            Log.i(TAG, "indexé : $path -> $uri")
+        // Jamais de chemin dans le journal du système (lisible par adb, rapports de bogue) :
+        // l'identifiant de la tâche seulement (audit C25).
+        MediaScannerConnection.scanFile(this, paths.toTypedArray(), null) { _, uri ->
+            Log.i(TAG, "indexé : tâche ${task.id}, ${if (uri != null) "ok" else "échec"}")
         }
     }
 

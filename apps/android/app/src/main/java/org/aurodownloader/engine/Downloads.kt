@@ -180,6 +180,9 @@ class Downloads(private val engine: EngineClient) {
         }
         if (method == "task.progress") {
             if (params.optLong("rev") < current) return
+            // L'avancement porte la révision courante sans l'augmenter (SPEC §6.10) : plus
+            // récent que l'état chargé, il révèle des changements manqués (comme W13).
+            if (params.optLong("rev") > current) return reload()
             val items = params.optJSONArray("items") ?: return
             for (i in 0 until items.length()) {
                 val item = items.getJSONObject(i)
@@ -196,10 +199,9 @@ class Downloads(private val engine: EngineClient) {
             }
             return
         }
-        if (method == "engine.warning") {
-            if (params.optString("code") == "EVENTS_LOST") reload()
-            return
-        }
+        // Notifications perdues : propre à la connexion, sans révision. Les autres
+        // avertissements sont numérotés, et comptés plus bas (audit C18).
+        if (method == "engine.warning" && params.optString("code") == "EVENTS_LOST") return reload()
         if (method !in REVISED) return
         val at = params.optLong("rev")
         if (at <= current) return
@@ -261,6 +263,9 @@ class Downloads(private val engine: EngineClient) {
             "task.added", "task.stateChanged", "task.updated", "task.removed", "queue.updated",
             "limits.updated", "settings.updated", "schedule.updated", "schedule.removed",
             "engine.endAction", "engine.network",
+            // Numérotées aussi (SPEC §6.10) ; oubliées, chacune faisait recharger l'état
+            // (audit C18).
+            "engine.torrentInterface", "media.tools", "engine.warning",
         )
     }
 }

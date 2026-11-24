@@ -14,6 +14,7 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -52,6 +53,8 @@ class Background(private val app: AuroApp) {
 
     private var connected = false
     private var unmetered = false
+    /** Wi-Fi ou Ethernet, facturé ou non : ce qu'exige « Wi-Fi seulement » (audit C17). */
+    private var wifi = false
     private var job: Pair<JobService, JobParameters>? = null
     private var service: TransferService? = null
     private var told: Pair<Boolean, Boolean>? = null
@@ -84,6 +87,7 @@ class Background(private val app: AuroApp) {
                 main.post {
                     connected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     unmetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                    wifi = isWifi(caps)
                     refresh()
                 }
             }
@@ -92,6 +96,7 @@ class Background(private val app: AuroApp) {
                 main.post {
                     connected = false
                     unmetered = false
+                    wifi = false
                     refresh()
                 }
             }
@@ -108,7 +113,7 @@ class Background(private val app: AuroApp) {
     fun refresh() {
         if (!app.downloads.loaded.value) return
         val busy = busy()
-        val networkOk = connected && (!wifiOnly || unmetered)
+        val networkOk = connected && (!wifiOnly || wifi)
         val protectedNow = visible || job != null || service != null
         waiting.value = when {
             busy.isEmpty() -> null
@@ -157,15 +162,39 @@ class Background(private val app: AuroApp) {
 
     private fun scheduler() = app.getSystemService(JobScheduler::class.java)
 
+    /**
+     * Le réseau par défaut passe par le Wi-Fi ou l'Ethernet. Un VPN a les transports de son
+     * réseau sous-jacent à partir d'Android 9 ; avant, un VPN non facturé est pris pour du
+     * Wi-Fi (le transport sous-jacent n'y est pas dit).
+     */
+    private fun isWifi(caps: NetworkCapabilities): Boolean =
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.P &&
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+
     private fun scheduleJob(busy: List<Task>) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
         val left = busy.sumOf { t -> t.totalBytes?.let { (it - t.doneBytes).coerceAtLeast(0) } ?: 0L }
-        val network = if (wifiOnly) JobInfo.NETWORK_TYPE_UNMETERED else JobInfo.NETWORK_TYPE_ANY
-        val info = JobInfo.Builder(JOB_ID, ComponentName(app, TransferJob::class.java))
+        val builder = JobInfo.Builder(JOB_ID, ComponentName(app, TransferJob::class.java))
             .setUserInitiated(true)
-            .setRequiredNetworkType(network)
             .setEstimatedNetworkBytes(left.coerceAtLeast(1), 0)
-            .build()
+        if (wifiOnly) {
+            // Wi-Fi ou Ethernet, facturé ou non (audit C17) ; un VPN par-dessus est accepté
+            // (la requête le refuse par défaut).
+            builder.setRequiredNetwork(
+                NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    .build(),
+            )
+        } else {
+            builder.setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+        }
+        val info = builder.build()
         val result = scheduler().schedule(info)
         if (result != JobScheduler.RESULT_SUCCESS) Log.w(AuroApp.TAG, "transfert non programmé : $result")
     }

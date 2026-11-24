@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/torrent.fetch.json",
+  "title": "torrent.fetch",
+  "description": "Lit un fichier .torrent à son adresse HTTP(S), par le moteur (proxy, réseau utilisable, réseau public pour un jeton ; 16 Mio au plus), pour l'ajouter ensuite par task.add (SPEC 7.16, depuis le 2026-11-24).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "Contenu du fichier en base64, pour sources[0].torrent de task.add.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data"
+      ]
+    }
+  }
+}

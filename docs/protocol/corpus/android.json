@@ -6,6 +6,7 @@
     {"method": "sync.snapshot", "params": {}},
     {"method": "engine.setNetwork", "params": {"usable": true, "metered": false}},
     {"method": "task.add", "params": {"sources": [{"url": "${url:/android.bin}"}]}, "save": {"task": "/taskId"}},
+    {"method": "torrent.fetch", "params": {"url": "${url:/lot.torrent}"}},
     {"method": "task.add", "params": {"sources": [{"torrent": "${torrent}"}]}, "save": {"torrent": "/taskId"}},
     {"method": "task.get", "params": {"taskId": "${torrent}", "include": ["files"]}},
     {"method": "task.get", "params": {"taskId": "${torrent}", "include": ["sources"]}},

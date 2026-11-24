@@ -2473,6 +2473,11 @@ async fn the_clients_corpus_still_works() {
                 &[("Content-Type", "text/html")],
                 b"<html><body><a href=\"d.bin\">d</a> <a href=\"e.zip\">e</a></body></html>",
             ),
+            "/lot.torrent" => crate::testing::reply(
+                "200 OK",
+                &[("Content-Type", "application/x-bittorrent")],
+                b"d4:infod4:name3:loteee",
+            ),
             "/lot.meta4" => {
                 let xml = "<?xml version=\"1.0\"?><metalink xmlns=\"urn:ietf:params:xml:ns:metalink\">\
                     <file name=\"m.bin\"><size>65536</size><url>http://HOTE/m.bin</url></file></metalink>"
@@ -3841,6 +3846,13 @@ async fn a_token_connection_reaches_only_the_public_network_and_the_download_fol
             .await,
         "ADDRESS_FORBIDDEN"
     );
+    // Audit C16 : un `.torrent` lu par le moteur suit la même limite.
+    assert_eq!(
+        remote
+            .error_code("torrent.fetch", json!({"url": inside}))
+            .await,
+        "ADDRESS_FORBIDDEN"
+    );
     let probed = remote
         .result("linkscan.probe", json!({"urls": [by_name]}))
         .await;
@@ -4983,5 +4995,65 @@ async fn an_sftp_host_key_is_accepted_then_the_task_resumes() {
         c.result("hostkey.list", json!({})).await["items"],
         json!([])
     );
+    crate::testing::stop(&engine).await;
+}
+
+/// Audit C16 : un fichier `.torrent` lu à son adresse par le moteur, rendu en base64 ; une
+/// page qui n'en est pas un est refusée ; réseau dit inutilisable : rien n'est lu.
+#[tokio::test]
+async fn a_torrent_file_is_fetched_by_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let metainfo = b"d4:infod6:lengthi3e4:name5:a.bin12:piece lengthi16384e6:pieces0:ee".to_vec();
+    let served = metainfo.clone();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&hits);
+    let host = crate::testing::serve(move |r| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match r.path.as_str() {
+            "/a.torrent" => crate::testing::reply(
+                "200 OK",
+                &[("Content-Type", "application/x-bittorrent")],
+                &served,
+            ),
+            "/page.html" => crate::testing::reply("200 OK", &[], b"<html></html>"),
+            _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+        }
+    });
+    let fetched = c
+        .result("torrent.fetch", json!({"url": host.url("/a.torrent")}))
+        .await;
+    let data = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        fetched["data"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data, metainfo);
+    for (url, code) in [
+        (host.url("/page.html"), "INVALID_PARAMS"),
+        (host.url("/absent.torrent"), "INVALID_PARAMS"),
+        ("ftp://exemple.org/a.torrent".to_owned(), "URL_INVALID"),
+    ] {
+        assert_eq!(
+            c.error_code("torrent.fetch", json!({"url": url})).await,
+            code,
+            "{url}"
+        );
+    }
+    assert_eq!(
+        c.error_code("torrent.fetch", json!({})).await,
+        "INVALID_PARAMS"
+    );
+    // Réseau inutilisable (Android, « Wi-Fi seulement ») : refusé sans requête.
+    c.result("engine.setNetwork", json!({"usable": false}))
+        .await;
+    let before = hits.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        c.error_code("torrent.fetch", json!({"url": host.url("/a.torrent")}))
+            .await,
+        "SOURCE_UNREACHABLE"
+    );
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), before);
     crate::testing::stop(&engine).await;
 }

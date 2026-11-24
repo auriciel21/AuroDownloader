@@ -100,7 +100,7 @@
     <string name="preallocate_note">Storage that is too small shows up before the download.</string>
 
     <string name="wifi_only">Wi-Fi only</string>
-    <string name="wifi_only_note">No downloading on a metered connection (mobile data, hotspot).</string>
+    <string name="wifi_only_note">Downloads only over Wi-Fi (or Ethernet), never over mobile data. A metered Wi-Fi, such as a phone hotspot, counts as Wi-Fi.</string>
     <string name="resume_boot">Resume after the device restarts</string>
     <string name="resume_boot_note">Unfinished downloads resume, or a notification offers to resume them (Android 14 and later).</string>
     <string name="wait_network">Waiting for the network</string>
@@ -145,4 +145,6 @@
     <string name="upload_limit">Upload limit</string>
     <string name="error_TORRENT_SESSION">torrent session unavailable (network, listening port)</string>
     <string name="error_TORRENT_FAILED">torrent error</string>
+    <string name="error_ADDRESS_FORBIDDEN">address on the internal network refused</string>
+    <string name="error_SECRET_UNAVAILABLE">system keychain unavailable</string>
 </resources>

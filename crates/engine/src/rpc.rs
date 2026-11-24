@@ -117,6 +117,7 @@ impl From<EngineError> for RpcError {
                 Self::new(-32033, "ADDRESS_FORBIDDEN", message)
             }
             EngineError::SourceUnreachable(_) => Self::new(-32028, "SOURCE_UNREACHABLE", message),
+            EngineError::NetworkUnusable => Self::new(-32028, "SOURCE_UNREACHABLE", message),
             EngineError::CapabilityMissing(_) => Self::capability_missing(message),
             EngineError::ToolsMissing(_) => Self::new(-32031, "TOOLS_MISSING", message),
             EngineError::Extractor(_) => Self::new(-32032, "EXTRACTOR_FAILED", message),

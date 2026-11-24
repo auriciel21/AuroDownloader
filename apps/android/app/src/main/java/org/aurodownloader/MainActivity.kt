@@ -3,6 +3,7 @@ package org.aurodownloader
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -20,7 +21,8 @@ import java.io.File
 /**
  * Fenêtre de l'application (SPEC §4.4, F-38) : la liste des téléchargements, leurs détails
  * et les réglages (Compose). Ajoute aussi un lien partagé depuis une autre application
- * (« Partager »), ouvert avec elle, ou donné par adb (`--es url <adresse>`, essais).
+ * (« Partager »), ouvert avec elle, ou donné par adb (`--es url <adresse>`, essais : APK de
+ * débogage seulement).
  */
 class MainActivity : ComponentActivity() {
     private val app get() = application as AuroApp
@@ -56,8 +58,13 @@ class MainActivity : ComponentActivity() {
         addFrom(intent)
     }
 
-    /** Adresse donnée par adb (`--es url`, essais) ; les liens partagés ou ouverts passent par [ShareActivity]. */
+    /**
+     * Adresse donnée par adb (`--es url`, essais) ; les liens partagés ou ouverts passent par
+     * [ShareActivity]. Seulement dans l'APK de débogage : l'activité est ouverte à toutes les
+     * applications, qui pourraient sinon ajouter un téléchargement sans rien montrer (audit C15).
+     */
     private fun addFrom(intent: Intent) {
+        if (!debuggable()) return
         if (!app.running) return
         val url = intent.getStringExtra("url") ?: return
         app.add(url) { error ->
@@ -65,6 +72,9 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, text, Toast.LENGTH_LONG).show()
         }
     }
+
+    /** APK de débogage (essais), jamais celui de publication. */
+    private fun debuggable() = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     /**
      * Ouvre un fichier terminé avec l'application qui sait le lire ; jamais un programme ni

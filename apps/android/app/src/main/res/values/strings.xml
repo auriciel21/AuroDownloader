@@ -116,7 +116,7 @@
 
     <!-- Arrière-plan (SPEC §7.15) -->
     <string name="wifi_only">Wi-Fi seulement</string>
-    <string name="wifi_only_note">Pas de téléchargement sur une connexion facturée au volume (données mobiles, partage de connexion).</string>
+    <string name="wifi_only_note">Téléchargements seulement en Wi-Fi (ou Ethernet), jamais sur les données mobiles. Un Wi-Fi facturé, comme le partage de connexion d\'un téléphone, compte comme du Wi-Fi.</string>
     <string name="resume_boot">Reprendre après le redémarrage de l\'appareil</string>
     <string name="resume_boot_note">Les téléchargements inachevés reprennent, ou une notification propose de les reprendre (Android 14 et plus).</string>
     <string name="wait_network">En attente du réseau</string>
@@ -161,4 +161,6 @@
     <string name="upload_limit">Limite d\'envoi</string>
     <string name="error_TORRENT_SESSION">session des torrents impossible (réseau, port d\'écoute)</string>
     <string name="error_TORRENT_FAILED">erreur du torrent</string>
+    <string name="error_ADDRESS_FORBIDDEN">adresse du réseau interne refusée</string>
+    <string name="error_SECRET_UNAVAILABLE">coffre du système indisponible</string>
 </resources>

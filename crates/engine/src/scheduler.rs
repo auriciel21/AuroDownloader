@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -500,6 +500,13 @@ pub enum EngineError {
     #[error("{0}")]
     PluginNotFound(String),
 
+    /// Le réseau est inutilisable pour l'instant (SPEC §7.15) : rien n'est lu.
+    #[error(
+        "réseau inutilisable pour l'instant (pas de réseau, ou « Wi-Fi seulement » sans \
+         Wi-Fi) : rien n'a été lu"
+    )]
+    NetworkUnusable,
+
     /// La page d'un plugin donne plusieurs liens : à choisir (`plugin.resolve`).
     #[error(
         "le plugin a trouvé {0} liens sur cette page : les choisir (plugin.resolve, plugin.add)"
@@ -917,6 +924,8 @@ pub struct Engine {
     remote: bool,
     /// Et réseau public seulement, sauf réglage `remote.allowPrivate`.
     public_only: bool,
+    /// Réseau utilisable, tel que l'application l'a dit (SPEC §7.15), tenu par la boucle.
+    network_usable: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -999,6 +1008,7 @@ impl Engine {
         );
         let tools = state.tools.clone();
         let client = state.config.client.clone();
+        let network_usable = Arc::clone(&state.network_shared);
         tokio::spawn(async move {
             state.run(inbox, prepared).await;
             // Boucle finie, base fermée : un autre moteur peut l'ouvrir.
@@ -1032,6 +1042,7 @@ impl Engine {
             remote_state: Arc::default(),
             plugins: Arc::new(crate::plugins::Plugins::new(&data_dir, config_proxy)),
             data_dir,
+            network_usable,
         };
         // Liens expirés des tâches venues d'un plugin (SPEC §7.20) : poignée faible, qui
         // n'empêche pas le moteur de s'arrêter quand ses poignées disparaissent.
@@ -1691,6 +1702,36 @@ impl Engine {
         };
         let doc = metalink::parse(&bytes).map_err(|e| EngineError::BadRequest(e.to_string()))?;
         Ok((doc, bytes))
+    }
+
+    /// Un fichier `.torrent` lu à son adresse par le moteur (SPEC §7.16, audit C16), pour
+    /// l'ajouter ensuite (`task.add`, `sources[0].torrent`) : proxy du moteur, réseau public
+    /// seulement pour une connexion à jeton, 16 Mio au plus, sans en-têtes ni identifiants.
+    /// Refusé quand l'application dit le réseau inutilisable (Android, « Wi-Fi seulement »).
+    pub async fn fetch_torrent(&self, url: &str) -> Result<Vec<u8>, EngineError> {
+        if !self.network_usable.load(Ordering::SeqCst) {
+            return Err(EngineError::NetworkUnusable);
+        }
+        match self
+            .client
+            .fetch_small_at(url, crate::torrent::MAX_TORRENT_FILE)
+            .await
+        {
+            // Un `.torrent` est un dictionnaire bencode : une page d'erreur n'en est pas un.
+            Ok(Some(bytes)) if bytes.first() == Some(&b'd') => Ok(bytes),
+            Ok(Some(_)) => Err(EngineError::BadRequest(
+                "ce n'est pas un fichier .torrent".into(),
+            )),
+            Ok(None) => Err(EngineError::BadRequest(format!(
+                "pas de fichier .torrent à cette adresse (réponse autre que 200, ou plus de {} \
+                 Mio)",
+                crate::torrent::MAX_TORRENT_FILE >> 20
+            ))),
+            Err(e @ (NetError::InvalidUrl(_) | NetError::UnsupportedScheme(_))) => {
+                Err(EngineError::Url(e))
+            }
+            Err(e) => Err(EngineError::SourceUnreachable(e)),
+        }
     }
 
     /// Les liens d'une page (analyse de liens, F-29, SPEC §7.18) : la page est lue par le
@@ -2476,6 +2517,8 @@ struct Scheduler {
     /// et celles en cours retournent en file. Dit par l'application (Android : réseau
     /// perdu, ou facturé avec « Wi-Fi seulement ») ; vrai au démarrage.
     network_usable: bool,
+    /// Copie de `network_usable` pour les poignées (`Engine::fetch_torrent`).
+    network_shared: Arc<AtomicBool>,
     /// Réseau facturé au volume (SPEC §7.16) : les torrents ne partagent pas. Dit par
     /// l'application Android ; faux au démarrage.
     network_metered: bool,
@@ -2567,6 +2610,7 @@ impl Scheduler {
             moved,
             moved_rx: Some(moved_rx),
             network_usable,
+            network_shared: Arc::new(AtomicBool::new(network_usable)),
             network_metered: false,
             torrents,
             iface_name,
@@ -5219,6 +5263,7 @@ impl Scheduler {
             return;
         }
         self.network_usable = usable;
+        self.network_shared.store(usable, Ordering::SeqCst);
         self.network_metered = metered;
         if usable {
             // Une erreur de réseau survenue avant que l'application dise la coupure : la tâche

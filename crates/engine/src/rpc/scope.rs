@@ -66,6 +66,8 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         "task.add" | "task.addBatch" | "media.probe" | "linkscan.run"
         // Fichiers Metalink (SPEC §7.7) : lus, au besoin à une adresse, puis ajoutés.
         | "metalink.read" | "metalink.add"
+        // Fichier `.torrent` lu à son adresse pour l'ajouter (SPEC §7.16, audit C16).
+        | "torrent.fetch"
         // Tailles des liens analysés : une requête vers chaque adresse (SPEC §7.18).
         | "linkscan.probe"
         // Plugins d'hébergeurs (SPEC §7.20) : s'en servir à l'ajout, jamais en installer.
