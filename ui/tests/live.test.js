@@ -37,6 +37,7 @@ const TASKS = [
   task("echec", "failed", { errorCode: "HOST_KEY_UNKNOWN", errorDetail: "ssh-ed25519 SHA256:abc" }),
   task("fini", "completed", { doneBytes: 100 * MIB, finishedAt: NOW - 60_000 }),
   task("partage", "seeding", { kind: "torrent", doneBytes: 100 * MIB }),
+  task("fusion", "post_processing", { kind: "media", doneBytes: 100 * MIB }),
 ];
 
 const DETAILS = {
@@ -263,6 +264,74 @@ test("Propriétés : la clé du serveur SSH d'une tâche arrêtée par elle", as
   assert.equal(window.document.getElementById("d-hostkey").hidden, false);
 });
 
+// Audit W7 : « Supprimer » une tâche qui finit sa fusion ou sa commande de fin le dit, au
+// lieu de ne rien faire ; rien n'est demandé au moteur pour elle.
+test("supprimer une tâche en post_processing : annoncé, rien d'envoyé", async () => {
+  await closeAll();
+  const { document } = window;
+  row("fusion").firstElementChild.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await settle();
+  const before = calls.length;
+  document.getElementById("tb-remove").click();
+  await settle();
+  const dialog = document.getElementById("remove-dialog");
+  assert.ok(dialog.open, "boîte de confirmation ouverte");
+  dialog.close("confirm");
+  await settle();
+  const sent = calls.slice(before).filter((c) => c === "task.remove" || c === "task.cancel");
+  assert.deepEqual(sent, []);
+  assert.equal(document.getElementById("error").hidden, false);
+  assert.match(document.getElementById("error-text").textContent, /fusion\.iso.*fusion ou sa commande de fin/);
+  document.getElementById("error").hidden = true;
+});
+
+// Audit W14 (leçon A15) : l'erreur d'un champ lui est liée avant qu'il prenne le focus.
+test("Options : une adresse de proxy refusée est liée à son champ, qui prend le focus", async () => {
+  await closeAll();
+  const { document } = window;
+  ENGINE["proxy.set"] = () => { throw new Error("url : adresse de proxy illisible"); };
+  try {
+    document.getElementById("tb-settings").click();
+    await settle();
+    document.getElementById("proxy-manual").click();
+    await settle();
+    const url = document.getElementById("proxy-url");
+    url.value = "pas un proxy";
+    document.getElementById("proxy-apply").click();
+    await settle();
+    assert.equal(url.getAttribute("aria-invalid"), "true");
+    assert.ok((url.getAttribute("aria-describedby") ?? "").split(/\s+/).includes("proxy-error"));
+    assert.match(document.getElementById("proxy-error").textContent, /illisible/);
+    assert.equal(document.activeElement?.id, "proxy-url");
+  } finally {
+    delete ENGINE["proxy.set"];
+    await closeAll();
+  }
+});
+
+// Audit W15 : sans la portée `admin`, les Options ne demandent ni les identifiants ni les
+// interfaces réseau (le moteur les refuserait).
+test("Options sans droit d'administration : rien de réservé n'est demandé", async () => {
+  await closeAll();
+  const { document } = window;
+  const up = (scope) => listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope } } });
+  up("control");
+  await settle();
+  try {
+    const before = calls.length;
+    document.getElementById("tb-settings").click();
+    await settle();
+    const asked = calls.slice(before);
+    for (const method of ["login.list", "torrent.interfaces", "hostkey.list", "proxy.get"]) {
+      assert.ok(!asked.includes(method), `${method} : ${asked.join(" ")}`);
+    }
+  } finally {
+    await closeAll();
+    up("admin");
+    await settle();
+  }
+});
+
 test("menu contextuel ouvert au clavier", async () => {
   await closeAll();
   const body = window.document.querySelector("#grid tbody");
@@ -353,6 +422,30 @@ test("boîte d'ajout : un ajout refusé est annoncé dans la boîte rouverte, le
   assert.equal(urls.hasAttribute("aria-invalid"), false);
   assert.equal(described(urls), "");
   urls.value = "";
+});
+
+// Audit W11 : moteur perdu, « Démarrer » garde la boîte ouverte, la saisie et le dit.
+test("boîte d'ajout : moteur perdu, la boîte reste ouverte et le dit", async () => {
+  await closeAll();
+  const document = window.document;
+  document.getElementById("tb-add").click();
+  await settle();
+  const box = document.getElementById("add-dialog");
+  const urls = document.getElementById("urls");
+  urls.value = "https://exemple.org/garde.iso";
+  listeners.engine({ payload: { kind: "status", state: "down", message: "moteur injoignable" } });
+  await settle();
+  const before = calls.length;
+  document.getElementById("add-start").click();
+  await settle();
+  assert.ok(box.open, "boîte restée ouverte");
+  assert.equal(urls.value, "https://exemple.org/garde.iso", "saisie gardée");
+  assertAlertIn(box, /moteur ne répond pas/);
+  assert.ok(!calls.slice(before).includes("task.add"));
+  listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope: "admin" } } });
+  await settle();
+  box.close("cancel");
+  await settle();
 });
 
 test("boîte d'ajout : un ajout accepté la ferme et rend le focus à la barre d'outils", async () => {

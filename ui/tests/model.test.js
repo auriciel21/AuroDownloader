@@ -124,6 +124,20 @@ test("un nouvel instantané après reconnexion repart de sa révision, même plu
   assert.ok(!store.apply("task.stateChanged", { rev: 3, taskId: "a", from: "paused", to: "queued" }).resync);
 });
 
+// Audit W13 : l'avancement porte la révision courante (SPEC 6.10) ; plus récent que l'état
+// chargé, il révèle des changements d'état manqués : rechargement, sans l'appliquer.
+test("un avancement en avance sur la révision est un trou", () => {
+  const store = new TaskStore();
+  store.load(snapshot(4, [task("a", "active")]));
+  const same = store.apply("task.progress", { rev: 4, items: [{ taskId: "a", doneBytes: 10 }] });
+  assert.ok(same.changed.has("a") && !same.resync);
+  const ahead = store.apply("task.progress", { rev: 6, items: [{ taskId: "a", doneBytes: 99 }] });
+  assert.ok(ahead.resync);
+  assert.equal(store.tasks.get("a").doneBytes, 10, "non appliqué");
+  const old = store.apply("task.progress", { rev: 3, items: [{ taskId: "a", doneBytes: 1 }] });
+  assert.ok(!old.resync && !old.changed.size);
+});
+
 test("une tâche retirée quitte la liste, dans l'ordre des révisions", () => {
   const store = new TaskStore();
   store.load(snapshot(1, [task("a", "completed"), task("b", "failed")]));

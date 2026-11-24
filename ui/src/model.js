@@ -382,6 +382,12 @@ export class TaskStore {
       case "task.progress":
         // Antérieur à l'état chargé : périmé.
         if (params.rev < this.rev) return result;
+        // Postérieur : l'avancement porte la révision courante sans l'augmenter (SPEC §6.10),
+        // donc des changements d'état ont manqué. Un trou, comme une révision sautée (W13).
+        if (params.rev > this.rev) {
+          result.resync = true;
+          return result;
+        }
         for (const item of params.items) {
           const task = this.tasks.get(item.taskId);
           if (!task) continue;

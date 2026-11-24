@@ -64,6 +64,10 @@ export const EN = {
   "Démarrer": "Start",
   // Suppression
   "Supprimer « {0} » de la liste ?": "Delete “{0}” from the list?",
+  "« {0} » termine sa fusion ou sa commande de fin : il pourra être supprimé ensuite.":
+    "“{0}” is finishing its merge or end command: it can be deleted afterwards.",
+  "{0} téléchargements terminent leur fusion ou leur commande de fin : ils pourront être supprimés ensuite.":
+    "{0} downloads are finishing their merge or end command: they can be deleted afterwards.",
   "Supprimer {0} téléchargements de la liste ?": "Delete {0} downloads from the list?",
   "Supprimer aussi les fichiers terminés du disque": "Also delete finished files from the disk",
   "Les fichiers partiels des téléchargements inachevés sont toujours supprimés.":
@@ -244,6 +248,9 @@ export const EN = {
   "identifiants demandés par le serveur": "the server asks for a user name and password",
   "identifiants refusés par le serveur": "the server refused the user name or password",
   "commande de fin en échec": "end command failed",
+  "session BitTorrent indisponible (port, réseau)": "BitTorrent session unavailable (port, network)",
+  "torrent refusé ou invalide": "torrent refused or invalid",
+  "adresse du réseau interne refusée": "address on the internal network refused",
   // Règles de rangement (SPEC 7.21)
   "Règles": "Rules",
   "Une règle range les fichiers ajoutés sans dossier choisi (extension, « Ajouter ») : dossier et nom donnés dès le départ. Elle peut aussi lancer une commande quand le téléchargement est terminé. La première règle activée qui correspond l'emporte.":
@@ -489,6 +496,8 @@ export const EN = {
   "Aucun téléchargement en cours": "No download in progress",
   "Action refusée : {0}": "Action refused: {0}",
   "{0} ajout(s) refusé(s) : {1}": "{0} addition(s) refused: {1}",
+  "Le moteur ne répond pas : rien n'a été ajouté. Réessayer quand il sera de retour.":
+    "The engine is not answering: nothing was added. Try again once it is back.",
   "(aucun)": "(none)",
   // Planification (F-16)
   "Planification": "Schedule",
@@ -820,6 +829,10 @@ export const ERRORS = {
   AUTH_FAILED: "identifiants refusés par le serveur",
   HOST_KEY_UNKNOWN: "clé du serveur SSH inconnue (voir les Propriétés)",
   HOST_KEY_CHANGED: "clé du serveur SSH changée (voir les Propriétés)",
+  // Audit W6 : codes de la SPEC 6.8 qui manquaient.
+  TORRENT_SESSION: "session BitTorrent indisponible (port, réseau)",
+  TORRENT_FAILED: "torrent refusé ou invalide",
+  ADDRESS_FORBIDDEN: "adresse du réseau interne refusée",
 };
 
 /// Cause d'un échec, lisible ; le code lui-même s'il est inconnu.

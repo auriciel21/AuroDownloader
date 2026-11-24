@@ -42,7 +42,7 @@ Fenêtre de l'icône, « Réglages » :
 
 - Confier les téléchargements à AuroDownloader, seulement à partir d'une taille ;
 - Sites exclus (un par ligne ; leurs sous-domaines aussi) ;
-- Aussi en navigation privée ;
+- Aussi en navigation privée (téléchargements et liens magnet des fenêtres privées) ;
 - **Transmettre les cookies et la page d'origine** : pour les téléchargements qui demandent
   d'être connecté ; AuroDownloader range les cookies dans le coffre du système ;
 - Confier les liens magnet à AuroDownloader ;

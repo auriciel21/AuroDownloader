@@ -9,6 +9,7 @@ if (typeof importScripts === "function" && !globalThis.AuroDecide) importScripts
 
 const {
   decide,
+  settings,
   requestId,
   pageHeaders,
   cookieStore,
@@ -137,9 +138,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, giveBack: true });
         return false;
       }
-      submit({ type: "add", url: message.url, requestId: freshKey("magnet") }, message.url).then((reply) =>
-        sendResponse({ ok: reply?.ok === true, giveBack: givesBackMagnet(reply) }),
-      );
+      (async () => {
+        // Fenêtre privée : capté seulement avec « captureIncognito », comme un
+        // téléchargement ; sinon rendu au navigateur (audit W9, décision 8).
+        if (sender.tab?.incognito) {
+          const stored = await chrome.storage.sync.get(null).catch(() => ({}));
+          if (!settings(stored).captureIncognito) return { ok: false, giveBack: true };
+        }
+        const reply = await submit({ type: "add", url: message.url, requestId: freshKey("magnet") }, message.url);
+        return { ok: reply?.ok === true, giveBack: givesBackMagnet(reply) };
+      })().then(sendResponse);
       return true;
     }
     // Fenêtre de l'extension (`popup.js`).
@@ -172,8 +180,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   const page = item.referrer || undefined;
   if (await hand(url, requestId(item), { page, storeId: cookieStore(item) })) {
-    await chrome.downloads.cancel(item.id).catch(() => {});
-    await chrome.downloads.erase({ id: item.id }).catch(() => {});
+    // Effacée seulement si l'annulation a pris : un téléchargement que le navigateur a
+    // déjà fini reste dans sa liste, au lieu d'un fichier en double invisible (audit W8).
+    const cancelled = await chrome.downloads.cancel(item.id).then(() => true, () => false);
+    if (cancelled) await chrome.downloads.erase({ id: item.id }).catch(() => {});
   }
 });
 

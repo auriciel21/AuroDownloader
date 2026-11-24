@@ -187,6 +187,14 @@ function fieldError(field, text, box = null) {
   if (document.activeElement === field) speak(box, text);
 }
 
+/// Erreur d'un seul champ, dans la zone d'erreur `boxId` de sa boîte : liée au champ avant
+/// qu'il prenne le focus, pour que le lecteur d'écran la lise avec lui (leçon A15, audit W14).
+function linkedError(fieldId, boxId, text) {
+  const field = $(fieldId);
+  fieldError(field, text, $(boxId));
+  field.focus();
+}
+
 function clearFieldErrors(dialog) {
   const boxes = new Set([...dialog.querySelectorAll("[data-field-error]")].map((box) => box.id));
   for (const field of dialog.querySelectorAll("[data-error-linked]")) {
@@ -843,6 +851,9 @@ async function deleteTasks(ids, deleteCompleted) {
   const sharing = tasks.filter((task) => task.state === "seeding").map((task) => task.taskId);
   const running = tasks.filter((task) => canCancel(task.state) && task.state !== "seeding")
     .map((task) => task.taskId);
+  // Fusion d'une vidéo ou commande de fin : ni annulée ni retirée (SPEC §5.5) ; dit, au lieu
+  // de ne rien faire (audit W7).
+  const finishing = tasks.filter((task) => task.state === "post_processing");
   if (done.length) await act("task.remove", { taskIds: done, deleteFiles: deleteCompleted });
   if (finished.length) await act("task.remove", { taskIds: finished, deleteFiles: true });
   for (const [list, deleteFiles] of [[sharing, deleteCompleted], [running, true]]) {
@@ -853,6 +864,11 @@ async function deleteTasks(ids, deleteCompleted) {
     if (!result) for (const id of list) removeWhenCancelled.delete(id);
   }
   removeCancelled();
+  if (finishing.length) {
+    showError(finishing.length === 1
+      ? t("« {0} » termine sa fusion ou sa commande de fin : il pourra être supprimé ensuite.", taskName(finishing[0]))
+      : t("{0} téléchargements terminent leur fusion ou leur commande de fin : ils pourront être supprimés ensuite.", finishing.length));
+  }
 }
 
 function removeCancelled() {
@@ -965,8 +981,7 @@ async function saveMove() {
     if (result.moving) announce(t("Copie de « {0} » vers l'autre disque en cours", taskName(result)));
     $("move-dialog").close();
   } catch (e) {
-    $("move-error").textContent = e?.message ?? String(e);
-    $("move-error").hidden = false;
+    linkedError("move-name", "move-error", e?.message ?? String(e));
   } finally {
     $("move-save").disabled = false;
   }
@@ -1013,8 +1028,7 @@ async function saveRefresh() {
     // Un téléchargement en échec (lien expiré) repart aussitôt.
     if (task.state === "failed") await act("task.resume", { taskIds: [taskId] });
   } catch (e) {
-    $("refresh-error").textContent = e?.message ?? String(e);
-    $("refresh-error").hidden = false;
+    linkedError("refresh-url", "refresh-error", e?.message ?? String(e));
   } finally {
     $("refresh-save").disabled = false;
   }
@@ -1912,12 +1926,17 @@ async function saveProxy() {
   $("proxy-apply").disabled = true;
   try {
     proxyView = await host.call("proxy.set", params);
+    clearFieldErrors($("proxy-url").closest("dialog"));
     $("proxy-error").hidden = true;
     announce(t("Proxy appliqué"));
     renderProxy();
   } catch (e) {
-    $("proxy-error").textContent = e?.message ?? String(e);
-    $("proxy-error").hidden = false;
+    // Proxy manuel : l'erreur porte sur son adresse, seul champ obligatoire.
+    if (params.mode === "manual") linkedError("proxy-url", "proxy-error", e?.message ?? String(e));
+    else {
+      $("proxy-error").textContent = e?.message ?? String(e);
+      $("proxy-error").hidden = false;
+    }
   } finally {
     // Le mot de passe ne reste pas dans la page.
     $("proxy-password").value = "";
@@ -2308,8 +2327,13 @@ async function addFromDialog(choice) {
   const dialog = $("add-dialog");
   const field = $("urls");
   let urls = field.value.split(/\s+/).filter(Boolean);
-  if ((!urls.length && !addTorrents.length && !addMetalinks.length && !addPluginPages.length) || !connected) {
+  if (!urls.length && !addTorrents.length && !addMetalinks.length && !addPluginPages.length) {
     dialog.close(choice);
+    return;
+  }
+  // Moteur perdu : la boîte reste ouverte, ce qui a été saisi aussi, et c'est dit (audit W11).
+  if (!connected) {
+    addFailed(t("Le moteur ne répond pas : rien n'a été ajouté. Réessayer quand il sera de retour."));
     return;
   }
   // Pages d'hébergeurs (SPEC §7.20) : celles qu'un plugin lira, sauf « sans plugin ».
@@ -2724,8 +2748,7 @@ async function addVideo(choice) {
   if (subtitles.length) media.subtitles = subtitles;
   const sub = subDirParam("v-subdir");
   if (sub === null) {
-    $("v-error").textContent = t("Sous-dossier refusé : « . » et « .. » ne sont pas permis.");
-    $("v-error").hidden = false;
+    linkedError("v-subdir", "v-error", t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."));
     return;
   }
   $("v-start").disabled = true;
@@ -4464,10 +4487,12 @@ function wire() {
   $("tb-settings").addEventListener("click", () => {
     selectTab($("tab-general"));
     $("settings").showModal();
-    if (connected) loadLogins();
+    // Identifiants et interfaces : portée `admin` (SPEC §6.9) ; demandés sans elle, ils
+    // n'obtenaient qu'un refus (audit W15).
+    if (connected && caps.admin) loadLogins();
     if (connected && caps.admin) loadHostKeys();
     if (connected) loadRules();
-    if (connected) loadInterfaces();
+    if (connected && caps.admin) loadInterfaces();
     if (connected && caps.qr && caps.admin) loadRemote();
     if (connected && caps.plugins && caps.admin) loadPlugins();
     if (connected && caps.admin) loadProxy();

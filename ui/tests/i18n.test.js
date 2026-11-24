@@ -27,6 +27,17 @@ test("chaque texte de la page a sa traduction anglaise", () => {
   assert.ok(used.size > 40, `${used.size} textes trouvés`);
 });
 
+// Audit W6 : chaque code d'erreur d'une tâche de la SPEC 6.8 a son texte.
+test("chaque code d'erreur de la SPEC 6.8 a son texte", () => {
+  const spec = readFileSync(new URL("../../docs/SPEC.md", import.meta.url), "utf8");
+  const start = spec.indexOf("### 6.8 ");
+  const end = spec.indexOf("\n### ", start + 1);
+  const codes = [...spec.slice(start, end).matchAll(/^\| `([A-Z_]+)` \|/gm)].map((m) => m[1]);
+  assert.ok(codes.length >= 20, `codes lus : ${codes.length}`);
+  const missing = codes.filter((code) => !ERRORS[code]);
+  assert.deepEqual(missing, []);
+});
+
 test("remplacement des paramètres", () => {
   assert.equal(fr("{0} en échec : {1}", "a.bin", "délai"), "a.bin en échec : délai");
   assert.equal(en("{0} en échec : {1}", "a.bin", "timeout"), "a.bin failed: timeout");

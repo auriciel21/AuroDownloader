@@ -159,7 +159,12 @@ export function webHost() {
     return response.json();
   }
 
+  /// Préférences reçues depuis le chargement : elles valent même quand le navigateur refuse
+  /// de les garder (navigation privée), sans quoi la langue choisie était ignorée (audit W12).
+  let kept = null;
+
   function loadPrefs() {
+    if (kept) return kept;
     try {
       return { lang: "", ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
     } catch {
@@ -228,12 +233,13 @@ export function webHost() {
     status: async () => status,
     info: async () => info(),
     savePrefs: async (prefs) => {
+      kept = { lang: "", ...prefs };
       try {
         localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
       } catch {
         // Stockage refusé (navigation privée) : les préférences valent pour cette page.
       }
-      return { ...info(), prefs, lang: info().lang };
+      return info();
     },
     saveText: async (name, text) => {
       const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));

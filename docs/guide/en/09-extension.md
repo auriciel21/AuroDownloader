@@ -40,7 +40,7 @@ Icon window, "Settings":
 
 - Hand downloads to AuroDownloader, only from a given size;
 - Excluded sites (one per line; their subdomains too);
-- In private browsing too;
+- In private browsing too (downloads and magnet links of private windows);
 - **Send the page's cookies and address**: for downloads that require signing in;
   AuroDownloader keeps the cookies in the system vault;
 - Hand magnet links to AuroDownloader;

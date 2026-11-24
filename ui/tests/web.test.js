@@ -75,3 +75,19 @@ test("une portée qui lit s'abonne, puis la connexion est prête", async () => {
   await tick();
   assert.equal(states.at(-1), "up");
 });
+
+// Audit W12 : stockage refusé (navigation privée), la langue choisie vaut pour la page.
+test("langue choisie gardée quand le navigateur refuse le stockage", async () => {
+  const refuse = () => { throw new Error("SecurityError"); };
+  define("localStorage", { getItem: refuse, setItem: refuse });
+  try {
+    const host = webHost();
+    assert.equal((await host.info()).lang, "fr", "langue du navigateur d'abord");
+    const saved = await host.savePrefs({ lang: "en" });
+    assert.equal(saved.lang, "en");
+    assert.equal(saved.prefs.lang, "en");
+    assert.equal((await host.info()).lang, "en");
+  } finally {
+    define("localStorage", { getItem: () => null, setItem() {} });
+  }
+});
