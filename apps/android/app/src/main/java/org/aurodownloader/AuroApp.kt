@@ -87,8 +87,11 @@ class AuroApp : Application() {
      */
     fun readTorrent(uri: Uri, done: (Result<ByteArray>) -> Unit) {
         if (uri.scheme == "http" || uri.scheme == "https") {
-            engine.call("torrent.fetch", JSONObject().put("url", uri.toString())) { reply ->
-                done(reply.mapCatching { Base64.decode(it.getString("data"), Base64.DEFAULT) })
+            // Reçue au démarrage, l'adresse attend que le moteur sache le réseau utilisable.
+            background.whenUsable {
+                engine.call("torrent.fetch", JSONObject().put("url", uri.toString())) { reply ->
+                    done(reply.mapCatching { Base64.decode(it.getString("data"), Base64.DEFAULT) })
+                }
             }
             return
         }

@@ -30,8 +30,8 @@ import org.json.JSONObject
 /**
  * Téléchargements en arrière-plan (SPEC §4.4 et §7.15, phase 4, étape 4).
  *
- * Le moteur ne télécharge que si le réseau convient (connecté ; sans frais au volume avec
- * « Wi-Fi seulement ») et si Android le protège : un transfert lancé par l'utilisateur à
+ * Le moteur ne télécharge que si le réseau convient (connecté ; Wi-Fi ou Ethernet avec
+ * « Wi-Fi seulement », audit C17) et si Android le protège : un transfert lancé par l'utilisateur à
  * partir d'Android 14 ([TransferJob]), un service au premier plan avant ([TransferService]),
  * ou l'application à l'écran. Sinon il le dit au moteur (`engine.setNetwork`), qui remet
  * les tâches en file : un processus qu'Android peut tuer à tout moment ne télécharge pas
@@ -58,6 +58,10 @@ class Background(private val app: AuroApp) {
     private var job: Pair<JobService, JobParameters>? = null
     private var service: TransferService? = null
     private var told: Pair<Boolean, Boolean>? = null
+    /** Le moteur a confirmé « réseau utilisable » (réponse à `engine.setNetwork`). */
+    private var engineUsable = false
+    /** Actions qui attendent [engineUsable] : voir [whenUsable]. */
+    private val pendingUsable = mutableListOf<() -> Unit>()
     private var lastNotice = 0L
     private var bootPending = false
 
@@ -105,6 +109,19 @@ class Background(private val app: AuroApp) {
         app.downloads.onFailed = { task -> if (!visible) notifyEnd(task, failed = true) }
     }
 
+    /**
+     * Lance [action] dès que le moteur sait le réseau utilisable, au plus tard après
+     * [timeoutMs]. Un lien reçu au démarrage arrive avant que l'état des tâches soit chargé
+     * et le réseau dit au moteur, qui refuserait `torrent.fetch` (audit C16, défaut trouvé à
+     * l'essai sur le téléphone). Passé le délai (pas de réseau, données mobiles avec
+     * « Wi-Fi seulement »), l'action part quand même et le moteur dit pourquoi il refuse.
+     */
+    fun whenUsable(timeoutMs: Long = USABLE_WAIT_MS, action: () -> Unit) {
+        if (engineUsable) return action()
+        pendingUsable += action
+        main.postDelayed({ if (pendingUsable.remove(action)) action() }, timeoutMs)
+    }
+
     /** Tâches qui demandent du réseau ou du travail : en attente, en cours, à relancer. */
     private fun busy(): List<Task> =
         app.downloads.tasks.values.filter { it.state in setOf("queued", "active", "retry_wait", "verifying") }
@@ -127,11 +144,21 @@ class Background(private val app: AuroApp) {
         // l'écran ou qu'un téléchargement est protégé.
         val metered = !unmetered
         if (told != usable to metered) {
-            told = usable to metered
+            val state = usable to metered
+            told = state
+            engineUsable = false
             app.engine.call(
                 "engine.setNetwork",
                 JSONObject().put("usable", usable).put("metered", metered),
-            )
+            ) { reply ->
+                // Seulement la réponse au dernier état dit, s'il est utilisable.
+                if (reply.isSuccess && told == state && usable) {
+                    engineUsable = true
+                    val ready = pendingUsable.toList()
+                    pendingUsable.clear()
+                    ready.forEach { it() }
+                }
+            }
         }
         if (busy.isEmpty()) {
             finishProtection()
@@ -373,6 +400,8 @@ class Background(private val app: AuroApp) {
 
     companion object {
         const val JOB_ID = 1
+        /** Attente au plus de [whenUsable]. */
+        const val USABLE_WAIT_MS = 10_000L
         const val NOTICE_ID = 1
         private const val RESUME_ID = 2
         private const val CHANNEL_RUNNING = "running"
