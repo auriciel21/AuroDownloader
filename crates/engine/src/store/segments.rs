@@ -18,7 +18,6 @@ fn state_to_sql(state: SegmentState) -> &'static str {
         SegmentState::Pending => "pending",
         SegmentState::Active => "active",
         SegmentState::Done => "done",
-        SegmentState::Failed => "failed",
     }
 }
 
@@ -27,7 +26,6 @@ fn state_from_sql(text: &str) -> Option<SegmentState> {
         "pending" => Some(SegmentState::Pending),
         "active" => Some(SegmentState::Active),
         "done" => Some(SegmentState::Done),
-        "failed" => Some(SegmentState::Failed),
         _ => None,
     }
 }
@@ -129,7 +127,9 @@ fn insert_segment(conn: &Connection, task_id: &str, s: &Segment) -> Result<(), S
 }
 
 /// Enregistre la taille d'une tâche et son découpage initial dans une seule transaction
-/// (SPEC §7.1, étape 5) : la base ne connaît jamais la taille sans les segments.
+/// (SPEC §7.1, étape 5) : la base ne connaît jamais la taille sans les segments. Tests
+/// seulement : la préparation passe par `tasks::save_preparation_placed` (audit S10).
+#[cfg(test)]
 pub fn save_initial_segments(
     conn: &mut Connection,
     task_id: &str,

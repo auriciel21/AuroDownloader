@@ -31,9 +31,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::client::{self, EngineRefused, Rpc, Session};
 
-/// Nom de l'hôte déclaré aux navigateurs.
-pub const HOST_NAME: &str = "org.aurodownloader.relay";
-
 /// Plus long message accepté de l'extension : un `.torrent` de 16 Mio en base64 y tient ;
 /// le navigateur n'en enverrait pas plus de 64 Mio. Sous la limite d'un message du moteur
 /// (SPEC §6.3) d'une marge pour l'enveloppe de la requête qui le porte : à la même

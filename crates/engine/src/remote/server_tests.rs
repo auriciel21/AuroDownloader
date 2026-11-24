@@ -530,10 +530,10 @@ async fn the_listener_follows_its_settings() {
     engine.set_flag(Flag::RemoteEnabled, false).await.unwrap();
     state_until(&engine, |s| !s.listening && !s.enabled).await;
     assert!(TcpStream::connect(second).await.is_err());
-    assert_eq!(engine.remote_listen().await.unwrap(), second);
+    assert_eq!(engine.remote_config().await.unwrap().listen, second);
     engine.set_remote_listen(None).await.unwrap();
     assert_eq!(
-        engine.remote_listen().await.unwrap().to_string(),
+        engine.remote_config().await.unwrap().listen.to_string(),
         crate::store::settings::REMOTE_DEFAULT_LISTEN
     );
     crate::testing::stop(&engine).await;

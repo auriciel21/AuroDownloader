@@ -831,6 +831,7 @@ impl Client {
     /// `total` est accepté. Un `200` en réponse à `If-Range`, une autre taille ou un `416`
     /// signifient que le fichier a changé ([`NetError::FileChanged`]) ; un `200` sans
     /// `If-Range`, que le serveur ignore désormais les plages.
+    #[cfg(test)]
     pub async fn get_range(
         &self,
         url: &str,

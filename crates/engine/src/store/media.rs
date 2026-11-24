@@ -272,24 +272,11 @@ pub fn stream_done(
     Ok(())
 }
 
-/// Octets reçus (une indication, comme pour un torrent) et taille totale si elle est
-/// connue.
-pub fn save_progress(
-    conn: &Connection,
-    task_id: &str,
-    done_bytes: u64,
-    total_bytes: Option<u64>,
-) -> Result<(), StoreError> {
+/// Octets reçus (une indication, comme pour un torrent).
+pub fn save_progress(conn: &Connection, task_id: &str, done_bytes: u64) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE tasks SET done_bytes = ?2, total_bytes = COALESCE(?3, total_bytes),
-                          updated_at = ?4
-         WHERE id = ?1",
-        params![
-            task_id,
-            done_bytes as i64,
-            total_bytes.map(|t| t as i64),
-            now_ms()
-        ],
+        "UPDATE tasks SET done_bytes = ?2, updated_at = ?3 WHERE id = ?1",
+        params![task_id, done_bytes as i64, now_ms()],
     )?;
     Ok(())
 }

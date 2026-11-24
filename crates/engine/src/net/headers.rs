@@ -85,6 +85,7 @@ pub fn is_encoded(content_encoding: &str) -> bool {
 }
 
 /// Un `ETag` fort (sans `W/`) : seul utilisable avec `If-Range` (RFC 9110 §13.1.5).
+#[cfg(test)]
 pub fn is_strong_etag(etag: &str) -> bool {
     !etag.trim_start().starts_with("W/")
 }

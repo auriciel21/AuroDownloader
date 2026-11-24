@@ -709,6 +709,7 @@ pub struct Preparation<'a> {
 /// Enregistre la préparation : validateurs de la source, nom du fichier, taille et
 /// segments initiaux, dans une seule transaction (SPEC §7.1, étapes 3 et 5, et §5.6,
 /// règle 2).
+#[cfg(test)]
 pub fn save_preparation(
     conn: &mut Connection,
     task_id: &str,

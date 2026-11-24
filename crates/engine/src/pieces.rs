@@ -62,6 +62,7 @@ impl Pieces {
         self.hashes.len()
     }
 
+    #[cfg(test)]
     pub fn hashes(&self) -> &[String] {
         &self.hashes
     }

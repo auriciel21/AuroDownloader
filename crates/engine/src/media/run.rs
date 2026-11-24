@@ -89,7 +89,10 @@ pub async fn run(
     }
     // yt-dlp tenu jusqu'à la fin de l'exécution (audit V8), puis l'état des outils lu.
     let _held = match ctx.tools {
-        Some(tools) => Some(tools.hold().await),
+        Some(tools) => {
+            tools.verify_once().await;
+            Some(tools.hold().await)
+        }
         None => None,
     };
     let status = ctx.tools.map(|t| t.status()).unwrap_or_default();
@@ -481,7 +484,7 @@ async fn download(
             match step {
                 Step::Done(size) => {
                     done_bytes += size;
-                    media::save_progress(conn, task_id, done_bytes, None)?;
+                    media::save_progress(conn, task_id, done_bytes)?;
                     break;
                 }
                 Step::Refresh if refreshes < MAX_REFRESH => {
@@ -513,7 +516,7 @@ async fn download(
                     ));
                 }
                 Step::End(end) => {
-                    media::save_progress(conn, task_id, done_bytes, None)?;
+                    media::save_progress(conn, task_id, done_bytes)?;
                     return Ok(end);
                 }
             }

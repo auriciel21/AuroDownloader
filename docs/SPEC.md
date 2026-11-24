@@ -734,12 +734,22 @@ ALTER TABLE tasks ADD COLUMN insecure_redirect INTEGER NOT NULL DEFAULT 0;
 -- par la page à chaque résolution (secondes) ; contrôle d'une fusion relancée.
 ALTER TABLE media_jobs ADD COLUMN duration_s REAL;
 
+-- Migration 0017 (2026-11-24, audit S9) : idx_segments_state retiré, aucune requête ne
+-- choisissant les segments par leur état (la clé primaire couvre la tâche).
+DROP INDEX IF EXISTS idx_segments_state;
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
-CREATE INDEX idx_segments_state    ON segments (task_id, state);
+CREATE INDEX idx_segments_state    ON segments (task_id, state);   -- retiré par la migration 0017
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
 CREATE INDEX idx_history_finished  ON history (finished_at DESC);
 CREATE INDEX idx_event_log_task    ON event_log (task_id, ts);
 ```
+
+Réservés (audit S9, 2026-11-24) : créés par la migration 1, jamais écrits par le moteur, et
+gardés puisqu'une migration publiée ne change pas : l'état `failed` d'un segment (une
+connexion perdue remet son segment en `pending`), `segments.attempts`, `segments.hash`,
+`tasks.options_json` et la table `event_log` (les journaux sont des fichiers, N-12).
+`tasks.started_at` est écrit mais jamais relu.
 
 ### 5.5 États d'une tâche
 
@@ -1727,7 +1737,7 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
   - La clé de yt-dlp est `crates/engine/src/media/yt-dlp-public.key`, copie exacte de `public.key` de son dépôt. Son empreinte, AC0C BBE6 848D 6A87 3464 AF4E 57CF 6593 3B5A 7581 (RSA 4096, relevée par `gpg` le 2026-11-09), est contrôlée au chargement.
 - **Outils** (`media::tools`) :
   - L'installation suit la section ci-dessus. Les fichiers téléchargés sont écrits sous un nom provisoire, contrôlés pendant l'écriture, vidés sur disque, puis renommés. Le moteur ne tire de l'archive de ffmpeg que `bin/ffmpeg` et `bin/ffprobe`, et l'efface ensuite.
-  - L'état est gardé dans `tools/tools.json` (version et empreinte de chaque outil, dernière recherche de mise à jour), écrit de la même façon. Au démarrage, un outil enregistré dont le fichier manque est oublié.
+  - L'état est gardé dans `tools/tools.json` (version et empreinte de chaque outil : le programme pour yt-dlp, l'archive et, depuis le 2026-11-24, ffmpeg et ffprobe qui en sont tirés ; dernière recherche de mise à jour), écrit de la même façon. Au démarrage, un outil enregistré dont le fichier manque est oublié. Depuis le 2026-11-24 (audit V24, décision de l'utilisateur), les empreintes des outils téléchargés sont revérifiées une fois par processus, avant le premier usage (exécution d'une vidéo, `media.probe`) : un outil abîmé ou remplacé est oublié de même, et l'erreur des outils le dit (à réinstaller) ; un `tools.json` plus ancien, sans les empreintes de ffmpeg et de ffprobe, les reçoit à cette première vérification. Les outils du système ne sont pas vérifiés.
   - La mise à jour de yt-dlp (`update_ytdlp_if_due`) remplace le fichier sous un verrou en écriture : elle attend qu'aucune exécution de yt-dlp ne tienne le verrou en lecture.
   - Sous Linux, le ffmpeg du système est préféré s'il est dans le `PATH`, avec son ffprobe à côté.
 - **Moteur et protocole** : `Engine::media_tools`, `Engine::install_media_tools` (en arrière-plan, une installation à la fois), `media.tools`, `media.installTools`, notification `media.tools`, réglage `media.autoUpdate` (section 6.5). Hors de Windows et Linux, pas d'outils : `CAPABILITY_MISSING`.

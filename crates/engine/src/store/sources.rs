@@ -204,7 +204,8 @@ pub fn is_internal(conn: &Connection, task_id: &str) -> Result<bool, StoreError>
         .unwrap_or(false))
 }
 
-/// État d'une source ; `None` si elle n'existe pas.
+/// État d'une source ; `None` si elle n'existe pas. Tests seulement (audit S10).
+#[cfg(test)]
 pub fn state_of(conn: &Connection, source_id: &str) -> Result<Option<SourceState>, StoreError> {
     let text: Option<String> = conn
         .query_row(

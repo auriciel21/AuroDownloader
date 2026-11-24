@@ -181,7 +181,7 @@
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
         <span class="row">
-          <button value="later" id="add-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
+          <button value="later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
           <button value="start" id="add-start" class="primary" data-i18n="Démarrer">Démarrer</button>
         </span>
       </div>
@@ -199,7 +199,7 @@
       </div>
       <p id="v-status" class="note flush" role="status"></p>
       <div id="v-tools" class="tools-box" hidden>
-        <p id="v-tools-text" data-i18n="Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.">Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.</p>
+        <p data-i18n="Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.">Les vidéos demandent yt-dlp et ffmpeg, absents. AuroDownloader peut les télécharger depuis leurs publications officielles (yt-dlp sur GitHub, ffmpeg des builds BtbN), en vérifiant leur signature et leurs empreintes : près de 400 Mo une fois installés.</p>
         <button type="button" id="v-tools-install" data-needs="admin" data-i18n="Installer yt-dlp et ffmpeg">Installer yt-dlp et ffmpeg</button>
       </div>
       <div id="v-result" hidden>
@@ -468,7 +468,7 @@
       <p id="sch-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
-        <button value="save" id="sch-save" class="primary" data-i18n="Enregistrer">Enregistrer</button>
+        <button value="save" class="primary" data-i18n="Enregistrer">Enregistrer</button>
       </div>
     </form>
   </dialog>
@@ -636,7 +636,7 @@
         <span data-i18n="Activée">Activée</span></label>
       <fieldset>
         <legend data-i18n="Si (tous les critères remplis ; vides : toute tâche)">Si (tous les critères remplis ; vides : toute tâche)</legend>
-        <fieldset class="plain" id="rule-types" aria-describedby="rule-types-note">
+        <fieldset class="plain" aria-describedby="rule-types-note">
           <legend data-i18n="Types de fichier">Types de fichier</legend>
           <div class="checks" id="rule-categories"></div>
         </fieldset>
@@ -886,7 +886,7 @@
           <select id="pref-limit"></select>
         </label>
         <p class="note flush" data-i18n="Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.">Le nombre de connexions de chaque téléchargement s'ajuste seul : 4 au départ, jusqu'à 16 tant que le débit progresse, moins si le serveur résiste.</p>
-        <fieldset id="proxy-box" class="proxy" data-needs="admin" aria-describedby="proxy-note">
+        <fieldset class="proxy" data-needs="admin" aria-describedby="proxy-note">
           <legend data-i18n="Proxy">Proxy</legend>
           <label class="check"><input type="radio" name="proxy-mode" value="system" id="proxy-system">
             <span data-i18n="Celui du système">Celui du système</span></label>
@@ -894,7 +894,7 @@
             <span data-i18n="Aucun (toujours en direct)">Aucun (toujours en direct)</span></label>
           <label class="check"><input type="radio" name="proxy-mode" value="manual" id="proxy-manual">
             <span data-i18n="Celui-ci :">Celui-ci :</span></label>
-          <div id="proxy-fields" class="proxy-fields">
+          <div class="proxy-fields">
             <label class="field"><span data-i18n="Adresse">Adresse</span>
               <input id="proxy-url" type="text" spellcheck="false" autocomplete="off" placeholder="socks5://127.0.0.1:1080"></label>
             <label class="field"><span data-i18n="En direct pour (séparés par des virgules)">En direct pour (séparés par des virgules)</span>
@@ -1103,7 +1103,7 @@
       </label>
       <p id="rl-error" class="form-error" role="alert" hidden></p>
       <div class="buttons end">
-        <button value="login" id="rl-submit" class="primary" data-i18n="Se connecter">Se connecter</button>
+        <button value="login" class="primary" data-i18n="Se connecter">Se connecter</button>
       </div>
     </form>
   </dialog>

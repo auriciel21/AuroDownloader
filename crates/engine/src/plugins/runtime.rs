@@ -210,8 +210,6 @@ pub struct Run {
     pub output: Result<Vec<u8>, String>,
     /// Journal du plugin (`auro.log`).
     pub logs: Vec<String>,
-    /// Unités de calcul consommées.
-    pub fuel: u64,
 }
 
 /// Lance `auro_resolve` sur `input`, dans une instance neuve.
@@ -222,7 +220,6 @@ pub fn resolve(bytes: &[u8], input: &[u8], fetch: Fetch, limits: &Limits) -> Run
             return Run {
                 output: Err(e),
                 logs: Vec::new(),
-                fuel: 0,
             };
         }
     };
@@ -252,7 +249,6 @@ pub fn resolve(bytes: &[u8], input: &[u8], fetch: Fetch, limits: &Limits) -> Run
             .map_err(|_| "sortie hors de la mémoire du plugin")?;
         Ok::<_, String>(output)
     })();
-    let fuel = limits.fuel - store.get_fuel().unwrap_or(0);
     let logs = std::mem::take(&mut store.data_mut().logs);
-    Run { output, logs, fuel }
+    Run { output, logs }
 }

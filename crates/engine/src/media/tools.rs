@@ -7,7 +7,9 @@
 //! un nom provisoire, se vide sur disque, puis prend son nom.
 //!
 //! L'état des outils installés est gardé dans `tools.json`, dans le même dossier : version,
-//! empreinte et date de la dernière recherche de mise à jour de yt-dlp.
+//! empreinte et date de la dernière recherche de mise à jour de yt-dlp. Les empreintes de
+//! yt-dlp, de ffmpeg et de ffprobe sont revérifiées une fois par processus, avant le
+//! premier usage (audit V24, [`Tools::verify_once`]).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -156,8 +158,13 @@ pub enum ToolsError {
 /// Ce qui est installé, tel que `tools.json` le garde.
 #[derive(Debug, Clone, Default)]
 struct Recorded {
+    /// Version, et empreinte SHA-256 du programme.
     ytdlp: Option<(String, String)>,
+    /// Version, et empreinte SHA-256 de l'archive publiée.
     ffmpeg: Option<(String, String)>,
+    /// Empreintes SHA-256 de ffmpeg et de ffprobe tirés de l'archive ; absentes d'un
+    /// `tools.json` d'avant le 2026-11-24, relevées alors à la première vérification.
+    ffmpeg_files: Option<(String, String)>,
     last_check_ms: Option<i64>,
 }
 
@@ -168,6 +175,8 @@ struct Live {
     error: Option<String>,
     /// ffmpeg du système, cherché une fois par processus.
     system: Option<Option<Tool>>,
+    /// Outils téléchargés revérifiés par ce processus (audit V24).
+    verified: bool,
 }
 
 /// Les outils d'un moteur.
@@ -242,6 +251,7 @@ impl Tools {
             }
             if !(tools.ffmpeg_path().is_file() && tools.ffprobe_path().is_file()) {
                 live.recorded.ffmpeg = None;
+                live.recorded.ffmpeg_files = None;
             }
         }
         tools
@@ -428,6 +438,82 @@ impl Tools {
         self.status().ytdlp.map(|t| (t.path, guard))
     }
 
+    /// Revérifie les outils téléchargés, une fois par processus, avant leur premier usage
+    /// (SPEC §7.17, audit V24) : un outil dont le fichier n'a plus l'empreinte enregistrée
+    /// (abîmé, remplacé) est oublié, comme un fichier manquant, et l'erreur le dit ; la
+    /// vidéo demande alors de le réinstaller. Les outils du système et les outils imposés
+    /// ne sont pas vérifiés. Pendant une installation ou une mise à jour, rien n'est fait :
+    /// la vérification se refait à l'usage suivant.
+    pub async fn verify_once(&self) {
+        let Ok(_busy) = self.busy.try_lock() else {
+            return;
+        };
+        let (ytdlp, ffmpeg, files) = {
+            let live = self.live.lock().unwrap();
+            if live.verified {
+                return;
+            }
+            (
+                live.recorded.ytdlp.as_ref().map(|(_, sum)| sum.clone()),
+                live.recorded.ffmpeg.is_some(),
+                live.recorded.ffmpeg_files.clone(),
+            )
+        };
+        let paths = (self.ytdlp_path(), self.ffmpeg_path(), self.ffprobe_path());
+        let sums = tokio::task::spawn_blocking(move || {
+            let ytdlp = ytdlp.map(|_| sha256_of(&paths.0));
+            let ffmpeg = ffmpeg.then(|| (sha256_of(&paths.1), sha256_of(&paths.2)));
+            (ytdlp, ffmpeg)
+        })
+        .await;
+        let Ok((ytdlp_now, ffmpeg_now)) = sums else {
+            return;
+        };
+        let mut changed = false;
+        {
+            let mut live = self.live.lock().unwrap();
+            let mut damaged = Vec::new();
+            if let (Some(now), Some((_, sum))) = (&ytdlp_now, &live.recorded.ytdlp)
+                && now.as_deref() != Some(sum.as_str())
+            {
+                live.recorded.ytdlp = None;
+                damaged.push("yt-dlp");
+            }
+            if let Some((Some(ffmpeg_now), Some(ffprobe_now))) = ffmpeg_now {
+                match files {
+                    Some((ffmpeg_sum, ffprobe_sum)) => {
+                        if ffmpeg_now != ffmpeg_sum || ffprobe_now != ffprobe_sum {
+                            live.recorded.ffmpeg = None;
+                            live.recorded.ffmpeg_files = None;
+                            damaged.push("ffmpeg");
+                        }
+                    }
+                    // `tools.json` d'avant le relevé des fichiers : relevés maintenant.
+                    None => {
+                        live.recorded.ffmpeg_files = Some((ffmpeg_now, ffprobe_now));
+                        changed = true;
+                    }
+                }
+            } else if ffmpeg {
+                live.recorded.ffmpeg = None;
+                live.recorded.ffmpeg_files = None;
+                damaged.push("ffmpeg");
+            }
+            if !damaged.is_empty() {
+                tracing::warn!(outils = ?damaged, "outils de la vidéo modifiés depuis leur installation, oubliés");
+                live.error = Some(format!(
+                    "{} modifié depuis son installation : à réinstaller",
+                    damaged.join(" et ")
+                ));
+                changed = true;
+            }
+            live.verified = true;
+        }
+        if changed && let Err(e) = self.save() {
+            tracing::warn!(erreur = %e, "état des outils de la vidéo non enregistré");
+        }
+    }
+
     /// Version de la dernière publication de yt-dlp.
     async fn latest_ytdlp(&self) -> Result<String, ToolsError> {
         let body = self.fetch(&self.sources.ytdlp_latest).await?;
@@ -497,8 +583,20 @@ impl Tools {
             std::fs::rename(self.dir.join(format!(".{}.new", exe(name))), &target)?;
         }
         crate::io::sync_parent_dir(&self.ffmpeg_path())?;
-        self.live.lock().unwrap().recorded.ffmpeg =
-            Some((format!("{FFMPEG_BRANCH} (BtbN)"), expected));
+        let (ffmpeg, ffprobe) = (self.ffmpeg_path(), self.ffprobe_path());
+        let files = tokio::task::spawn_blocking(move || (sha256_of(&ffmpeg), sha256_of(&ffprobe)))
+            .await
+            .map_err(|e| ToolsError::Refused(format!("empreinte interrompue : {e}")))?;
+        let (Some(ffmpeg_sum), Some(ffprobe_sum)) = files else {
+            return Err(ToolsError::Refused(
+                "ffmpeg ou ffprobe illisible après l'extraction".into(),
+            ));
+        };
+        {
+            let mut live = self.live.lock().unwrap();
+            live.recorded.ffmpeg = Some((format!("{FFMPEG_BRANCH} (BtbN)"), expected));
+            live.recorded.ffmpeg_files = Some((ffmpeg_sum, ffprobe_sum));
+        }
         self.save()
     }
 
@@ -565,9 +663,15 @@ impl Tools {
             t.as_ref()
                 .map(|(version, sha256)| json!({"version": version, "sha256": sha256}))
         };
+        let mut ffmpeg = tool(&recorded.ffmpeg);
+        if let (Some(ffmpeg), Some((ffmpeg_sum, ffprobe_sum))) =
+            (ffmpeg.as_mut(), &recorded.ffmpeg_files)
+        {
+            ffmpeg["files"] = json!({"ffmpeg": ffmpeg_sum, "ffprobe": ffprobe_sum});
+        }
         let text = json!({
             "ytdlp": tool(&recorded.ytdlp),
-            "ffmpeg": tool(&recorded.ffmpeg),
+            "ffmpeg": ffmpeg,
             "lastCheckMs": recorded.last_check_ms,
         })
         .to_string();
@@ -592,11 +696,24 @@ fn read_state(path: &Path) -> Option<Recorded> {
             v["sha256"].as_str()?.to_owned(),
         ))
     };
+    let files = &json["ffmpeg"]["files"];
     Some(Recorded {
         ytdlp: tool(&json["ytdlp"]),
         ffmpeg: tool(&json["ffmpeg"]),
+        ffmpeg_files: files["ffmpeg"]
+            .as_str()
+            .zip(files["ffprobe"].as_str())
+            .map(|(a, b)| (a.to_owned(), b.to_owned())),
         last_check_ms: json["lastCheckMs"].as_i64(),
     })
+}
+
+/// Empreinte SHA-256 du fichier `path`, en hexadécimal minuscule ; `None` s'il ne se lit
+/// pas.
+fn sha256_of(path: &Path) -> Option<String> {
+    crate::io::checksum::hash_file(path, crate::io::checksum::Algo::Sha256, |_| true)
+        .ok()
+        .flatten()
 }
 
 /// L'empreinte de `name` dans une liste au format de `sha256sum` (`<hex>  <nom>`, ou

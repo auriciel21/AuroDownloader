@@ -85,7 +85,7 @@ pub fn replace_all(conn: &mut Connection, rules: &[Rule]) -> Result<Vec<Rule>, S
 /// Ce que le rangement d'une tâche doit savoir d'elle : le dossier des téléchargements de
 /// son ajout si elle est venue sans dossier (`None` sinon), et le jour de son ajout en
 /// heure locale (`AAAA-MM-JJ`).
-pub fn task_scope(
+fn task_scope(
     conn: &Connection,
     task_id: &str,
 ) -> Result<(Option<String>, String, bool), StoreError> {

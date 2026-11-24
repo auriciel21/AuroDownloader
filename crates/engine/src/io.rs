@@ -36,7 +36,7 @@ use crate::segmenter::Segment;
 
 pub mod checksum;
 mod space;
-pub use space::{allocated, free_space, preallocate, space_needed};
+pub use space::{free_space, preallocate, space_needed};
 
 /// Taille par défaut du tampon d'un écrivain : 256 Kio (SPEC §7.10).
 pub const DEFAULT_WRITE_BUFFER: usize = 256 * 1024;
@@ -741,6 +741,7 @@ impl SegmentWriter {
 
     /// Nouvelle fin du segment après un redécoupage (SPEC §7.2) : la connexion s'arrêtera
     /// à `end`. Refusé si des octets déjà reçus dépassent cette borne.
+    #[cfg(test)]
     pub fn shrink_end(&mut self, end: u64) -> Result<(), IoError> {
         shrink(&self.bounds, self.idx, self.start, end)
     }

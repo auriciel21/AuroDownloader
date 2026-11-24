@@ -128,6 +128,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "media_duration",
         sql: include_str!("../migrations/0016_media_duration.sql"),
     },
+    Migration {
+        version: 17,
+        name: "drop_segments_state_index",
+        sql: include_str!("../migrations/0017_drop_segments_state_index.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

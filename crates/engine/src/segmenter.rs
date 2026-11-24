@@ -15,13 +15,13 @@ use std::collections::HashSet;
 /// Taille minimale d'un segment par défaut : 1 Mio (SPEC §7.10).
 pub const DEFAULT_MIN_SEGMENT_SIZE: u64 = 1024 * 1024;
 
-/// État d'un segment, comme la colonne `segments.state` (SPEC §5.3).
+/// État d'un segment, comme la colonne `segments.state` (SPEC §5.3) ; `failed`, réservé
+/// par la migration 1, n'est jamais écrit (audit S9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentState {
     Pending,
     Active,
     Done,
-    Failed,
 }
 
 /// Plage d'octets d'un fichier, téléchargée par une connexion (SPEC §5.3).
@@ -499,7 +499,7 @@ mod tests {
         match *op {
             Op::Activate(i) => {
                 if let Some(s) = pick(i).map(|k| &mut segments[k])
-                    && matches!(s.state, SegmentState::Pending | SegmentState::Failed)
+                    && s.state == SegmentState::Pending
                 {
                     s.state = SegmentState::Active;
                 }
@@ -518,7 +518,8 @@ mod tests {
                 if let Some(s) = pick(i).map(|k| &mut segments[k])
                     && s.state == SegmentState::Active
                 {
-                    s.state = SegmentState::Failed;
+                    // Connexion perdue : le segment revient en attente.
+                    s.state = SegmentState::Pending;
                 }
             }
             Op::Split => {

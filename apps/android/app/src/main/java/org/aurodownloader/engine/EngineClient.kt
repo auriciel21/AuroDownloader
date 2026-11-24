@@ -39,12 +39,6 @@ class EngineClient {
         notifications.add(listener)
     }
 
-    fun close() {
-        NativeEngine.forget(listener)
-        pending.clear()
-        notifications.clear()
-    }
-
     private fun dispatch(line: String) {
         val message = try {
             JSONObject(line)

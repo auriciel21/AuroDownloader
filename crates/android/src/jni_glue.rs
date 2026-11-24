@@ -79,19 +79,3 @@ pub extern "system" fn Java_org_aurodownloader_engine_NativeEngine_send<'caller>
         })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aurodownloader_engine_NativeEngine_stop<'caller>(
-    mut unowned: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-) {
-    unowned
-        .with_env(|_env| -> Result<(), Error> {
-            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(host) = host {
-                host.stop();
-            }
-            Ok(())
-        })
-        .resolve::<ThrowRuntimeExAndDefault>()
-}

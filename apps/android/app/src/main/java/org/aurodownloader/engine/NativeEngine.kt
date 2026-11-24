@@ -26,16 +26,8 @@ object NativeEngine {
     @JvmStatic
     external fun send(message: String)
 
-    /** Arrête le moteur ; ses tâches sont enregistrées et reprendront au démarrage suivant. */
-    @JvmStatic
-    external fun stop()
-
     fun listen(listener: (String) -> Unit) {
         listeners.add(listener)
-    }
-
-    fun forget(listener: (String) -> Unit) {
-        listeners.remove(listener)
     }
 
     /** Appelée par le moteur pour chaque message ; depuis l'un de ses fils. */

@@ -264,7 +264,7 @@ fn compile(pattern: &str) -> Result<Regex, regex::Error> {
 }
 
 /// Dossier d'une règle : absolu tel quel, relatif sous `base`.
-pub fn folder_dir(base: &Path, folder: &str) -> PathBuf {
+fn folder_dir(base: &Path, folder: &str) -> PathBuf {
     let path = Path::new(folder);
     if path.is_absolute() {
         return path.to_path_buf();

@@ -237,6 +237,80 @@ async fn only_one_installation_at_a_time() {
     assert!(tools.begin_install());
 }
 
+/// Outils installés par un faux serveur dans `dir` (yt-dlp, ffmpeg et ffprobe).
+async fn installed(release: &FakeRelease, dir: &Path) {
+    release.publish_ytdlp("2026.11.01", b"faux yt-dlp", None);
+    release.publish_default_ffmpeg();
+    let tools = tools_from(release, dir);
+    assert!(tools.begin_install());
+    assert!(tools.install(false).await.unwrap().ready());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn damaged_tools_are_forgotten_before_their_first_use() {
+    let release = FakeRelease::new();
+    let dir = tempfile::tempdir().unwrap();
+    installed(&release, dir.path()).await;
+
+    // Intacts : un nouveau processus les garde, sans rien réécrire.
+    let state = dir.path().join(STATE_FILE);
+    let before = std::fs::read(&state).unwrap();
+    let tools = tools_from(&release, dir.path());
+    tools.verify_once().await;
+    assert!(tools.status().ready());
+    assert!(tools.status().error.is_none());
+    assert_eq!(std::fs::read(&state).unwrap(), before);
+
+    // yt-dlp abîmé : oublié, et l'erreur le dit ; ffmpeg reste.
+    std::fs::write(dir.path().join(exe("yt-dlp")), b"autre yt-dlp").unwrap();
+    // Une seule vérification par processus.
+    tools.verify_once().await;
+    assert!(tools.status().ytdlp.is_some());
+    let tools = tools_from(&release, dir.path());
+    tools.verify_once().await;
+    let status = tools.status();
+    assert!(status.ytdlp.is_none());
+    assert!(status.ffmpeg.is_some());
+    assert!(status.error.unwrap().contains("yt-dlp"));
+    // Oublié aussi pour un autre processus.
+    assert!(tools_from(&release, dir.path()).status().ytdlp.is_none());
+
+    // ffprobe remplacé : ffmpeg oublié avec lui.
+    std::fs::write(dir.path().join(exe("ffprobe")), b"autre ffprobe").unwrap();
+    let tools = tools_from(&release, dir.path());
+    tools.verify_once().await;
+    let status = tools.status();
+    assert!(status.ffmpeg.is_none());
+    assert!(status.error.unwrap().contains("ffmpeg"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_state_gets_the_sums_of_ffmpeg_and_ffprobe() {
+    let release = FakeRelease::new();
+    let dir = tempfile::tempdir().unwrap();
+    installed(&release, dir.path()).await;
+    // `tools.json` d'avant le 2026-11-24 : sans les empreintes des fichiers de ffmpeg.
+    let state = dir.path().join(STATE_FILE);
+    let mut json: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    assert!(json["ffmpeg"]["files"]["ffprobe"].is_string());
+    json["ffmpeg"].as_object_mut().unwrap().remove("files");
+    std::fs::write(&state, json.to_string()).unwrap();
+
+    let tools = tools_from(&release, dir.path());
+    tools.verify_once().await;
+    assert!(tools.status().ready());
+    let json: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    assert_eq!(
+        json["ffmpeg"]["files"]["ffmpeg"].as_str(),
+        sha256_of(&dir.path().join(exe("ffmpeg"))).as_deref()
+    );
+    // Relevées, elles servent : ffmpeg changé ensuite est oublié.
+    std::fs::write(dir.path().join(exe("ffmpeg")), b"autre ffmpeg").unwrap();
+    let tools = tools_from(&release, dir.path());
+    tools.verify_once().await;
+    assert!(tools.status().ffmpeg.is_none());
+}
+
 #[test]
 fn sums_are_read_like_sha256sum() {
     let a = "a".repeat(64);

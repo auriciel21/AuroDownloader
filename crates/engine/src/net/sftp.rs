@@ -33,9 +33,6 @@ use super::auth::{Auth, Secret};
 use super::dial::{Route, dial, route_for};
 use super::{NetError, Probe, RangeRequest, filename, proxy, reach};
 
-/// Connexions simultanées au plus en mode automatique vers un serveur SFTP.
-pub const MAX_AUTO_CONNECTIONS: u32 = 4;
-
 const POOL_PER_KEY: usize = 8;
 const POOL_IDLE: Duration = Duration::from_secs(30);
 /// Taille d'une lecture : les serveurs servent souvent 256 Kio par requête au plus

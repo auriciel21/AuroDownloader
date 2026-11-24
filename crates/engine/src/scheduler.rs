@@ -852,7 +852,6 @@ enum Command {
     Rules(Reply<Vec<crate::rules::Rule>>),
     SetRules(Vec<crate::rules::Rule>, Reply<Vec<crate::rules::Rule>>),
     SetLogsLevel(crate::logs::Level, Reply<()>),
-    RemoteListen(Reply<std::net::SocketAddr>),
     SetRemoteListen(Option<std::net::SocketAddr>, Reply<std::net::SocketAddr>),
     RemoteConfig(Reply<settings::RemoteConfig>),
     SetRemoteHosts(Vec<String>, Reply<()>),
@@ -1334,6 +1333,7 @@ impl Engine {
                 .await
                 .map_err(EngineError::SourceUnreachable)?;
         }
+        tools.verify_once().await;
         self.update_ytdlp_if_due(&tools).await;
         let Some((ytdlp, _running)) = tools.ytdlp().await else {
             return Err(EngineError::ToolsMissing(
@@ -1422,11 +1422,6 @@ impl Engine {
     /// Change le niveau des journaux ; [`crate::logs::follow`] l'applique aussitôt.
     pub async fn set_logs_level(&self, level: crate::logs::Level) -> Result<(), EngineError> {
         self.ask(|reply| Command::SetLogsLevel(level, reply)).await
-    }
-
-    /// Adresse et port d'écoute de l'interface distante (`remote.listen`, SPEC §7.19).
-    pub async fn remote_listen(&self) -> Result<std::net::SocketAddr, EngineError> {
-        self.ask(Command::RemoteListen).await
     }
 
     /// Change l'écoute de l'interface distante (`None` : celle par défaut) ; rend celle
@@ -3336,9 +3331,6 @@ impl Scheduler {
             }
             Command::SetLogsLevel(level, reply) => {
                 let _ = reply.send(self.set_logs_level(level));
-            }
-            Command::RemoteListen(reply) => {
-                let _ = reply.send(settings::remote_listen(&self.conn).map_err(Into::into));
             }
             Command::SetRemoteListen(addr, reply) => {
                 let _ = reply.send(self.set_remote_listen(addr));

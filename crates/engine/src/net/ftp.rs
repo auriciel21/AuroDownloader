@@ -51,8 +51,8 @@ use super::{NetError, Probe, RangeRequest, filename, proxy, reach};
 
 type Stream = suppaftp::tokio::TransferStream<AsyncRustlsStream>;
 
-/// Connexions simultanées au plus en mode automatique vers un serveur FTP (décision de
-/// l'utilisateur du 2026-11-17) : beaucoup en limitent le nombre par adresse.
+/// Connexions simultanées au plus en mode automatique vers un serveur FTP, FTPS ou SFTP
+/// (décision de l'utilisateur du 2026-11-17) : beaucoup en limitent le nombre par adresse.
 pub const MAX_AUTO_CONNECTIONS: u32 = 4;
 
 /// Connexions de commande gardées par serveur et identifiant, et leur durée de vie au
