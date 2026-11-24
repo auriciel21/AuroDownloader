@@ -87,6 +87,11 @@ pub async fn run(
             });
         }
     }
+    // yt-dlp tenu jusqu'à la fin de l'exécution (audit V8), puis l'état des outils lu.
+    let _held = match ctx.tools {
+        Some(tools) => Some(tools.hold().await),
+        None => None,
+    };
     let status = ctx.tools.map(|t| t.status()).unwrap_or_default();
     // Pas d'empreinte cherchée à côté des adresses des flux et des sous-titres : des
     // requêtes inutiles vers les serveurs de vidéos (étape 4e).
@@ -324,8 +329,15 @@ async fn download(
     let mut resolution = match resolve(status, ctx.client, &job.page_url, &selector, stop).await {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(End::Stopped),
+        // Tous les flux sont faits (arrêt avant la fusion) : la page n'est plus utile, la
+        // vidéo se finit, ses sous-titres non obtenus annoncés manquants (audit V15 : elle
+        // échouait, complète, en `EXTRACTOR_FAILED`).
+        Err(_) if !streams.is_empty() && streams.iter().all(|s| s.done || s.is_subtitle()) => {
+            return finish(conn, status, task_id, None).await;
+        }
         Err(e) => return Ok(failed("EXTRACTOR_FAILED", e.to_string())),
     };
+    media::set_duration(conn, task_id, resolution.duration_s)?;
     if resolution.streams.iter().any(|s| s.drm) {
         // SPEC §8.3 : jamais de contournement d'une protection.
         return Ok(failed(
@@ -920,7 +932,7 @@ async fn fragmented(
         command.arg("-o").arg(&template);
         command.args(["--", page_url]);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (mut child, _tree) = match super::process::spawn(&mut command) {
+        let (mut child, tree) = match super::process::spawn(&mut command) {
             Ok(spawned) => spawned,
             Err(e) => return Ok(Step::End(failed("TOOLS_MISSING", e.to_string()))),
         };
@@ -961,7 +973,7 @@ async fn fragmented(
             }
         }
         let exit = tokio::select! {
-            exit = child.wait() => exit,
+            exit = super::process::wait(&mut child, tree) => exit,
             _ = wait_stop(stop) => return Ok(Step::End(End::Stopped)),
         };
         let stderr = errors.await.unwrap_or_default();
@@ -1033,6 +1045,12 @@ async fn finish(
     task_id: &str,
     duration_s: Option<f64>,
 ) -> Result<End, TransferError> {
+    // Fusion relancée après un arrêt : la durée notée à la résolution, pour que ffprobe la
+    // contrôle encore (audit V14).
+    let duration_s = match duration_s {
+        Some(d) => Some(d),
+        None => media::duration(conn, task_id)?,
+    };
     let task = load_task(conn, task_id)?;
     let job = media::load_job(conn, task_id)?;
     // Les sous-titres restent à côté de la vidéo : ni fusionnés, ni effacés.
@@ -1203,8 +1221,26 @@ async fn run_tool(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "l'outil".to_owned());
-    let (child, _tree) = super::process::spawn(&mut command).map_err(|e| e.to_string())?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
+    let (mut child, tree) = super::process::spawn(&mut command).map_err(|e| e.to_string())?;
+    let (Some(mut out), Some(mut err)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err(format!("{tool} : sorties absentes"));
+    };
+    let work = async {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut out = (&mut out).take(16 << 20);
+        let mut err = (&mut err).take(1 << 20);
+        let (read_out, read_err) =
+            tokio::join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr));
+        read_out.and(read_err)?;
+        let status = super::process::wait(&mut child, tree).await?;
+        Ok::<_, std::io::Error>(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    };
+    let output = tokio::time::timeout(timeout, work)
         .await
         .map_err(|_| "délai dépassé".to_owned())?
         .map_err(|e| e.to_string())?;
@@ -1245,6 +1281,17 @@ pub fn delete_files(conn: &Connection, task: &TaskRow, finals: bool) -> std::io:
         let path = dir.join(&s.file_name);
         remove(part_path(&path))?;
         remove(path)?;
+        // Flux fragmenté, écrit par yt-dlp : son état (`.ytdl`) et ses fragments
+        // (`.part-FragN`) restaient à l'annulation (audit V13).
+        remove(dir.join(format!("{}.ytdl", s.file_name)))?;
+        let fragments = format!("{}.part-Frag", s.file_name);
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&fragments) {
+                    remove(entry.path())?;
+                }
+            }
+        }
     }
     for child in media::children(conn, &task.id).map_err(std::io::Error::other)? {
         if kept.contains(&child.as_str()) {

@@ -512,6 +512,58 @@ fn names_from_a_torrent_are_cleaned_and_never_leave_the_folder() {
             Layout::parse(&handmade("..", &[&["x"]])).unwrap().top != ".."
         }
     );
+    // Audit V20 : là où la casse ne compte pas, deux noms que NTFS confond (il met chaque
+    // caractère en majuscule) sont le même chemin : `ς` et `σ` ; `ſ` et `s`.
+    let greek = handmade("Haut", &[&["λόγος.txt"], &["λόγοσ.txt"]]);
+    let long_s = handmade("Haut", &[&["ſon.txt"], &["son.txt"]]);
+    for metainfo in [greek, long_s] {
+        assert_eq!(
+            inspect_metainfo(&metainfo).is_err(),
+            crate::io::CASE_INSENSITIVE_NAMES,
+            "même chemin sous NTFS"
+        );
+    }
+}
+
+/// Audit V22 (décision 5) : un ratio propre à la tâche, écrit par `task.update`, remplace
+/// le réglage (1 ici) à sa prochaine exécution : à 0, elle finit sans partager. Une tâche
+/// HTTP n'en a pas.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_ratio_replaces_the_setting() {
+    use crate::scheduler::{Ratio, TaskUpdate};
+    let seed = seeder("propre.bin", &[("", 100 * 1024)], None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = sharing_engine(dir.path(), vec![seed.addr], free_addr());
+    let mut events = engine.subscribe();
+    let paused = AddTask {
+        start_paused: true,
+        ..add(dir.path(), &seed.metainfo)
+    };
+    let id = engine.add(paused).await.unwrap();
+    let zero = TaskUpdate {
+        ratio_limit: Some(Some(Ratio(0.0))),
+        ..TaskUpdate::default()
+    };
+    engine.update_task(&id, zero.clone()).await.unwrap();
+    engine.resume(&id).await.unwrap();
+    wait_state(&mut events, &id, TaskState::Completed).await;
+
+    let http = engine
+        .add(AddTask {
+            url: "http://127.0.0.1:1/f.bin".into(),
+            dest_dir: Some(dir.path().to_string_lossy().into_owned()),
+            start_paused: true,
+            ..AddTask::default()
+        })
+        .await
+        .unwrap();
+    assert!(engine.update_task(&http, zero).await.is_err());
+    let negative = TaskUpdate {
+        ratio_limit: Some(Some(Ratio(-1.0))),
+        ..TaskUpdate::default()
+    };
+    assert!(engine.update_task(&id, negative).await.is_err());
+    crate::testing::stop(&engine).await;
 }
 
 // ---------- Étape 3b : partage, réseau facturé, choix des fichiers ----------
@@ -726,6 +778,45 @@ async fn a_file_chosen_as_the_download_ends_is_fetched_too() {
     assert_eq!(std::fs::read(top.join("b.bin")).unwrap(), data(1, LEN));
     no_part_left(dir.path());
     crate::testing::stop(&engine).await;
+}
+
+/// Audit V7 : des fichiers que librqbit tient encore ouverts à la fin d'un passage ne
+/// prennent pas leur nom final ; la tâche réessaie, revérifie, et finit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn files_still_open_are_not_renamed() {
+    const LEN: usize = 256 * 1024;
+    let seed = seeder("ouvert.iso", &[("", LEN)], Some(64 * 1024)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = start(dir.path(), vec![seed.addr]).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(dir.path(), &seed.metainfo)).await.unwrap();
+    *crate::torrent::STILL_OPEN.lock().unwrap() = Some(id.clone());
+    wait_state(&mut events, &id, TaskState::RetryWait).await;
+    assert!(
+        !dir.path().join("ouvert.iso").exists(),
+        "renommé encore ouvert"
+    );
+    wait_state(&mut events, &id, TaskState::Completed).await;
+    assert_eq!(
+        std::fs::read(dir.path().join("ouvert.iso")).unwrap(),
+        data(0, LEN)
+    );
+    no_part_left(dir.path());
+    crate::testing::stop(&engine).await;
+}
+
+/// Audit V16 : un fichier de taille non nulle dont le `.part` a disparu n'est jamais
+/// remplacé par un fichier vide ; un fichier vide du torrent est créé.
+#[test]
+fn a_missing_part_is_not_replaced_by_an_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let lost = dir.path().join("perdu.bin");
+    let err = super::seal(&lost, 10).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert!(!lost.exists());
+    let empty = dir.path().join("vide.bin");
+    super::seal(&empty, 0).unwrap();
+    assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
 }
 
 /// État d'une tâche lu dans la base, moteur arrêté.

@@ -376,3 +376,42 @@ async fn real_probe_of_free_videos() {
         assert!(!probe.formats.is_empty());
     }
 }
+
+/// Audit V11 : en direct (proxy « aucun »), yt-dlp et ffmpeg qu'il lance n'héritent pas
+/// des variables de proxy du système.
+#[test]
+fn a_direct_route_removes_the_proxy_variables() {
+    let client = crate::net::Client::new().unwrap();
+    client
+        .set_proxy(crate::net::proxy::Effective {
+            settings: crate::net::proxy::Settings {
+                mode: crate::net::proxy::Mode::None,
+                ..crate::net::proxy::Settings::default()
+            },
+            password: None,
+        })
+        .unwrap();
+    let command = ytdlp_command(std::path::Path::new("yt-dlp"), &client);
+    let removed: Vec<String> = command
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+        assert!(
+            removed.iter().any(|k| k.eq_ignore_ascii_case(key)),
+            "{key} hérité : {removed:?}"
+        );
+    }
+}
+
+/// Audit V12 : des messages démesurés ne gardent que leur fin, où yt-dlp écrit son erreur.
+#[tokio::test]
+async fn only_the_end_of_long_messages_is_kept() {
+    let mut text = "bavardage\n".repeat(20_000).into_bytes();
+    text.extend_from_slice(b"ERROR: page introuvable\n");
+    let kept = read_tail(&text[..], 1024).await.unwrap();
+    assert_eq!(kept.len(), 1024);
+    assert_eq!(error_message(&kept), "page introuvable");
+}

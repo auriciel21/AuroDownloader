@@ -117,8 +117,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Security_Credentials",
     # Espace libre d'un volume (`io::free_space`).
     "Win32_Storage_FileSystem",
-    # Arbre des processus de la vidéo, tué avec son Job Object (`media::process`).
+    # Arbre des processus de la vidéo, tué avec son Job Object (`media::process`) ; lancé
+    # suspendu, puis son fil relancé une fois adopté.
     "Win32_System_JobObjects",
+    "Win32_System_Diagnostics_ToolHelp",
     # Lancer `aurod` sans lui transmettre les poignées d'entrée et de sortie (`launch`).
     "Win32_System_Console",
     # Mise en veille, action de fin d'une planification (`power`).

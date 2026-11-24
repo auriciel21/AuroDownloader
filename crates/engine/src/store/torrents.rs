@@ -74,6 +74,24 @@ pub fn create_torrent_task(
     Ok(task_id)
 }
 
+/// Ratio de partage propre à une tâche (`None` : celui du réglage `torrent.ratioLimit`).
+pub fn set_ratio_limit(
+    conn: &Connection,
+    task_id: &str,
+    ratio: Option<f64>,
+) -> Result<(), StoreError> {
+    let changed = conn.execute(
+        "UPDATE torrents SET ratio_limit = ?2 WHERE task_id = ?1",
+        params![task_id, ratio],
+    )?;
+    if changed == 0 {
+        return Err(StoreError::TaskNotFound {
+            task_id: task_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Une tâche non terminée pour ce torrent, s'il y en a une : deux tâches ne téléchargent
 /// pas le même torrent en même temps.
 pub fn unfinished_with_hash(

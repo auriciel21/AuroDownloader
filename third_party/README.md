@@ -10,7 +10,7 @@ GPL-3.0 ou ultérieure du projet (SPEC 8.3). Chaque fichier modifié le dit en t
 | Crate | Version d'origine | Modification |
 |---|---|---|
 | `librqbit-dualstack-sockets` | 0.7.0 (commit d'origine dans `.cargo_vcs_info.json`) | Liaison à une interface sous Windows (`src/bind_device.rs`, `src/socket.rs`, `src/connect.rs`, `Cargo.toml`) |
-| `librqbit` | 9.1.0 (commit 4309d38769ef93f6ee4f01a1ab147009a197fa8f) | Client HTTP des trackers lié à l'interface sous Windows (`src/session.rs`) |
+| `librqbit` | 9.1.0 (commit 4309d38769ef93f6ee4f01a1ab147009a197fa8f) | Client HTTP des trackers lié à l'interface sous Windows, et jamais le proxy du système (`src/session.rs`) |
 
 ## Liaison à une interface sous Windows (SPEC 7.16, étape 3d, 2026-11-09)
 
@@ -28,6 +28,12 @@ réseau sous Windows (`BindDeviceNotSupported`) ; le projet l'ajoute ici.
 - Une connexion vers un pair d'une famille d'adresses que l'interface n'a pas est refusée,
   jamais tentée par une autre interface.
 - Les requêtes HTTP des trackers partent de l'adresse de l'interface (`local_address`).
+
+## Jamais le proxy du système (audit V6, 2026-11-24)
+
+Le client reqwest de librqbit (annonces aux trackers HTTP) suivait le proxy du système
+(variables `HTTP_PROXY`, `HTTPS_PROXY`, réglages de Windows) quand la session n'en a pas :
+les torrents ne passent jamais par un proxy (SPEC 7.16, F-07). `no_proxy()` sur ce client.
 
 Mise à jour d'une de ces crates : reprendre la nouvelle version publiée, y reporter les
 modifications (marquées « AuroDownloader »), et mettre à jour ce tableau. Une contribution

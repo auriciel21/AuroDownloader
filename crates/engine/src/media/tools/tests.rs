@@ -165,6 +165,26 @@ async fn ytdlp_updates_at_most_once_a_day_to_a_newer_release() {
     let ytdlp = tools.status().ytdlp.unwrap();
     assert_eq!(ytdlp.version, "2026.11.05");
     assert_eq!(std::fs::read(&ytdlp.path).unwrap(), b"version 2");
+
+    // Audit V10 (décision 11) : une publication plus ancienne, même bien signée, n'est
+    // jamais installée.
+    release.publish_ytdlp("2026.10.01", b"ancienne", None);
+    let even_later = much_later + 2 * UPDATE_EVERY_MS;
+    assert_eq!(tools.update_ytdlp_if_due(even_later).await.unwrap(), None);
+    let ytdlp = tools.status().ytdlp.unwrap();
+    assert_eq!(ytdlp.version, "2026.11.05");
+    assert_eq!(std::fs::read(&ytdlp.path).unwrap(), b"version 2");
+}
+
+/// Audit V10 : comparaison des étiquettes de yt-dlp.
+#[test]
+fn only_a_newer_ytdlp_tag_is_newer() {
+    assert!(is_newer("2026.11.05", "2026.11.01"));
+    assert!(is_newer("2026.11.05.1", "2026.11.05"));
+    assert!(is_newer("2026.12.01", "2026.11.30"));
+    assert!(!is_newer("2026.11.01", "2026.11.05"));
+    assert!(!is_newer("2026.11.05", "2026.11.05"));
+    assert!(!is_newer("nightly", "2026.11.05"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

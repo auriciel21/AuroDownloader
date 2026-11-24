@@ -454,6 +454,9 @@ async fn describe(
             if let Some(checksum) = &update.checksum {
                 params["checksum"] = checksum_json(checksum.as_ref(), None);
             }
+            if let Some(ratio) = update.ratio_limit {
+                params["ratioLimit"] = json!(ratio.map(|r| r.0));
+            }
             Some(notification("task.updated", params))
         }
         Event::Prepared {

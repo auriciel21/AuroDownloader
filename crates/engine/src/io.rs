@@ -108,10 +108,21 @@ pub(crate) const CASE_INSENSITIVE_NAMES: bool = cfg!(any(windows, target_os = "a
 
 /// Deux noms désignent-ils le même fichier ([`CASE_INSENSITIVE_NAMES`]) ?
 pub(crate) fn same_name(a: &str, b: &str) -> bool {
+    fold_name(a) == fold_name(b)
+}
+
+/// Forme d'un nom pour comparer deux noms là où la casse ne compte pas. NTFS met chaque
+/// caractère en majuscule (`ς` et `σ`, `ſ` et `s` sont le même nom) : majuscules d'abord,
+/// puis minuscules, pour confondre au moins tout ce qu'il confond, quitte à refuser
+/// quelques noms qu'il distinguerait (`ß` et `ss`) (audit V20). Ailleurs, le nom tel quel.
+pub(crate) fn fold_name(name: &str) -> String {
     if CASE_INSENSITIVE_NAMES {
-        a.to_lowercase() == b.to_lowercase()
+        name.chars()
+            .flat_map(char::to_uppercase)
+            .flat_map(char::to_lowercase)
+            .collect()
     } else {
-        a == b
+        name.to_owned()
     }
 }
 

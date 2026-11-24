@@ -16,6 +16,11 @@
         "checksum": {
           "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/checksumParam"
         },
+        "ratioLimit": {
+          "description": "Ratio de partage d'un torrent (SPEC 7.16), ou null pour celui du réglage torrent.ratioLimit (depuis le 2026-11-24).",
+          "type": ["number", "null"],
+          "minimum": 0
+        },
         "url": {
           "type": "string"
         },

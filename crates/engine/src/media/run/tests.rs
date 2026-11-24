@@ -473,6 +473,37 @@ async fn wait_received(events: &mut broadcast::Receiver<Event>, task_id: &str, b
     .expect("aucun avancement");
 }
 
+/// Audit V9 : les cookies que yt-dlp donne aux flux internes quittent le coffre à la fin
+/// de la vidéo, au lieu d'y rester jusqu'au démarrage suivant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cookies_of_the_streams_leave_with_the_video() {
+    let server = site(None);
+    let answer = resolution(&server, "", false).replace(
+        "\"Accept-Encoding\":\"gzip\"",
+        "\"Accept-Encoding\":\"gzip\",\"Cookie\":\"session=1\"",
+    );
+    assert!(answer.contains("session=1"), "{answer}");
+    let s = setup(&[&answer], true);
+    let mut events = s.engine.subscribe();
+    let id = s
+        .engine
+        .add(add_video(&s, "https://exemple.org/page"))
+        .await
+        .unwrap();
+    assert_eq!(wait_end(&mut events, &id).await, TaskState::Completed);
+    let conn = crate::store::open(&s._dir.path().join("auro.db")).unwrap();
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_headers h JOIN tasks t ON t.id = h.task_id
+             WHERE t.parent_id = ?1 AND h.secret_ref IS NOT NULL",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0, "secrets des flux encore référencés");
+    crate::testing::stop(&s.engine).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_direct_streams_become_one_video() {
     let server = site(None);
@@ -731,6 +762,169 @@ async fn cancelling_a_video_deletes_its_streams() {
     wait_received(&mut events, &id, 32 * 1024).await;
     s.engine.cancel(&id, true).await.unwrap();
     // Le temps que l'exécution s'arrête et que les fichiers partent.
+    timeout(WAIT, async {
+        while !files_in(&s.dest).is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("restent : {:?}", files_in(&s.dest)));
+    crate::testing::stop(&s.engine).await;
+}
+
+/// Moteur sur la base de `dir` avec les outils `sources` (redémarrage d'un essai).
+fn engine_on(dir: &Path, sources: crate::media::tools::Sources) -> Engine {
+    Engine::start(Config {
+        db_path: dir.join("auro.db"),
+        client: Client::with_timeouts(Duration::from_secs(5), Duration::from_secs(5)).unwrap(),
+        transfer: crate::transfer::Options {
+            media: crate::media::Options { sources, dir: None },
+            connections: Some(2),
+            min_segment: 16 * 1024,
+            ..crate::transfer::Options::default()
+        },
+        disk_recheck: DISK_RECHECK,
+        planning: Planning::default(),
+    })
+    .unwrap()
+}
+
+/// Une vidéo dont la fusion a échoué (ffprobe annonce une autre durée), ses flux faits et
+/// gardés ; `then` change la base, puis le moteur redémarre avec des outils justes, et la
+/// page ne se relit plus (réponse illisible de yt-dlp). Rend l'issue.
+async fn after_a_failed_merge(then: &str) -> (TaskState, Option<String>) {
+    let server = site(None);
+    let answer = resolution(&server, "", false);
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("faux");
+    let ytdlp = crate::testing::tools::fake_ytdlp_answers(&fake, &[&answer, "pas du json"]);
+    let sources = |ffmpeg| crate::media::tools::Sources {
+        local_ytdlp: Some(ytdlp.clone()),
+        local_ffmpeg: Some(ffmpeg),
+        system_ffmpeg: false,
+        ..Default::default()
+    };
+    let dest = dir.path().join("videos");
+    std::fs::create_dir_all(&dest).unwrap();
+    // L'état, pas un événement : une exécution peut finir avant tout abonnement.
+    let end = |engine: Engine, id: String| async move {
+        let task = timeout(WAIT, async {
+            loop {
+                let task = engine.get(&id).await.unwrap();
+                if matches!(task.state, TaskState::Completed | TaskState::Failed) {
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("la vidéo ne finit pas");
+        crate::testing::stop(&engine).await;
+        task
+    };
+    let engine = engine_on(
+        dir.path(),
+        sources(crate::testing::tools::fake_ffmpeg(&fake, "99.0")),
+    );
+    let add = AddTask {
+        dest_dir: Some(dest.to_string_lossy().into_owned()),
+        media: Some(MediaRequest {
+            page_url: "https://exemple.org/page".into(),
+            ..MediaRequest::default()
+        }),
+        ..AddTask::default()
+    };
+    let id = engine.add(add).await.unwrap();
+    let first = end(engine, id.clone()).await;
+    assert_eq!(first.error_code.as_deref(), Some("MERGE_FAILED"));
+    crate::store::open(&dir.path().join("auro.db"))
+        .unwrap()
+        .execute_batch(&then.replace("?1", &format!("'{id}'")))
+        .unwrap();
+
+    let engine = engine_on(
+        dir.path(),
+        sources(crate::testing::tools::fake_ffmpeg(&fake, "6.0")),
+    );
+    let task = end(engine, id).await;
+    (task.state, task.error_code)
+}
+
+/// Audit V15 : tous les flux faits, la vidéo se finit même si la page ne se relit plus
+/// (elle échouait, complète, en `EXTRACTOR_FAILED`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_video_whose_streams_are_done_ends_without_its_page() {
+    // Comme un arrêt brutal avant le passage à la fusion, flux faits.
+    let (end, code) =
+        after_a_failed_merge("UPDATE tasks SET state = 'queued' WHERE id = ?1;").await;
+    assert_eq!((end, code), (TaskState::Completed, None));
+}
+
+/// Audit V14 : une fusion relancée contrôle encore la durée notée à la résolution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merge_run_again_still_checks_the_duration() {
+    let (end, code) = after_a_failed_merge(
+        "UPDATE tasks SET state = 'post_processing' WHERE id = ?1;
+         UPDATE media_jobs SET duration_s = 60.0 WHERE task_id = ?1;",
+    )
+    .await;
+    assert_eq!(end, TaskState::Failed);
+    assert_eq!(code.as_deref(), Some("MERGE_FAILED"));
+}
+
+/// Audit V13 : annulée avec ses fichiers, une vidéo efface aussi les fichiers de travail
+/// de yt-dlp d'un flux fragmenté (`.ytdl`, `.part-FragN`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_video_deletes_the_fragments_of_ytdlp() {
+    let server = site(None);
+    let fragment = crate::testing::content_range(3_000_000, 100 * 1024);
+    let answer = serde_json::json!({
+        "title": "Fragments", "duration": 6.0,
+        "requested_formats": [
+            {"format_id": "hls-1", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+             "protocol": "m3u8_native", "url": server.url("/v.m3u8")}
+        ]
+    })
+    .to_string();
+    let s = setup_with(|fake| crate::media::tools::Sources {
+        local_ytdlp: Some(crate::testing::tools::fake_ytdlp_media(
+            fake, &answer, &fragment, 30,
+        )),
+        local_ffmpeg: Some(crate::testing::tools::fake_ffmpeg(fake, "6.0")),
+        system_ffmpeg: false,
+        ..Default::default()
+    });
+    let mut events = s.engine.subscribe();
+    let id = s
+        .engine
+        .add(add_video(&s, "https://exemple.org/page"))
+        .await
+        .unwrap();
+    let db = s._dir.path().join("auro.db");
+    let stream: String = timeout(WAIT, async {
+        loop {
+            let found = crate::store::open(&db).ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT file_name FROM media_streams WHERE task_id = ?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .ok()
+            });
+            if let Some(name) = found {
+                return name;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("flux résolu");
+    // Ce que yt-dlp laisse en cours de route.
+    std::fs::write(s.dest.join(format!("{stream}.ytdl")), b"etat").unwrap();
+    std::fs::write(s.dest.join(format!("{stream}.part-Frag1")), b"x").unwrap();
+    std::fs::write(s.dest.join(format!("{stream}.part-Frag2.part")), b"x").unwrap();
+    s.engine.cancel(&id, true).await.unwrap();
+    wait_end(&mut events, &id).await;
     timeout(WAIT, async {
         while !files_in(&s.dest).is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;

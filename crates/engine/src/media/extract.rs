@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 
 /// Délai d'une extraction.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -78,6 +79,13 @@ pub(crate) fn ytdlp_command(ytdlp: &Path, client: &crate::net::Client) -> tokio:
         crate::net::proxy::Route::System => {}
         crate::net::proxy::Route::Direct => {
             command.args(["--proxy", ""]);
+            // ffmpeg, que yt-dlp lance pour les flux fragmentés, lit les variables de proxy
+            // héritées : retirées aussi (audit V11).
+            for (key, _) in
+                crate::net::proxy::environment(&proxy, client.is_public_only()).unwrap_or_default()
+            {
+                command.env_remove(key);
+            }
         }
         crate::net::proxy::Route::Manual => {
             for (key, value) in
@@ -130,19 +138,63 @@ async fn run(
 ) -> Result<Vec<u8>, ExtractError> {
     // L'arbre de yt-dlp meurt avec `_tree`, à la fin, sur un délai dépassé ou si
     // l'appelant abandonne.
-    let (child, _tree) =
+    let (mut child, tree) =
         super::process::spawn(&mut command).map_err(|e| ExtractError::Launch(e.to_string()))?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
+    let launch = |e: std::io::Error| ExtractError::Launch(e.to_string());
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err(ExtractError::Launch("sorties de yt-dlp absentes".into()));
+    };
+    // Lectures bornées en cours de route (audit V12) : la réponse au plus `MAX_OUTPUT`,
+    // les messages réduits à leur fin, là où yt-dlp écrit son erreur. Les messages se lisent
+    // à côté, pour que yt-dlp ne bloque jamais sur un tuyau plein.
+    let messages = tokio::spawn(read_tail(stderr, MESSAGES_KEPT));
+    let work = async {
+        let mut out = Vec::new();
+        stdout
+            .take(MAX_OUTPUT as u64 + 1)
+            .read_to_end(&mut out)
+            .await
+            .map_err(launch)?;
+        if out.len() > MAX_OUTPUT {
+            // L'arbre de yt-dlp est tué avec `tree`.
+            return Err(ExtractError::Failed("réponse de yt-dlp trop longue".into()));
+        }
+        let status = super::process::wait(&mut child, tree)
+            .await
+            .map_err(launch)?;
+        Ok((out, status))
+    };
+    let (out, status) = tokio::time::timeout(timeout, work)
         .await
-        .map_err(|_| ExtractError::Timeout)?
-        .map_err(|e| ExtractError::Launch(e.to_string()))?;
-    if !output.status.success() {
-        return Err(ExtractError::Failed(error_message(&output.stderr)));
+        .map_err(|_| ExtractError::Timeout)??;
+    if !status.success() {
+        let stderr = messages.await.ok().and_then(Result::ok).unwrap_or_default();
+        return Err(ExtractError::Failed(error_message(&stderr)));
     }
-    if output.stdout.len() > MAX_OUTPUT {
-        return Err(ExtractError::Failed("réponse de yt-dlp trop longue".into()));
+    Ok(out)
+}
+
+/// Messages de yt-dlp gardés, les derniers.
+const MESSAGES_KEPT: usize = 64 << 10;
+
+/// Lit `reader` jusqu'au bout et n'en garde que les `keep` derniers octets.
+async fn read_tail(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    keep: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut tail = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(tail);
+        }
+        tail.extend_from_slice(&chunk[..n]);
+        if tail.len() > keep {
+            let cut = tail.len() - keep;
+            tail.drain(..cut);
+        }
     }
-    Ok(output.stdout)
 }
 
 /// Le dernier message `ERROR:` de yt-dlp (sinon sa dernière ligne), sans adresse (SPEC

@@ -403,12 +403,23 @@ impl Tools {
         self.live.lock().unwrap().recorded.last_check_ms = Some(now_ms);
         self.save()?;
         let latest = self.latest_ytdlp().await?;
-        if latest == installed {
+        // Seulement vers une version plus récente : une publication plus ancienne, même
+        // signée, ramènerait des failles corrigées depuis (audit V10, décision 11).
+        if !is_newer(&latest, &installed) {
+            if latest != installed {
+                tracing::warn!("yt-dlp : la publication annoncée n'est pas plus récente, gardé");
+            }
             return Ok(None);
         }
         let result = self.install_ytdlp(&latest).await;
         self.live.lock().unwrap().error = result.as_ref().err().map(|e| e.to_string());
         result.map(|()| Some(latest))
+    }
+
+    /// yt-dlp gardé pendant toute l'exécution d'une vidéo : une mise à jour attend qu'elle
+    /// finisse, au lieu de remplacer le programme entre la résolution et les flux (audit V8).
+    pub async fn hold(&self) -> RwLockReadGuard<'_, ()> {
+        self.in_use.read().await
     }
 
     /// yt-dlp, gardé tant que le garde vit : une mise à jour attend qu'il soit rendu.
@@ -721,6 +732,21 @@ fn for_each_entry(
     _each: &mut dyn FnMut(&str, &mut dyn std::io::Read) -> Result<bool, ToolsError>,
 ) -> Result<(), ToolsError> {
     Err(ToolsError::Unsupported)
+}
+
+/// `latest` est-elle une version de yt-dlp plus récente qu'`installed` ? Les étiquettes
+/// sont des dates (`2025.10.22`, parfois `2025.10.22.1`), comparées nombre par nombre ;
+/// une étiquette illisible n'est jamais plus récente.
+fn is_newer(latest: &str, installed: &str) -> bool {
+    let parse = |tag: &str| {
+        tag.split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<u64>>>()
+    };
+    match (parse(latest), parse(installed)) {
+        (Some(latest), Some(installed)) => latest > installed,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

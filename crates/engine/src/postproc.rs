@@ -166,18 +166,27 @@ pub async fn run(
     };
     tracing::info!(tache = %task_id, "commande de fin lancée");
     let limit = Duration::from_secs(u64::from(command.timeout_s));
-    let ended = tokio::select! {
-        status = child.wait() => Some(status),
-        () = tokio::time::sleep(limit) => None,
-        () = stopped(stop) => {
-            drop(tree);
+    // L'arbre entier meurt avec le garde, même si le premier processus a fini : avant sa
+    // libération (audit V19), ou dès l'abandon de l'attente (délai, arrêt).
+    enum Waited {
+        Ended(std::io::Result<std::process::ExitStatus>),
+        Late,
+        Stopped,
+    }
+    let waited = tokio::select! {
+        status = crate::media::process::wait(&mut child, tree) => Waited::Ended(status),
+        () = tokio::time::sleep(limit) => Waited::Late,
+        () = stopped(stop) => Waited::Stopped,
+    };
+    let ended = match waited {
+        Waited::Ended(status) => Some(status),
+        Waited::Late => None,
+        Waited::Stopped => {
             let _ = child.wait().await;
             tracing::info!(tache = %task_id, "commande de fin arrêtée avec le moteur");
             return Ok(Ran::Stopped);
         }
     };
-    // L'arbre entier meurt avec le garde, même si le premier processus a fini.
-    drop(tree);
     match ended {
         Some(Ok(status)) if status.success() => {
             tracing::info!(tache = %task_id, "commande de fin réussie");

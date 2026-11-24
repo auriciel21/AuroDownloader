@@ -123,6 +123,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "insecure_redirect",
         sql: include_str!("../migrations/0015_insecure_redirect.sql"),
     },
+    Migration {
+        version: 16,
+        name: "media_duration",
+        sql: include_str!("../migrations/0016_media_duration.sql"),
+    },
 ];
 
 /// Erreurs du module de stockage.

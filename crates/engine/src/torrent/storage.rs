@@ -29,17 +29,21 @@ pub(super) struct Factory {
     files: Arc<Vec<Option<PathBuf>>>,
     error: FirstError,
     opened: Opened,
+    /// Faux pendant le partage : les fichiers sont terminés, rien ne se crée (audit V17 :
+    /// un fichier final effacé faisait recréer un `.part` qui restait).
+    creates: bool,
 }
 
 /// Fichiers ouverts par les stockages d'un torrent, pour savoir quand tous sont fermés.
 type Opened = Arc<Mutex<Vec<Weak<File>>>>;
 
 impl Factory {
-    pub(super) fn new(files: Vec<Option<PathBuf>>) -> Self {
+    pub(super) fn new(files: Vec<Option<PathBuf>>, sharing: bool) -> Self {
         Factory {
             files: Arc::new(files),
             error: FirstError::default(),
             opened: Opened::default(),
+            creates: !sharing,
         }
     }
 
@@ -82,6 +86,7 @@ impl StorageFactory for Factory {
             Arc::clone(&self.files),
             Arc::clone(&self.error),
             Arc::clone(&self.opened),
+            self.creates,
         ))
     }
 
@@ -96,16 +101,24 @@ pub(super) struct Storage {
     open: Vec<RwLock<Option<Arc<File>>>>,
     error: FirstError,
     opened: Opened,
+    /// Voir [`Factory`] : faux pendant le partage.
+    creates: bool,
 }
 
 impl Storage {
-    fn new(files: Arc<Vec<Option<PathBuf>>>, error: FirstError, opened: Opened) -> Self {
+    fn new(
+        files: Arc<Vec<Option<PathBuf>>>,
+        error: FirstError,
+        opened: Opened,
+        creates: bool,
+    ) -> Self {
         let open = files.iter().map(|_| RwLock::new(None)).collect();
         Storage {
             files,
             open,
             error,
             opened,
+            creates,
         }
     }
 
@@ -126,7 +139,7 @@ impl Storage {
         if let Some(file) = slot.as_ref() {
             return Ok(Some(Arc::clone(file)));
         }
-        let file = Arc::new(open(path, create)?);
+        let file = Arc::new(open(path, create && self.creates)?);
         if let Ok(mut opened) = self.opened.lock() {
             opened.retain(|f| f.strong_count() > 0);
             opened.push(Arc::downgrade(&file));
@@ -233,6 +246,34 @@ impl TorrentStorage for Storage {
             Arc::clone(&self.files),
             Arc::clone(&self.error),
             Arc::clone(&self.opened),
+            self.creates,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit V17 : au partage, un fichier final effacé ne fait pas recréer de `.part` ; au
+    /// téléchargement, le `.part` se crée.
+    #[test]
+    fn sharing_never_creates_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        let files = Arc::new(vec![Some(path.clone())]);
+        let sharing = Storage::new(
+            Arc::clone(&files),
+            FirstError::default(),
+            Opened::default(),
+            false,
+        );
+        let err = sharing.file(0, true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(!part_path(&path).exists() && !path.exists());
+
+        let downloading = Storage::new(files, FirstError::default(), Opened::default(), true);
+        assert!(downloading.file(0, true).unwrap().is_some());
+        assert!(part_path(&path).exists());
     }
 }

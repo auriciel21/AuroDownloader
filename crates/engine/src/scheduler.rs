@@ -155,13 +155,29 @@ pub struct TaskUpdate {
     pub speed_limit_bps: Option<Option<u64>>,
     /// Empreinte attendue (F-11) ; `Some(None)` : la retire.
     pub checksum: Option<Option<Checksum>>,
+    /// Ratio de partage d'un torrent (SPEC §7.16) ; `Some(None)` : celui du réglage
+    /// `torrent.ratioLimit` (audit V22, décision 5).
+    pub ratio_limit: Option<Option<Ratio>>,
 }
 
 impl TaskUpdate {
     fn is_empty(&self) -> bool {
-        self.speed_limit_bps.is_none() && self.checksum.is_none()
+        self.speed_limit_bps.is_none() && self.checksum.is_none() && self.ratio_limit.is_none()
     }
 }
+
+/// Ratio de partage : nombre réel, positif ou nul. Comparé bit à bit, pour que les
+/// événements qui le portent restent comparables (`Eq`).
+#[derive(Debug, Clone, Copy)]
+pub struct Ratio(pub f64);
+
+impl PartialEq for Ratio {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Ratio {}
 
 /// Champs modifiés d'une file (`queue.update`) ; `None` : inchangé.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3509,6 +3525,21 @@ impl Scheduler {
             }
             tasks::set_checksum(&self.conn, task_id, checksum.as_ref(), None)?;
         }
+        if let Some(ratio) = &update.ratio_limit {
+            let task = load_task(&self.conn, task_id)?;
+            if task.kind != TaskKind::Torrent {
+                return Err(EngineError::BadRequest(
+                    "ratioLimit : un torrent seulement".into(),
+                ));
+            }
+            if ratio.is_some_and(|r| !r.0.is_finite() || r.0 < 0.0) {
+                return Err(EngineError::BadRequest(
+                    "ratioLimit : un nombre positif ou nul, ou null".into(),
+                ));
+            }
+            // Lu au début de chaque exécution (SPEC §7.16) : vaut à la prochaine.
+            store::torrents::set_ratio_limit(&self.conn, task_id, ratio.map(|r| r.0))?;
+        }
         if let Some(limit) = update.speed_limit_bps {
             Self::check_speed_limit(limit)?;
             tasks::set_task_speed_limit(&self.conn, task_id, limit)?;
@@ -4192,8 +4223,13 @@ impl Scheduler {
 
     /// Retire de la base les secrets d'une tâche terminée, puis les efface du coffre.
     fn drop_secrets(&mut self, task_id: &str) {
-        if let Ok(ids) = headers::drop_secrets(&self.conn, task_id) {
-            self.vault().forget(ids);
+        // Ceux de ses flux internes aussi (vidéo, cookies du site) : ils restaient au coffre
+        // jusqu'au ramassage du démarrage suivant (audit V9).
+        let children = store::media::children(&self.conn, task_id).unwrap_or_default();
+        for id in std::iter::once(task_id.to_owned()).chain(children) {
+            if let Ok(ids) = headers::drop_secrets(&self.conn, &id) {
+                self.vault().forget(ids);
+            }
         }
     }
 
@@ -4917,7 +4953,12 @@ impl Scheduler {
                 _ => delete_part(&self.conn, &task)?,
             }
         }
-        let secrets = headers::secret_refs(&self.conn, task_id)?;
+        let mut secrets = headers::secret_refs(&self.conn, task_id)?;
+        // Les tâches internes partent avec elle (`ON DELETE CASCADE`), leurs secrets aussi
+        // (audit V9).
+        for child in store::media::children(&self.conn, task_id)? {
+            secrets.extend(headers::secret_refs(&self.conn, &child)?);
+        }
         tasks::remove_task(&mut self.conn, task_id)?;
         self.vault().forget(secrets);
         self.broken.remove(task_id);

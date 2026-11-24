@@ -453,13 +453,7 @@ fn with_name(magnet: &str, name: &str) -> String {
 /// les noms bruts identiques. Les fichiers de remplissage, jamais écrits, ne comptent pas.
 /// Sous Windows et Android (stockage partagé), la casse ne distingue pas deux noms.
 fn check_collisions(files: &[LayoutFile]) -> Result<(), String> {
-    let fold = |c: &String| {
-        if cfg!(any(windows, target_os = "android")) {
-            c.to_lowercase()
-        } else {
-            c.clone()
-        }
-    };
+    let fold = |c: &String| crate::io::fold_name(c);
     let mut paths: Vec<Vec<String>> = files
         .iter()
         .filter(|f| !f.padding)
@@ -902,11 +896,20 @@ async fn drive(
         };
         // Fichiers choisis vidés sur disque, puis sous leur nom final.
         for (i, path) in paths.iter().enumerate() {
-            if let Some(path) = path
-                && selected.contains(&i)
-                && let Err(e) = seal(path)
-            {
-                return Ok(End::Failed(Failure::Disk(e)));
+            let Some(path) = path else { continue };
+            if !selected.contains(&i) {
+                continue;
+            }
+            match seal(path, layout.files[i].length) {
+                Ok(()) => {}
+                // Effacé pendant la fin : la tâche réessaie, revérifie ses morceaux et le
+                // télécharge de nouveau, au lieu de finir avec un fichier vide (audit V16).
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(End::Failed(Failure::Session(
+                        "fichier du torrent effacé avant sa fin : nouvel essai".into(),
+                    )));
+                }
+                Err(e) => return Ok(End::Failed(Failure::Disk(e))),
             }
         }
         files_complete(conn, task_id)?;
@@ -1029,7 +1032,7 @@ impl Pass<'_> {
         sharing: bool,
     ) -> Result<Passed, TransferError> {
         let task_id = self.task_id;
-        let factory = storage::Factory::new(self.paths.to_vec());
+        let factory = storage::Factory::new(self.paths.to_vec(), sharing);
         let first_error = factory.error();
         let mut selected = selected_files(conn, task_id)?;
         let options = AddTorrentOptions {
@@ -1172,12 +1175,22 @@ impl Pass<'_> {
         }
         let file_progress = handle.stats().file_progress;
         drop(handle);
-        if !factory.wait_closed(CLOSE_WAIT).await {
+        let closed = factory.wait_closed(CLOSE_WAIT).await && !still_open_hook(task_id);
+        if !closed {
             tracing::warn!(tache = %task_id, "fichiers du torrent encore ouverts");
         }
         if let Some(e) = db_error {
             return Err(e);
         }
+        // Fichiers encore ouverts : ni renommés ni vidés sous leur nom final (une écriture
+        // en retard irait dans le fichier terminé) ; échec passager, la tâche réessaie et
+        // revérifie ses morceaux (audit V7).
+        let passed = match passed {
+            Passed::Reached(_) if !closed => Passed::Failed(Failure::Session(
+                "fichiers du torrent encore ouverts : nouvel essai".into(),
+            )),
+            other => other,
+        };
         let files = (!sharing).then_some(&file_progress);
         save_counters(conn, task_id, counters, files)?;
         Ok(passed)
@@ -1206,6 +1219,28 @@ fn reached_hook(conn: &mut Connection, task_id: &str) {
     if let Some((_, action)) = hook {
         action(conn);
     }
+}
+
+/// Essais (audit V7) : pour cette tâche, une fois, les fichiers passent pour encore
+/// ouverts à la fin d'un passage.
+#[cfg(test)]
+pub(crate) static STILL_OPEN: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+fn still_open_hook(task_id: &str) -> bool {
+    let mut slot = STILL_OPEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if slot.as_deref() == Some(task_id) {
+        *slot = None;
+        return true;
+    }
+    false
+}
+
+#[cfg(not(test))]
+fn still_open_hook(_: &str) -> bool {
+    false
 }
 
 /// Enregistre l'avancement (indicatif), les octets envoyés et, au téléchargement,
@@ -1351,10 +1386,11 @@ fn prepare(conn: &mut Connection, task: &TaskRow, layout: &Layout) -> Result<(),
     Ok(())
 }
 
-/// Vide le `.part` de `path` sur disque et lui donne son nom final. Un fichier vide n'a
-/// jamais été écrit : il est créé. Un fichier déjà renommé (arrêt pendant une fin
-/// précédente) est seulement vidé.
-fn seal(path: &Path) -> std::io::Result<()> {
+/// Vide le `.part` de `path` sur disque et lui donne son nom final. Un fichier vide
+/// (`length` nul) n'a jamais été écrit : il est créé ; un autre qui manque est une erreur
+/// `NotFound` (effacé par l'utilisateur, audit V16). Un fichier déjà renommé (arrêt pendant
+/// une fin précédente) est seulement vidé.
+fn seal(path: &Path, length: u64) -> std::io::Result<()> {
     let part = part_path(path);
     match std::fs::OpenOptions::new().write(true).open(&part) {
         Ok(file) => {
@@ -1366,6 +1402,9 @@ fn seal(path: &Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             match std::fs::OpenOptions::new().write(true).open(path) {
                 Ok(file) => file.sync_all()?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && length > 0 => {
+                    return Err(e);
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if let Some(dir) = path.parent() {
                         std::fs::create_dir_all(dir)?;

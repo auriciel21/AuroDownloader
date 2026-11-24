@@ -1122,20 +1122,36 @@ async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let file_name = p.str("fileName")?;
     let speed_limit_bps = p.limit("speedLimitBps")?;
     let checksum = p.checksum("checksum")?;
+    // Ratio de partage d'un torrent (SPEC §7.16, audit V22) : nombre, ou null pour celui
+    // du réglage.
+    let ratio_limit = match p.0.get("ratioLimit") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => match v.as_f64() {
+            Some(r) if r.is_finite() && r >= 0.0 => Some(Some(crate::scheduler::Ratio(r))),
+            _ => {
+                return Err(Params::wrong(
+                    "ratioLimit",
+                    "nombre positif ou nul, ou null",
+                ));
+            }
+        },
+    };
     let relocate = dest_dir.is_some() || file_name.is_some();
     let several = [
         url.is_some(),
         relocate,
         speed_limit_bps.is_some(),
         checksum.is_some(),
+        ratio_limit.is_some(),
     ]
     .iter()
     .filter(|b| **b)
     .count();
     if several > 1 {
         return Err(RpcError::invalid_params(
-            "url, destDir et fileName, speedLimitBps, et checksum se changent par des appels \
-             séparés",
+            "url, destDir et fileName, speedLimitBps, checksum, et ratioLimit se changent par \
+             des appels séparés",
         ));
     }
     let task = if let Some(url) = url {
@@ -1146,6 +1162,7 @@ async fn task_update(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         let update = TaskUpdate {
             speed_limit_bps,
             checksum,
+            ratio_limit,
         };
         ctx.engine.update_task(&id, update).await?
     };

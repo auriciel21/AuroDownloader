@@ -1,5 +1,6 @@
-// Modifié par AuroDownloader (2026-11-09) : client HTTP lié à l'interface sous Windows
-// (recherche « AuroDownloader » ci-dessous). Voir third_party/README.md.
+// Modifié par AuroDownloader (2026-11-09) : client HTTP lié à l'interface sous Windows ;
+// (2026-11-24) jamais le proxy du système (recherche « AuroDownloader » ci-dessous). Voir
+// third_party/README.md.
 
 use std::{
     borrow::Cow,
@@ -719,8 +720,11 @@ impl Session {
                         .context("error creating socks5 proxy for HTTP")?;
                     reqwest::Client::builder().proxy(proxy)
                 } else {
+                    // AuroDownloader (2026-11-24, audit V6) : sans proxy de session, jamais
+                    // celui du système (variables HTTP_PROXY, réglages de Windows) : les
+                    // torrents ne passent jamais par un proxy (SPEC 7.16, F-07).
                     #[allow(unused_mut)]
-                    let mut b = reqwest::Client::builder();
+                    let mut b = reqwest::Client::builder().no_proxy();
                     #[cfg(not(windows))]
                     if let Some(bd) = opts.bind_device_name.as_ref() {
                         b = b.interface(bd);

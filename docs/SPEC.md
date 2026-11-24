@@ -726,6 +726,10 @@ ALTER TABLE site_logins ADD COLUMN key_path TEXT;
 -- préparation, remise à 0 par un retéléchargement.
 ALTER TABLE tasks ADD COLUMN insecure_redirect INTEGER NOT NULL DEFAULT 0;
 
+-- Migration 0016 (2026-11-24, section 7.17, audit V14 et V15) : durée d'une vidéo annoncée
+-- par la page à chaque résolution (secondes) ; contrôle d'une fusion relancée.
+ALTER TABLE media_jobs ADD COLUMN duration_s REAL;
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -832,7 +836,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | `task.cancel` | `taskIds[]`, `deleteFiles` | Liste des tâches modifiées |
 | `task.remove` | `taskIds[]`, `deleteFiles` | Nombre de tâches retirées |
 | `task.restart` | `taskIds[]`, `deleteFiles` | Tâches reparties de zéro, et refus (`errors`) |
-| `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `url`, `checksum` | Tâche modifiée |
+| `task.update` | `taskId`, `maxConnections`, `speedLimitBps`, `destDir`, `fileName`, `url`, `checksum`, `ratioLimit` (torrent seulement : nombre positif ou nul, ou `null` pour celui du réglage ; depuis le 2026-11-24, section 7.16) | Tâche modifiée |
 | `task.addSource` | `taskId`, `url`, `rank` | `sourceId` |
 | `task.setFiles` | `taskId`, `selected[]` (torrent) | Tâche modifiée |
 | `metalink.read` | `data` (base64) ou `url` | Fichiers décrits, fichiers écartés (section 7.7) |
@@ -1617,6 +1621,14 @@ Conception arrêtée après le prototype (`experiments/torrent/README.md`) et le
 - **Essai réel** (2026-11-09, Windows 11) : VPN de l'utilisateur (« Ma Protection » du Pack Vie Digitale, carte Wintun `FSVpnSDK-HydraTunnel`, une adresse IPv4 et une adresse locale au lien), `aurod` d'essai lié à elle, netinst Debian 13.7 (756 Mio) par lien magnet (DHT seul), ratio 0, envoi limité à 100 Kio/s, réception à 2 Mio/s. Relevé toutes les 5 s : jusqu'à 263 connexions TCP et les deux sockets UDP, toutes sur l'adresse du VPN, aucune ailleurs. À 4,4 %, l'utilisateur a coupé le VPN : le torrent est revenu en file en moins de 5 s, sans plus aucune connexion ; au retour du VPN, il est reparti seul sur une nouvelle session, liée à lui. Terminé en 7 min 20 s, empreinte publiée juste.
 - **Reste de l'étape 3** : la durée de partage (`torrents.seed_time_limit_s`) n'est pas encore suivie ; la liaison sous Android n'a pas été essayée sur un appareil, et l'application Android ne la propose pas (décision de l'utilisateur du 2026-11-10, étape 5e : le VPN d'Android vaut pour toute l'application ; section 4.4).
 
+- **Précisions du 2026-11-24** (audit, lot 5d) :
+  - Les annonces aux trackers HTTP ne suivent jamais le proxy du système (copie corrigée de librqbit, `third_party/README.md`, V6).
+  - Des fichiers encore tenus ouverts par librqbit à la fin d'un passage ne prennent pas leur nom final : échec passager, la tâche réessaie et revérifie (V7).
+  - Un fichier de taille non nulle dont le `.part` a disparu avant la fin n'est plus remplacé par un fichier vide : la tâche réessaie et le télécharge de nouveau (V16).
+  - Au partage, le stockage ne crée plus aucun fichier : un fichier final effacé ne fait plus naître de `.part` (V17).
+  - Deux chemins du torrent sont le même chemin s'ils se confondent sous NTFS (chaque caractère mis en majuscule, puis en minuscule ; Windows et Android) : `ς` et `σ`, `ſ` et `s` (V20). Même règle pour les noms réservés (section 7.1).
+  - Ratio propre à une tâche : écrit par `task.update` (`ratioLimit`, `null` pour revenir au réglage), annoncé par `task.updated`, lu au début de l'exécution suivante (V22, décision 5 de l'audit).
+
 ### 7.17 Vidéo (phase 5, conception du 2026-11-09)
 
 Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par ffmpeg (F-22 à F-25). Windows et Linux seulement en v1 : le moteur Android n'annonce pas la capacité `media`, et ses méthodes y rendent `CAPABILITY_MISSING`.
@@ -1823,6 +1835,15 @@ Module `media` du moteur : extraction par yt-dlp, téléchargement, fusion par f
 - **Essais réels** (test ignoré `real_free_videos_are_downloaded_to_the_end`, vrais yt-dlp et ffmpeg) : flux direct seul (PeerTube de Blender ; Internet Archive, format `1`), flux direct et sous-titres WebVTT avec une langue absente (Wikimedia Commons, format `0`), HLS par yt-dlp et son seul direct fusionnés en mp4 avec un sous-titre (Framatube, PeerTube de Framasoft : « Bruce Schneier introduces FSF EncryptFest », CC BY, formats `3+Audio_only-0`).
 - **Tests** : choix du format des sous-titres ; vidéo avec sous-titre téléchargé, sous-titre en ligne, refusé, seulement en HLS et absent, avertissement, retéléchargement et retrait ; `taskId` de `engine.warning` ; `If-Range` avec une `ETag` sans guillemets (serveur strict) ; plages annoncées sans validateur puis ignorées.
 - **Résultats** (2026-11-09) : essai réel passé sous Windows et sous Linux (WSL), les quatre vidéos complètes, durées vérifiées par ffprobe, sous-titres `en` et `fr` de Commons et `en` de Framatube à côté, `xx` signalé, dossier sans flux ni `.part`. Bancs sans défaut : vidéos, 150 cycles (Windows 124 vidéos, Linux 132) ; `aurod`, 150 cycles (Linux, 56 tâches) ; reprise, 300 cycles (Linux, 73 fichiers).
+
+- **Précisions du 2026-11-24** (audit, lot 5d) :
+  - yt-dlp est tenu pendant toute l'exécution d'une vidéo : une mise à jour attend qu'elle finisse (V8) ; elle n'installe qu'une version plus récente que l'installée, jamais une plus ancienne, même signée (V10, décision 11).
+  - Les cookies que yt-dlp donne aux flux internes quittent le coffre à la fin de la vidéo, et avec son retrait (V9).
+  - Proxy « aucun » : en plus de `--proxy ""`, les variables de proxy héritées sont retirées de l'environnement de yt-dlp, et donc de ffmpeg qu'il lance (V11).
+  - Sorties de yt-dlp bornées en cours de lecture : la réponse à 64 Mio, les messages réduits à leurs 64 derniers Kio (V12).
+  - L'annulation avec les fichiers efface aussi les fichiers de travail de yt-dlp d'un flux fragmenté (`.ytdl`, `.part-FragN`) (V13).
+  - La durée annoncée par la page est gardée (`media_jobs.duration_s`, migration 16) : une fusion relancée après un arrêt la contrôle encore (V14) ; si tous les flux sont faits et que la page ne se relit plus, la vidéo se finit, ses sous-titres non obtenus annoncés manquants (V15).
+  - Sous Windows, yt-dlp et ffmpeg sont lancés suspendus, puis relancés une fois dans leur Job Object : aucun petit-processus ne naît hors de l'arbre (V18). Le moteur se range lui-même, au premier lancement, dans un Job Object tué à sa fermeture : un processus y entre dès sa création, et un moteur tué avant de l'avoir rangé dans le sien ne le laisse pas suspendu pour toujours (banc des vidéos du 2026-11-24). Sous Linux, la fin du processus de tête est attendue sans le libérer (`waitid` avec `WNOWAIT`), le reste de son groupe tué, puis il est libéré : le numéro du groupe ne peut pas avoir été repris (V19).
 
 ### 7.18 Analyse de liens (phase 6, étape 2, conception du 2026-11-11)
 

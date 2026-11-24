@@ -294,6 +294,31 @@ pub fn save_progress(
     Ok(())
 }
 
+/// Note la durée annoncée par la page (secondes), à chaque résolution.
+pub fn set_duration(
+    conn: &Connection,
+    task_id: &str,
+    duration_s: Option<f64>,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE media_jobs SET duration_s = ?2 WHERE task_id = ?1",
+        params![task_id, duration_s],
+    )?;
+    Ok(())
+}
+
+/// Durée de la vidéo notée à sa dernière résolution.
+pub fn duration(conn: &Connection, task_id: &str) -> Result<Option<f64>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT duration_s FROM media_jobs WHERE task_id = ?1",
+            [task_id],
+            |r| r.get::<_, Option<f64>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// Les tâches internes d'une vidéo.
 pub fn children(conn: &Connection, parent_id: &str) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id")?;
