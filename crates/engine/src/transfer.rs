@@ -659,14 +659,24 @@ fn site_login(
     url: &str,
     task_headers: &[(String, String)],
 ) -> Result<Option<LoginRow>, TransferError> {
-    if !crate::net::is_file_transfer(url)
-        && task_headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-    {
+    let explicit = task_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+    Ok(login_for(conn, url, explicit)?)
+}
+
+/// La règle de [`site_login`], pour qui sait seulement si la tâche porte son propre
+/// `Authorization` (`explicit`) : l'exécution et les vérifications du planificateur
+/// (nouvelle adresse, miroir) choisissent ainsi les mêmes identifiants (audit T21).
+pub(crate) fn login_for(
+    conn: &Connection,
+    url: &str,
+    explicit: bool,
+) -> Result<Option<LoginRow>, crate::store::StoreError> {
+    if explicit && !crate::net::is_file_transfer(url) {
         return Ok(None);
     }
-    Ok(logins::best_for(conn, url)?)
+    logins::best_for(conn, url)
 }
 
 /// Lit dans le coffre le mot de passe de `login` ([`reveal_auth`]) ; un coffre qui ne

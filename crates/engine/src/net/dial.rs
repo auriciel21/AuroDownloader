@@ -48,6 +48,33 @@ pub(crate) fn server_host(url: &Url, protocol: &str) -> Result<String, NetError>
         .ok_or_else(|| NetError::InvalidUrl(format!("adresse {protocol} sans hôte")))
 }
 
+/// Préparation d'un fichier FTP ou SFTP (audit F16) : l'adresse sans ses identifiants, le
+/// nom tiré du chemin, aucun validateur sinon la date ; les plages seulement avec une taille
+/// connue et `ranges` (FTP : `REST` accepté).
+pub(crate) fn file_probe(
+    url: &Url,
+    path: &str,
+    total: Option<u64>,
+    modified: Option<String>,
+    ranges: bool,
+) -> super::Probe {
+    let mut final_url = url.clone();
+    let _ = final_url.set_username("");
+    let _ = final_url.set_password(None);
+    let name = path.rsplit('/').next().unwrap_or_default();
+    super::Probe {
+        final_url,
+        total_bytes: total,
+        accepts_ranges: total.is_some() && ranges,
+        etag: None,
+        last_modified: modified,
+        file_name: super::filename::sanitize(name, super::filename::NameRules::native()),
+        downgraded: false,
+        content_type: None,
+        attachment: false,
+    }
+}
+
 /// Nom ou mot de passe écrit dans une adresse, décodé (audit F14).
 pub(crate) fn decode_userinfo(text: &str) -> String {
     percent_decode_str(text).decode_utf8_lossy().into_owned()

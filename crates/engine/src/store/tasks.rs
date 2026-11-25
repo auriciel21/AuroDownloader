@@ -385,12 +385,14 @@ pub fn create_task(
     conn: &mut Connection,
     new: &NewTask<'_>,
 ) -> Result<(String, String), StoreError> {
-    create_task_with_mirrors(conn, new, &[])
+    create_task_with_pieces(conn, new, &[], None, Start::default())
 }
 
 /// Crée une tâche `queued`, sa source de référence et ses miroirs (rangs 1 et plus, à
 /// valider, SPEC §7.7), dans une seule transaction ; renvoie les identifiants de la tâche et
-/// de la référence. Une adresse en double est refusée.
+/// de la référence. Une adresse en double est refusée. Tests seulement : l'ajout passe par
+/// [`create_task_with_pieces`] (audit S16).
+#[cfg(test)]
 pub fn create_task_with_mirrors(
     conn: &mut Connection,
     new: &NewTask<'_>,
@@ -399,8 +401,9 @@ pub fn create_task_with_mirrors(
     create_task_with_pieces(conn, new, mirrors, None, Start::default())
 }
 
-/// [`create_task_with_mirrors`], avec les empreintes de morceaux d'un Metalink (F-12,
-/// SPEC §7.9) enregistrées dans la même transaction.
+/// Crée une tâche `queued`, sa source de référence et ses miroirs (SPEC §7.7), avec les
+/// empreintes de morceaux d'un Metalink (F-12, SPEC §7.9) enregistrées dans la même
+/// transaction ; renvoie les identifiants de la tâche et de la référence.
 pub fn create_task_with_pieces(
     conn: &mut Connection,
     new: &NewTask<'_>,

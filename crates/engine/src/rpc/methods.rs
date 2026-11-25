@@ -1210,12 +1210,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
                 let text = torrent.as_str().ok_or_else(|| {
                     RpcError::invalid_params("sources[0].torrent : texte base64 attendu")
                 })?;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(text)
-                    .map_err(|_| {
-                        RpcError::invalid_params("sources[0].torrent : base64 invalide")
-                    })?;
-                ("", Some(bytes))
+                ("", Some(base64_param("sources[0].torrent", text)?))
             }
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
@@ -1421,12 +1416,7 @@ async fn linkscan_probe(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
 /// (contenu en base64) ou `url` (lue par le moteur).
 fn metalink_source(p: &Params) -> Result<MetalinkSource, RpcError> {
     match (p.str("data")?, p.str("url")?) {
-        (Some(data), None) => {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .map_err(|_| RpcError::invalid_params("data : base64 invalide"))?;
-            Ok(MetalinkSource::Data(bytes))
-        }
+        (Some(data), None) => Ok(MetalinkSource::Data(base64_param("data", &data)?)),
         (None, Some(url)) => Ok(MetalinkSource::Url(url)),
         _ => Err(RpcError::invalid_params("data ou url, l'un des deux")),
     }
@@ -1553,9 +1543,15 @@ fn plugin_data(p: &Params) -> Result<Vec<u8>, RpcError> {
             crate::plugins::manifest::MAX_FILE >> 20
         )));
     }
+    base64_param("data", text.trim())
+}
+
+/// Contenu d'un paramètre en base64 (`.torrent`, Metalink, plugin) ; refusé sous le nom
+/// `name` (une seule lecture, audit R19).
+fn base64_param(name: &str, text: &str) -> Result<Vec<u8>, RpcError> {
     base64::engine::general_purpose::STANDARD
-        .decode(text.trim())
-        .map_err(|_| RpcError::invalid_params("data : base64 invalide"))
+        .decode(text)
+        .map_err(|_| RpcError::invalid_params(format!("{name} : base64 invalide")))
 }
 
 fn manifest_json(m: &crate::plugins::Manifest) -> Value {

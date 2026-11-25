@@ -3828,10 +3828,7 @@ impl Scheduler {
         if let Some(origin) = &task.plugin {
             tasks::set_plugin_origin(&self.conn, &task_id, &origin.page, &origin.plugin_id)?;
         }
-        let id = task_id.clone();
-        self.emit(|rev| Event::Added { rev, task_id: id });
-        self.announce_start(&task_id, start);
-        Ok(task_id)
+        Ok(self.added(task_id, start))
     }
 
     /// Dossier et file d'un ajout : ceux demandés, sinon le dossier des téléchargements du
@@ -3954,10 +3951,7 @@ impl Scheduler {
             },
             start,
         )?;
-        let id = task_id.clone();
-        self.emit(|rev| Event::Added { rev, task_id: id });
-        self.announce_start(&task_id, start);
-        Ok(task_id)
+        Ok(self.added(task_id, start))
     }
 
     fn add_torrent(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {
@@ -3997,10 +3991,16 @@ impl Scheduler {
             },
             start,
         )?;
+        Ok(self.added(task_id, start))
+    }
+
+    /// Fin de tout ajout (HTTP, vidéo, torrent) : `task.added`, puis le départ annoncé ;
+    /// rend l'identifiant (audit P26).
+    fn added(&mut self, task_id: String, start: tasks::Start) -> String {
         let id = task_id.clone();
         self.emit(|rev| Event::Added { rev, task_id: id });
         self.announce_start(&task_id, start);
-        Ok(task_id)
+        task_id
     }
 
     fn vault(&self) -> &Vault {
@@ -4813,10 +4813,7 @@ impl Scheduler {
         let explicit = headers
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
-        let login = match explicit {
-            true => None,
-            false => store::logins::best_for(&self.conn, url)?,
-        };
+        let login = transfer::login_for(&self.conn, url, explicit)?;
         // Une tâche terminée ou annulée ne reprendra pas : son retéléchargement
         // réapprendra tout.
         let resumable = !matches!(task.state, TaskState::Completed | TaskState::Cancelled);
@@ -4858,16 +4855,10 @@ impl Scheduler {
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
         let same_host = net::same_origin(&reference.url, url);
-        let reference_login = match explicit {
-            true => None,
-            false => store::logins::best_for(&self.conn, &reference.url)?,
-        };
+        let reference_login = transfer::login_for(&self.conn, &reference.url, explicit)?;
         // Un `Authorization` propre à la tâche ne part pas vers un autre hôte : le miroir y
         // prend les identifiants de son site.
-        let mirror_login = match explicit && same_host {
-            true => None,
-            false => store::logins::best_for(&self.conn, url)?,
-        };
+        let mirror_login = transfer::login_for(&self.conn, url, explicit && same_host)?;
         let total = task
             .total_bytes
             .filter(|_| task.file_name.is_some() && reference.accepts_ranges == Some(true));

@@ -31,7 +31,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::auth::{Auth, Secret};
 use super::dial::{Route, decode_userinfo, dial, route_for, server_host, within};
-use super::{NetError, Probe, RangeRequest, filename, reach};
+use super::{NetError, Probe, RangeRequest, reach};
 
 const POOL_PER_KEY: usize = 8;
 const POOL_IDLE: Duration = Duration::from_secs(30);
@@ -494,21 +494,7 @@ impl Context<'_> {
         let session = self.session(&server).await?;
         let (total, modified) = within(self.read, Self::facts(&session, &path)).await?;
         self.shared.put(session);
-        let mut final_url = url.clone();
-        let _ = final_url.set_username("");
-        let _ = final_url.set_password(None);
-        let name = path.rsplit('/').next().unwrap_or_default();
-        Ok(Probe {
-            final_url,
-            total_bytes: total,
-            accepts_ranges: total.is_some(),
-            etag: None,
-            last_modified: modified,
-            file_name: filename::sanitize(name, filename::NameRules::native()),
-            downgraded: false,
-            content_type: None,
-            attachment: false,
-        })
+        Ok(super::dial::file_probe(url, &path, total, modified, true))
     }
 
     pub async fn get_range(

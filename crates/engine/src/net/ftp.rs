@@ -49,7 +49,7 @@ use super::auth::Auth;
 use super::dial::{
     Route, decode_userinfo, dial, net_error, resolve, route_for, route_public, server_host, within,
 };
-use super::{NetError, Probe, RangeRequest, filename, reach};
+use super::{NetError, Probe, RangeRequest, reach};
 
 type Stream = suppaftp::tokio::TransferStream<AsyncRustlsStream>;
 
@@ -673,21 +673,7 @@ impl Context<'_> {
         let found = within(self.read, Self::facts(&mut session, &path)).await?;
         let (total, modified, rest) = found;
         self.shared.put(session.key, Some(session.conn), false);
-        let mut final_url = url.clone();
-        let _ = final_url.set_username("");
-        let _ = final_url.set_password(None);
-        let name = path.rsplit('/').next().unwrap_or_default();
-        Ok(Probe {
-            final_url,
-            total_bytes: total,
-            accepts_ranges: total.is_some() && rest,
-            etag: None,
-            last_modified: modified,
-            file_name: filename::sanitize(name, filename::NameRules::native()),
-            downgraded: false,
-            content_type: None,
-            attachment: false,
-        })
+        Ok(super::dial::file_probe(url, &path, total, modified, rest))
     }
 
     async fn facts(

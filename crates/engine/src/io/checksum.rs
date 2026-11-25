@@ -138,26 +138,37 @@ const READ_SIZE: usize = 1024 * 1024;
 pub fn hash_file(
     path: &Path,
     algo: Algo,
-    mut on_read: impl FnMut(u64) -> bool,
+    on_read: impl FnMut(u64) -> bool,
 ) -> io::Result<Option<String>> {
-    let mut file = File::open(path)?;
     let mut hasher = hasher(algo);
+    let finished = read_all(path, on_read, |data| hasher.feed(data))?;
+    Ok(finished.then(|| hasher.hex()))
+}
+
+/// Lit tout le fichier `path`, morceau par morceau, en donnant chacun à `each` ; `on_read`
+/// reçoit les octets lus jusque-là après chaque lecture et arrête par `false` (rend
+/// `Ok(false)`). Lecture commune aux empreintes du fichier et des morceaux (audit S13).
+fn read_all(
+    path: &Path,
+    mut on_read: impl FnMut(u64) -> bool,
+    mut each: impl FnMut(&[u8]),
+) -> io::Result<bool> {
+    let mut file = File::open(path)?;
     let mut buf = vec![0u8; READ_SIZE];
     let mut done = 0u64;
     loop {
         let n = match file.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => return Ok(true),
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        hasher.feed(&buf[..n]);
+        each(&buf[..n]);
         done += n as u64;
         if !on_read(done) {
-            return Ok(None);
+            return Ok(false);
         }
     }
-    Ok(Some(hasher.hex()))
 }
 
 /// Empreintes d'une lecture de [`hash_pieces`].
@@ -185,28 +196,19 @@ pub fn hash_pieces(
     piece_algo: Algo,
     piece_len: u64,
     whole: Option<Algo>,
-    mut on_read: impl FnMut(u64) -> bool,
+    on_read: impl FnMut(u64) -> bool,
 ) -> io::Result<Option<PieceHashes>> {
     assert!(piece_len > 0, "longueur de morceau nulle");
-    let mut file = File::open(path)?;
     let mut whole = whole.map(hasher);
     let mut piece = hasher(piece_algo);
     // Octets du morceau en cours déjà lus.
     let mut in_piece = 0u64;
     let mut pieces = Vec::new();
-    let mut buf = vec![0u8; READ_SIZE];
-    let mut done = 0u64;
-    loop {
-        let n = match file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
+    let finished = read_all(path, on_read, |data| {
         if let Some(h) = whole.as_mut() {
-            h.feed(&buf[..n]);
+            h.feed(data);
         }
-        let mut rest = &buf[..n];
+        let mut rest = data;
         while !rest.is_empty() {
             let room = usize::try_from(piece_len - in_piece).unwrap_or(usize::MAX);
             let take = room.min(rest.len());
@@ -218,10 +220,9 @@ pub fn hash_pieces(
                 in_piece = 0;
             }
         }
-        done += n as u64;
-        if !on_read(done) {
-            return Ok(None);
-        }
+    })?;
+    if !finished {
+        return Ok(None);
     }
     // Le dernier morceau, plus court.
     if in_piece > 0 {
