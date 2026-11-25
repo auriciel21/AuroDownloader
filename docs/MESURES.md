@@ -637,3 +637,59 @@ place seulement si une tâche l'attend (vrai au démarrage, remis à jour à cha
 remis par toute pause `disk_full`). Compteur : le délai rendu par `next_wake` au repos,
 vérifié par `an_idle_loop_wakes_only_for_what_it_watches` (contre-épreuves : 30 s sans
 l'indicateur de la place, 15 s sans la condition des plages).
+
+## 2026-11-25, second relevé : Linux (WSL 2), porte de l'étape 10 après l'audit
+
+Code de 882181b (lots 1 à 8 de l'audit), rustc 1.100.0 ; Intel Core i7-3930K (12
+processeurs logiques), aria2 1.35.0, curl 7.68.0. 512 Mio, médiane de 5, outils alternés.
+`cargo test --release -p auro-cli --test perf_vs_aria2 -- --ignored --nocapture`.
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processus et vidage, auro / aria2 (porte) | Processus seul (indicatif) | Machine (indicatif) | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 152,8 | 1,33 | 0,71 | 0,76 | 0,65 | 15,0 % |
+| local, sans bridage | aria2c -x 4 | 115,2 | | | | | 19,7 % |
+| local HTTPS, sans bridage | auro -c 4 | 132,1 | 1,29 | 0,77 | 0,81 | 0,79 | 31,1 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 102,4 | | | | | 38,6 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 106,5 | 1,83 | 0,95 | 1,02 | 1,04 | 21,7 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 65,7 | 1,13 | 0,95 | 1,02 | 1,02 | 21,7 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 58,1 | | | | | 21,3 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 109,8 | 1,64 | 0,85 | 0,88 | 0,82 | 38,9 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 70,3 | 1,05 | 0,89 | 0,92 | 0,72 | 40,6 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 67,0 | | | | | 43,9 % |
+
+Le banc passe : à nombre de connexions égal, débit de 1,05 à 1,83 fois celui d'aria2 et
+coût processeur par octet (processus et vidage) de 0,71 à 0,95 fois le sien, en HTTP comme
+en HTTPS. Comparé au relevé du 2026-11-06 (sixième), rien n'a reculé au-delà du bruit : les
+corrections de l'audit n'ont pas alourdi le chemin chaud. Les constats T15 à T18 (écriture
+du `.part`, verrous, transactions de départ) restent donc sans changement : le banc ne
+montre aucun écart à rattraper (lot 7b de l'audit, sans objet).
+
+## 2026-11-25, troisième relevé : Windows 11, porte de l'étape 10 après l'audit
+
+Même code et même machine que le relevé Linux précédent (882181b, rustc 1.100.0), sous
+Windows 11 ; aria2 1.37.0 (winget). Dossier du banc exclu de Microsoft Defender (`TMP`
+dirigé vers lui pour ce seul passage) ; poste de travail ouvert. 512 Mio, médiane de 5.
+
+| Scénario | Outil | Débit (Mio/s) | Débit auro / aria2 | Processus et vidage, auro / aria2 | Processus seul | Machine (indicatif) | Cœur à 1 Gbit/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| local, sans bridage | auro -c 4 | 99,8 | 1,74 | 0,45 | 0,45 | 0,49 | 35,9 % |
+| local, sans bridage | aria2c -x 4 | 57,4 | | | | | 79,4 % |
+| local HTTPS, sans bridage | auro -c 4 | 86,1 | 1,29 | 0,63 | 0,63 | 0,66 | 59,1 % |
+| local HTTPS, sans bridage | aria2c -x 4 | 66,6 | | | | | 93,3 % |
+| local, 8 Mio/s par connexion | auro -c 16 | 88,2 | 1,22 | 0,55 | 0,55 | 0,73 | 26,2 % |
+| local, 8 Mio/s par connexion | auro (automatique) | 69,3 | 0,96 | 0,57 | 0,57 | 0,73 | 26,7 % |
+| local, 8 Mio/s par connexion | aria2c -x 16 | 72,1 | | | | | 47,3 % |
+| local HTTPS, 8 Mio/s par connexion | auro -c 16 | 86,5 | 1,16 | 0,78 | 0,78 | 1,12 | 53,6 % |
+| local HTTPS, 8 Mio/s par connexion | auro (automatique) | 66,6 | 0,89 | 0,78 | 0,78 | 0,88 | 53,9 % |
+| local HTTPS, 8 Mio/s par connexion | aria2c -x 16 | 74,8 | | | | | 69,1 % |
+
+**Lecture :**
+- À nombre de connexions égal, tout passe : débit de 1,16 à 1,74 fois celui d'aria2,
+  processeur par octet de 0,45 à 0,78 fois le sien.
+- Le mode automatique n'est pas à nombre de connexions égal (il part de 4 et monte) : ses
+  0,89 et 0,96 face à `aria2c -x 16`, bridé à 8 Mio/s par connexion, ne relèvent pas de la
+  porte. Il était à 1,05 et 1,13 sous Linux. Son coût par octet reste bas (0,57 et
+  0,78) : l'écart tient à la montée progressive des connexions sur 7 s de mesure, cause
+  non mesurée plus avant ici. À suivre seulement si un essai réel (serveur lointain) le
+  montre.
+- Processeur de la machine : toujours indicatif sous Windows (poste ouvert, ±30 %).

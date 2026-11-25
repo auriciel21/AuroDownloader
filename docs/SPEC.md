@@ -2080,6 +2080,10 @@ Version de la porte de phase 1, passée le 2026-10-15 sous Windows 11, sans aucu
 - 782 reprises avec des octets déjà enregistrés ;
 - 155 fichiers terminés et vérifiés octet par octet.
 
+Campagne de la porte de l'étape 10 de la phase 7 (2026-11-25), sur le code corrigé après l'audit (`docs/AUDIT.md`, commit 882181b), Rust 1.100.0, 1 000 lancements sur 1 Gio, 8 s au plus par lancement, sans aucun défaut :
+- Windows 11 (graine 1795616149492648401, dossier exclu de l'antivirus) : 794 arrêts brutaux, dont 342 sur un découpage redécoupé ; 733 reprises avec des octets déjà enregistrés ; 206 fichiers vérifiés octet par octet ; 1 h 34 ;
+- Linux (WSL, graine 1795621776090296201) : 716 arrêts brutaux, dont 260 sur un découpage redécoupé ; 695 reprises ; 286 fichiers vérifiés ; 1 h 21.
+
 Le banc de performance (`crates/cli/tests/perf_vs_aria2.rs`, ignoré par défaut) compare `auro` et `aria2c` à nombre de connexions égal : serveur local sans bridage, en HTTP puis en HTTPS ; serveur local bridé par connexion ; et un serveur réel au choix. Chaque mesure va jusqu'au fichier sur disque. `auro` vide ses données (règle 1 de la section 5.6), mais pas `aria2c` ni `curl` : le banc vide donc lui-même le fichier après chaque outil, et compte ce temps. Le banc relève trois temps processeur :
 - **Celui du processus de l'outil, plus celui que le banc passe à vider sur disque ce que l'outil a laissé en mémoire.** Il fait la porte de N-01 (depuis le 2026-11-06, second choix du jour). `auro` paie ses vidages dans son processus (règle 1), aria2 les laisse au système : compter le vidage pour les deux les compare à armes égales. Ce que le système a déjà écrit de lui-même pendant le téléchargement n'y est pas compté, ce qui avantage encore un peu aria2.
 - **Celui du seul processus de l'outil.** Il a fait la porte le 2026-11-06, avant le choix précédent. Il n'est plus qu'indicatif : il avantage les outils qui ne vident pas leurs données, et à 16 connexions le rapport `auro` / aria2 oscille de 0,93 à 1,07 d'un passage à l'autre autour de la parité, l'écart restant étant le vidage qu'`auro` paie seul (`docs/MESURES.md`).
