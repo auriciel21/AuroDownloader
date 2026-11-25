@@ -854,8 +854,12 @@ mod auto {
         let mut case = new_case(&server.url("/plafond.bin"));
         let outcome = case.run().await;
         assert_completed(&case, &outcome, "plafond.bin", &content(len as usize));
+        // Le serveur compte une connexion jusqu'à la pause qui suit son dernier morceau
+        // (20 ms) : une connexion finie, ou abandonnée par un redécoupage, y reste un
+        // instant pendant que sa remplaçante arrive. D'où 5 au plus ; un moteur qui
+        // ignorerait le nombre imposé en ouvrirait davantage.
         assert!(
-            server.peak_connections() <= 4,
+            server.peak_connections() <= 5,
             "{}",
             server.peak_connections()
         );
