@@ -56,7 +56,7 @@ rustls-platform-verifier = "0.7.1"
 # Certificat refusé dans la chaîne d'erreurs de reqwest ; serveur TLS de l'interface
 # distante (aws-lc, comme le reste du moteur).
 rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 # Protocole JSON-RPC (module `rpc`).
 serde_json = "1.0.154"
 # Empreinte du fichier complet (F-11, `io::checksum`) : SHA-1 ; SHA-256 et MD5 servent
@@ -65,11 +65,11 @@ sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2.0.21"
 # Dates du certificat fabriqué (type de rcgen) ; déjà tirée par rcgen.
-time = { version = "0.3.45", default-features = false }
+time = { version = "0.3.47", default-features = false }
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 # Archive de ffmpeg sous Windows (builds BtbN, SPEC §7.17, `media::tools`) ; archive du
 # diagnostic (N-12, `logs::write_archive`).
-zip = { version = "7.3.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
 # Journaux (N-12, phase 7) : événements en lignes JSON, fichiers tournants (`logs`).
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std", "registry"] }
@@ -80,7 +80,7 @@ x509-parser = "0.18.1"
 uuid = { version = "1.26.1", features = ["v4", "v7"] }
 # Plugins d'hébergeurs (F-41, SPEC §7.20) : interpréteur WebAssembly (prototype de l'étape
 # 4a, `experiments/plugins`) ; sans `wat` ni `memory64`.
-wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+wasmi = { version = "2.0.3", default-features = false, features = ["std", "validate", "auto-dispatch"] }
 # Plugins d'essai écrits en texte WebAssembly (`testing::plugin_files`, fonctionnalité
 # `testing` et tests).
 wat = { version = "1", optional = true }

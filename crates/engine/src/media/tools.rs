@@ -820,7 +820,7 @@ fn for_each_entry(
     let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?).map_err(unreadable)?;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(unreadable)?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry.name().map_err(unreadable)?.replace('\\', "/");
         each(&name, &mut entry)?;
     }
     Ok(())

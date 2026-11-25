@@ -73,7 +73,7 @@ signed, SmartScreen warns about an "unknown publisher".
 
 ## Building from source
 
-You need the stable Rust toolchain (1.88 or later). On Windows, the Visual Studio C++ Build
+You need the stable Rust toolchain (1.89 or later). On Windows, the Visual Studio C++ Build
 Tools (SQLite is compiled with the project). On Linux, for the desktop application,
 WebKitGTK 4.1 and its development files (`libwebkit2gtk-4.1-dev` and the packages listed in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
