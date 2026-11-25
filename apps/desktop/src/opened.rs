@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use auro_engine::io::{BoundedReadError, read_bounded};
 use base64::Engine as _;
 use serde::Serialize;
 
@@ -39,11 +40,11 @@ impl Granted {
     }
 }
 
-/// Taille maximale d'un fichier `.torrent` lu pour le moteur : un garde-fou (le moteur a le
-/// sien).
-pub const MAX_TORRENT_FILE: u64 = 16 << 20;
-/// Taille maximale d'un fichier Metalink (celle du moteur, SPEC §7.7).
-pub const MAX_METALINK_FILE: u64 = 4 << 20;
+/// Taille maximale d'un fichier `.torrent` lu pour le moteur : celle du moteur ; recopiée
+/// dans l'extension et l'application Android, comparées par un test (audit C29).
+pub const MAX_TORRENT_FILE: u64 = auro_engine::torrent::MAX_TORRENT_FILE as u64;
+/// Taille maximale d'un fichier Metalink : celle du moteur (SPEC §7.7).
+pub const MAX_METALINK_FILE: u64 = auro_engine::metalink::MAX_LEN as u64;
 
 /// Ce qui a été ouvert avec l'application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -151,27 +152,33 @@ pub fn read_torrent(path: &str) -> Result<TorrentFile, String> {
         (_, true) => MAX_METALINK_FILE,
         _ => return Err("fichier .torrent ou Metalink attendu".into()),
     };
-    if !path.is_absolute() {
-        return Err("chemin absolu attendu".into());
-    }
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("{} : {e}", path.display()))?
-        .len();
-    if len > limit {
-        return Err(format!("{} : fichier trop gros", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
+    let (name, bytes) = read_chosen(path, limit, "fichier trop gros")?;
     Ok(TorrentFile {
-        name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        name,
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
 }
 
-/// Taille maximale d'un fichier de plugin (celle du moteur, SPEC §7.20).
-pub const MAX_PLUGIN_FILE: u64 = 8 << 20;
+/// Fichier choisi par l'utilisateur, lu pour le moteur : chemin absolu, `limit` octets au
+/// plus (`io::read_bounded`, audit C31), refusé au-delà par `too_large` ; rend son nom,
+/// pour l'affichage, et son contenu.
+fn read_chosen(path: &Path, limit: u64, too_large: &str) -> Result<(String, Vec<u8>), String> {
+    if !path.is_absolute() {
+        return Err("chemin absolu attendu".into());
+    }
+    let bytes = read_bounded(path, limit).map_err(|e| match e {
+        BoundedReadError::TooLarge { .. } => format!("{} : {too_large}", path.display()),
+        BoundedReadError::Io(e) => format!("{} : {e}", path.display()),
+    })?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok((name, bytes))
+}
+
+/// Taille maximale d'un fichier de plugin : celle du moteur (SPEC §7.20, audit C29).
+pub const MAX_PLUGIN_FILE: u64 = auro_engine::plugins::manifest::MAX_FILE as u64;
 
 /// Lit un fichier de plugin `.wasm` choisi par l'utilisateur (8 Mio au plus), par son chemin
 /// absolu, pour `plugin.inspect` et `plugin.install` (base64). Rien n'en est exécuté ici.
@@ -183,27 +190,15 @@ pub fn read_plugin(path: &str) -> Result<TorrentFile, String> {
     {
         return Err("fichier de plugin .wasm attendu".into());
     }
-    if !path.is_absolute() {
-        return Err("chemin absolu attendu".into());
-    }
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("{} : {e}", path.display()))?
-        .len();
-    if len > MAX_PLUGIN_FILE {
-        return Err(format!("{} : fichier trop gros", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
+    let (name, bytes) = read_chosen(path, MAX_PLUGIN_FILE, "fichier trop gros")?;
     Ok(TorrentFile {
-        name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        name,
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
 }
 
-/// Taille maximale d'une liste de liens importée (celle du moteur, SPEC §7.18).
-pub const MAX_LIST_FILE: u64 = 4 << 20;
+/// Taille maximale d'une liste de liens importée : celle du moteur (SPEC §7.18, audit C29).
+pub const MAX_LIST_FILE: u64 = auro_engine::linkscan::MAX_INPUT as u64;
 
 /// Une liste de liens importée (F-31), lue comme un texte.
 #[derive(Debug, Serialize)]
@@ -218,22 +213,9 @@ pub struct ListFile {
 /// Lit une liste de liens choisie par l'utilisateur : chemin absolu, 4 Mio au plus, quelle
 /// que soit son extension (texte, CSV, export d'un autre gestionnaire).
 pub fn read_list(path: &str) -> Result<ListFile, String> {
-    let path = Path::new(path);
-    if !path.is_absolute() {
-        return Err("chemin absolu attendu".into());
-    }
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("{} : {e}", path.display()))?
-        .len();
-    if len > MAX_LIST_FILE {
-        return Err(format!("{} : liste trop grosse", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{} : {e}", path.display()))?;
+    let (name, bytes) = read_chosen(Path::new(path), MAX_LIST_FILE, "liste trop grosse")?;
     Ok(ListFile {
-        name: path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        name,
         text: String::from_utf8_lossy(&bytes).into_owned(),
     })
 }
@@ -343,6 +325,26 @@ mod tests {
         // Sans dossier courant, un chemin relatif ne désigne rien.
         assert!(from_args(["a.torrent".to_owned()], None).is_empty());
         assert!(!is_magnet("magnet:?a\nb"));
+    }
+
+    #[test]
+    fn the_torrent_limit_of_the_extension_and_android_is_this_one() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mib = MAX_TORRENT_FILE >> 20;
+        assert_eq!(MAX_TORRENT_FILE, mib << 20);
+        let decide = std::fs::read_to_string(root.join("../../extension/decide.js")).unwrap();
+        assert!(
+            decide.contains(&format!("const MAX_TORRENT_BYTES = {mib} * 1024 * 1024;")),
+            "limite des .torrent de l'extension différente"
+        );
+        let app = std::fs::read_to_string(
+            root.join("../android/app/src/main/java/org/aurodownloader/AuroApp.kt"),
+        )
+        .unwrap();
+        assert!(
+            app.contains(&format!("const val MAX_TORRENT_FILE = {mib} * 1024 * 1024")),
+            "limite des .torrent de l'application Android différente"
+        );
     }
 
     #[test]

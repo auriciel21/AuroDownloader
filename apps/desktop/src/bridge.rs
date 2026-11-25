@@ -22,8 +22,6 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Avancement regroupé toutes les 500 ms (SPEC §6.5).
 const PROGRESS_INTERVAL_MS: u64 = 500;
-/// Attente d'`aurod` après l'avoir lancé.
-const START_WAIT: Duration = Duration::from_secs(10);
 
 /// Erreur d'un appel, telle que la page la reçoit : `code` est le `data.code` stable du
 /// moteur (SPEC §6.7), ou `ENGINE_DOWN` quand le moteur n'est pas joignable.
@@ -164,17 +162,9 @@ impl Starts {
     }
 }
 
-/// Personne n'écoute sur le point d'accès : seul cas où lancer `aurod`. Un canal d'un autre
-/// utilisateur, un dossier refusé ou un canal occupé ne lancent rien (audit C8).
-pub fn engine_absent(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
-}
-
 /// Connexion au point d'accès local ; si personne n'y écoute et que `autostart` est vrai,
-/// lance `aurod` (avec `db` s'il est donné), dans la limite de `starts`, et l'attend.
+/// lance `aurod` (avec `db` s'il est donné), dans la limite de `starts`, et l'attend
+/// (`launch::connect_or_start`, commun avec la CLI et le relais, audit C30).
 pub fn local_connect(
     endpoint: String,
     db: Option<PathBuf>,
@@ -184,29 +174,17 @@ pub fn local_connect(
     Box::new(move || {
         let (endpoint, db, starts) = (endpoint.clone(), db.clone(), Arc::clone(&starts));
         Box::pin(async move {
-            match local::connect(&endpoint).await {
-                Ok(halves) => return Ok(halves),
-                Err(e) if !autostart || !engine_absent(&e) => return Err(e),
-                Err(_) => {}
-            }
-            starts
-                .take(Instant::now())
-                .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
-            auro_engine::launch::start_daemon(&endpoint, db.as_deref(), None)?;
-            let deadline = tokio::time::Instant::now() + START_WAIT;
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                match local::connect(&endpoint).await {
-                    Ok(halves) => return Ok(halves),
-                    Err(e) if tokio::time::Instant::now() >= deadline => {
-                        return Err(io::Error::new(
-                            e.kind(),
-                            format!("aurod lancé, mais ne répond pas : {e}"),
-                        ));
-                    }
-                    Err(_) => {}
-                }
-            }
+            let permit = || starts.take(Instant::now());
+            auro_engine::launch::connect_or_start(
+                &endpoint,
+                autostart,
+                db.as_deref(),
+                None,
+                permit,
+                || local::connect(&endpoint),
+            )
+            .await
+            .map_err(io::Error::from)
         })
     })
 }

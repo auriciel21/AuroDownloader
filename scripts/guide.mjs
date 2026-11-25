@@ -11,7 +11,7 @@
 // un lien hors du guide devient du texte suivi de son adresse (la page ne quitte jamais
 // l'application).
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -227,7 +227,8 @@ export function output(lang) {
   return join(ROOT, "ui/src/guide", `${lang}.html`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Lancé directement (pas importé par ses tests) : même détection que scripts/latest-json.mjs.
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   if (process.argv.includes("--check")) {
     const faults = check();
     for (const lang of LANGS) {

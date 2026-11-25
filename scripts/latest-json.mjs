@@ -8,7 +8,8 @@
 // *_amd64.AppImage, *_aarch64.AppImage. Un paquet manquant, ou sans signature, est une
 // erreur : une publication incomplète laisserait une plateforme sans mise à jour.
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const REPO = "https://github.com/aurodownloader/aurodownloader";
 
@@ -34,7 +35,8 @@ export function latestJson(version, files, readSig, notes, date) {
   return { version, notes: notes.trim(), pub_date: date.toISOString().replace(/\.\d{3}Z$/, "Z"), platforms };
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("latest-json.mjs")) {
+// Lancé directement (pas importé par ses tests) : même détection que scripts/guide.mjs.
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const [version, dir, notesFile] = process.argv.slice(2);
   if (!version || !dir || !notesFile) {
     console.error("usage : node scripts/latest-json.mjs <version> <dossier> <notes.md>");

@@ -10,6 +10,23 @@ fn urls(links: &[Link]) -> Vec<&str> {
     links.iter().map(|l| l.url.as_str()).collect()
 }
 
+/// La page reconnaît les mêmes pages web que le moteur (audit C28).
+#[test]
+fn page_extensions_are_those_of_the_page() {
+    let model = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/model.js"),
+    )
+    .unwrap();
+    let list: Vec<String> = PAGE_EXTENSIONS.iter().map(|e| format!("\"{e}\"")).collect();
+    assert!(
+        model.contains(&format!(
+            "const PAGE_EXTENSIONS = new Set([{}]);",
+            list.join(", ")
+        )),
+        "PAGE_EXTENSIONS diffère de ui/src/model.js"
+    );
+}
+
 #[test]
 fn links_of_a_page_resolved_against_its_address() {
     let html = r##"<!DOCTYPE html><html><head>

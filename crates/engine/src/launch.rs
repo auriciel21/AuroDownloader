@@ -1,11 +1,104 @@
-//! Démarrage d'`aurod` par ses clients (SPEC §4.6) : la CLI et l'application de bureau
-//! le lancent, détaché, quand il ne répond pas sur son point d'accès.
+//! Démarrage d'`aurod` par ses clients (SPEC §4.6) : la CLI, le relais de l'extension et
+//! l'application de bureau le lancent, détaché, quand personne n'écoute sur son point
+//! d'accès ([`connect_or_start`]).
 
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::paths;
+
+/// Délai de réponse d'un `aurod` lancé par un client.
+pub const START_WAIT: Duration = Duration::from_secs(10);
+
+/// Personne n'écoute sur le point d'accès : seul cas où un client lance `aurod`. Un canal
+/// d'un autre utilisateur, un dossier refusé ou un canal occupé ne lancent rien (audit C8).
+pub fn engine_absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// `aurod` peut-il être lancé sur `endpoint` avec la base `db` ? Sans base, il prendrait
+/// celle du moteur réel : seulement sur le point d'accès par défaut, jamais sur un point
+/// d'accès d'essai, fût-il celui d'`AURO_ENDPOINT` (incident du 2026-11-08, audit R3).
+pub fn may_start(endpoint: &str, db: Option<&Path>) -> bool {
+    db.is_some() || endpoint == paths::default_endpoint()
+}
+
+/// Pourquoi un client n'a pas joint le moteur ([`connect_or_start`]).
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectError {
+    /// Personne n'écoute, et ce client ne lance pas `aurod`.
+    #[error("aucun moteur sur {0}")]
+    Absent(String),
+    /// Personne n'écoute sur un point d'accès d'essai, sans base d'essai ([`may_start`]).
+    #[error("aucun moteur d'essai sur {0} : il se démarre avec sa base")]
+    TestEndpoint(String),
+    /// Lancement refusé par le client (trop de lancements, mise à jour en cours…).
+    #[error("{0}")]
+    NotPermitted(String),
+    /// Connexion impossible pour une autre raison qu'un moteur absent, ou lancement
+    /// impossible.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// `aurod` lancé, mais muet au bout de [`START_WAIT`].
+    #[error("aurod lancé, mais ne répond pas : {0}")]
+    NoAnswer(io::Error),
+}
+
+impl From<ConnectError> for io::Error {
+    fn from(error: ConnectError) -> Self {
+        match error {
+            ConnectError::Io(e) => e,
+            ConnectError::NoAnswer(ref e) => io::Error::new(e.kind(), error.to_string()),
+            other => io::Error::new(io::ErrorKind::NotFound, other.to_string()),
+        }
+    }
+}
+
+/// Connexion d'un client au moteur par `connect`. Si personne n'écoute (seul cas, audit C8)
+/// et que `autostart` le demande, lance `aurod` (avec `db` et `ca_cert`), sous le garde de
+/// [`may_start`] et l'accord de `permit`, puis réessaie toutes les 100 ms pendant
+/// [`START_WAIT`]. Seul chemin des clients qui lancent le moteur (audit C30).
+pub async fn connect_or_start<T, F, Fut>(
+    endpoint: &str,
+    autostart: bool,
+    db: Option<&Path>,
+    ca_cert: Option<&Path>,
+    permit: impl FnOnce() -> Result<(), String>,
+    mut connect: F,
+) -> Result<T, ConnectError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = io::Result<T>>,
+{
+    match connect().await {
+        Ok(found) => return Ok(found),
+        Err(e) if !engine_absent(&e) => return Err(ConnectError::Io(e)),
+        Err(_) if !autostart => return Err(ConnectError::Absent(endpoint.to_owned())),
+        Err(_) => {}
+    }
+    if !may_start(endpoint, db) {
+        return Err(ConnectError::TestEndpoint(endpoint.to_owned()));
+    }
+    permit().map_err(ConnectError::NotPermitted)?;
+    start_daemon(endpoint, db, ca_cert)?;
+    let deadline = tokio::time::Instant::now() + START_WAIT;
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        match connect().await {
+            Ok(found) => return Ok(found),
+            Err(e) if tokio::time::Instant::now() >= deadline => {
+                return Err(ConnectError::NoAnswer(e));
+            }
+            Err(_) => {}
+        }
+    }
+}
 
 /// `aurod` à côté du programme qui l'appelle, sinon dans le `PATH`. `AURO_DAEMON` le
 /// remplace.
@@ -125,6 +218,60 @@ fn keep_own_handles() {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+
+    use super::*;
+
+    /// Audit C8 : `aurod` n'est lancé que si personne n'écoute ; jamais pour un canal d'un
+    /// autre utilisateur, un dossier refusé ou un canal occupé.
+    #[test]
+    fn only_an_absent_engine_is_started() {
+        use std::io::{Error, ErrorKind};
+        assert!(engine_absent(&Error::from(ErrorKind::NotFound)));
+        assert!(engine_absent(&Error::from(ErrorKind::ConnectionRefused)));
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::TimedOut,
+            ErrorKind::AddrInUse,
+            ErrorKind::Other,
+        ] {
+            assert!(!engine_absent(&Error::from(kind)), "{kind:?}");
+        }
+    }
+
+    /// Audit R3 et C30 : sans base, rien n'est lancé sur un point d'accès d'essai ; un
+    /// moteur présent est joint sans rien lancer ; une autre erreur ne lance rien non plus.
+    #[tokio::test]
+    async fn a_client_starts_aurod_only_when_it_may() {
+        let test = r"\\.\pipe\auro-essai-lancement".to_owned();
+        assert_ne!(test, paths::default_endpoint());
+        assert!(!may_start(&test, None));
+        assert!(may_start(&test, Some(Path::new("essai.db"))));
+        assert!(may_start(&paths::default_endpoint(), None));
+
+        let absent = || async { Err::<(), _>(io::Error::from(io::ErrorKind::NotFound)) };
+        let refused = || -> Result<(), String> { panic!("aucun lancement attendu") };
+        let e = connect_or_start(&test, true, None, None, refused, absent).await;
+        assert!(matches!(e, Err(ConnectError::TestEndpoint(_))), "{e:?}");
+        let e = connect_or_start(&test, false, None, None, refused, absent).await;
+        assert!(matches!(e, Err(ConnectError::Absent(_))), "{e:?}");
+        let other = || async { Err::<(), _>(io::Error::from(io::ErrorKind::PermissionDenied)) };
+        let e = connect_or_start(&test, true, Some(Path::new("e.db")), None, refused, other).await;
+        assert!(matches!(e, Err(ConnectError::Io(_))), "{e:?}");
+        let present = || async { Ok::<_, io::Error>(7) };
+        let found = connect_or_start(&test, true, None, None, refused, present).await;
+        assert_eq!(found.unwrap(), 7);
+        // Lancement refusé par le client : rien n'est lancé.
+        let e = connect_or_start(
+            &test,
+            true,
+            Some(Path::new("e.db")),
+            None,
+            || Err("non".into()),
+            absent,
+        )
+        .await;
+        assert!(matches!(e, Err(ConnectError::NotPermitted(_))), "{e:?}");
+    }
 
     #[test]
     fn a_large_log_is_set_aside_at_launch() {

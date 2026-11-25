@@ -685,6 +685,7 @@ export function formatContent(f) {
 // ---------- Analyse de liens (F-29, F-31, SPEC §7.18) ----------
 
 /// Extensions des pages web, comme celles du moteur : un lien vers elles n'est pas un fichier.
+// Recopiées du moteur (`linkscan::PAGE_EXTENSIONS`), comparées par ses tests (audit C28).
 const PAGE_EXTENSIONS = new Set(["htm", "html", "xhtml", "shtml", "php", "php3", "php5", "asp", "aspx", "jsp", "jspx", "cgi", "pl", "cfm", "do", "action", "py"]);
 
 /// Ce que demande la zone « Analyser des liens » : une seule adresse HTTP(S) qui n'a pas

@@ -861,7 +861,8 @@ export function stateText(task, t) {
 
 const UNITS = ["o", "Kio", "Mio", "Gio", "Tio"];
 
-/// Taille en unités binaires, une décimale au-delà de l'octet ; « ? » si inconnue.
+/// Taille en unités binaires, une décimale au-delà de l'octet ; « ? » si inconnue. Recopiée
+/// dans l'extension (`formatSize` d'`extension/video.js`), comparée par ses tests (audit W22).
 export function bytes(n, lang, t) {
   if (n == null || n < 0 || !Number.isFinite(n)) return "?";
   let i = 0;
@@ -872,6 +873,18 @@ export function bytes(n, lang, t) {
   const digits = i === 0 ? 0 : 1;
   const number = n.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   return `${number} ${t(UNITS[i])}`;
+}
+
+/// Nom d'une langue (`fr`, `pt-BR`) dans la langue de l'interface, suivi de son code ; le code
+/// seul s'il est inconnu. Recopiée dans l'extension (`extension/video.js`), comparée par ses
+/// tests (audit W22).
+export function languageName(code, lang, t) {
+  try {
+    const name = new Intl.DisplayNames([lang], { type: "language" }).of(code);
+    return name && name !== code ? t("{0} ({1})", name, code) : code;
+  } catch {
+    return code;
+  }
 }
 
 /// Durée en secondes, arrondie à l'unité utile ; vide si inconnue.

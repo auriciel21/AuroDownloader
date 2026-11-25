@@ -34,8 +34,10 @@ use std::time::{Duration, Instant};
 use crate::net::filename::MAX_NAME_BYTES;
 use crate::segmenter::Segment;
 
+mod bounded;
 pub mod checksum;
 mod space;
+pub use bounded::{BoundedReadError, read_bounded};
 pub use space::{free_space, preallocate, space_needed};
 
 /// Taille par défaut du tampon d'un écrivain : 256 Kio (SPEC §7.10).

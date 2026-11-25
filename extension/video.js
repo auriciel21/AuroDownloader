@@ -54,19 +54,22 @@
     return choices;
   }
 
-  /// Taille lisible : unités binaires, notées à la française (« Mio ») en français.
+  /// Taille lisible : unités binaires, notées à la française (« Mio ») en français, une
+  /// décimale au-delà de l'octet ; « ? » si inconnue. Recopie de `bytes` (`ui/src/i18n.js`),
+  /// comparée par les tests.
   function formatSize(bytes, lang = "en") {
     const fr = String(lang).toLowerCase().startsWith("fr");
     const units = fr ? ["o", "Kio", "Mio", "Gio", "Tio"] : ["B", "KiB", "MiB", "GiB", "TiB"];
-    let value = Number(bytes) || 0;
+    let value = bytes;
+    if (value == null || value < 0 || !Number.isFinite(value)) return "?";
     let unit = 0;
     while (value >= 1024 && unit < units.length - 1) {
       value /= 1024;
       unit += 1;
     }
-    const digits = unit === 0 || value >= 100 ? 0 : 1;
-    const number = new Intl.NumberFormat(lang, { maximumFractionDigits: digits }).format(value);
-    return `${number}${fr ? " " : " "}${units[unit]}`;
+    const digits = unit === 0 ? 0 : 1;
+    const number = value.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    return `${number} ${units[unit]}`;
   }
 
   /// Durée lisible : `m:ss` ou `h:mm:ss` ; `""` si inconnue.
@@ -79,7 +82,8 @@
     return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
   }
 
-  /// Nom d'une langue dans celle de l'interface, sinon son code.
+  /// Nom d'une langue dans celle de l'interface, sinon son code. Recopie de `languageName`
+  /// (`ui/src/i18n.js`), comparée par les tests.
   function languageName(code, lang = "en") {
     try {
       const name = new Intl.DisplayNames([lang], { type: "language" }).of(code);

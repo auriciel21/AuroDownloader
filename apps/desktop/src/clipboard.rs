@@ -27,11 +27,8 @@ const EVERY: Duration = Duration::from_secs(1);
 /// Texte copié examiné au plus : au-delà, ce n'est pas une adresse seule.
 const MAX_TEXT: usize = 8 * 1024;
 
-/// Extensions des pages web, comme celles du moteur (`linkscan`, SPEC §7.18).
-const PAGE_EXTENSIONS: [&str; 17] = [
-    "htm", "html", "xhtml", "shtml", "php", "php3", "php5", "asp", "aspx", "jsp", "jspx", "cgi",
-    "pl", "cfm", "do", "action", "py",
-];
+// Extensions des pages web : celles du moteur (SPEC §7.18, audit C28).
+use auro_engine::linkscan::PAGE_EXTENSIONS;
 
 /// Le lien à proposer pour un texte copié : une adresse HTTP(S) seule dont le dernier
 /// segment a une extension hors pages web, ou un lien magnet ; `None` pour tout le reste

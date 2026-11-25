@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::display::{self, Limit, Line, Status, size};
 use auro_cli::client::{EngineRefused, Rpc, Target};
 use auro_engine::io::checksum::Checksum;
+use auro_engine::io::{BoundedReadError, read_bounded};
 
 /// Dossier de destination en chemin absolu, qui doit exister.
 pub(crate) fn dest_dir(dir: &Path) -> Result<String> {
@@ -76,8 +77,9 @@ pub struct AddOptions<'a> {
     pub no_plugin: bool,
 }
 
-/// Taille maximale d'un fichier Metalink lu par la CLI (celle du moteur, SPEC §7.7).
-const MAX_METALINK_FILE: u64 = 4 << 20;
+/// Taille maximale d'un fichier Metalink lu par la CLI : celle du moteur (SPEC §7.7,
+/// audit C29).
+const MAX_METALINK_FILE: u64 = auro_engine::metalink::MAX_LEN as u64;
 
 /// Fichier Metalink désigné par un argument (F-27, SPEC §7.7) : un fichier local `.meta4` ou
 /// `.metalink` (envoyé en base64), ou une adresse HTTP(S) dont le chemin finit ainsi (lue
@@ -97,13 +99,21 @@ fn metalink_of(arg: &str) -> Result<Option<Value>> {
         return Ok(None);
     }
     use base64::Engine as _;
-    let len = std::fs::metadata(path)?.len();
-    if len > MAX_METALINK_FILE {
-        bail!("{arg} : fichier Metalink trop gros ({})", size(len));
-    }
-    let bytes = std::fs::read(path).with_context(|| format!("lecture de {arg}"))?;
+    let bytes = read_chosen(path, arg, MAX_METALINK_FILE, "fichier Metalink")?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(Some(json!({"data": encoded})))
+}
+
+/// Fichier local nommé par l'argument `arg`, `limit` octets au plus (`io::read_bounded`,
+/// audit C31) ; `what` le nomme dans le refus.
+fn read_chosen(path: &Path, arg: &str, limit: u64, what: &str) -> Result<Vec<u8>> {
+    match read_bounded(path, limit) {
+        Ok(bytes) => Ok(bytes),
+        Err(BoundedReadError::TooLarge { len, .. }) => {
+            bail!("{arg} : {what} trop gros ({})", size(len))
+        }
+        Err(BoundedReadError::Io(e)) => Err(e).with_context(|| format!("lecture de {arg}")),
+    }
 }
 
 /// Fichiers d'un Metalink ajoutés : identifiant et chemin de chaque tâche, et nombre de
@@ -213,9 +223,8 @@ pub async fn metalink(rpc: &mut Rpc, arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Taille maximale d'un fichier `.torrent` lu par la CLI : un garde-fou (le moteur a le
-/// sien).
-const MAX_TORRENT_FILE: u64 = 16 << 20;
+/// Taille maximale d'un fichier `.torrent` lu par la CLI : celle du moteur (audit C29).
+const MAX_TORRENT_FILE: u64 = auro_engine::torrent::MAX_TORRENT_FILE as u64;
 
 /// Source d'un ajout : un fichier `.torrent` local (envoyé en base64, SPEC §6.5), ou une
 /// adresse (HTTP, HTTPS ou lien magnet).
@@ -226,11 +235,7 @@ fn source_of(arg: &str) -> Result<Value> {
         .is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
     if is_torrent && !arg.contains("://") && path.is_file() {
         use base64::Engine as _;
-        let len = std::fs::metadata(path)?.len();
-        if len > MAX_TORRENT_FILE {
-            bail!("{arg} : fichier .torrent trop gros ({})", size(len));
-        }
-        let bytes = std::fs::read(path).with_context(|| format!("lecture de {arg}"))?;
+        let bytes = read_chosen(path, arg, MAX_TORRENT_FILE, "fichier .torrent")?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
         return Ok(json!({"torrent": encoded}));
     }

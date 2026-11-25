@@ -1,7 +1,7 @@
 // Page de l'application : barre d'outils, arborescence des catégories, tableau des
 // téléchargements, menu contextuel, propriétés d'un téléchargement, options. Toute action
 // passe par le protocole du moteur (SPEC §6) ; la page ne garde que ce qu'elle affiche.
-import { translator, stateText, errorText, bytes, duration } from "./i18n.js";
+import { translator, stateText, errorText, bytes, duration, languageName } from "./i18n.js";
 import {
   TaskStore, GROUPS, CATEGORIES, COLUMNS, LIVE_COLUMNS, category, taskFileName,
   canPause, canResume, canCancel, canRemove, canRestart, canRelocate, canSetChecksum, detailsOutdated,
@@ -1863,15 +1863,8 @@ function renderDest() {
 }
 
 /// Niveau des journaux du moteur (N-12), appliqué sans redémarrer.
-async function saveLogsLevel() {
-  const level = $("pref-logs-level").value;
-  try {
-    await host.call("settings.set", { values: { "logs.level": level } });
-    announce(t("Détail des journaux changé"));
-  } catch (e) {
-    showError(refused(e));
-    renderDest();
-  }
+function saveLogsLevel() {
+  return saveSetting("logs.level", $("pref-logs-level").value, t("Détail des journaux changé"), renderDest);
 }
 
 /// Proxy du moteur (F-07), lu à l'ouverture des Options (`proxy.get`) ; jamais son mot de
@@ -1990,27 +1983,17 @@ async function saveDiagnostic() {
 }
 
 /// Réservation de la place des fichiers (F-10), réglage du moteur.
-async function savePreallocate() {
+function savePreallocate() {
   const on = $("pref-preallocate").checked;
-  try {
-    await host.call("settings.set", { values: { "downloads.preallocate": on } });
-    announce(on ? t("Place réservée dès le départ") : t("Place prise au fil du téléchargement"));
-  } catch (e) {
-    showError(refused(e));
-    renderDest();
-  }
+  const done = on ? t("Place réservée dès le départ") : t("Place prise au fil du téléchargement");
+  return saveSetting("downloads.preallocate", on, done, renderDest);
 }
 
 /// Empreintes lues dans les fichiers voisins (F-11), réglage du moteur.
-async function saveNeighbor() {
+function saveNeighbor() {
   const on = $("pref-neighbor").checked;
-  try {
-    await host.call("settings.set", { values: { "downloads.neighborChecksum": on } });
-    announce(on ? t("Empreintes cherchées à côté des fichiers") : t("Empreintes non cherchées à côté des fichiers"));
-  } catch (e) {
-    showError(refused(e));
-    renderDest();
-  }
+  const done = on ? t("Empreintes cherchées à côté des fichiers") : t("Empreintes non cherchées à côté des fichiers");
+  return saveSetting("downloads.neighborChecksum", on, done, renderDest);
 }
 
 /// Fichiers `.torrent` à ajouter : `{name, data}` (base64), lus par l'hôte.
@@ -2116,20 +2099,8 @@ function renderAddMetalinks() {
     legend.append(title, drop);
     group.append(legend);
     for (const f of m.doc.files) {
-      const label = document.createElement("label");
-      label.className = "check";
-      const tick = document.createElement("input");
-      tick.type = "checkbox";
-      tick.checked = m.chosen.has(f.index);
-      tick.addEventListener("change", () => {
-        if (tick.checked) m.chosen.add(f.index);
-        else m.chosen.delete(f.index);
-      });
-      const text = document.createElement("span");
-      text.className = "path";
-      text.textContent = f.size != null ? t("{0} ({1})", f.path, bytes(f.size, lang, t)) : f.path;
-      label.append(tick, text);
-      group.append(label);
+      const text = f.size != null ? t("{0} ({1})", f.path, bytes(f.size, lang, t)) : f.path;
+      group.append(checkLabel(text, { path: true, chosen: m.chosen, key: f.index }));
     }
     for (const ignored of m.doc.ignored) {
       const note = document.createElement("p");
@@ -2207,22 +2178,9 @@ function renderAddPluginPages() {
     legend.append(title, drop);
     group.append(legend);
     r.links.forEach((link, index) => {
-      const label = document.createElement("label");
-      label.className = "check";
-      const tick = document.createElement("input");
-      tick.type = "checkbox";
-      tick.checked = entry.chosen.has(index);
-      tick.addEventListener("change", () => {
-        if (tick.checked) entry.chosen.add(index);
-        else entry.chosen.delete(index);
-      });
-      const text = document.createElement("span");
-      text.className = "path";
       const name = pluginLinkName(link);
-      text.textContent = link.size != null ? t("{0} ({1})", name, bytes(link.size, lang, t)) : name;
-      text.title = link.url;
-      label.append(tick, text);
-      group.append(label);
+      const text = link.size != null ? t("{0} ({1})", name, bytes(link.size, lang, t)) : name;
+      group.append(checkLabel(text, { path: true, title: link.url, chosen: entry.chosen, key: index }));
     });
     if (!r.links.length) {
       const none = document.createElement("p");
@@ -2537,16 +2495,6 @@ function sizeText(size) {
   return size.approx ? t("≈ {0}", text) : text;
 }
 
-/// Nom d'une langue dans la langue de l'interface, sinon son code.
-function languageName(code) {
-  try {
-    const name = new Intl.DisplayNames([lang], { type: "language" }).of(code);
-    return name && name !== code ? t("{0} ({1})", name, code) : code;
-  } catch {
-    return code;
-  }
-}
-
 function toolText(tool) {
   if (!tool?.version) return t("absent");
   return tool.origin === "system"
@@ -2704,17 +2652,7 @@ function renderVideo() {
   }));
 
   const subs = probe.subtitles ?? [];
-  $("v-subs").replaceChildren(...subs.map((code) => {
-    const label = document.createElement("label");
-    label.className = "check";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = code;
-    const text = document.createElement("span");
-    text.textContent = languageName(code);
-    label.append(box, text);
-    return label;
-  }));
+  $("v-subs").replaceChildren(...subs.map((code) => checkLabel(languageName(code, lang, t), { value: code })));
   $("v-subs-none").hidden = subs.length > 0;
 }
 
@@ -3280,16 +3218,23 @@ async function loadInterfaces() {
   renderTorrentSettings();
 }
 
-/// Change un réglage du moteur ; le moteur l'annonce, la réponse le donne aussitôt.
-async function saveSetting(key, value, done) {
+/// Change des réglages du moteur ; le moteur les annonce (`settings.updated`), la réponse
+/// les donne aussitôt. Chemin commun de tous les réglages de la page (audit W20).
+async function setSettings(values) {
+  const result = await host.call("settings.set", { values });
+  Object.assign(store.settings, result.values);
+}
+
+/// Change un réglage des Options : `done` annoncé, l'erreur montrée, puis `render` redessine
+/// la rubrique (la case revient à la valeur du moteur après un refus).
+async function saveSetting(key, value, done, render = renderTorrentSettings) {
   try {
-    const result = await host.call("settings.set", { values: { [key]: value } });
-    Object.assign(store.settings, result.values);
+    await setSettings({ [key]: value });
     if (done) announce(done);
   } catch (e) {
     showError(refused(e));
   }
-  renderTorrentSettings();
+  render();
 }
 
 async function changeUploadLimit(event) {
@@ -3497,7 +3442,7 @@ function offerHostKey() {
   const key = pendingKeyFor(detailsKeys, detailsFull?.sources?.[0]?.url);
   if (!task || !key) return;
   offeredKey = key;
-  const server = key.host.includes(":") ? `[${key.host}]:${key.port}` : `${key.host}:${key.port}`;
+  const server = joinListen(key.host, key.port);
   $("hostkey-text").textContent = t(
     "Serveur {0}. Les téléchargements SFTP de ce serveur ne se feront qu'avec cette clé ; ceux qu'elle bloquait repartiront.",
     server,
@@ -3555,7 +3500,7 @@ async function loadHostKeys() {
   list.replaceChildren(...hostKeys.map((key, i) => {
     const option = document.createElement("option");
     option.value = String(i);
-    const server = key.host.includes(":") ? `[${key.host}]:${key.port}` : `${key.host}:${key.port}`;
+    const server = joinListen(key.host, key.port);
     option.textContent = `${server} — ${key.algorithm} ${key.fingerprint}`;
     // L'empreinte dépasse souvent la largeur de la liste : entière au survol.
     option.title = option.textContent;
@@ -3784,15 +3729,31 @@ async function deleteChosenRule() {
 
 /// Cases des types de fichier de la boîte d'une règle, dans l'ordre de l'arborescence.
 function renderRuleCategories() {
-  $("rule-categories").replaceChildren(...CATEGORIES.map((cat) => {
-    const label = document.createElement("label");
-    label.className = "check";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = cat;
-    label.append(box, " ", t(CATEGORY_LABELS[cat]));
-    return label;
-  }));
+  $("rule-categories").replaceChildren(...CATEGORIES.map((cat) => checkLabel(t(CATEGORY_LABELS[cat]), { value: cat })));
+}
+
+/// Une case et son texte (`label.check`), pour les listes à cocher des boîtes : fichiers d'un
+/// Metalink, liens d'un plugin, sous-titres, types d'une règle (audit W21). `chosen` et `key` :
+/// la case suit l'appartenance de `key` à l'ensemble `chosen`, et le tient à jour.
+function checkLabel(text, { value, path = false, title, chosen, key } = {}) {
+  const label = document.createElement("label");
+  label.className = "check";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  if (value !== undefined) box.value = value;
+  if (chosen) {
+    box.checked = chosen.has(key);
+    box.addEventListener("change", () => {
+      if (box.checked) chosen.add(key);
+      else chosen.delete(key);
+    });
+  }
+  const span = document.createElement("span");
+  if (path) span.className = "path";
+  if (title) span.title = title;
+  span.textContent = text;
+  label.append(box, span);
+  return label;
 }
 
 // ---------- Plugins d'hébergeurs (SPEC §7.20, étape 4c) ----------
@@ -4052,8 +4013,7 @@ async function settleRemote() {
 async function changeRemote(values, done) {
   $("r-error").hidden = true;
   try {
-    const result = await host.call("settings.set", { values });
-    Object.assign(store.settings, result.values);
+    await setSettings(values);
     if (done) announce(done);
   } catch (e) {
     remoteFailed(e);
@@ -4101,9 +4061,7 @@ async function pickPem(field) {
 async function saveCert() {
   $("cert-save").disabled = true;
   try {
-    const values = { "remote.tlsCert": $("cert-file").value.trim(), "remote.tlsKey": $("cert-key").value.trim() };
-    const result = await host.call("settings.set", { values });
-    Object.assign(store.settings, result.values);
+    await setSettings({ "remote.tlsCert": $("cert-file").value.trim(), "remote.tlsKey": $("cert-key").value.trim() });
     $("cert-dialog").close();
     await settleRemote();
     $("r-cert-provide").focus();
@@ -4337,8 +4295,7 @@ async function chooseFolder(save) {
   const folder = await host.pickFolder(current).catch(() => null);
   if (folder) {
     try {
-      const result = await host.call("settings.set", { values: { "downloads.dir": folder } });
-      Object.assign(store.settings, result.values);
+      await setSettings({ "downloads.dir": folder });
       renderDest();
     } catch (e) {
       showError(refused(e));
@@ -4417,8 +4374,8 @@ function wire() {
   $("m-reinstall").addEventListener("click", () => installTools(true));
   $("pref-ytdlp-update").addEventListener("change", async (e) => {
     await saveSetting("media.autoUpdate", e.target.checked,
-      e.target.checked ? t("yt-dlp se mettra à jour de lui-même") : t("yt-dlp ne se mettra plus à jour de lui-même"));
-    renderTools();
+      e.target.checked ? t("yt-dlp se mettra à jour de lui-même") : t("yt-dlp ne se mettra plus à jour de lui-même"),
+      renderTools);
   });
   $("tb-resume").addEventListener("click", () => resume(selectedTasks()));
   $("tb-pause").addEventListener("click", () => pause(selectedTasks()));

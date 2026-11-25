@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use auro_engine::launch;
+use auro_engine::launch::{self, ConnectError};
 use auro_engine::rpc::local::{self, Halves};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -142,35 +142,37 @@ pub struct Target {
     pub ca_cert: Option<PathBuf>,
 }
 
-/// Connexion au moteur, après l'avoir démarré si besoin.
+/// Connexion au moteur, après l'avoir démarré si personne n'écoute
+/// (`launch::connect_or_start` ; jamais sur un point d'accès d'essai, sans base : audit R3).
 pub async fn connect(target: &Target) -> Result<Rpc> {
-    if let Ok(rpc) = Rpc::connect(&target.endpoint).await {
-        return Ok(rpc);
+    let endpoint = &target.endpoint;
+    let found = launch::connect_or_start(
+        endpoint,
+        target.autostart,
+        None,
+        target.ca_cert.as_deref(),
+        || Ok(()),
+        || Rpc::connect(endpoint),
+    )
+    .await;
+    match found {
+        Ok(rpc) => Ok(rpc),
+        Err(ConnectError::Absent(_)) => {
+            bail!("aucun moteur sur {endpoint} ; le démarrer avec « auro engine start »")
+        }
+        Err(ConnectError::TestEndpoint(_)) => bail!(
+            "aucun moteur sur {endpoint} ; un point d'accès d'essai se démarre avec sa base : \
+             « auro --endpoint {endpoint} engine start --db <base> »"
+        ),
+        Err(e) => Err(anyhow::Error::from(e))
+            .with_context(|| format!("le moteur ne répond pas sur {endpoint}")),
     }
-    if !target.autostart {
-        bail!(
-            "aucun moteur sur {} ; le démarrer avec « auro engine start »",
-            target.endpoint
-        );
-    }
-    // Démarré ici, `aurod` prendrait la base par défaut, celle du moteur réel : seulement
-    // pour le point d'accès par défaut (incident du 2026-11-08), jamais pour celui
-    // d'`AURO_ENDPOINT` (audit R3).
-    if target.endpoint != auro_engine::paths::default_endpoint() {
-        bail!(
-            "aucun moteur sur {0} ; un point d'accès d'essai se démarre avec sa base : « auro \
-             --endpoint {0} engine start --db <base> »",
-            target.endpoint
-        );
-    }
-    start_daemon(&target.endpoint, None, target.ca_cert.as_deref())?;
-    wait_for(&target.endpoint).await
 }
 
 /// Un `aurod` démarré sur un point d'accès d'essai exige sa base : sans elle, il refuse de
 /// démarrer, et l'attendre ne mènerait qu'à « ne répond pas » au bout de 10 s (audit C7).
 pub fn check_start(endpoint: &str, db: Option<&Path>) -> Result<()> {
-    if db.is_none() && endpoint != auro_engine::paths::default_endpoint() {
+    if !launch::may_start(endpoint, db) {
         bail!(
             "un point d'accès d'essai se démarre avec sa base : « auro --endpoint {endpoint} \
              engine start --db <base> »"

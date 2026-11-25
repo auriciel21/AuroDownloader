@@ -20,8 +20,9 @@ pub const MAX_INPUT: usize = 4 << 20;
 pub const MAX_LINKS: usize = 10_000;
 
 /// Extensions des pages web : un lien vers l'une d'elles n'est pas un fichier à télécharger
-/// (montré seulement sur demande).
-const PAGE_EXTENSIONS: [&str; 17] = [
+/// (montré seulement sur demande). Aussi celles du presse-papiers du bureau ; recopiées dans
+/// `ui/src/model.js`, comparées par un test (audit C28).
+pub const PAGE_EXTENSIONS: [&str; 17] = [
     "htm", "html", "xhtml", "shtml", "php", "php3", "php5", "asp", "aspx", "jsp", "jspx", "cgi",
     "pl", "cfm", "do", "action", "py",
 ];

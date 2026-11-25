@@ -331,22 +331,8 @@ impl Outgoing {
     }
 }
 
-/// Audit C8 : `aurod` n'est lancé que si personne n'écoute ; jamais pour un canal d'un
-/// autre utilisateur, un dossier refusé ou un canal occupé.
-#[test]
-fn only_an_absent_engine_is_started() {
-    use std::io::{Error, ErrorKind};
-    assert!(engine_absent(&Error::from(ErrorKind::NotFound)));
-    assert!(engine_absent(&Error::from(ErrorKind::ConnectionRefused)));
-    for kind in [
-        ErrorKind::PermissionDenied,
-        ErrorKind::TimedOut,
-        ErrorKind::AddrInUse,
-        ErrorKind::Other,
-    ] {
-        assert!(!engine_absent(&Error::from(kind)), "{kind:?}");
-    }
-}
+// Audit C8 (`aurod` lancé seulement si personne n'écoute) : testé avec
+// `launch::connect_or_start`, dans le moteur (audit C30).
 
 /// Audit C8 et C6 : au plus trois lancements en dix minutes, aucun pendant une mise à jour.
 #[test]

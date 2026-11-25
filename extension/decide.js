@@ -16,7 +16,8 @@
     captureMagnet: true,
   });
 
-  /// Plus gros fichier `.torrent` lu et envoyé (comme l'application de bureau).
+  /// Plus gros fichier `.torrent` lu et envoyé : celui du moteur, comparé par les tests de
+  /// l'application de bureau (`opened.rs`, audit C29).
   const MAX_TORRENT_BYTES = 16 * 1024 * 1024;
 
   /// Délai pendant lequel un clic avec Alt laisse le téléchargement au navigateur.

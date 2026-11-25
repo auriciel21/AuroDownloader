@@ -12,9 +12,11 @@ use serde_json::{Value, json};
 
 use crate::display::size;
 use auro_cli::client::Rpc;
+use auro_engine::io::{BoundedReadError, read_bounded};
 
-/// Taille maximale d'un texte ou d'une liste envoyés au moteur (la sienne, SPEC §7.18).
-const MAX_TEXT: u64 = 4 << 20;
+/// Taille maximale d'un texte ou d'une liste envoyés au moteur : la sienne (SPEC §7.18,
+/// audit C29).
+const MAX_TEXT: u64 = auro_engine::linkscan::MAX_INPUT as u64;
 /// Liens dont la taille est demandée, au plus (décision de l'utilisateur du 2026-11-11).
 const MAX_SIZED: usize = 500;
 /// Adresses par appel à `linkscan.probe`.
@@ -88,13 +90,16 @@ fn scan_params(source: &str) -> Result<Value> {
             .context("lecture de l'entrée standard")?;
         bytes
     } else {
-        let len = std::fs::metadata(source)
-            .with_context(|| format!("{source} : ni adresse, ni fichier lisible"))?
-            .len();
-        if len > MAX_TEXT {
-            bail!("{source} : liste trop grosse ({})", size(len));
+        match read_bounded(Path::new(source), MAX_TEXT) {
+            Ok(bytes) => bytes,
+            Err(BoundedReadError::TooLarge { len, .. }) => {
+                bail!("{source} : liste trop grosse ({})", size(len))
+            }
+            Err(BoundedReadError::Io(e)) => {
+                return Err(e)
+                    .with_context(|| format!("{source} : ni adresse, ni fichier lisible"));
+            }
         }
-        std::fs::read(source).with_context(|| format!("lecture de {source}"))?
     };
     if bytes.len() as u64 > MAX_TEXT {
         bail!("entrée trop grosse (plus de {})", size(MAX_TEXT));

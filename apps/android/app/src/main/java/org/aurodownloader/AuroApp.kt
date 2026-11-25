@@ -281,7 +281,8 @@ class AuroApp : Application() {
     companion object {
         const val TAG = "AuroDownloader"
 
-        /** Plus gros fichier `.torrent` lu (comme l'application de bureau, SPEC §4.6). */
+        /** Plus gros fichier `.torrent` lu : celui du moteur, comparé par les tests de
+         *  l'application de bureau (`opened.rs`, audit C29). */
         const val MAX_TORRENT_FILE = 16 * 1024 * 1024
     }
 }

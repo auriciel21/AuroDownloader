@@ -29,7 +29,7 @@ use std::io;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::client::{self, EngineRefused, Rpc, Session};
+use crate::client::{EngineRefused, Rpc, Session};
 
 /// Plus long message accepté de l'extension : un `.torrent` de 16 Mio en base64 y tient ;
 /// le navigateur n'en enverrait pas plus de 64 Mio. Sous la limite d'un message du moteur
@@ -114,21 +114,18 @@ impl Relay {
     /// Connexion au moteur, démarré si besoin.
     async fn engine(&mut self) -> anyhow::Result<&mut Rpc> {
         if self.rpc.is_none() {
-            let rpc = match Rpc::open(&self.endpoint, &SESSION).await {
-                Ok(rpc) => rpc,
-                // Un moteur d'essai (`AURO_ENDPOINT`) ne se démarre jamais d'ici : sans
-                // base d'essai, il prendrait celle du moteur réel (audit R3).
-                Err(e) if self.endpoint != auro_engine::paths::default_endpoint() => {
-                    return Err(anyhow::anyhow!(
-                        "aucun moteur d'essai sur {} : le démarrer avec sa base ({e})",
-                        self.endpoint
-                    ));
-                }
-                Err(_) => {
-                    client::start_daemon(&self.endpoint, None, None)?;
-                    client::wait_for_session(&self.endpoint, &SESSION).await?
-                }
-            };
+            // Un moteur d'essai (`AURO_ENDPOINT`) ne se démarre jamais d'ici : sans base
+            // d'essai, il prendrait celle du moteur réel (audit R3, `launch::may_start`).
+            let endpoint = &self.endpoint;
+            let rpc = auro_engine::launch::connect_or_start(
+                endpoint,
+                true,
+                None,
+                None,
+                || Ok(()),
+                || Rpc::open(endpoint, &SESSION),
+            )
+            .await?;
             self.rpc = Some(rpc);
         }
         Ok(self.rpc.as_mut().expect("connexion ouverte ci-dessus"))
