@@ -197,9 +197,11 @@ pub struct QueueChange {
 /// sans l'augmenter. Elle repart de 0 à chaque démarrage du moteur.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Tâche ajoutée, telle qu'enregistrée à l'ajout : les abonnés l'annoncent sans
+    /// redemander la tâche au moteur (audit R12).
     Added {
         rev: u64,
-        task_id: String,
+        task: Arc<TaskRow>,
     },
     StateChanged {
         rev: u64,
@@ -2498,6 +2500,10 @@ struct Scheduler {
     limits: Limits,
     /// Prochaine vérification de la place libre pour les tâches en pause `disk_full`.
     next_disk_check: Instant,
+    /// Une tâche attend peut-être la place (`disk_full`) : vrai au démarrage, remis à jour
+    /// à chaque vérification, mis par [`Scheduler::changed`] à chaque pause `disk_full`.
+    /// Sans elle, la vérification ne réveille pas la boucle (audit P27).
+    disk_waiting: std::cell::Cell<bool>,
     /// Les exécutions y signalent leur préparation enregistrée ; la boucle l'annonce
     /// (`Event::Prepared`), car elle seule augmente la révision.
     prepared: mpsc::UnboundedSender<(u64, RunNote)>,
@@ -2600,6 +2606,7 @@ impl Scheduler {
                 tasks: HashMap::new(),
             },
             next_disk_check: Instant::now(),
+            disk_waiting: std::cell::Cell::new(true),
             prepared,
             last_run: 0,
             planning: planning::State::default(),
@@ -2669,9 +2676,12 @@ impl Scheduler {
     /// contrôle des plages horaires ou action de fin, au plus une minute.
     fn next_wake(&self) -> Duration {
         let now = Instant::now();
-        let cap = Duration::from_secs(60)
-            .min(self.next_disk_check.saturating_duration_since(now))
-            .min(self.planning_wake(now));
+        let cap = Duration::from_secs(60).min(self.planning_wake(now));
+        // La place libre : seulement si une tâche l'attend (audit P27).
+        let cap = match self.disk_waiting.get() {
+            true => cap.min(self.next_disk_check.saturating_duration_since(now)),
+            false => cap,
+        };
         // L'interface des torrents se surveille tant qu'il y en a une.
         let cap = match self.iface_name {
             Some(_) => cap.min(self.next_iface_check.saturating_duration_since(now)),
@@ -2721,10 +2731,10 @@ impl Scheduler {
 
     /// Remet en file les tâches arrêtées faute de place quand la place revient (F-18) :
     /// celle qu'il leur reste à prendre, plus la réserve. Au plus une fois par
-    /// `disk_recheck`.
+    /// `disk_recheck`, et seulement si une tâche l'attend (audit P27).
     fn recheck_disk(&mut self) {
         let now = Instant::now();
-        if now < self.next_disk_check {
+        if !self.disk_waiting.get() || now < self.next_disk_check {
             return;
         }
         self.next_disk_check = now + self.config.disk_recheck;
@@ -2735,13 +2745,18 @@ impl Scheduler {
         let Ok(paused) = tasks::find_tasks(&self.conn, &filter) else {
             return;
         };
+        let mut waiting = false;
         for task in paused {
-            if task.pause_reason.as_deref() == Some(PauseReason::DiskFull.as_sql())
-                && self.config.transfer.space_for(&task)
-            {
-                let _ = self.set_state(&task.id, &Change::to(TaskState::Queued));
+            if task.pause_reason.as_deref() != Some(PauseReason::DiskFull.as_sql()) {
+                continue;
             }
+            let requeued = self.config.transfer.space_for(&task)
+                && self
+                    .set_state(&task.id, &Change::to(TaskState::Queued))
+                    .is_ok();
+            waiting |= !requeued;
         }
+        self.disk_waiting.set(waiting);
     }
 
     /// Annonce un changement, avec la révision suivante.
@@ -2856,6 +2871,9 @@ impl Scheduler {
             Ok(t) => (t.pause_reason, t.error_code),
             Err(_) => (None, None),
         };
+        if pause_reason.as_deref() == Some(PauseReason::DiskFull.as_sql()) {
+            self.disk_waiting.set(true);
+        }
         self.emit(|rev| Event::StateChanged {
             rev,
             task_id: task_id.to_owned(),
@@ -3997,8 +4015,15 @@ impl Scheduler {
     /// Fin de tout ajout (HTTP, vidéo, torrent) : `task.added`, puis le départ annoncé ;
     /// rend l'identifiant (audit P26).
     fn added(&mut self, task_id: String, start: tasks::Start) -> String {
-        let id = task_id.clone();
-        self.emit(|rev| Event::Added { rev, task_id: id });
+        match load_task(&self.conn, &task_id) {
+            Ok(task) => {
+                let task = Arc::new(task);
+                self.emit(|rev| Event::Added { rev, task });
+            }
+            // Tâche enregistrée mais illisible aussitôt : pas d'annonce, comme quand
+            // l'abonné la redemandait ; l'instantané la montrera.
+            Err(e) => tracing::warn!(tache = %task_id, erreur = %e, "tâche ajoutée illisible"),
+        }
         self.announce_start(&task_id, start);
         task_id
     }

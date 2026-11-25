@@ -606,3 +606,34 @@ Le banc passe : toutes les portes tenues à nombre de connexions égal.
   ce passage lent d'aria2. Le gain se prouve par la mesure isolée, pas par ce rapport.
 - Reste propre à auro : la copie vers le tampon d'écriture (0,10 s pour 512 Mio), à
   traiter dans un chantier séparé de `io`.
+
+## 2026-11-25 : audit, lot 7, annonces d'ajout et réveils du planificateur (Windows)
+
+Mesures des deux constats de performance qu'un compteur suffit à établir (`docs/AUDIT.md`,
+R12 et P27). Machine de développement sous Windows 11, compilation `--release`.
+
+**R12, annonce des tâches ajoutées.** Chaque `task.added` faisait, pour chaque abonné, un
+`engine.get` traité par la boucle du planificateur, en concurrence avec les ajouts : un lot
+de 1 000 ajouts suivi par 4 abonnés coûtait 4 000 commandes de plus. Depuis, l'événement
+porte la tâche telle qu'enregistrée à l'ajout. Mesure :
+`cargo test --release -p auro-engine --lib -- --ignored r12_ --nocapture` (lot de 1 000
+`task.add` en pause par `task.addBatch`, 4 abonnés au sujet `tasks`, cinq passages).
+
+| | lot accepté (s), cinq passages | médiane (s) | `task.added` reçus | `EVENTS_LOST` |
+| --- | --- | --- | --- | --- |
+| avant | 4,56 ; 3,62 ; 3,82 ; 3,92 ; 4,79 | 3,92 | 1 000 par abonné | 0 |
+| après | 2,09 ; 2,01 ; 2,06 ; 2,12 ; 2,05 | 2,06 | 1 000 par abonné | 0 |
+
+Chez chaque abonné, le dernier `task.added` arrive quelques millisecondes avant la réponse
+du lot, avant comme après : les abonnés suivaient déjà ; c'est le lot lui-même qui attendait
+derrière les `engine.get` (−47 %).
+
+**P27, réveils de la boucle au repos.** Sans planification et sans tâche en pause
+`disk_full`, la boucle se réveillait toutes les 15 s (contrôle des plages, deux requêtes)
+et toutes les 30 s (place libre, une requête), soit 240 réveils par heure, sous Android
+aussi. Elle ne se réveille plus, au repos, qu'une fois par minute (borne gardée), soit 60
+par heure : le contrôle des plages seulement s'il existe une planification, celui de la
+place seulement si une tâche l'attend (vrai au démarrage, remis à jour à chaque contrôle,
+remis par toute pause `disk_full`). Compteur : le délai rendu par `next_wake` au repos,
+vérifié par `an_idle_loop_wakes_only_for_what_it_watches` (contre-épreuves : 30 s sans
+l'indicateur de la place, 15 s sans la condition des plages).

@@ -42,7 +42,7 @@ use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream, AsyncRustlsStream};
 use suppaftp::types::FileType;
-use suppaftp::{FtpError, Mode};
+use suppaftp::{FtpError, FtpResult, Mode, Status};
 use tokio::io::AsyncReadExt;
 
 use super::auth::Auth;
@@ -526,7 +526,7 @@ impl Context<'_> {
         loop {
             match self.shared.take(&key) {
                 (Some(mut conn), _) => {
-                    let alive = tokio::time::timeout(QUICK, conn.noop()).await;
+                    let alive = tokio::time::timeout(QUICK, still_alive(&mut conn)).await;
                     if matches!(alive, Ok(Ok(()))) {
                         return Ok(Session {
                             conn,
@@ -841,6 +841,25 @@ impl std::fmt::Debug for FtpBody {
         f.debug_struct("FtpBody")
             .field("remaining", &self.remaining)
             .finish_non_exhaustive()
+    }
+}
+
+/// `NOOP` d'une connexion reprise de la réserve. Après un `ABOR`, certains serveurs
+/// (libunftp) envoient le `226` de l'`ABOR` avant le `426` du transfert interrompu, que
+/// `abort` ne lit donc pas : ce reste arrive en réponse au `NOOP`. Il est alors lu, puis la
+/// vraie réponse du `NOOP` : la connexion, de nouveau accordée, sert encore au lieu d'être
+/// jetée (une connexion de plus, que le serveur peut refuser).
+async fn still_alive(conn: &mut AsyncRustlsFtpStream) -> FtpResult<()> {
+    match conn.noop().await {
+        Err(FtpError::UnexpectedResponse(late))
+            if matches!(
+                late.status,
+                Status::TransferAborted | Status::ClosingDataConnection
+            ) =>
+        {
+            conn.read_response_in(&[Status::CommandOk]).await.map(drop)
+        }
+        other => other,
     }
 }
 

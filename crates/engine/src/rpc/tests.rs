@@ -5069,3 +5069,69 @@ async fn a_torrent_file_is_fetched_by_the_engine() {
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), before);
     crate::testing::stop(&engine).await;
 }
+
+/// Audit R12, mesure (ignorée par défaut, relevé dans `docs/MESURES.md`) : un lot de 1 000
+/// ajouts suivi par 4 abonnés ; chaque abonné doit recevoir ses 1 000 `task.added`, sans
+/// `EVENTS_LOST`.
+/// `cargo test --release -p auro-engine --lib -- --ignored r12_ --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn r12_a_batch_of_additions_reaches_every_subscriber() {
+    const TASKS: usize = 1000;
+    const SUBSCRIBERS: usize = 4;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let started = std::time::Instant::now();
+    let mut readers = Vec::new();
+    for _ in 0..SUBSCRIBERS {
+        let mut c = TestClient::connect(&engine);
+        c.result("engine.hello", hello()).await;
+        c.result("events.subscribe", json!({"topics": ["tasks"]}))
+            .await;
+        readers.push(tokio::spawn(async move {
+            let (mut added, mut lost) = (0, 0);
+            let mut last = Duration::ZERO;
+            while added < TASKS {
+                let Ok(Ok(Some(line))) =
+                    timeout(Duration::from_secs(20), c.lines.next_line()).await
+                else {
+                    break;
+                };
+                if line.contains("\"task.added\"") {
+                    added += 1;
+                    last = started.elapsed();
+                } else if line.contains("EVENTS_LOST") {
+                    lost += 1;
+                }
+            }
+            (added, lost, last)
+        }));
+    }
+    let mut adder = TestClient::connect(&engine);
+    adder.result("engine.hello", hello()).await;
+    let items: Vec<Value> = (0..TASKS)
+        .map(|i| {
+            json!({
+                "sources": [{"url": format!("http://127.0.0.1:9/f{i}.bin")}],
+                "destDir": dir_text(dir.path()),
+                "startPaused": true,
+            })
+        })
+        .collect();
+    let sent = started.elapsed();
+    let batch = adder.result("task.addBatch", json!({"items": items})).await;
+    let accepted = started.elapsed() - sent;
+    assert_eq!(batch["tasks"].as_array().unwrap().len(), TASKS, "{batch}");
+    let mut complete = true;
+    for reader in readers {
+        let (added, lost, last) = reader.await.unwrap();
+        println!(
+            "abonné : {added} task.added, {lost} EVENTS_LOST, dernier {:?} après l'envoi",
+            last.saturating_sub(sent)
+        );
+        complete &= added == TASKS && lost == 0;
+    }
+    println!("lot de {TASKS} accepté en {accepted:?}");
+    crate::testing::stop(&engine).await;
+    assert!(complete, "un abonné n'a pas tout reçu");
+}

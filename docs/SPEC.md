@@ -1377,8 +1377,8 @@ Si des empreintes par segment existent (torrent, Metalink), seul le segment faut
 | Durée maximale d'octets en tampon | 500 ms | non |
 | Réserve d'un seau de débit inemployé | 100 ms de son débit | non |
 | Place laissée libre sur le disque de destination | 64 Mio | non |
-| Vérification de la place pour les tâches en pause `disk_full` | 30 s | non |
-| Contrôle des plages horaires (section 7.11) | 15 s | non |
+| Vérification de la place pour les tâches en pause `disk_full` (seulement s'il y en a, audit P27) | 30 s | non |
+| Contrôle des plages horaires (section 7.11 ; seulement s'il existe une planification, audit P27) | 15 s | non |
 | Délai entre l'annonce d'une action de fin et son exécution | 60 s | non |
 
 ### 7.11 Planification (F-16)

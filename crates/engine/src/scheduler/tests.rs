@@ -1255,6 +1255,74 @@ async fn a_due_retry_that_cannot_start_does_not_spin_the_loop() {
     scheduler.begin_shutdown(None);
 }
 
+/// Audit P27 : au repos, sans planification ni tâche en attente de place, la boucle ne se
+/// réveille qu'une fois par minute (avant : toutes les 15 s pour les plages, toutes les
+/// 30 s pour la place) ; une pause `disk_full` ou une planification rétablit son contrôle.
+#[tokio::test]
+async fn an_idle_loop_wakes_only_for_what_it_watches() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+    let disk_recheck = config.disk_recheck;
+    let check_every = config.planning.check_every;
+    let conn = store::open(&config.db_path).unwrap();
+    let queue = tasks::ensure_queue(&conn, DEFAULT_QUEUE).unwrap();
+    let (events, _announced) = broadcast::channel(16);
+    let (prepared, _) = mpsc::unbounded_channel();
+    let mut scheduler = Scheduler::new(conn, config, events, Arc::default(), queue, None, prepared);
+    // Rien ne part : seuls les contrôles de la boucle comptent ici.
+    scheduler.network_usable = false;
+    let turn = |scheduler: &mut Scheduler| {
+        scheduler.recheck_disk();
+        scheduler.check_interface();
+        scheduler.refresh_schedules(false);
+        scheduler.check_end_action();
+        scheduler.start_runnable();
+        scheduler.next_wake()
+    };
+    // Premier tour : la place et les plages sont vues une fois, puis plus rien à surveiller.
+    let wake = turn(&mut scheduler);
+    assert!(wake > Duration::from_secs(59), "au repos : {wake:?}");
+
+    // Une tâche s'arrête faute de place : la place se revérifie.
+    let id = scheduler
+        .add(add("http://127.0.0.1:1/f", dir.path()))
+        .unwrap();
+    tasks::change_state(&mut scheduler.conn, &id, &Change::to(TaskState::Active)).unwrap();
+    tasks::change_state(
+        &mut scheduler.conn,
+        &id,
+        &Change {
+            to: TaskState::Paused,
+            pause_reason: Some(PauseReason::DiskFull),
+            error: None,
+            next_retry_at: None,
+        },
+    )
+    .unwrap();
+    scheduler.changed(&id, TaskState::Active, TaskState::Paused);
+    let wake = turn(&mut scheduler);
+    assert!(wake <= disk_recheck, "place attendue : {wake:?}");
+    // Reprise par l'utilisateur : au contrôle suivant, plus rien n'attend la place.
+    scheduler
+        .set_state(&id, &Change::to(TaskState::Queued))
+        .unwrap();
+    scheduler.next_disk_check = Instant::now();
+    let wake = turn(&mut scheduler);
+    assert!(
+        wake > Duration::from_secs(59),
+        "place plus attendue : {wake:?}"
+    );
+
+    // Une planification : ses plages se contrôlent de nouveau.
+    let rules = crate::schedule::Rules::from_json(&serde_json::json!({
+        "windows": [{"days": [1], "start": "13:00", "end": "14:00"}],
+    }))
+    .unwrap();
+    scheduler.set_schedule(None, "Essai", true, rules).unwrap();
+    let wake = turn(&mut scheduler);
+    assert!(wake <= check_every, "plages à suivre : {wake:?}");
+}
+
 /// Planification (F-16, SPEC §7.11) : plages horaires et action de fin.
 mod planning {
     use std::sync::atomic::{AtomicI64, Ordering};

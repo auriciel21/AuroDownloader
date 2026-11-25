@@ -67,6 +67,11 @@ impl Scheduler {
         if !force && self.planning.next_check.is_some_and(|at| now < at) {
             return;
         }
+        // Aucune planification : rien ne change avant qu'on en écrive une, ce qui force le
+        // calcul (audit P27).
+        if !force && self.planning.next_check.is_some() && self.planning.open.is_empty() {
+            return;
+        }
         self.planning.next_check = Some(now + self.config.planning.check_every);
         let (Ok(views), Ok(queues)) = (self.schedule_views(), tasks::list_queues(&self.conn))
         else {
@@ -104,12 +109,14 @@ impl Scheduler {
         }
     }
 
-    /// Délai jusqu'au prochain contrôle des plages ou à l'action de fin.
+    /// Délai jusqu'au prochain contrôle des plages ou à l'action de fin ; sans
+    /// planification, aucun contrôle à attendre (audit P27).
     pub(super) fn planning_wake(&self, now: Instant) -> Duration {
-        let check = self
-            .planning
-            .next_check
-            .map_or(Duration::ZERO, |at| at.saturating_duration_since(now));
+        let check = match self.planning.next_check {
+            None => Duration::ZERO,
+            Some(_) if self.planning.open.is_empty() => Duration::MAX,
+            Some(at) => at.saturating_duration_since(now),
+        };
         match self.planning.deadline {
             Some(at) => check.min(at.saturating_duration_since(now)),
             None => check,

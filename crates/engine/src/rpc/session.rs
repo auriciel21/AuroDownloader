@@ -412,13 +412,10 @@ async fn describe(
     progress: &mut ProgressBatch,
 ) -> Option<Value> {
     match event {
-        Event::Added { rev, task_id } if topics.tasks => {
-            let task = engine.get(&task_id).await.ok()?;
-            Some(notification(
-                "task.added",
-                json!({"rev": rev, "task": task_json(&task)}),
-            ))
-        }
+        Event::Added { rev, task } if topics.tasks => Some(notification(
+            "task.added",
+            json!({"rev": rev, "task": task_json(&task)}),
+        )),
         Event::StateChanged {
             rev,
             task_id,

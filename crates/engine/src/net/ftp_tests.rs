@@ -162,9 +162,9 @@ fn only_a_socks5_proxy_is_followed() {
 async fn anonymous_probe_ranges_and_whole_file() {
     let site = FtpSite::start(FtpOptions::default()).await;
     // Assez gros pour qu'une plage du début soit interrompue (`ABOR`) pendant que le
-    // serveur envoie encore : avec un petit fichier, il a parfois déjà tout envoyé (tampons
-    // de la boucle locale, plusieurs Mio sous Linux), répond deux fois `226`, et la
-    // connexion, désaccordée, est jetée au `NOOP` suivant ; le test en voyait deux.
+    // serveur envoie encore. Sous charge, libunftp répond parfois `226` à l'`ABOR` avant le
+    // `426` du transfert : ce reste arrivait en réponse au `NOOP` suivant, et la connexion
+    // était jetée (le test en voyait deux) ; `still_alive` le lit maintenant.
     const TOTAL: u64 = 32 << 20;
     let data = content(TOTAL as usize);
     site.put("pub/fichier.bin", &data);
