@@ -90,7 +90,7 @@ jobs:
       - name: Installateur à signer
         id: unsigned
         if: steps.signpath.outputs.enabled == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-windows-${{ matrix.arch }}
           path: dist/${{ steps.setup.outputs.name }}
@@ -121,7 +121,7 @@ jobs:
         run: |
           cargo tauri signer sign "dist/${{ steps.setup.outputs.name }}"
           if ($LASTEXITCODE -ne 0) { throw "signature de la mise à jour : échec" }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-${{ matrix.arch }}
           path: dist/
@@ -163,7 +163,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri signer sign dist/*_${{ matrix.appimage }}.AppImage
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-${{ matrix.arch }}
           path: dist/
@@ -216,7 +216,7 @@ jobs:
       - name: Magasin de clés effacé
         if: always()
         run: rm -f "$RUNNER_TEMP/auro.jks"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android
           path: dist/
