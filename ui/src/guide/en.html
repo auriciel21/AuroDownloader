@@ -3,13 +3,13 @@
 <h2 id="guide-readme" tabindex="-1">AuroDownloader user guide</h2>
 <p>AuroDownloader is a free and open source download manager for Windows, Linux and Android. It downloads fast, in several parts at once, and picks up where it left off after an interruption, without losing or corrupting data.</p>
 <p>A single engine does all the downloading; the desktop application, the Android application, the browser extension, the web interface and the command line only drive it. Closing the window therefore does not stop downloads.</p>
-<p>Version française (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/guide/fr/README.md</span>)</p>
+<p>Version française (<span class="guide-url">https://github.com/auriciel21/AuroDownloader/blob/main/docs/guide/fr/README.md</span>)</p>
 <h3 id="guide-readme-contents" tabindex="-1">Contents</h3>
 <ol><li><a href="#guide-01-installation">Installation</a>: Windows, Linux, Android, extension, uninstalling.</li><li><a href="#guide-02-first-steps">First steps</a>: the window, a first download.</li><li><a href="#guide-03-downloads">Downloads</a>: adding, following, Properties, checksum, mirrors, Metalink, FTP and SFTP, moving, downloading again.</li><li><a href="#guide-04-torrents">Torrents</a>: magnet links, <code>.torrent</code> files, seeding.</li><li><a href="#guide-05-video">Videos</a>: the video of a page, quality, subtitles.</li><li><a href="#guide-06-links">Link grabber</a>: every file of a page or a list, copied links.</li><li><a href="#guide-07-organising">Organising</a>: queues, speed limits, time slots, filing rules, history.</li><li><a href="#guide-08-options">Options</a>: every section, including updates and the proxy.</li><li><a href="#guide-09-extension">Browser extension</a>: Firefox, Chrome, Edge.</li><li><a href="#guide-10-android">Android</a>.</li><li><a href="#guide-11-remote-access">Remote access</a>: driving downloads from another device.</li><li><a href="#guide-12-command-line">Command line</a>: <code>auro</code>.</li><li><a href="#guide-13-accessibility">Accessibility</a>: keyboard and screen readers.</li><li><a href="#guide-14-troubleshooting">Troubleshooting</a>: common problems, diagnostic, privacy.</li></ol>
 </section>
 <section aria-labelledby="guide-01-installation">
 <h2 id="guide-01-installation" tabindex="-1">Installation</h2>
-<p>Packages are on the project's Releases (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/releases</span>) page. Each release also provides <code>SHA256SUMS</code>, the checksum of every file, to check a download.</p>
+<p>Packages are on the project's Releases (<span class="guide-url">https://github.com/auriciel21/AuroDownloader/releases</span>) page. Each release also provides <code>SHA256SUMS</code>, the checksum of every file, to check a download.</p>
 <h3 id="guide-01-installation-windows-10-and-11" tabindex="-1">Windows 10 and 11</h3>
 <ol><li>Download <code>AuroDownloader_&lt;version&gt;_x64-setup.exe</code> (most computers) or <code>_arm64-setup.exe</code> (computers with an ARM processor).</li><li>Run it. It installs for your account only, without administrator rights, in <code>%LOCALAPPDATA%\AuroDownloader</code>. If WebView2 is missing (rare on Windows 11), the installer downloads it.</li><li>If Windows shows &quot;Windows protected your PC&quot; and &quot;unknown publisher&quot;, the installer is not signed. Choose &quot;More info&quot;, then &quot;Run anyway&quot;, if you did get it from the Releases page.</li></ol>
 <p>The installer also registers the <a href="#guide-09-extension">extension</a>'s relay with the browsers.</p>
@@ -234,7 +234,7 @@ auro engine stop</code></pre>
 <p>In the &quot;Add&quot; box, Enter starts, Shift+Enter starts a new line.</p>
 <h3 id="guide-13-accessibility-screen-readers" tabindex="-1">Screen readers</h3>
 <ul><li>Messages (refused addition, checksum cleared, download completed…) are announced; an error tied to a field is read with it.</li><li><strong>Orca</strong>: version 46 treats the application as a WebKitGTK page; in a field, letters move around while structural navigation is on: Orca+Z turns it off before typing. Orca 46 does not announce the page's status messages either.</li></ul>
-<p>The detail of the accessibility review (WCAG 2.2, levels A and AA, in French) is in <code>docs/ACCESSIBILITE.md</code> (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/blob/main/docs/ACCESSIBILITE.md</span>).</p>
+<p>The detail of the accessibility review (WCAG 2.2, levels A and AA, in French) is in <code>docs/ACCESSIBILITE.md</code> (<span class="guide-url">https://github.com/auriciel21/AuroDownloader/blob/main/docs/ACCESSIBILITE.md</span>).</p>
 </section>
 <section aria-labelledby="guide-14-troubleshooting">
 <h2 id="guide-14-troubleshooting" tabindex="-1">Troubleshooting</h2>
@@ -248,5 +248,5 @@ auro engine stop</code></pre>
 <p>AuroDownloader sends no telemetry. It only contacts:</p>
 <ul><li>the servers of the files you download (and their mirrors);</li><li>torrent peers;</li><li>GitHub, at most once a day, for updates (can be turned off);</li><li>the official releases of yt-dlp and ffmpeg, if you install them;</li><li>the domains declared by the plugins you install.</li></ul>
 <h3 id="guide-14-troubleshooting-reporting-a-problem" tabindex="-1">Reporting a problem</h3>
-<p>On the issues (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/issues</span>) page, with the version (Options, About), the system, what happens, and the diagnostic if possible. A security flaw is reported privately, through the security advisories (<span class="guide-url">https://github.com/aurodownloader/aurodownloader/security/advisories/new</span>).</p>
+<p>On the issues (<span class="guide-url">https://github.com/auriciel21/AuroDownloader/issues</span>) page, with the version (Options, About), the system, what happens, and the diagnostic if possible. A security flaw is reported privately, through the security advisories (<span class="guide-url">https://github.com/auriciel21/AuroDownloader/security/advisories/new</span>).</p>
 </section>

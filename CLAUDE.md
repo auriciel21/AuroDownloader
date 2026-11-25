@@ -322,7 +322,8 @@ téléchargement.
   banc de performance le lundi) ; `release.yml` (8c : étiquette `v0.x.y`, paquets de toutes
   les plateformes, SignPath facultatif, signature des mises à jour après Authenticode, APK
   signé, brouillon de publication avec `latest.json` et `SHA256SUMS`). Jamais encore lancés :
-  le dépôt GitHub est à créer par l'utilisateur. `scripts/version.sh` (version des cinq
+  dépôt GitHub `auriciel21/AuroDownloader` (public, créé vide par l'utilisateur le
+  2026-11-25 ; poussé par lui seul). `scripts/version.sh` (version des cinq
   fichiers, `--check` pour la publication), `scripts/latest-json.mjs` (tests dans
   `scripts/tests`). Procédure du mainteneur (dépôt, clés, secrets, SignPath, publication) :
   `docs/PUBLICATION.md` ; clés et secrets créés par l'utilisateur seul, jamais par Claude.

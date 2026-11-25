@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const LANGS = ["fr", "en"];
-const REPO = "https://github.com/aurodownloader/aurodownloader/blob/main";
+const REPO = "https://github.com/auriciel21/AuroDownloader/blob/main";
 
 /** Ancre d'un titre, comme GitHub : minuscules, lettres, chiffres, espaces et tirets. */
 export function slug(text) {

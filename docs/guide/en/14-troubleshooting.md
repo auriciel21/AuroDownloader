@@ -41,7 +41,7 @@ AuroDownloader sends no telemetry. It only contacts:
 
 ## Reporting a problem
 
-On the [issues](https://github.com/aurodownloader/aurodownloader/issues) page, with the version
+On the [issues](https://github.com/auriciel21/AuroDownloader/issues) page, with the version
 (Options, About), the system, what happens, and the diagnostic if possible. A security flaw is
 reported privately, through the
-[security advisories](https://github.com/aurodownloader/aurodownloader/security/advisories/new).
+[security advisories](https://github.com/auriciel21/AuroDownloader/security/advisories/new).

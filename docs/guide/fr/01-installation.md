@@ -1,7 +1,7 @@
 # Installation
 
 Les paquets sont sur la page des
-[publications](https://github.com/aurodownloader/aurodownloader/releases) du projet. Chaque
+[publications](https://github.com/auriciel21/AuroDownloader/releases) du projet. Chaque
 publication donne aussi `SHA256SUMS`, l'empreinte de chaque fichier, pour vérifier un
 téléchargement.
 

@@ -11,7 +11,7 @@ same engine.
 
 > **Status: version 1 in preparation.** Nothing has been released yet. The features below
 > are written and tested; packages will be published on the
-> [Releases](https://github.com/aurodownloader/aurodownloader/releases) page.
+> [Releases](https://github.com/auriciel21/AuroDownloader/releases) page.
 
 ## Features
 
@@ -47,7 +47,7 @@ same engine.
 
 ## Installing
 
-Once version 1 is out, from the [Releases](https://github.com/aurodownloader/aurodownloader/releases)
+Once version 1 is out, from the [Releases](https://github.com/auriciel21/AuroDownloader/releases)
 page:
 
 | System | Package |
@@ -112,7 +112,7 @@ Installers, the Android application, the benchmarks and every other command are 
 ## Security
 
 Please report vulnerabilities privately, through GitHub's
-[security advisories](https://github.com/aurodownloader/aurodownloader/security/advisories/new),
+[security advisories](https://github.com/auriciel21/AuroDownloader/security/advisories/new),
 not in public issues. The security review of the remote interface, the plugins and the local
 channel is in [`docs/SECURITE.md`](docs/SECURITE.md) (in French).
 

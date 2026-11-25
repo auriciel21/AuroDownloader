@@ -22,7 +22,7 @@ test("une entrée par plateforme, adresse de la publication et signature", () =>
   assert.deepEqual(Object.keys(json.platforms), Object.keys(PLATFORMS));
   assert.deepEqual(json.platforms["windows-x86_64"], {
     signature: "signature de AuroDownloader_0.2.0_x64-setup.exe.sig",
-    url: "https://github.com/aurodownloader/aurodownloader/releases/download/v0.2.0/AuroDownloader_0.2.0_x64-setup.exe",
+    url: "https://github.com/auriciel21/AuroDownloader/releases/download/v0.2.0/AuroDownloader_0.2.0_x64-setup.exe",
   });
   assert.match(json.platforms["linux-aarch64"].url, /_aarch64\.AppImage$/);
 });

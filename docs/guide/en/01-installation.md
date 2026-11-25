@@ -1,6 +1,6 @@
 # Installation
 
-Packages are on the project's [Releases](https://github.com/aurodownloader/aurodownloader/releases)
+Packages are on the project's [Releases](https://github.com/auriciel21/AuroDownloader/releases)
 page. Each release also provides `SHA256SUMS`, the checksum of every file, to check a
 download.
 

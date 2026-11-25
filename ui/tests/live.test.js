@@ -70,7 +70,7 @@ const APP_INFO = { lang: "fr", prefs: { lang: "fr", closeToTray: true, showOnAdd
 /** Faux hôte des mises à jour (étape 8b) : installation qui se met à jour, clé présente. */
 const FOUND = {
   version: "0.2.0", current: "0.1.0", date: null,
-  page: "https://github.com/aurodownloader/aurodownloader/releases/tag/v0.2.0",
+  page: "https://github.com/auriciel21/AuroDownloader/releases/tag/v0.2.0",
   // Notes venues de la publication : du texte, jamais interprété comme du HTML.
   notes: "Corrections.\n<img src=x onerror=\"globalThis.piege = 1\">",
 };

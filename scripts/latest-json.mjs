@@ -11,7 +11,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const REPO = "https://github.com/aurodownloader/aurodownloader";
+export const REPO = "https://github.com/auriciel21/AuroDownloader";
 
 export const PLATFORMS = {
   "windows-x86_64": /_x64-setup\.exe$/,

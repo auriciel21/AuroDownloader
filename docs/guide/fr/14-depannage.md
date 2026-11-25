@@ -42,7 +42,7 @@ AuroDownloader n'envoie aucune télémétrie. Il ne contacte que :
 
 ## Signaler un problème
 
-Sur la page des [tickets](https://github.com/aurodownloader/aurodownloader/issues), avec la
+Sur la page des [tickets](https://github.com/auriciel21/AuroDownloader/issues), avec la
 version (Options, À propos), le système, ce qui se passe, et le diagnostic si possible. Une
 faille de sécurité se signale en privé, par les
-[avis de sécurité](https://github.com/aurodownloader/aurodownloader/security/advisories/new).
+[avis de sécurité](https://github.com/auriciel21/AuroDownloader/security/advisories/new).

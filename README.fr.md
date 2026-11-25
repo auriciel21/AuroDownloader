@@ -11,7 +11,7 @@ téléchargement : toutes parlent au même moteur.
 
 > **État : version 1 en préparation.** Rien n'est encore publié. Les fonctions ci-dessous
 > sont écrites et testées ; les paquets seront publiés sur la page des
-> [publications](https://github.com/aurodownloader/aurodownloader/releases).
+> [publications](https://github.com/auriciel21/AuroDownloader/releases).
 
 ## Fonctions
 
@@ -49,7 +49,7 @@ téléchargement : toutes parlent au même moteur.
 ## Installation
 
 Une fois la version 1 sortie, depuis la page des
-[publications](https://github.com/aurodownloader/aurodownloader/releases) :
+[publications](https://github.com/auriciel21/AuroDownloader/releases) :
 
 | Système | Paquet |
 | --- | --- |
@@ -115,7 +115,7 @@ sont décrits dans [`CLAUDE.md`](CLAUDE.md), et la procédure de publication dan
 ## Sécurité
 
 Merci de signaler les failles en privé, par les
-[avis de sécurité](https://github.com/aurodownloader/aurodownloader/security/advisories/new)
+[avis de sécurité](https://github.com/auriciel21/AuroDownloader/security/advisories/new)
 de GitHub, et non dans les tickets publics. La revue de sécurité de l'interface distante, des
 plugins et du canal local est dans [`docs/SECURITE.md`](docs/SECURITE.md).
 

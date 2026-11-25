@@ -28,7 +28,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use crate::bridge::{Bridge, Starts, Status as BridgeStatus};
 
 /// Publications du projet.
-pub const RELEASES: &str = "https://github.com/aurodownloader/aurodownloader/releases";
+pub const RELEASES: &str = "https://github.com/auriciel21/AuroDownloader/releases";
 
 /// Une recherche par jour au plus.
 pub const DAY: u64 = 24 * 3600;
@@ -360,11 +360,11 @@ mod tests {
     fn release_page_of_a_version() {
         assert_eq!(
             release_page("0.2.0"),
-            "https://github.com/aurodownloader/aurodownloader/releases/tag/v0.2.0"
+            "https://github.com/auriciel21/AuroDownloader/releases/tag/v0.2.0"
         );
         assert_eq!(
             release_page("v0.2.0"),
-            "https://github.com/aurodownloader/aurodownloader/releases/tag/v0.2.0"
+            "https://github.com/auriciel21/AuroDownloader/releases/tag/v0.2.0"
         );
     }
 }

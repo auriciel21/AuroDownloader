@@ -8,20 +8,22 @@ Vue d'ensemble :
 
 | Quoi | Où | Obligatoire |
 |---|---|---|
-| Dépôt `aurodownloader/aurodownloader`, public | GitHub | Oui |
+| Dépôt `auriciel21/AuroDownloader`, public | GitHub | Oui |
 | Clé des mises à jour (Tauri) | Machine du mainteneur, secrets GitHub, clé publique dans `tauri.conf.json` | Oui |
 | Magasin de clés Android | Machine du mainteneur, secrets GitHub | Oui |
 | Signature Windows par SignPath Foundation | Compte SignPath, secrets et variables GitHub | Non : sans elle, installateurs non signés |
 
 ## 1. Créer le dépôt et y pousser le code
 
-1. Sur GitHub, créer l'organisation **aurodownloader** (« New organization », offre
-   gratuite), puis dans celle-ci le dépôt **aurodownloader**, **public**, vide (sans README,
-   licence ni `.gitignore` : ils existent déjà).
+1. Le dépôt **auriciel21/AuroDownloader** existe depuis le 2026-11-25 : **public**, créé
+   vide (sans README, licence ni `.gitignore` : ils existent déjà). Son adresse est écrite
+   dans les README, le guide, `scripts/latest-json.mjs` et l'application de bureau
+   (`update.rs`, adresse des mises à jour de `tauri.conf.json`) : la changer partout si le
+   dépôt change de nom ou de propriétaire.
 2. Dans le dossier du projet :
 
    ```
-   git remote add origin https://github.com/aurodownloader/aurodownloader.git
+   git remote add origin https://github.com/auriciel21/AuroDownloader.git
    git push -u origin main
    ```
 
