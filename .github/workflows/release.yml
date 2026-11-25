@@ -5,6 +5,10 @@ name: Publication
 # sont signés par SignPath quand ses secrets existent (facultatif), les mises à jour par la
 # clé de l'utilisateur, l'APK par son magasin de clés ; un BROUILLON de publication est
 # préparé, que l'utilisateur relit et publie. Procédure : docs/PUBLICATION.md.
+#
+# Audit W3, W4, W17 : chaque secret n'est donné qu'à l'étape qui signe ; actions épinglées
+# par SHA (mises à jour par Dependabot, .github/dependabot.yml) ; aucun cache dans les
+# constructions de publication ; aucun job ne garde le jeton de git.
 on:
   push:
     tags: ["v*.*.*"]
@@ -29,7 +33,9 @@ jobs:
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
       HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Version de l'étiquette partout
         run: sh scripts/version.sh --check "$GITHUB_REF_NAME"
       - name: Clé publique des mises à jour dans tauri.conf.json
@@ -54,17 +60,13 @@ jobs:
         include:
           - { runner: windows-latest, arch: x64 }
           - { runner: windows-11-arm, arch: arm64 }
-    env:
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          workspaces: |
-            . -> target
-            apps/desktop -> target
-      - run: cargo install tauri-cli --version "^2" --locked
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # branche stable
+      # Version exacte (audit W4) : celle avec laquelle les paquets ont été essayés.
+      - run: cargo install tauri-cli --version "=2.12.4" --locked
       - name: Installateur NSIS
         shell: pwsh
         run: apps/desktop/bundle.ps1
@@ -77,17 +79,24 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item $files[0].FullName dist/
           "name=$($files[0].Name)" >> $env:GITHUB_OUTPUT
-      # Signature Authenticode (facultative) : SignPath signe l'installateur.
+      # Signature Authenticode (facultative) : SignPath signe l'installateur. Le jeton ne
+      # sert qu'à l'étape de SignPath, jamais à la construction (audit W3).
+      - name: SignPath configuré ?
+        id: signpath
+        shell: bash
+        env:
+          HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        run: echo "enabled=$HAS_SIGNPATH" >> "$GITHUB_OUTPUT"
       - name: Installateur à signer
         id: unsigned
-        if: env.SIGNPATH_API_TOKEN != ''
-        uses: actions/upload-artifact@v4
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-windows-${{ matrix.arch }}
           path: dist/${{ steps.setup.outputs.name }}
       - name: Signature SignPath
-        if: env.SIGNPATH_API_TOKEN != ''
-        uses: signpath/github-action-submit-signing-request@v1
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1.3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -97,7 +106,7 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: signed
       - name: Installateur signé à la place
-        if: env.SIGNPATH_API_TOKEN != ''
+        if: steps.signpath.outputs.enabled == 'true'
         shell: pwsh
         run: |
           Copy-Item "signed/${{ steps.setup.outputs.name }}" "dist/${{ steps.setup.outputs.name }}" -Force
@@ -112,7 +121,7 @@ jobs:
         run: |
           cargo tauri signer sign "dist/${{ steps.setup.outputs.name }}"
           if ($LASTEXITCODE -ne 0) { throw "signature de la mise à jour : échec" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-${{ matrix.arch }}
           path: dist/
@@ -129,19 +138,17 @@ jobs:
           - { runner: ubuntu-22.04, arch: amd64, appimage: amd64 }
           - { runner: ubuntu-22.04-arm, arch: arm64, appimage: aarch64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Bibliothèques de Tauri (WebKitGTK 4.1) et outils de l'AppImage
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config build-essential file libfuse2
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            apps/desktop -> target
-      - run: cargo install tauri-cli --version "^2" --locked
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # branche stable
+      # Version exacte (audit W4) : celle avec laquelle les paquets ont été essayés.
+      - run: cargo install tauri-cli --version "=2.12.4" --locked
       - name: Paquets .deb et AppImage
         run: sh apps/desktop/bundle.sh
       - name: Paquets trouvés
@@ -156,7 +163,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri signer sign dist/*_${{ matrix.appimage }}.AppImage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-${{ matrix.arch }}
           path: dist/
@@ -166,42 +173,50 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # branche stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: 17
       - name: NDK du projet
         run: echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
-      - name: Magasin de clés de l'utilisateur
+      # Construit sans clé (sans AURO_KEYSTORE, Gradle ne signe pas), puis signé par
+      # apksigner dans une étape à part : ni la clé ni ses mots de passe ne restent pendant
+      # la construction (audit W3).
+      - name: APK de publication, non signé
+        working-directory: apps/android
+        run: ./gradlew assembleRelease -PauroAbis=arm64-v8a
+      - name: Signature par la clé de l'utilisateur
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/auro.jks"
-      - name: APK de publication, signé
-        working-directory: apps/android
-        env:
-          AURO_KEYSTORE: ${{ runner.temp }}/auro.jks
           AURO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           AURO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           AURO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease -PauroAbis=arm64-v8a
-      - name: Signature vérifiée
         run: |
           set -eu
+          umask 077
           version=${GITHUB_REF_NAME#v}
-          apk=apps/android/app/build/outputs/apk/release/app-release.apk
+          set -- apps/android/app/build/outputs/apk/release/*.apk
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::APK non signé introuvable ou en double : $*"; exit 1; }
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$tools/apksigner" verify --print-certs "$apk"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/auro.jks"
+          "$tools/zipalign" -f -p 4 "$1" "$RUNNER_TEMP/aligned.apk"
           mkdir -p dist
-          cp "$apk" "dist/AuroDownloader_${version}_arm64.apk"
+          apk="dist/AuroDownloader_${version}_arm64.apk"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/auro.jks" --ks-pass env:AURO_KEYSTORE_PASSWORD \
+            --ks-key-alias "$AURO_KEY_ALIAS" --key-pass env:AURO_KEY_PASSWORD \
+            --out "$apk" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$RUNNER_TEMP/auro.jks" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --print-certs "$apk"
       - name: Magasin de clés effacé
         if: always()
         run: rm -f "$RUNNER_TEMP/auro.jks"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: android
           path: dist/
@@ -215,25 +230,36 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Lu par l'API, le jeton seulement à cette étape : le dépôt cloné ne le garde pas
+      # (audit W17).
       - name: Message de l'étiquette
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' > notes.md
+          set -eu
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          if [ "$(echo "$ref" | jq -r .object.type)" = tag ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$(echo "$ref" | jq -r .object.sha)" --jq .message > notes.md
+          else
+            : > notes.md
+          fi
           [ -s notes.md ] || echo "AuroDownloader ${GITHUB_REF_NAME#v}." > notes.md
           cat notes.md
       # Installateurs signés seulement (pas les « unsigned-… » envoyés à SignPath).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
           pattern: windows-*
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
           pattern: linux-*
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           name: android

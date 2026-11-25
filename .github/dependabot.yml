@@ -1,0 +1,8 @@
+# Mises à jour des actions des workflows, épinglées par SHA (audit W4) : Dependabot propose
+# chaque semaine le SHA d'une version plus récente, avec son étiquette en commentaire.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
