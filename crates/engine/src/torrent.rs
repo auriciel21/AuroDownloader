@@ -43,8 +43,8 @@ use crate::store::claims::ClaimKind;
 use crate::store::now_ms;
 use crate::store::settings;
 use crate::store::tasks::{
-    Change, PauseReason, TaskRow, TaskState, change_state, complete_task, load_task,
-    primary_source, reserved_names,
+    Change, PauseReason, TaskRow, TaskState, change_state, load_task, primary_source,
+    reserved_names,
 };
 use crate::store::torrents::{
     TorrentFile, files_complete, load_files, load_torrent, save_file_progress, save_metainfo,
@@ -722,12 +722,13 @@ pub async fn run(
 /// ratio ne demande aucun envoi, sinon passé au partage (rend vrai : à relancer).
 pub fn after_command(conn: &mut Connection, task_id: &str) -> Result<bool, TransferError> {
     let task = load_task(conn, task_id)?;
-    let ratio = match load_torrent(conn, task_id)?.ratio_limit {
+    let row = load_torrent(conn, task_id)?;
+    let ratio = match row.ratio_limit {
         Some(r) => Some(r),
         None => settings::torrent_ratio(conn)?,
     };
     let total = task.total_bytes.unwrap_or(task.done_bytes);
-    if ratio.map(|r| target_bytes(r, total)) == Some(0) {
+    if ratio_reached(ratio.map(|r| target_bytes(r, total)), row.uploaded_bytes) {
         crate::postproc::complete(conn, task_id)?;
         return Ok(false);
     }
@@ -735,17 +736,10 @@ pub fn after_command(conn: &mut Connection, task_id: &str) -> Result<bool, Trans
     Ok(true)
 }
 
-/// Termine une tâche dont le partage s'arrête : ses fichiers sont en place.
+/// Termine une tâche dont le partage s'arrête : ses fichiers sont en place (audit V25 :
+/// la même fin que [`crate::postproc::complete`]).
 pub fn finish_sharing(conn: &mut Connection, task_id: &str) -> Result<Outcome, TransferError> {
-    let task = load_task(conn, task_id)?;
-    let top = Path::new(&task.dest_dir).join(task.file_name.as_deref().unwrap_or_default());
-    complete_task(
-        conn,
-        task_id,
-        &top.to_string_lossy(),
-        task.total_bytes.unwrap_or(task.done_bytes),
-    )?;
-    Ok(Outcome::Completed(top))
+    crate::postproc::complete(conn, task_id)
 }
 
 fn record_failure(
@@ -925,7 +919,7 @@ async fn drive(
             crate::postproc::enter(conn, task_id, counters.total)?;
             return Ok(End::Completed(Path::new(&task.dest_dir).join(&top)));
         }
-        if counters.target == Some(0) {
+        if ratio_reached(counters.target, counters.uploaded) {
             return complete(conn, task_id, &task.dest_dir, &top, counters.total);
         }
         // Partage (décision de l'utilisateur du 2026-11-09 : jusqu'au ratio 1).
@@ -940,6 +934,13 @@ async fn drive(
         Passed::Stopped => Ok(End::SeedingStopped),
         Passed::Failed(f) => Ok(End::SeedingFailed(f)),
     }
+}
+
+/// Partage fini : le ratio ne demande aucun envoi, ou il est déjà atteint (des envois
+/// pendant le téléchargement ; audit V27 : terminé tout de suite, sans passer par le
+/// partage).
+fn ratio_reached(target: Option<u64>, uploaded: u64) -> bool {
+    target.is_some_and(|t| uploaded >= t)
 }
 
 /// Octets à envoyer pour un ratio et une taille.
@@ -960,7 +961,7 @@ fn complete(
     total: u64,
 ) -> Result<End, TransferError> {
     let path = Path::new(dest_dir).join(top);
-    complete_task(conn, task_id, &path.to_string_lossy(), total)?;
+    crate::postproc::complete_at(conn, task_id, &path, total)?;
     Ok(End::Completed(path))
 }
 
@@ -1157,7 +1158,7 @@ impl Pass<'_> {
                                 "fichiers changés depuis la fin du téléchargement".into(),
                             ));
                         }
-                        if counters.target.is_some_and(|t| counters.uploaded >= t) {
+                        if ratio_reached(counters.target, counters.uploaded) {
                             break Passed::Reached(selected.clone());
                         }
                     }

@@ -173,12 +173,7 @@ impl Options {
     /// `keep_free` libres ; `None` si elle suffit, ou si la mesure est impossible (un
     /// disque vraiment plein arrêtera la tâche proprement à l'écriture).
     fn short_of_space(&self, dir: &Path, needed: u64) -> Option<Failure> {
-        let free = (self.free_space)(dir).ok()?;
-        (free < needed.saturating_add(self.keep_free)).then_some(Failure::NoSpace {
-            needed,
-            free,
-            keep: self.keep_free,
-        })
+        short_of_space(self.free_space, self.keep_free, dir, needed)
     }
 
     /// La tâche, arrêtée faute de place, peut-elle repartir ? Même règle qu'au départ :
@@ -194,6 +189,22 @@ impl Options {
         self.short_of_space(Path::new(&task.dest_dir), needed)
             .is_none()
     }
+}
+
+/// [`Options::short_of_space`] avec ses deux réglages seulement : la mesure régulière
+/// d'une exécution ne recopie pas toutes les options (audit T23).
+fn short_of_space(
+    free_space: fn(&Path) -> std::io::Result<u64>,
+    keep_free: u64,
+    dir: &Path,
+    needed: u64,
+) -> Option<Failure> {
+    let free = free_space(dir).ok()?;
+    (free < needed.saturating_add(keep_free)).then_some(Failure::NoSpace {
+        needed,
+        free,
+        keep: keep_free,
+    })
 }
 
 /// Avancement, pour l'affichage : des octets reçus, pas forcément vidés sur disque.
@@ -557,33 +568,86 @@ fn record_failure(
     Ok(outcome)
 }
 
-/// En-têtes de la tâche, secrets lus dans le coffre. Un secret qui n'y est plus (coffre en
-/// mémoire après un redémarrage du moteur, effacé à la main) : l'en-tête n'est pas envoyé,
-/// et le serveur dira s'il en avait besoin. Un coffre qui ne répond pas : échec temporaire.
-async fn request_headers(
+/// Un secret n'a pas été lu : le coffre ne répond pas, ou la lecture s'est arrêtée.
+#[derive(Debug)]
+pub(crate) enum RevealError {
+    Vault(crate::secrets::VaultError),
+    Join(tokio::task::JoinError),
+}
+
+/// Un secret du coffre, lu hors du fil courant ; `None` s'il n'y est plus.
+async fn read_secret(vault: &Vault, id: String) -> Result<Option<String>, RevealError> {
+    let vault = vault.clone();
+    tokio::task::spawn_blocking(move || vault.get(&id))
+        .await
+        .map_err(RevealError::Join)?
+        .map_err(RevealError::Vault)
+}
+
+/// En-têtes de la tâche, secrets lus dans le coffre : exécution, et vérification d'une
+/// source par le planificateur (une seule lecture, audit T20). Un secret qui n'y est plus
+/// (coffre en mémoire après un redémarrage du moteur, effacé à la main) : l'en-tête n'est
+/// pas envoyé, et le serveur dira s'il en avait besoin.
+pub(crate) async fn reveal_headers(
     stored: Vec<StoredHeader>,
     task_id: &str,
     vault: &Vault,
-) -> Step<Vec<(String, String)>> {
+) -> Result<Vec<(String, String)>, RevealError> {
     let mut list = Vec::new();
     for (name, stored) in stored {
-        let id = match stored {
-            Stored::Plain(value) => {
-                list.push((name, value));
-                continue;
-            }
-            Stored::Secret(id) => id,
-        };
-        let vault = vault.clone();
-        match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
-            Ok(Some(secret)) => list.push((name, secret)),
-            Ok(None) => {
-                tracing::warn!(tache = %task_id, entete = %name, "en-tête absent du coffre, non envoyé")
-            }
-            Err(e) => return fail(Failure::Vault(e)),
+        match stored {
+            Stored::Plain(value) => list.push((name, value)),
+            Stored::Secret(id) => match read_secret(vault, id).await? {
+                Some(secret) => list.push((name, secret)),
+                None => {
+                    tracing::warn!(tache = %task_id, entete = %name, "en-tête absent du coffre, non envoyé")
+                }
+            },
         }
     }
-    Ok(Ok(list))
+    Ok(list)
+}
+
+/// Identifiants d'un site (SPEC §7.14), mot de passe lu dans le coffre (audit T20). Absent
+/// du coffre (coffre en mémoire après un redémarrage) : aucun, et le serveur dira s'il en
+/// avait besoin.
+pub(crate) async fn reveal_auth(
+    login: Option<LoginRow>,
+    vault: &Vault,
+) -> Result<Option<Auth>, RevealError> {
+    let Some(login) = login else {
+        return Ok(None);
+    };
+    let Ok(site) = Site::parse(&login.site) else {
+        return Ok(None);
+    };
+    // L'hôte seul dans le journal, jamais le protocole, le port ni le chemin (audit T9).
+    let host = site.host().to_owned();
+    match read_secret(vault, login.secret_ref.clone()).await? {
+        Some(password) => Ok(Some(
+            Auth::new(Login {
+                site,
+                username: login.username,
+                password,
+            })
+            .allowing_plain(login.allow_plain)
+            .with_key(login.key_path),
+        )),
+        None => {
+            tracing::warn!(host = %host, "mot de passe absent du coffre, non envoyé");
+            Ok(None)
+        }
+    }
+}
+
+/// Une lecture de secrets dans le cours d'une exécution : un coffre qui ne répond pas est un
+/// échec temporaire.
+fn revealed<T>(read: Result<T, RevealError>) -> Step<T> {
+    match read {
+        Ok(value) => Ok(Ok(value)),
+        Err(RevealError::Vault(e)) => fail(Failure::Vault(e)),
+        Err(RevealError::Join(e)) => Err(e.into()),
+    }
 }
 
 /// Identifiants enregistrés pour le site de `url` (SPEC §7.14). Aucun si la tâche porte
@@ -605,35 +669,10 @@ fn site_login(
     Ok(logins::best_for(conn, url)?)
 }
 
-/// Lit dans le coffre le mot de passe de `login`. Absent du coffre (coffre en mémoire après
-/// un redémarrage) : la tâche part sans, et le serveur dira s'il en avait besoin. Un coffre
-/// qui ne répond pas : échec temporaire, comme pour les en-têtes.
+/// Lit dans le coffre le mot de passe de `login` ([`reveal_auth`]) ; un coffre qui ne
+/// répond pas : échec temporaire, comme pour les en-têtes.
 async fn reveal_login(login: Option<LoginRow>, vault: &Vault) -> Step<Option<Auth>> {
-    let Some(login) = login else {
-        return Ok(Ok(None));
-    };
-    let Ok(site) = Site::parse(&login.site) else {
-        return Ok(Ok(None));
-    };
-    let (vault, id) = (vault.clone(), login.secret_ref.clone());
-    // L'hôte seul dans le journal, jamais le protocole, le port ni le chemin (audit T9).
-    let host = site.host().to_owned();
-    match tokio::task::spawn_blocking(move || vault.get(&id)).await? {
-        Ok(Some(password)) => Ok(Ok(Some(
-            Auth::new(Login {
-                site,
-                username: login.username,
-                password,
-            })
-            .allowing_plain(login.allow_plain)
-            .with_key(login.key_path),
-        ))),
-        Ok(None) => {
-            tracing::warn!(host = %host, "mot de passe absent du coffre, non envoyé");
-            Ok(Ok(None))
-        }
-        Err(e) => fail(Failure::Vault(e)),
-    }
+    revealed(reveal_auth(login, vault).await)
 }
 
 async fn execute(
@@ -655,7 +694,7 @@ async fn execute(
     }
     let mut source = primary_source(conn, task_id)?;
     let stored = stored_headers::load(conn, task_id)?;
-    let mut task_headers = match request_headers(stored, task_id, &opts.vault).await? {
+    let mut task_headers = match revealed(reveal_headers(stored, task_id, &opts.vault).await)? {
         Ok(list) => list,
         Err(stop) => return Ok(Err(stop)),
     };
@@ -2181,8 +2220,12 @@ async fn pool(
             // Le disque se remplit (un autre programme, une autre tâche) : arrêt propre
             // avant que la réserve ne soit prise (F-18).
             _ = space.tick(), if failure.is_none() && !user_stop => {
-                let (dir, opts) = (ctx.dir.to_owned(), ctx.opts.clone());
-                let short = tokio::task::spawn_blocking(move || opts.short_of_space(&dir, 0)).await?;
+                let (dir, free_space, keep_free) =
+                    (ctx.dir.to_owned(), ctx.opts.free_space, ctx.opts.keep_free);
+                let short = tokio::task::spawn_blocking(move || {
+                    short_of_space(free_space, keep_free, &dir, 0)
+                })
+                .await?;
                 if let Some(f) = short {
                     first_failure(f, &mut failure);
                 }

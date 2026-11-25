@@ -1102,3 +1102,47 @@ async fn bound_elsewhere_the_local_peer_is_never_reached() {
     );
     crate::testing::stop(&engine).await;
 }
+
+/// Audit V27 : la commande de fin passée, un torrent dont les envois (faits pendant le
+/// téléchargement) atteignent déjà le ratio se termine tout de suite, sans partager ; un
+/// octet de moins, il partage.
+#[test]
+fn a_ratio_already_reached_ends_without_sharing() {
+    use crate::store::tasks::{Change, change_state, ensure_queue, set_finished_size};
+    use crate::store::torrents::{NewTorrent, create_torrent_task, save_uploaded};
+    let mut conn = crate::store::open_in_memory().unwrap();
+    crate::store::migrate(&mut conn, crate::store::MIGRATIONS).unwrap();
+    let queue = ensure_queue(&conn, "principale").unwrap();
+    let mut ended = Vec::new();
+    for (hash, uploaded) in [
+        ("7acf8fb590b2060dd9c3146ef770169d593433b0", 1000),
+        ("8acf8fb590b2060dd9c3146ef770169d593433b0", 999),
+    ] {
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+        let new = NewTorrent {
+            queue_id: &queue,
+            display_name: "debian.iso",
+            dest_dir: "/tmp",
+            magnet: &magnet,
+            info_hash: hash,
+            metainfo: None,
+            speed_limit_bps: None,
+            idempotency_key: None,
+            requested_name: None,
+        };
+        let id = create_torrent_task(&mut conn, &new, Default::default()).unwrap();
+        for to in [TaskState::Active, TaskState::PostProcessing] {
+            change_state(&mut conn, &id, &Change::to(to)).unwrap();
+        }
+        // Ratio du réglage, 1 par défaut : 1 000 octets à envoyer.
+        set_finished_size(&conn, &id, 1000).unwrap();
+        save_uploaded(&conn, &id, uploaded).unwrap();
+        let shares = super::after_command(&mut conn, &id).unwrap();
+        let state = crate::store::tasks::load_task(&conn, &id).unwrap().state;
+        ended.push((shares, state));
+    }
+    assert_eq!(
+        ended,
+        [(false, TaskState::Completed), (true, TaskState::Seeding)]
+    );
+}

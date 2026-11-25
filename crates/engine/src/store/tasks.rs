@@ -645,6 +645,19 @@ fn source_row(raw: RawSource) -> Result<SourceRow, StoreError> {
     })
 }
 
+/// Hôte de la source préférée d'une tâche, pour l'historique : le nom d'hôte seulement,
+/// l'adresse complète pouvant porter un jeton (SPEC §8.2 ; une seule lecture, audit S12).
+fn reference_host(conn: &Connection, task_id: &str) -> Result<Option<String>, StoreError> {
+    let url: Option<String> = conn
+        .query_row(
+            "SELECT url FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(url.as_deref().and_then(crate::net::host_of))
+}
+
 /// Source de rang le plus faible (la préférée) d'une tâche.
 pub fn primary_source(conn: &Connection, task_id: &str) -> Result<SourceRow, StoreError> {
     let raw = conn
@@ -1042,18 +1055,7 @@ pub fn complete_task(
     let total = super::to_i64(total_bytes, "taille")?;
     let now = now_ms();
 
-    let url: Option<String> = tx
-        .query_row(
-            "SELECT url FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
-            [task_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    // Le nom d'hôte seulement : l'adresse complète peut porter un jeton (SPEC §8.2).
-    let host = url
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(str::to_owned));
+    let host = reference_host(&tx, task_id)?;
     tx.execute(
         "INSERT INTO history (id, task_id, display_name, final_path, total_bytes, source_host,
                               final_state, sha256, finished_at)
@@ -1208,18 +1210,7 @@ pub fn remove_task(conn: &mut Connection, task_id: &str) -> Result<(), StoreErro
             .optional()?
             .is_some();
     if !recorded {
-        let url: Option<String> = tx
-            .query_row(
-                "SELECT url FROM sources WHERE task_id = ?1 ORDER BY rank, id LIMIT 1",
-                [task_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        // Le nom d'hôte seulement : l'adresse complète peut porter un jeton (SPEC §8.2).
-        let host = url
-            .as_deref()
-            .and_then(|u| reqwest::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(str::to_owned));
+        let host = reference_host(&tx, task_id)?;
         tx.execute(
             "INSERT INTO history (id, task_id, display_name, final_path, total_bytes, source_host,
                                   final_state, finished_at)

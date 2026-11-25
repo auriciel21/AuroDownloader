@@ -1630,8 +1630,8 @@ impl Engine {
         let facts = match check.expect_bytes {
             None => None,
             Some(expected) => {
-                let headers = reveal(check.headers, &self.vault).await?;
-                let auth = reveal_site_login(check.login, &self.vault).await?;
+                let headers = transfer::reveal_headers(check.headers, task_id, &self.vault).await?;
+                let auth = transfer::reveal_auth(check.login, &self.vault).await?;
                 let probe = self
                     .client
                     .probe_as(url, &headers, auth.as_ref())
@@ -1803,9 +1803,10 @@ impl Engine {
         let facts = match check.total {
             None => None,
             Some(total) => {
-                let headers = reveal(check.headers, &self.vault).await?;
-                let reference_auth = reveal_site_login(check.reference_login, &self.vault).await?;
-                let mirror_auth = reveal_site_login(check.mirror_login, &self.vault).await?;
+                let headers = transfer::reveal_headers(check.headers, task_id, &self.vault).await?;
+                let reference_auth =
+                    transfer::reveal_auth(check.reference_login, &self.vault).await?;
+                let mirror_auth = transfer::reveal_auth(check.mirror_login, &self.vault).await?;
                 let mirror_headers = mirrors::headers_for(&headers, &check.reference.url, url);
                 let if_range = net::headers::if_range_validator(
                     check.reference.etag.as_deref(),
@@ -4463,24 +4464,24 @@ impl Scheduler {
             return Err(EngineError::Moving(task_id.to_owned()));
         }
         match task.state {
-            TaskState::Queued | TaskState::Paused | TaskState::RetryWait => {
-                self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
-                if delete_files {
-                    delete_part(&self.conn, &task)?;
-                }
-                Ok(())
-            }
-            // Partage interrompu : ses fichiers sont terminés (SPEC §7.16).
-            TaskState::Seeding => {
-                self.set_state(task_id, &Change::to(TaskState::Cancelled))?;
-                if delete_files {
-                    delete_final(&self.conn, &task)?;
-                }
-                Ok(())
+            TaskState::Queued | TaskState::Paused | TaskState::RetryWait | TaskState::Seeding => {
+                self.cancel_stopped(&task, delete_files)
             }
             TaskState::Cancelled => Ok(()),
             _ => Err(Self::invalid(&task, "annulation")),
         }
+    }
+
+    /// Annule une tâche qui ne tourne pas (`queued`, `paused`, `retry_wait`, ou `failed`
+    /// déjà remise en file) ou en partage, puis efface ses fichiers si `delete_files` : le
+    /// `.part`, ou les fichiers terminés d'un partage (SPEC §7.16). `task` : son état
+    /// d'avant l'annulation (audit P25 : annulation directe et fin d'une exécution).
+    fn cancel_stopped(&mut self, task: &TaskRow, delete_files: bool) -> Result<(), EngineError> {
+        self.set_state(&task.id, &Change::to(TaskState::Cancelled))?;
+        if delete_files {
+            remove_files(&self.conn, task, task.state == TaskState::Seeding)?;
+        }
+        Ok(())
     }
 
     /// Tâche, segments et sources (`task.get`, SPEC §6.4). Les octets reçus d'un segment en
@@ -4550,9 +4551,9 @@ impl Scheduler {
             )));
         }
         if delete_files && task.state == TaskState::Completed {
-            delete_final(&self.conn, &task)?;
+            remove_files(&self.conn, &task, true)?;
         }
-        delete_part(&self.conn, &task)?;
+        remove_files(&self.conn, &task, false)?;
         let from = tasks::restart_task(&mut self.conn, task_id)?;
         self.broken.remove(task_id);
         let id = task_id.to_owned();
@@ -4985,10 +4986,7 @@ impl Scheduler {
             return Err(Self::invalid(&task, "retrait"));
         }
         if delete_files {
-            match task.state {
-                TaskState::Completed => delete_final(&self.conn, &task)?,
-                _ => delete_part(&self.conn, &task)?,
-            }
+            remove_files(&self.conn, &task, task.state == TaskState::Completed)?;
         }
         let mut secrets = headers::secret_refs(&self.conn, task_id)?;
         // Les tâches internes partent avec elle (`ON DELETE CASCADE`), leurs secrets aussi
@@ -5325,29 +5323,16 @@ impl Scheduler {
             }
             Then::Requeue => Ok(()),
             Then::Cancel { delete_files } => match task.state {
-                TaskState::Paused | TaskState::RetryWait => self
-                    .set_state(task_id, &Change::to(TaskState::Cancelled))
-                    .and_then(|()| match delete_files {
-                        true => delete_part(&self.conn, &task),
-                        false => Ok(()),
-                    }),
+                // Partage arrêté (SPEC §7.16) : les fichiers sont terminés.
+                TaskState::Paused | TaskState::RetryWait | TaskState::Seeding => {
+                    self.cancel_stopped(&task, delete_files)
+                }
                 // L'exécution a échoué pendant qu'elle s'arrêtait : l'annulation demandée
                 // s'applique quand même (audit P13), par `queued` (la table de la SPEC §5.5
                 // ne mène pas de `failed` à `cancelled`), dans le même tour de la boucle.
                 TaskState::Failed => self
                     .set_state(task_id, &Change::to(TaskState::Queued))
-                    .and_then(|()| self.set_state(task_id, &Change::to(TaskState::Cancelled)))
-                    .and_then(|()| match delete_files {
-                        true => delete_part(&self.conn, &task),
-                        false => Ok(()),
-                    }),
-                // Partage arrêté (SPEC §7.16) : les fichiers sont terminés.
-                TaskState::Seeding => self
-                    .set_state(task_id, &Change::to(TaskState::Cancelled))
-                    .and_then(|()| match delete_files {
-                        true => delete_final(&self.conn, &task),
-                        false => Ok(()),
-                    }),
+                    .and_then(|()| self.cancel_stopped(&task, delete_files)),
                 _ => Ok(()),
             },
             // Pause pendant le partage : la tâche est terminée.
@@ -5483,54 +5468,15 @@ fn check_file_name(name: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// Identifiants d'un site, mot de passe lu dans le coffre, hors de la boucle (SPEC §7.14).
-async fn reveal_site_login(
-    login: Option<store::logins::LoginRow>,
-    vault: &Vault,
-) -> Result<Option<crate::net::auth::Auth>, EngineError> {
-    let Some(login) = login else {
-        return Ok(None);
-    };
-    let Ok(site) = crate::net::auth::Site::parse(&login.site) else {
-        return Ok(None);
-    };
-    let (vault, id) = (vault.clone(), login.secret_ref.clone());
-    let password = tokio::task::spawn_blocking(move || vault.get(&id))
-        .await
-        .map_err(|_| EngineError::Stopped)??;
-    Ok(password.map(|password| {
-        crate::net::auth::Auth::new(crate::net::auth::Login {
-            site,
-            username: login.username,
-            password,
-        })
-        .allowing_plain(login.allow_plain)
-        .with_key(login.key_path)
-    }))
-}
-
-/// En-têtes à envoyer, secrets lus dans le coffre, hors de la boucle. Un secret absent du
-/// coffre n'est pas envoyé, comme pour une exécution.
-async fn reveal(
-    stored: Vec<StoredHeader>,
-    vault: &Vault,
-) -> Result<Vec<(String, String)>, EngineError> {
-    let mut list = Vec::new();
-    for (name, stored) in stored {
-        match stored {
-            Stored::Plain(value) => list.push((name, value)),
-            Stored::Secret(id) => {
-                let vault = vault.clone();
-                let found = tokio::task::spawn_blocking(move || vault.get(&id))
-                    .await
-                    .map_err(|_| EngineError::Stopped)??;
-                if let Some(secret) = found {
-                    list.push((name, secret));
-                }
-            }
+/// Un secret illisible pendant une vérification : l'erreur du coffre, ou le moteur qui
+/// s'arrête (audit T20).
+impl From<transfer::RevealError> for EngineError {
+    fn from(e: transfer::RevealError) -> Self {
+        match e {
+            transfer::RevealError::Vault(e) => e.into(),
+            transfer::RevealError::Join(_) => EngineError::Stopped,
         }
     }
-    Ok(list)
 }
 
 /// Ratio de partage tel que le protocole le montre : un nombre, ou `null` (sans limite).
@@ -5593,40 +5539,21 @@ fn user_pause() -> Change<'static> {
     }
 }
 
-/// Supprime le `.part` d'une tâche annulée, s'il existe ; ceux de chaque fichier d'un
-/// torrent (SPEC §7.16).
-fn delete_part(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
+/// Supprime les fichiers d'une tâche, s'ils existent : les fichiers terminés si
+/// `finished` (tous ceux d'un torrent, et son dossier s'il reste vide), sinon le `.part` (ceux
+/// de chaque fichier d'un torrent ou d'une vidéo ; SPEC §7.16, §7.17). Une seule fonction
+/// pour les deux (audit P24).
+fn remove_files(conn: &Connection, task: &TaskRow, finished: bool) -> Result<(), EngineError> {
     let Some(name) = &task.file_name else {
         return Ok(());
     };
     let path = Path::new(&task.dest_dir).join(name);
-    if task.kind == TaskKind::Torrent {
-        return torrent::delete_files(conn, task, false)
-            .map_err(|source| EngineError::DeleteFile { path, source });
-    }
-    if task.kind == TaskKind::Media {
-        return media::run::delete_files(conn, task, false)
-            .map_err(|source| EngineError::DeleteFile { path, source });
-    }
-    delete_file(part_path(&path))
-}
-
-/// Supprime le fichier final d'une tâche terminée, s'il existe encore ; tous ceux d'un
-/// torrent, et son dossier s'il reste vide.
-fn delete_final(conn: &Connection, task: &TaskRow) -> Result<(), EngineError> {
-    let Some(name) = &task.file_name else {
-        return Ok(());
+    let deleted = match task.kind {
+        TaskKind::Torrent => torrent::delete_files(conn, task, finished),
+        TaskKind::Media => media::run::delete_files(conn, task, finished),
+        _ => return delete_file(if finished { path } else { part_path(&path) }),
     };
-    let path = Path::new(&task.dest_dir).join(name);
-    if task.kind == TaskKind::Torrent {
-        return torrent::delete_files(conn, task, true)
-            .map_err(|source| EngineError::DeleteFile { path, source });
-    }
-    if task.kind == TaskKind::Media {
-        return media::run::delete_files(conn, task, true)
-            .map_err(|source| EngineError::DeleteFile { path, source });
-    }
-    delete_file(path)
+    deleted.map_err(|source| EngineError::DeleteFile { path, source })
 }
 
 fn delete_file(path: PathBuf) -> Result<(), EngineError> {

@@ -86,13 +86,8 @@ pub fn replace(
     headers: &[StoredHeader],
 ) -> Result<Vec<String>, StoreError> {
     let tx = conn.transaction()?;
-    let old: Vec<String> = {
-        let mut statement = tx.prepare(
-            "SELECT secret_ref FROM task_headers WHERE task_id = ?1 AND secret_ref IS NOT NULL",
-        )?;
-        let refs = statement.query_map([task_id], |r| r.get(0))?;
-        refs.collect::<Result<_, _>>()?
-    };
+    // Les mêmes que `secret_refs` (audit S14).
+    let old = secret_refs(&tx, task_id)?;
     tx.execute("DELETE FROM task_headers WHERE task_id = ?1", [task_id])?;
     insert(&tx, task_id, headers)?;
     tx.commit()?;

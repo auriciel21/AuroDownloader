@@ -218,13 +218,25 @@ pub async fn run(
 pub fn complete(conn: &mut Connection, task_id: &str) -> Result<Outcome, TransferError> {
     let task = load_task(conn, task_id)?;
     let path = final_path(conn, task_id)?;
-    complete_task(
+    complete_at(
         conn,
         task_id,
-        &path.to_string_lossy(),
+        &path,
         task.total_bytes.unwrap_or(task.done_bytes),
     )?;
     Ok(Outcome::Completed(path))
+}
+
+/// Termine une tâche dont les fichiers sont à `final_path`, sa commande de fin passée ou
+/// absente : fin du partage d'un torrent (SPEC §7.16). Toute fin passe par ce module
+/// (audit V25).
+pub fn complete_at(
+    conn: &mut Connection,
+    task_id: &str,
+    final_path: &Path,
+    total: u64,
+) -> Result<(), StoreError> {
+    complete_task(conn, task_id, &final_path.to_string_lossy(), total)
 }
 
 fn fail(conn: &mut Connection, task_id: &str, detail: String) -> Result<Ran, TransferError> {
