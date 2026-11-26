@@ -360,6 +360,9 @@
       </label>
       <label class="check" id="l-tree-box" hidden><input id="l-tree" type="checkbox" aria-describedby="l-tree-note"><span data-i18n="Garder l'arborescence du site">Garder l'arborescence du site</span></label>
       <span class="note" id="l-tree-note" data-i18n="Chaque fichier va dans un sous-dossier au nom du site, puis de ses dossiers (8 niveaux au plus)." hidden>Chaque fichier va dans un sous-dossier au nom du site, puis de ses dossiers (8 niveaux au plus).</span>
+      <!-- Copie d'un site (F-43, SPEC 7.18 ter) : après une exploration, si le moteur annonce `site`. -->
+      <label class="check" id="l-site-box" hidden><input id="l-site" type="checkbox" aria-describedby="l-site-note"><span data-i18n="Copier le site pour la navigation hors ligne">Copier le site pour la navigation hors ligne</span></label>
+      <span class="note" id="l-site-note" data-i18n="Une seule tâche copie les pages explorées, avec leurs images, styles, scripts et polices, et les fichiers cochés ; les liens des pages mènent à la copie. Les pages suivent les réglages de l'exploration : les pages cochées sont ignorées." hidden>Une seule tâche copie les pages explorées, avec leurs images, styles, scripts et polices, et les fichiers cochés ; les liens des pages mènent à la copie. Les pages suivent les réglages de l'exploration : les pages cochées sont ignorées.</span>
       <p id="l-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
@@ -595,6 +598,29 @@
           </table>
         </div>
         <span class="row"><button type="button" id="d-files-apply" data-needs="control" data-i18n="Appliquer le choix">Appliquer le choix</button></span>
+      </section>
+      <!-- Copie d'un site (F-43, SPEC 7.18 ter). -->
+      <section id="d-site-section" class="files-section" aria-labelledby="d-site-title" hidden>
+        <h3 id="d-site-title" data-i18n="Copie du site">Copie du site</h3>
+        <dl class="facts">
+          <div id="f-site-page"><dt data-i18n="Page de départ">Page de départ</dt><dd id="d-site-page" class="path"></dd></div>
+          <div id="f-site-start"><dt data-i18n="Page copiée">Page copiée</dt><dd id="d-site-start" class="path"></dd></div>
+          <div id="f-site-settings"><dt data-i18n="Réglages">Réglages</dt><dd id="d-site-settings"></dd></div>
+          <div id="f-site-counts"><dt data-i18n="Copiés">Copiés</dt><dd id="d-site-counts"></dd></div>
+          <div id="f-site-stop"><dt data-i18n="Exploration">Exploration</dt><dd id="d-site-stop"></dd></div>
+        </dl>
+        <div id="d-site-failed-box" hidden>
+          <h4 id="d-site-failed-title" data-i18n="Éléments en échec">Éléments en échec</h4>
+          <div class="segments-box">
+            <table id="d-site-failed" aria-labelledby="d-site-failed-title">
+              <thead><tr>
+                <th scope="col" data-i18n="Adresse">Adresse</th>
+                <th scope="col" data-i18n="Raison">Raison</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
       </section>
       <div class="field limit-field" id="d-limit-field" data-needs="control">
         <label for="d-limit" data-i18n="Débit maximal de ce téléchargement">Débit maximal de ce téléchargement</label>

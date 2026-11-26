@@ -274,7 +274,16 @@ const QUEUE_LABELS = {
 
 const ICONS = { all: "i-all", incomplete: "i-incomplete", completed: "i-completed" };
 
-const taskName = (task) => taskFileName(task) || t("(sans nom)");
+const taskName = (task) => task.kind === "site"
+  ? t("Site : {0}", task.displayName || taskFileName(task))
+  : taskFileName(task) || t("(sans nom)");
+
+/// Éléments d'une copie de site : « 12 page(s), 40 ressource(s), 2 fichier(s) ».
+function siteCountsText(counts) {
+  if (!counts) return "";
+  const text = t("{0} page(s), {1} ressource(s), {2} fichier(s)", counts.pages ?? 0, counts.resources ?? 0, counts.files ?? 0);
+  return counts.failed ? t("{0}, {1} en échec", text, counts.failed) : text;
+}
 const queueName = (queue) => (QUEUE_LABELS[queue.name] ? t(QUEUE_LABELS[queue.name]) : queue.name);
 
 function viewLabel(key) {
@@ -514,7 +523,8 @@ function renderRow(taskId) {
     bar.value = 0;
   }
   paintMeter(cell("progress").querySelector(".meter"), task);
-  cell("pct").textContent = percentText(task);
+  // Copie d'un site : ses éléments, le volume n'étant connu qu'à la fin (SPEC §7.18 ter).
+  cell("pct").textContent = task.kind === "site" && task.site ? siteCountsText(task.site) : percentText(task);
   cell("state").textContent = taskStateText(task);
   cell("state").title = cell("state").textContent;
   const active = task.state === "active";
@@ -719,7 +729,7 @@ function openMenu(x, y) {
   const one = chosen.length === 1 ? chosen[0] : null;
   const done = one?.state === "completed" && one.fileName;
   const enable = {
-    open: done && !isExecutable(one.fileName),
+    open: done && (one.kind === "site" || !isExecutable(one.fileName)),
     reveal: done,
     restart: chosen.some((task) => canRestart(task.state)),
     move: one && canRelocate(one),
@@ -778,7 +788,7 @@ function runCommand(command) {
   const one = chosen.length === 1 ? chosen[0] : null;
   closeMenu(!["properties", "limit", "remove", "restart", "move", "refresh"].includes(command));
   switch (command) {
-    case "open": if (one) withFile(one.taskId, host.openFile); break;
+    case "open": if (one) withFile(one.taskId, openTask); break;
     case "reveal": if (one) withFile(one.taskId, host.revealFile); break;
     case "resume": resume(chosen); break;
     case "pause": pause(chosen); break;
@@ -798,10 +808,16 @@ function runCommand(command) {
 async function withFile(taskId, action) {
   try {
     const task = await host.call("task.get", { taskId });
-    await action(task.destDir, task.fileName);
+    await action(task.destDir, task.fileName, task);
   } catch (e) {
     showError(refused(e));
   }
+}
+
+/// « Ouvrir » : le fichier, ou la page de départ d'une copie de site, dans le navigateur.
+function openTask(dir, name, task) {
+  if (task.kind === "site") return host.openSite(dir, name, task.site?.startPath ?? "");
+  return host.openFile(dir, name);
 }
 
 function isExecutable(name) {
@@ -1053,7 +1069,13 @@ async function refreshDetails() {
   if (!detailsOutdated(detailsFull, id, stateRev)) return;
   let full;
   // Un torrent : ses fichiers (SPEC §6.5) ; il n'a pas de segments.
-  const include = store.tasks.get(id)?.kind === "torrent" ? ["sources", "files"] : ["segments", "sources"];
+  // Une copie de site : ses éléments, une fois la copie arrêtée ou finie (jusqu'à 20 000).
+  const kind = store.tasks.get(id)?.kind;
+  const include = kind === "torrent"
+    ? ["sources", "files"]
+    : kind === "site"
+      ? store.tasks.get(id)?.state === "active" ? [] : ["items"]
+      : ["segments", "sources"];
   try {
     full = await host.call("task.get", { taskId: id, include });
   } catch {
@@ -1181,7 +1203,7 @@ function renderDetails() {
   $("d-cancel").disabled = !connected;
   const done = task.state === "completed" && task.fileName;
   // Programmes et scripts : jamais ouverts depuis l'application (SPEC §8.1).
-  $("d-open").hidden = !done || isExecutable(task.fileName);
+  $("d-open").hidden = !done || (task.kind !== "site" && isExecutable(task.fileName));
   $("d-reveal").hidden = !done;
   $("d-limit-field").hidden = seeding || !(canPause(task.state) || canResume(task.state));
   $("d-limit-apply").disabled = !connected;
@@ -1190,6 +1212,53 @@ function renderDetails() {
   renderSources(task);
   renderTorrentFiles(task);
   renderHostKey(task);
+  renderSite(task);
+}
+
+const SITE_STOPS = {
+  finished: "finie",
+  maxPages: "arrêtée : limite de pages atteinte",
+  maxBytes: "arrêtée : volume atteint",
+  maxItems: "arrêtée : 20 000 éléments trouvés",
+};
+
+/// Copie d'un site (SPEC §7.18 ter) : page de départ, réglages, nombres, éléments en échec.
+function renderSite(task) {
+  const copy = task.kind === "site" ? detailsFull?.site : null;
+  $("d-site-section").hidden = !copy;
+  if (!copy) return;
+  const set = (key, text) => {
+    $(`d-${key}`).textContent = text;
+    $(`f-${key}`).hidden = !text;
+  };
+  set("site-page", copy.pageUrl ?? "");
+  set("site-start", copy.startPath ?? "");
+  const settings = [
+    t("profondeur {0}", copy.depth),
+    t("{0} pages au plus", copy.maxPages),
+    t("{0} au plus", bytes(copy.maxBytes, lang, t)),
+  ];
+  if (copy.sameFolder) settings.push(t("sous le dossier de départ"));
+  if (copy.ignoreRobots) settings.push(t("robots.txt ignoré"));
+  set("site-settings", settings.join(", "));
+  // L'avancement est plus frais que la dernière lecture pendant la copie.
+  const counts = task.state === "active" && task.site ? task.site : copy;
+  const copied = siteCountsText(counts);
+  set("site-counts", copy.skipped ? t("{0}, {1} laissé(s) par les limites", copied, copy.skipped) : copied);
+  set("site-stop", copy.stop ? t(SITE_STOPS[copy.stop] ?? copy.stop) : t("en cours"));
+  const failed = (copy.items ?? []).filter((i) => i.state === "failed");
+  $("d-site-failed-box").hidden = !failed.length;
+  const body = $("d-site-failed").tBodies[0];
+  body.replaceChildren(...failed.slice(0, MAX_ROWS).map((i) => {
+    const row = document.createElement("tr");
+    for (const text of [i.url, errorText(i.error, t)]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    row.cells[0].className = "path";
+    return row;
+  }));
 }
 
 /// Nom court d'une source, traduit : « Principale » ou « Miroir 2 ».
@@ -1756,6 +1825,9 @@ function onStatus(status) {
     // Exploration d'un site (SPEC §7.18 bis) : depuis le 2026-11-26.
     crawlCapable = status.engine?.capabilities?.includes("crawl") === true;
     $("l-crawl-box").hidden = !crawlCapable;
+    // Copie d'un site (SPEC §7.18 ter) : depuis le 2026-11-26.
+    siteCapable = status.engine?.capabilities?.includes("site") === true;
+    setCrawled(crawled);
     $("tab-media").hidden = !mediaCapable;
     resync();
     loadTools();
@@ -2762,6 +2834,12 @@ const linkUnchecked = new Set();
 let scanSeq = 0;
 /// Le moteur sait explorer un site (capacité `crawl`, SPEC §7.18 bis).
 let crawlCapable = false;
+/// Le moteur sait copier un site (capacité `site`, SPEC §7.18 ter).
+let siteCapable = false;
+/// Réglages de la dernière exploration lancée : ceux d'une copie du site.
+let crawlSettings = null;
+/// Fichiers cochés d'une copie, au plus (SPEC §7.18 ter).
+const MAX_SITE_FILES = 10000;
 /// Exploration en cours, dont la réponse est arrivée ; `null` sinon.
 let crawlId = null;
 /// Avancements arrivés avant la réponse de `linkscan.crawl` : le dernier de chacune.
@@ -2850,6 +2928,8 @@ async function startCrawl(pageUrl) {
     sameFolder: $("l-same-folder").checked,
     ignoreRobots: $("l-ignore-robots").checked,
   });
+  // Ceux d'une copie du site, même si les champs changent ensuite.
+  crawlSettings = read.params ?? null;
   if (read.error === "depth") return linkedError("l-depth", "l-error", t("Profondeur refusée : de 1 à 5."));
   if (read.error === "maxPages") return linkedError("l-max-pages", "l-error", t("Nombre de pages refusé : de 1 à 2000."));
   if (read.error === "exclude") {
@@ -2959,6 +3039,10 @@ function setCrawled(on) {
   $("l-links").classList.toggle("crawled", on);
   $("l-tree-box").hidden = !on;
   $("l-tree-note").hidden = !on;
+  // Copie du site (SPEC §7.18 ter) : seulement après une exploration.
+  $("l-site-box").hidden = !(on && siteCapable);
+  $("l-site-note").hidden = !(on && siteCapable);
+  $("l-tree").disabled = siteChosen();
 }
 
 /// Un modèle choisi : profondeur, extensions, et l'exploration cochée.
@@ -3094,8 +3178,10 @@ function renderLinkCount() {
   $("l-count").textContent = lists
     ? t("{0} coché(s) sur {1} montré(s), {2} trouvé(s)", chosen, lists.shown.length, scanLinks.length)
     : "";
-  $("l-start").disabled = !chosen || !connected;
-  $("l-later").disabled = !chosen || !connected;
+  // Une copie du site se fait sans fichier coché : les pages viennent de l'exploration.
+  const ready = (chosen > 0 || (siteChosen() && lists)) && connected;
+  $("l-start").disabled = !ready;
+  $("l-later").disabled = !ready;
 }
 
 function renderLinkList() {
@@ -3151,6 +3237,7 @@ function checkShownLinks(on) {
 /// Ajoute les liens cochés (`task.addBatch`, 1 000 par appel). Les refusés restent dans la
 /// boîte, seuls cochés ; la boîte se ferme si tout est ajouté.
 async function addLinks(choice) {
+  if (siteChosen()) return addSite(choice);
   const lists = chosenLinks();
   if (!lists?.chosen.length) return;
   const sub = subDirParam("l-subdir");
@@ -3203,6 +3290,47 @@ async function addLinks(choice) {
   renderLinkList();
 }
 
+/// « Copier le site pour la navigation hors ligne » est coché, après une exploration.
+const siteChosen = () => crawled && siteCapable && crawlSettings !== null && $("l-site").checked;
+
+/// La copie garde toujours l'arborescence du site : la case des fichiers ne s'applique pas.
+function syncSiteChoice() {
+  $("l-tree").disabled = siteChosen();
+  renderLinkCount();
+}
+
+/// Copie du site (F-43, SPEC §7.18 ter) : une seule tâche, avec les réglages de
+/// l'exploration et les fichiers cochés (adresses HTTP(S), ni pages ni liens magnet).
+async function addSite(choice) {
+  const lists = chosenLinks();
+  if (!lists) return;
+  const sub = subDirParam("l-subdir");
+  if (sub === null) {
+    showLinksError(t("Sous-dossier refusé : « . » et « .. » ne sont pas permis."));
+    return;
+  }
+  const files = lists.chosen
+    .filter((l) => l.kind !== "page" && l.kind !== "magnet" && /^https?:\/\//i.test(l.url))
+    .map((l) => l.url);
+  if (files.length > MAX_SITE_FILES) {
+    showLinksError(t("{0} fichiers cochés : une copie en prend 10 000 au plus.", files.length));
+    return;
+  }
+  $("l-start").disabled = true;
+  $("l-later").disabled = true;
+  try {
+    await host.call("task.add", { site: { ...crawlSettings, files }, startPaused: choice === "later", ...sub });
+  } catch (e) {
+    showLinksError(refused(e));
+    $("l-error").dataset.kind = "add";
+    renderLinkCount();
+    return;
+  }
+  if (view.startsWith("completed")) chooseView("all");
+  $("links-dialog").close("added");
+  announce(t("Copie du site ajoutée"));
+}
+
 function closeLinks() {
   scanSeq++;
   // Fermer la boîte arrête l'exploration (SPEC §7.18 bis).
@@ -3215,6 +3343,8 @@ function closeLinks() {
     linkUnchecked.clear();
     $("l-source").value = "";
     $("l-status").textContent = "";
+    $("l-site").checked = false;
+    $("l-tree").disabled = false;
   }
   delete $("l-error").dataset.kind;
   $("tb-links").focus();
@@ -4544,6 +4674,7 @@ function wire() {
   $("l-template").addEventListener("change", applyTemplate);
   $("l-depth").addEventListener("input", syncTemplate);
   $("l-stop").addEventListener("click", stopCrawl);
+  $("l-site").addEventListener("change", syncSiteChoice);
   $("l-check-all").addEventListener("click", () => checkShownLinks(true));
   $("l-check-none").addEventListener("click", () => checkShownLinks(false));
   $("l-links").addEventListener("change", (event) => {
@@ -4897,7 +5028,7 @@ function wire() {
     // Une tâche annulée ne reprend jamais : son fichier partiel ne servirait plus.
     if (detailsTask) act("task.cancel", { taskIds: [detailsTask], deleteFiles: true });
   });
-  $("d-open").addEventListener("click", () => detailsTask && withFile(detailsTask, host.openFile));
+  $("d-open").addEventListener("click", () => detailsTask && withFile(detailsTask, openTask));
   $("d-reveal").addEventListener("click", () => detailsTask && withFile(detailsTask, host.revealFile));
   $("d-limit-apply").addEventListener("click", applyTaskLimit);
   $("d-checksum-apply").addEventListener("click", applyChecksum);

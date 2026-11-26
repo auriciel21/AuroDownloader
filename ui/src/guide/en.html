@@ -113,6 +113,12 @@
 <p>What the exploration does:</p>
 <ul><li>only the pages of the <strong>same site</strong> (same host name) are read; the files they cite are shown even when they are on another site (images of a third-party service, for example);</li><li>two pages at a time at most, with a quarter of a second between two, so as not to overload the site; robots.txt is respected;</li><li>a page protected by a password is read with the logins saved for its site (Options, Site logins); a sign-in form is not filled in;</li><li>a link that leads to a file is never downloaded during the exploration: it is listed among the files;</li><li>the exploration also stops after 256 MiB of pages read or 10,000 links found.</li></ul>
 <p>From the <a href="#guide-11-remote-access">remote page</a>, the exploration runs without the site logins, and only on the Internet (never the local network).</p>
+<h3 id="guide-06-links-copy-a-site-for-offline-browsing" tabindex="-1">Copy a site for offline browsing</h3>
+<p>After an exploration, the <strong>Copy the site for offline browsing</strong> box (below the table) makes &quot;Add&quot; create a single task, &quot;Site: example.org&quot;, which copies the site to disk to read it without a connection:</p>
+<ul><li>the explored pages, with the exploration settings (depth, pages at most, pages not to open, starting folder, robots.txt), and their images, styles, scripts and fonts, even from another site;</li><li>the files checked in the table (checked pages are ignored: pages come from the exploration);</li><li>the links of the pages lead to the copy; a link to something not copied keeps its online address.</li></ul>
+<p>The copy takes a folder named after the site in the chosen folder (&quot;example.org&quot;, then &quot;example.org (1)&quot; for a second copy), with one subfolder per site. It always keeps the tree of the site: &quot;Keep the tree of the site&quot; does not apply.</p>
+<p>During the copy, the list shows the pages, resources and files copied instead of a percentage (the size is only known at the end). Once finished, <strong>Open</strong> shows the start page in the browser, and <strong>Show in folder</strong> the folder of the copy. The Properties give the start page, the settings, the numbers of items and the failed items with their reason.</p>
+<p>Limits: pages made by a script (JavaScript) are copied as the server sends them, often empty; a login form is not filled in; the copy stops exploring after 1 GiB of pages and resources. &quot;Also delete finished files from the disk&quot; only deletes what the copy wrote.</p>
 <h3 id="guide-06-links-copied-links" tabindex="-1">Copied links</h3>
 <p>Option &quot;Offer to add copied links&quot; (Options, General, off by default): when you copy the address of a file or a magnet link, a system notification offers it; a click opens &quot;Add&quot;. The clipboard is only read for that, and nothing from it is kept. If AuroDownloader's notifications are turned off in the system, the Options say so.</p>
 </section>
@@ -229,6 +235,7 @@ auro get &lt;address&gt; --mirror &lt;address&gt;…              # mirrors
 auro metalink &lt;file.meta4&gt; ; auro get &lt;file.meta4&gt; --select 0,2
 auro add file.torrent ; auro files &lt;id&gt; --select 0,2-4
 auro links &lt;page&gt; -e iso,zip --min-size 10M --add -o .
+auro site &lt;page&gt; -o . --depth 2 ; auro site &lt;page&gt; -e pdf   # offline copy
 auro video info &lt;page&gt; ; auro video get &lt;page&gt; --subs fr,en
 auro limit 2M ; auro limit --upload 500K ; auro limit 1M --queue Night
 auro schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep

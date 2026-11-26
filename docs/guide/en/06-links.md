@@ -65,6 +65,33 @@ What the exploration does:
 From the [remote page](11-remote-access.md), the exploration runs without the site logins,
 and only on the Internet (never the local network).
 
+## Copy a site for offline browsing
+
+After an exploration, the **Copy the site for offline browsing** box (below the table) makes
+"Add" create a single task, "Site: example.org", which copies the site to disk to read it
+without a connection:
+
+- the explored pages, with the exploration settings (depth, pages at most, pages not to open,
+  starting folder, robots.txt), and their images, styles, scripts and fonts, even from
+  another site;
+- the files checked in the table (checked pages are ignored: pages come from the
+  exploration);
+- the links of the pages lead to the copy; a link to something not copied keeps its online
+  address.
+
+The copy takes a folder named after the site in the chosen folder ("example.org", then
+"example.org (1)" for a second copy), with one subfolder per site. It always keeps the tree
+of the site: "Keep the tree of the site" does not apply.
+
+During the copy, the list shows the pages, resources and files copied instead of a
+percentage (the size is only known at the end). Once finished, **Open** shows the start page
+in the browser, and **Show in folder** the folder of the copy. The Properties give the start
+page, the settings, the numbers of items and the failed items with their reason.
+
+Limits: pages made by a script (JavaScript) are copied as the server sends them, often empty;
+a login form is not filled in; the copy stops exploring after 1 GiB of pages and resources.
+"Also delete finished files from the disk" only deletes what the copy wrote.
+
 ## Copied links
 
 Option "Offer to add copied links" (Options, General, off by default): when you copy the

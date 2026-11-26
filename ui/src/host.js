@@ -53,6 +53,8 @@ export function tauriHost() {
     setAutostart: (enabled) => invoke("set_autostart", { enabled }),
     pickFolder: (current) => invoke("pick_folder", { current }),
     openFile: (dir, name) => invoke("open_file", { dir, name }),
+    // Copie d'un site (SPEC §7.18 ter) : sa page de départ, dans le navigateur.
+    openSite: (dir, name, start) => invoke("open_site", { dir, name, start }),
     revealFile: (dir, name) => invoke("reveal_file", { dir, name }),
     saveText: (name, text) => invoke("save_text", { name, text }),
     // Impression de la page par la fenêtre (WebKitGTK n'imprime pas par window.print).

@@ -113,6 +113,12 @@
 <p>Ce que fait l'exploration :</p>
 <ul><li>seules les pages du <strong>même site</strong> (même nom d'hôte) sont lues ; les fichiers cités par elles sont montrés même s'ils sont sur un autre site (images d'un service tiers, par exemple) ;</li><li>deux pages à la fois au plus, avec une pause d'un quart de seconde entre deux, pour ne pas surcharger le site ; robots.txt est respecté ;</li><li>une page protégée par un mot de passe se lit avec les identifiants enregistrés pour son site (Options, Identifiants de sites) ; une page de connexion par formulaire n'est pas remplie ;</li><li>un lien qui mène à un fichier n'est jamais téléchargé pendant l'exploration : il est rangé parmi les fichiers ;</li><li>l'exploration s'arrête aussi après 256 Mio de pages lues ou 10 000 liens trouvés.</li></ul>
 <p>Depuis la <a href="#guide-11-acces-distant">page distante</a>, l'exploration se fait sans les identifiants des sites, et seulement sur Internet (jamais le réseau local).</p>
+<h3 id="guide-06-liens-copier-un-site-pour-la-navigation-hors-ligne" tabindex="-1">Copier un site pour la navigation hors ligne</h3>
+<p>Après une exploration, la case <strong>Copier le site pour la navigation hors ligne</strong> (sous le tableau) fait d'« Ajouter » une seule tâche, « Site : exemple.org », qui copie le site sur le disque pour le lire sans connexion :</p>
+<ul><li>les pages explorées, avec les réglages de l'exploration (profondeur, pages au plus, pages à ne pas ouvrir, dossier de départ, robots.txt), et leurs images, styles, scripts et polices, même venus d'un autre site ;</li><li>les fichiers cochés dans le tableau (les pages cochées sont ignorées : les pages viennent de l'exploration) ;</li><li>les liens des pages mènent à la copie ; un lien vers ce qui n'a pas été copié garde son adresse en ligne.</li></ul>
+<p>La copie prend un dossier au nom du site dans le dossier choisi (« exemple.org », puis « exemple.org (1) » pour une deuxième copie), avec un sous-dossier par site. Elle garde toujours l'arborescence du site : « Garder l'arborescence du site » ne s'applique pas.</p>
+<p>Pendant la copie, la liste montre les pages, ressources et fichiers copiés au lieu d'un pourcentage (le volume n'est connu qu'à la fin). Une fois finie, <strong>Ouvrir</strong> montre la page de départ dans le navigateur, et <strong>Afficher dans le dossier</strong> le dossier de la copie. Les Propriétés donnent la page de départ, les réglages, les nombres d'éléments et les éléments en échec avec leur raison.</p>
+<p>Limites : les pages faites par un script (JavaScript) sont copiées telles que le serveur les envoie, souvent vides ; un formulaire de connexion n'est pas rempli ; la copie s'arrête d'explorer après 1 Gio de pages et de ressources. « Supprimer aussi les fichiers terminés du disque » n'efface que ce que la copie a écrit.</p>
 <h3 id="guide-06-liens-liens-copiés" tabindex="-1">Liens copiés</h3>
 <p>Option « Proposer d'ajouter les liens copiés » (Options, Général, désactivée par défaut) : quand vous copiez l'adresse d'un fichier ou un lien magnet, une notification du système le propose ; un clic ouvre « Ajouter ». Le presse-papiers n'est lu que pour cela, et rien n'en est gardé. Si les notifications d'AuroDownloader sont coupées dans le système, les Options le disent.</p>
 </section>
@@ -229,6 +235,7 @@ auro get &lt;adresse&gt; --mirror &lt;adresse&gt;…              # miroirs
 auro metalink &lt;fichier.meta4&gt; ; auro get &lt;fichier.meta4&gt; --select 0,2
 auro add fichier.torrent ; auro files &lt;id&gt; --select 0,2-4
 auro links &lt;page&gt; -e iso,zip --min-size 10M --add -o .
+auro site &lt;page&gt; -o . --depth 2 ; auro site &lt;page&gt; -e pdf   # copie hors ligne
 auro video info &lt;page&gt; ; auro video get &lt;page&gt; --subs fr,en
 auro limit 2M ; auro limit --upload 500K ; auro limit 1M --queue Nuit
 auro schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep

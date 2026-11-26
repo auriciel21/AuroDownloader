@@ -94,15 +94,19 @@ pub fn is_executable(name: &str) -> bool {
         .is_some_and(|e| EXECUTABLE.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// Chemin d'un fichier d'une tâche : `name` est un simple nom de fichier, sans dossier,
-/// et le fichier existe.
-pub fn task_file(dir: &str, name: &str) -> Result<PathBuf, String> {
-    let plain = !name.is_empty()
+/// Un simple nom, sans dossier : ni vide, ni `.`, ni `..`, ni séparateur, ni lecteur.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\'])
-        && Path::new(name).file_name() == Some(name.as_ref());
-    if !plain {
+        && Path::new(name).file_name() == Some(name.as_ref())
+}
+
+/// Chemin de ce qu'une tâche a écrit (fichier, ou dossier d'un torrent ou d'une copie de
+/// site) : `name` est un simple nom, `dir` un chemin absolu, et le chemin existe.
+pub fn task_entry(dir: &str, name: &str) -> Result<PathBuf, String> {
+    if !plain_name(name) {
         return Err("nom de fichier invalide".into());
     }
     let dir = Path::new(dir);
@@ -110,10 +114,49 @@ pub fn task_file(dir: &str, name: &str) -> Result<PathBuf, String> {
         return Err("dossier invalide".into());
     }
     let path = dir.join(name);
+    if !path.exists() {
+        return Err("fichier introuvable".into());
+    }
+    Ok(path)
+}
+
+/// Chemin d'un fichier d'une tâche : `name` est un simple nom de fichier, sans dossier,
+/// et le fichier existe.
+pub fn task_file(dir: &str, name: &str) -> Result<PathBuf, String> {
+    let path = task_entry(dir, name)?;
     if !path.is_file() {
         return Err("fichier introuvable".into());
     }
     Ok(path)
+}
+
+/// Page de départ d'une copie de site (SPEC §7.18 ter) : `start`, relatif au dossier `name`
+/// de la tâche, parties séparées par `/`. Une page HTML qui existe dans le dossier de la
+/// copie, sans en sortir (ni `..`, ni lien vers l'extérieur).
+pub fn site_page(dir: &str, name: &str, start: &str) -> Result<PathBuf, String> {
+    let root = task_entry(dir, name)?;
+    if !root.is_dir() {
+        return Err("dossier de la copie introuvable".into());
+    }
+    if !start.split('/').all(plain_name) {
+        return Err("page de départ invalide".into());
+    }
+    let page = start.split('/').fold(root.clone(), |p, part| p.join(part));
+    let html = page
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "html" | "htm"));
+    if !html {
+        return Err("la page de départ n'est pas une page HTML".into());
+    }
+    let inside = match (root.canonicalize(), page.canonicalize()) {
+        (Ok(root), Ok(real)) => real.starts_with(root) && real.is_file(),
+        _ => false,
+    };
+    if !inside {
+        return Err("page de départ introuvable dans la copie".into());
+    }
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -156,6 +199,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         std::fs::create_dir(dir.path().join("sous")).unwrap();
+        // Le dossier d'une tâche se montre, il ne s'ouvre pas comme un fichier.
+        assert_eq!(
+            task_entry(dir.path().to_str().unwrap(), "sous").unwrap(),
+            dir.path().join("sous")
+        );
         let d = dir.path().to_str().unwrap();
         assert_eq!(task_file(d, "a.txt").unwrap(), dir.path().join("a.txt"));
         for name in [
@@ -171,5 +219,33 @@ mod tests {
             assert!(task_file(d, name).is_err(), "{name}");
         }
         assert!(task_file("relatif", "a.txt").is_err());
+    }
+
+    #[test]
+    fn the_start_page_of_a_site_copy_stays_inside_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("exemple.org");
+        std::fs::create_dir_all(root.join("exemple.org/doc")).unwrap();
+        std::fs::write(root.join("exemple.org/index.html"), b"<p>").unwrap();
+        std::fs::write(root.join("exemple.org/doc/f.exe"), b"MZ").unwrap();
+        std::fs::write(dir.path().join("dehors.html"), b"<p>").unwrap();
+        let d = dir.path().to_str().unwrap();
+        assert_eq!(
+            site_page(d, "exemple.org", "exemple.org/index.html").unwrap(),
+            root.join("exemple.org").join("index.html")
+        );
+        for start in [
+            "../dehors.html",
+            "exemple.org/../../dehors.html",
+            "exemple.org/doc/f.exe",
+            "exemple.org/absente.html",
+            "exemple.org\\index.html",
+            "/exemple.org/index.html",
+            "",
+        ] {
+            assert!(site_page(d, "exemple.org", start).is_err(), "{start}");
+        }
+        assert!(site_page(d, "..", "dehors.html").is_err());
+        assert!(site_page("relatif", "exemple.org", "exemple.org/index.html").is_err());
     }
 }

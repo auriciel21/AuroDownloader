@@ -1002,3 +1002,126 @@ test("exploration d'un site : modèle, avancement, colonnes, arborescence, arrê
     await closeAll();
   }
 });
+
+test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvrir", async () => {
+  await closeAll();
+  const document = window.document;
+  const $ = (id) => document.getElementById(id);
+  // Un moteur qui sait copier un site (capacité `site`).
+  listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan", "crawl", "site"], scope: "admin" } } });
+  await settle();
+  // La page a relu l'instantané du faux moteur, à la révision 1.
+  rev = 1;
+  const adds = [];
+  const plain = { add: ENGINE["task.add"], get: ENGINE["task.get"] };
+  ENGINE["linkscan.crawl"] = () => ({ crawlId: "crawl-site" });
+  ENGINE["linkscan.crawlResult"] = ({ crawlId }) => ({
+    crawlId, state: "done", stop: "finished", pagesRead: 2, pagesQueued: 0, bytesRead: 10, pageUrl: "https://exemple.org/",
+    links: [
+      { url: "https://exemple.org/docs/a.pdf", name: "a.pdf", ext: "pdf", kind: "file", depth: 1, foundOn: "https://exemple.org/", sitePath: "exemple.org/docs" },
+      { url: "https://exemple.org/p.html", name: "p.html", ext: "html", kind: "page", depth: 1, foundOn: "https://exemple.org/", sitePath: "exemple.org" },
+      { url: "magnet:?xt=urn:btih:abc", name: "abc", ext: null, kind: "magnet", depth: 1, foundOn: "https://exemple.org/", sitePath: "" },
+    ],
+  });
+  ENGINE["linkscan.probe"] = ({ urls }) => ({ items: urls.map((url) => ({ url, size: 1000, name: "x", kind: null })) });
+  ENGINE["task.add"] = (params) => {
+    adds.push(params);
+    return { taskId: "copie" };
+  };
+  try {
+    $("tb-links").click();
+    await settle();
+    $("l-source").value = "https://exemple.org/";
+    $("l-crawl").checked = true;
+    $("l-depth").value = "2";
+    $("l-scan").click();
+    await settle();
+    listeners.engine({ payload: { kind: "message", message: { method: "linkscan.progress", params: {
+      rev, crawlId: "crawl-site", state: "done", pagesRead: 2, pagesQueued: 0, links: 3, bytesRead: 10, stop: "finished" } } } });
+    await settle();
+    assert.equal($("l-site-box").hidden, false);
+    assert.equal($("l-tree").disabled, false);
+    $("l-site").checked = true;
+    $("l-site").dispatchEvent(new window.Event("change"));
+    assert.equal($("l-tree").disabled, true, "la copie garde toujours l'arborescence");
+    assert.deepEqual(await audit($("links-dialog")), []);
+    // Sans fichier coché, la copie se fait quand même.
+    $("l-all").checked = true;
+    $("l-all").dispatchEvent(new window.Event("change"));
+    $("l-check-none").click();
+    assert.equal($("l-start").disabled, false);
+    $("l-check-all").click();
+    // Les réglages de l'exploration lancée, même changés depuis ; ni page ni lien magnet.
+    $("l-depth").value = "5";
+    $("l-later").click();
+    await settle();
+    assert.deepEqual(adds, [{
+      site: {
+        pageUrl: "https://exemple.org/", depth: 2, maxPages: 200,
+        exclude: "(?i)logout|signout|deconnexion|déconnexion", sameFolder: false, ignoreRobots: false,
+        files: ["https://exemple.org/docs/a.pdf"],
+      },
+      startPaused: true,
+    }]);
+    assert.equal($("links-dialog").open, false);
+    assert.equal($("l-site").checked, false);
+    assert.equal($("l-tree").disabled, false);
+
+    // La ligne : « Site : … », ses éléments au lieu d'un pourcentage.
+    const copy = task("copie", "active", {
+      kind: "site", displayName: "exemple.org", fileName: "exemple.org", totalBytes: null, doneBytes: 3000,
+    });
+    notify("task.added", { task: copy });
+    await settle();
+    listeners.engine({ payload: { kind: "message", message: { method: "task.progress", params: { rev, items: [{
+      taskId: "copie", doneBytes: 4000, totalBytes: null, bps: 100, connections: 0, etaS: null,
+      site: { pages: 3, resources: 7, files: 0, failed: 1, queued: 2 } }] } } } });
+    await settle();
+    assert.equal(row("copie").querySelector(".name .text").textContent, "Site : exemple.org");
+    assert.equal(row("copie").querySelector(".pct").textContent, "3 page(s), 7 ressource(s), 0 fichier(s), 1 en échec");
+
+    // Finie : Propriétés de la copie, éléments en échec, « Ouvrir » vers la page de départ.
+    const site = {
+      pageUrl: "https://exemple.org/", startPath: "exemple.org/index.html", depth: 2, maxPages: 200,
+      maxBytes: 1024 * MIB, exclude: "", sameFolder: true, ignoreRobots: false, stop: "maxPages",
+      pages: 3, resources: 7, files: 1, failed: 1, skipped: 4, queued: 0,
+      items: [
+        { url: "https://exemple.org/", kind: "page", state: "done", path: "exemple.org/index.html", size: 100, error: null },
+        { url: "https://exemple.org/manque.png", kind: "resource", state: "failed", path: null, size: null, error: "HTTP_STATUS" },
+      ],
+    };
+    ENGINE["task.get"] = ({ taskId }) => taskId === "copie"
+      ? { ...copy, state: "completed", finishedAt: NOW, doneBytes: 5000, totalBytes: 5000, site }
+      : plain.get({ taskId });
+    notify("task.stateChanged", { taskId: "copie", from: "active", to: "completed" });
+    await settle();
+    row("copie").firstElementChild.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    assert.ok($("details").open);
+    assert.equal($("d-site-section").hidden, false);
+    assert.equal($("d-site-page").textContent, "https://exemple.org/");
+    assert.equal($("d-site-start").textContent, "exemple.org/index.html");
+    assert.match($("d-site-settings").textContent, /^profondeur 2, 200 pages au plus, .* au plus, sous le dossier de départ$/);
+    assert.equal($("d-site-counts").textContent, "3 page(s), 7 ressource(s), 1 fichier(s), 1 en échec, 4 laissé(s) par les limites");
+    assert.equal($("d-site-stop").textContent, "arrêtée : limite de pages atteinte");
+    const failed = [...$("d-site-failed").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
+    assert.deepEqual(failed, [["https://exemple.org/manque.png", "refusé par le serveur"]]);
+    assert.equal($("d-open").hidden, false);
+    assert.deepEqual(await audit($("details")), []);
+    const before = calls.length;
+    $("d-open").click();
+    await settle();
+    assert.ok(calls.slice(before).includes("open_site"), calls.slice(before).join(", "));
+    assert.ok(!calls.slice(before).includes("open_file"));
+  } finally {
+    for (const m of ["linkscan.crawl", "linkscan.crawlResult", "linkscan.probe"]) delete ENGINE[m];
+    ENGINE["task.add"] = plain.add;
+    ENGINE["task.get"] = plain.get;
+    $("l-crawl").checked = false;
+    $("l-all").checked = false;
+    $("l-depth").value = "1";
+    await closeAll();
+    notify("task.removed", { taskId: "copie" });
+    await settle();
+  }
+});

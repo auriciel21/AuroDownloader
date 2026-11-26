@@ -73,6 +73,35 @@ Ce que fait l'exploration :
 Depuis la [page distante](11-acces-distant.md), l'exploration se fait sans les identifiants
 des sites, et seulement sur Internet (jamais le réseau local).
 
+## Copier un site pour la navigation hors ligne
+
+Après une exploration, la case **Copier le site pour la navigation hors ligne** (sous le
+tableau) fait d'« Ajouter » une seule tâche, « Site : exemple.org », qui copie le site sur le
+disque pour le lire sans connexion :
+
+- les pages explorées, avec les réglages de l'exploration (profondeur, pages au plus, pages à
+  ne pas ouvrir, dossier de départ, robots.txt), et leurs images, styles, scripts et polices,
+  même venus d'un autre site ;
+- les fichiers cochés dans le tableau (les pages cochées sont ignorées : les pages viennent de
+  l'exploration) ;
+- les liens des pages mènent à la copie ; un lien vers ce qui n'a pas été copié garde son
+  adresse en ligne.
+
+La copie prend un dossier au nom du site dans le dossier choisi (« exemple.org », puis
+« exemple.org (1) » pour une deuxième copie), avec un sous-dossier par site. Elle garde
+toujours l'arborescence du site : « Garder l'arborescence du site » ne s'applique pas.
+
+Pendant la copie, la liste montre les pages, ressources et fichiers copiés au lieu d'un
+pourcentage (le volume n'est connu qu'à la fin). Une fois finie, **Ouvrir** montre la page de
+départ dans le navigateur, et **Afficher dans le dossier** le dossier de la copie. Les
+Propriétés donnent la page de départ, les réglages, les nombres d'éléments et les éléments en
+échec avec leur raison.
+
+Limites : les pages faites par un script (JavaScript) sont copiées telles que le serveur les
+envoie, souvent vides ; un formulaire de connexion n'est pas rempli ; la copie s'arrête
+d'explorer après 1 Gio de pages et de ressources. « Supprimer aussi les fichiers terminés du
+disque » n'efface que ce que la copie a écrit.
+
 ## Liens copiés
 
 Option « Proposer d'ajouter les liens copiés » (Options, Général, désactivée par défaut) :

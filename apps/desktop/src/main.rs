@@ -337,10 +337,19 @@ fn open_file(app: AppHandle, dir: String, name: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Montre un fichier dans son dossier.
+/// Ouvre dans le navigateur la page de départ d'une copie de site (SPEC §7.18 ter).
+#[tauri::command]
+fn open_site(app: AppHandle, dir: String, name: String, start: String) -> Result<(), String> {
+    let page = files::site_page(&dir, &name, &start)?;
+    app.opener()
+        .open_path(page.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Montre un fichier dans son dossier (ou le dossier d'un torrent ou d'une copie de site).
 #[tauri::command]
 fn reveal_file(app: AppHandle, dir: String, name: String) -> Result<(), String> {
-    let path = files::task_file(&dir, &name)?;
+    let path = files::task_entry(&dir, &name)?;
     app.opener()
         .reveal_item_in_dir(path)
         .map_err(|e| e.to_string())
@@ -705,6 +714,7 @@ fn main() {
             set_autostart,
             pick_folder,
             open_file,
+            open_site,
             reveal_file,
             save_text,
             save_diagnostic,

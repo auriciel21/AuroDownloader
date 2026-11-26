@@ -141,7 +141,10 @@ téléchargement.
   `transfer::Options::site_spacing` (`aurod --site-spacing-ms` pour le banc) ; protocole
   (étape B2) : `site` de `task.add`, de `task.get` (`include: ["items"]`) et de
   `task.progress` (`Progress::site`), capacité `site` ; CLI `auro site` (`crates/cli` :
-  `remote::add_site`, fichiers cochés par `links::find`).
+  `remote::add_site`, fichiers cochés par `links::find`) ; bureau et page (étape B3) : case
+  « Copier le site pour la navigation hors ligne » de la boîte « Liens » (réglages de
+  l'exploration lancée), ligne « Site : … » et ses éléments, section « Copie du site » des
+  Propriétés, « Ouvrir » vers la page de départ.
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
@@ -229,7 +232,9 @@ téléchargement.
   l'Ubuntu 20.04 de WSL). `bridge` : liaison avec le moteur (démarrage d'`aurod`, session,
   abonnement, reconnexion, avancement suspendu fenêtre cachée), sans dépendre de Tauri ;
   `prefs` : préférences de l'interface (JSON, aucun secret) ; `files` : ouverture d'un
-  fichier terminé, jamais d'un exécutable (SPEC 8.1) ; `opened` : liens magnet et
+  fichier terminé, jamais d'un exécutable (SPEC 8.1), et de la page de départ d'une copie
+  de site (`site_page`, commande `open_site` : page HTML dans le dossier de la copie, sans
+  en sortir ; étape B3) ; `opened` : liens magnet et
   `.torrent` reçus (arguments, relance, glisser-déposer), lus pour le moteur ; `links` :
   association aux liens magnet et aux `.torrent` (option, désactivée par défaut ; ses tests
   n'écrivent que sous `HKCU\Software\AuroDownloaderEssai` ou dans un dossier temporaire ;
