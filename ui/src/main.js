@@ -8,6 +8,7 @@ import {
   parseChecksum, ALGO_LABELS, historyCsv, localStamp, canChooseFiles, isFinishedDownload, isMagnet,
   shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, linkFilter, reclassifyLink,
+  CRAWL_TEMPLATES, templateExtensions, matchingTemplate, crawlParams, siteSubDir,
   subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
@@ -1752,6 +1753,9 @@ function onStatus(status) {
     // Analyse de liens (SPEC §7.18) : un moteur plus ancien ne la sait pas.
     linkscanCapable = status.engine?.capabilities?.includes("linkscan") === true;
     $("tb-links").hidden = !linkscanCapable || !caps.add;
+    // Exploration d'un site (SPEC §7.18 bis) : depuis le 2026-11-26.
+    crawlCapable = status.engine?.capabilities?.includes("crawl") === true;
+    $("l-crawl-box").hidden = !crawlCapable;
     $("tab-media").hidden = !mediaCapable;
     resync();
     loadTools();
@@ -1760,6 +1764,14 @@ function onStatus(status) {
       openAdd();
     }
   } else {
+    // L'exploration tenait à la connexion : elle s'est arrêtée avec elle.
+    if (!$("l-crawling").hidden) {
+      crawlId = null;
+      scanSeq++;
+      endCrawling();
+      $("l-status").textContent = "";
+      showLinksError(t("Connexion au moteur perdue : l'exploration s'est arrêtée."));
+    }
     banner.hidden = false;
     banner.textContent = status.state === "connecting"
       ? t("Connexion au moteur…")
@@ -1786,6 +1798,11 @@ function onEngine(event) {
       break;
     case "message": {
       const { method, params } = event.message;
+      // Avancement d'une exploration de cette connexion (SPEC §7.18 bis) : pas un état.
+      if (method === "linkscan.progress") {
+        onCrawlProgress(params ?? {});
+        return;
+      }
       const result = store.apply(method, params ?? {});
       if (result.resync) {
         resync();
@@ -2743,6 +2760,14 @@ const linkSizes = new Map();
 const linkUnchecked = new Set();
 /// Numéro de la dernière analyse : une réponse plus ancienne est écartée.
 let scanSeq = 0;
+/// Le moteur sait explorer un site (capacité `crawl`, SPEC §7.18 bis).
+let crawlCapable = false;
+/// Exploration en cours, dont la réponse est arrivée ; `null` sinon.
+let crawlId = null;
+/// Avancements arrivés avant la réponse de `linkscan.crawl` : le dernier de chacune.
+const earlyCrawlNotes = new Map();
+/// Les liens montrés viennent d'une exploration : colonnes et arborescence du site.
+let crawled = false;
 /// Tailles demandées pour l'analyse en cours (500 au plus, décision de l'utilisateur).
 let sizedCount = 0;
 let probing = false;
@@ -2783,6 +2808,7 @@ async function scanLinksOf(request, label) {
     linkSizes.clear();
     linkUnchecked.clear();
     sizedCount = 0;
+    setCrawled(false);
     $("l-status").textContent = t("{0} lien(s) trouvé(s) dans {1}", scanLinks.length, result.pageUrl ?? label);
     renderLinkList();
     probeSizes();
@@ -2802,7 +2828,172 @@ function scanSource() {
     $("l-source").focus();
     return;
   }
+  if (crawlCapable && $("l-crawl").checked) {
+    if (!request.pageUrl) {
+      linkedError("l-source", "l-error", t("« Explorer le site » demande l'adresse d'une page web."));
+      return;
+    }
+    startCrawl(request.pageUrl);
+    return;
+  }
   scanLinksOf(request, request.pageUrl ?? t("le texte collé"));
+}
+
+// ---------- Exploration d'un site (F-42, SPEC §7.18 bis, étape A2) ----------
+
+/// Lance l'exploration ; son avancement arrive par `linkscan.progress`.
+async function startCrawl(pageUrl) {
+  const read = crawlParams(pageUrl, {
+    depth: $("l-depth").value,
+    maxPages: $("l-max-pages").value,
+    exclude: $("l-exclude").value,
+    sameFolder: $("l-same-folder").checked,
+    ignoreRobots: $("l-ignore-robots").checked,
+  });
+  if (read.error === "depth") return linkedError("l-depth", "l-error", t("Profondeur refusée : de 1 à 5."));
+  if (read.error === "maxPages") return linkedError("l-max-pages", "l-error", t("Nombre de pages refusé : de 1 à 2000."));
+  if (read.error === "exclude") {
+    return linkedError("l-exclude", "l-error", t("Expression des pages à ne pas ouvrir illisible : {0}", read.message ?? ""));
+  }
+  const seq = ++scanSeq;
+  showLinksError("");
+  earlyCrawlNotes.clear();
+  crawlId = null;
+  $("l-status").textContent = t("Exploration du site en cours…");
+  $("l-progress").textContent = "";
+  $("l-crawling").hidden = false;
+  $("l-scan").disabled = true;
+  try {
+    const result = await host.call("linkscan.crawl", read.params);
+    if (seq !== scanSeq) {
+      host.call("linkscan.cancel", { crawlId: result.crawlId }).catch(() => {});
+      return;
+    }
+    crawlId = result.crawlId;
+    const early = earlyCrawlNotes.get(crawlId);
+    earlyCrawlNotes.clear();
+    if (early) onCrawlProgress(early);
+  } catch (e) {
+    if (seq !== scanSeq) return;
+    endCrawling();
+    $("l-status").textContent = "";
+    showLinksError(refused(e));
+  }
+}
+
+/// Fin de l'attente : le bouton « Arrêter » disparaît, « Analyser » revient.
+function endCrawling() {
+  const hadFocus = $("l-crawling").contains(document.activeElement);
+  $("l-crawling").hidden = true;
+  $("l-scan").disabled = !connected;
+  if (hadFocus) $("l-scan").focus();
+}
+
+function onCrawlProgress(params) {
+  if (params.crawlId !== crawlId) {
+    // Arrivé avant la réponse de `linkscan.crawl` : gardé pour elle.
+    if (crawlId === null && !$("l-crawling").hidden) earlyCrawlNotes.set(params.crawlId, params);
+    return;
+  }
+  $("l-progress").textContent = t("{0} page(s) lue(s), {1} en attente, {2} lien(s) trouvé(s)",
+    params.pagesRead, params.pagesQueued, params.links);
+  if (params.state !== "running") finishCrawl(params.crawlId);
+}
+
+const CRAWL_STOPS = {
+  maxPages: "Limite de pages atteinte : les pages suivantes n'ont pas été lues.",
+  maxBytes: "256 Mio de pages lus : l'exploration s'est arrêtée là.",
+  maxLinks: "10 000 liens trouvés : l'exploration s'est arrêtée là.",
+};
+
+/// L'exploration est finie (ou arrêtée) : ses liens remplissent le tableau.
+async function finishCrawl(id) {
+  if (crawlId !== id) return;
+  crawlId = null;
+  const seq = scanSeq;
+  let result;
+  try {
+    result = await host.call("linkscan.crawlResult", { crawlId: id });
+  } catch (e) {
+    if (seq !== scanSeq) return;
+    endCrawling();
+    $("l-status").textContent = "";
+    showLinksError(refused(e));
+    return;
+  }
+  if (seq !== scanSeq) return;
+  endCrawling();
+  if (result.state === "failed") {
+    $("l-status").textContent = "";
+    showLinksError(t("Exploration impossible : {0}", result.error?.message ?? ""));
+    return;
+  }
+  scanLinks = result.links;
+  linkSizes.clear();
+  linkUnchecked.clear();
+  sizedCount = 0;
+  setCrawled(true);
+  const status = result.state === "cancelled"
+    ? t("Exploration arrêtée : {0} lien(s) trouvé(s) ({1} page(s) lue(s))", scanLinks.length, result.pagesRead)
+    : t("{0} lien(s) trouvé(s) en explorant {1} ({2} page(s) lue(s))", scanLinks.length, result.pageUrl ?? "", result.pagesRead);
+  const why = CRAWL_STOPS[result.stop];
+  $("l-status").textContent = why ? `${status} ${t(why)}` : status;
+  renderLinkList();
+  probeSizes();
+}
+
+/// « Arrêter l'exploration » : ce qui a été trouvé est gardé.
+async function stopCrawl() {
+  const id = crawlId;
+  if (!id) return;
+  try {
+    const result = await host.call("linkscan.cancel", { crawlId: id });
+    if (result.state !== "running") finishCrawl(id);
+  } catch (e) {
+    showLinksError(refused(e));
+  }
+}
+
+function setCrawled(on) {
+  crawled = on;
+  $("l-links").classList.toggle("crawled", on);
+  $("l-tree-box").hidden = !on;
+  $("l-tree-note").hidden = !on;
+}
+
+/// Un modèle choisi : profondeur, extensions, et l'exploration cochée.
+function applyTemplate() {
+  const key = $("l-template").value;
+  const template = CRAWL_TEMPLATES[key];
+  if (!template) return;
+  $("l-crawl").checked = true;
+  $("l-depth").value = String(template.depth);
+  $("l-ext").value = templateExtensions(key);
+  renderLinkList();
+  probeSizes();
+}
+
+/// Profondeur ou extensions changées à la main : le modèle qui leur correspond, s'il y en a un.
+function syncTemplate() {
+  $("l-template").value = matchingTemplate(Number($("l-depth").value), $("l-ext").value);
+}
+
+const VISITS = {
+  read: "lue",
+  queued: "en attente",
+  depth: "non lue : au-delà de la profondeur",
+  offsite: "non lue : autre site",
+  folder: "non lue : hors du dossier de départ",
+  robots: "non lue : robots.txt",
+  excluded: "non lue : exclue",
+  failed: "non lue : échec",
+  limit: "non lue : exploration arrêtée",
+};
+
+/// Colonne « Niveau » : le niveau, et pour une page ce qu'il en est advenu.
+function linkLevelText(link) {
+  if (link.depth == null) return "";
+  return link.visit ? t("{0} ({1})", String(link.depth), t(VISITS[link.visit] ?? link.visit)) : String(link.depth);
 }
 
 /// Liste importée (F-31) : un fichier texte ou CSV lu par l'hôte, analysé comme un texte.
@@ -2932,6 +3123,13 @@ function renderLinkList() {
       if (path) cell.className = "path";
       row.append(cell);
     }
+    // Colonnes d'une exploration (cachées sinon, `style.css`).
+    for (const [text, extra] of [[linkLevelText(l), ""], [l.foundOn ?? "", " path"]]) {
+      const cell = document.createElement("td");
+      cell.className = `crawl-col${extra}`;
+      cell.textContent = text;
+      row.append(cell);
+    }
     return row;
   });
   $("l-links").tBodies[0].replaceChildren(...rows);
@@ -2966,10 +3164,17 @@ async function addLinks(choice) {
   const refusedLinks = [];
   let firstError = null;
   let added = 0;
+  // Arborescence du site (SPEC §7.18 bis) : le sous-dossier choisi, puis celui du lien.
+  const tree = crawled && $("l-tree").checked;
+  const placed = (l) => {
+    if (!tree) return sub;
+    const subDir = siteSubDir(sub.subDir, l.sitePath);
+    return subDir ? { subDir } : {};
+  };
   for (let i = 0; i < chosen.length; i += BATCH_CHUNK) {
     const part = chosen.slice(i, i + BATCH_CHUNK);
     try {
-      const items = part.map((l) => ({ sources: [{ url: l.url }], startPaused: choice === "later", ...sub }));
+      const items = part.map((l) => ({ sources: [{ url: l.url }], startPaused: choice === "later", ...placed(l) }));
       const result = await host.call("task.addBatch", { items });
       added += result.tasks.length;
       for (const e of result.errors) {
@@ -3000,6 +3205,10 @@ async function addLinks(choice) {
 
 function closeLinks() {
   scanSeq++;
+  // Fermer la boîte arrête l'exploration (SPEC §7.18 bis).
+  if (crawlId) host.call("linkscan.cancel", { crawlId }).catch(() => {});
+  crawlId = null;
+  endCrawling();
   if ($("links-dialog").returnValue === "added") {
     scanLinks = [];
     linkSizes.clear();
@@ -4326,10 +4535,15 @@ function wire() {
   $("l-import").addEventListener("click", importLinks);
   for (const id of ["l-ext", "l-min", "l-max", "l-regex", "l-all"]) {
     $(id).addEventListener(id === "l-all" ? "change" : "input", () => {
+      if (id === "l-ext") syncTemplate();
       renderLinkList();
       probeSizes();
     });
   }
+  // Exploration d'un site (étape A2).
+  $("l-template").addEventListener("change", applyTemplate);
+  $("l-depth").addEventListener("input", syncTemplate);
+  $("l-stop").addEventListener("click", stopCrawl);
   $("l-check-all").addEventListener("click", () => checkShownLinks(true));
   $("l-check-none").addEventListener("click", () => checkShownLinks(false));
   $("l-links").addEventListener("change", (event) => {

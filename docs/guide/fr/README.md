@@ -18,7 +18,8 @@ piloter. Fermer la fenêtre n'arrête donc pas les téléchargements.
    miroirs, Metalink, FTP et SFTP, déplacer, retélécharger.
 4. [Torrents](04-torrents.md) : liens magnet, fichiers `.torrent`, partage.
 5. [Vidéos](05-video.md) : la vidéo d'une page, qualité, sous-titres.
-6. [Analyse de liens](06-liens.md) : tous les fichiers d'une page ou d'une liste, liens copiés.
+6. [Analyse de liens](06-liens.md) : tous les fichiers d'une page ou d'une liste, exploration
+   d'un site, liens copiés.
 7. [Organisation](07-organisation.md) : files, limites de débit, plages horaires, règles de
    rangement, historique.
 8. [Options](08-options.md) : chaque rubrique, dont les mises à jour et le proxy.

@@ -910,6 +910,12 @@ select.logins { display: block; width: 100%; margin: 0.5em 0; }
 #l-links td:first-child { width: 72px; text-align: center; }
 #l-links td:nth-child(3) { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 #l-links td:nth-child(4) { color: var(--muted); }
+/* Colonnes de l'exploration d'un site (SPEC 7.18 bis) : seulement après une exploration. */
+#l-links:not(.crawled) .crawl-col { display: none; }
+#l-links td.crawl-col:nth-child(5) { white-space: nowrap; }
+#l-links td.crawl-col:nth-child(6) { color: var(--muted); }
+#l-crawl-box { margin: 0 0 8px; }
+#l-crawl-box .note { margin: 0; }
 
 /* Accès à distance (étape 3d) : port, empreinte, jeton, QR code. Le QR code reste noir sur
    blanc quel que soit le thème : les appareils photo lisent mal l'inverse. */

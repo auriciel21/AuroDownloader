@@ -748,6 +748,68 @@ export function linkFilter({ extensions = "", min = "", max = "", regex = "", al
   };
 }
 
+// ---------- Exploration d'un site (F-42, SPEC §7.18 bis) ----------
+
+/// Pages à ne pas ouvrir, par défaut (décision de l'utilisateur du 2026-11-26), comme
+/// `linkscan::crawl::DEFAULT_EXCLUDE` (comparées par un test).
+export const DEFAULT_EXCLUDE = "(?i)logout|signout|deconnexion|déconnexion";
+
+/// Modèles de la boîte, à la manière d'IDM : profondeur et types de fichiers (le champ
+/// « Extensions ») ; le moteur n'en sait rien. « … du site » : profondeur 5 ; « … d'un
+/// niveau en dessous » : 1. La limite de pages n'est jamais changée.
+export const CRAWL_TEMPLATES = {
+  images: { depth: 5, categories: ["images"] },
+  audio: { depth: 1, categories: ["music"] },
+  video: { depth: 5, categories: ["video"] },
+  files: { depth: 5, categories: ["compressed", "documents", "music", "programs", "video"] },
+  documents: { depth: 1, categories: ["documents"] },
+};
+
+/// Extensions d'un modèle, pour le champ « Extensions » : « jpg, png, … ».
+export function templateExtensions(key) {
+  const template = CRAWL_TEMPLATES[key];
+  if (!template) return "";
+  return template.categories.flatMap((c) => EXTENSIONS[c].split(" ")).join(", ");
+}
+
+/// Le modèle que décrivent une profondeur et un champ « Extensions » ; `""` (personnalisé)
+/// si aucun.
+export function matchingTemplate(depth, extensions) {
+  const wanted = extensions.split(/[\s,;]+/).filter(Boolean).join(", ");
+  for (const key of Object.keys(CRAWL_TEMPLATES)) {
+    if (CRAWL_TEMPLATES[key].depth === depth && templateExtensions(key) === wanted) return key;
+  }
+  return "";
+}
+
+/// Paramètres de `linkscan.crawl` lus des champs : `{params}`, ou `{error}` (`depth`,
+/// `maxPages`, `exclude` : valeur refusée, avec `message` pour l'expression).
+export function crawlParams(pageUrl, { depth, maxPages, exclude, sameFolder, ignoreRobots }) {
+  const d = Number(depth);
+  if (!Number.isInteger(d) || d < 1 || d > 5) return { error: "depth" };
+  const n = Number(maxPages);
+  if (!Number.isInteger(n) || n < 1 || n > 2000) return { error: "maxPages" };
+  const pattern = (exclude ?? "").trim();
+  if (pattern) {
+    // Syntaxe du moteur (Rust) : `(?i)` en tête, que JavaScript n'écrit pas ainsi.
+    try {
+      new RegExp(pattern.replace(/^\(\?i\)/, ""));
+    } catch (e) {
+      return { error: "exclude", message: e.message };
+    }
+  }
+  return { params: { pageUrl, depth: d, maxPages: n, exclude: pattern, sameFolder: !!sameFolder, ignoreRobots: !!ignoreRobots } };
+}
+
+/// Sous-dossier d'un lien qui garde l'arborescence du site : le sous-dossier choisi, puis
+/// son `sitePath` ; 8 parties au plus (celles de `subDir`).
+export function siteSubDir(subDir, sitePath) {
+  const parts = [...(subDir ?? "").split("/"), ...(sitePath ?? "").split("/")]
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return parts.slice(0, 8).join("/");
+}
+
 /// Un lien classé « page » (sans extension, ou extension de page web) que le serveur décrit
 /// comme un fichier (`linkscan.probe`, `kind`) devient un fichier (décision du 2026-11-11) ;
 /// jamais l'inverse : un fichier qui rend une page d'erreur reste un fichier.

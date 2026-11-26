@@ -18,7 +18,8 @@ window therefore does not stop downloads.
    FTP and SFTP, moving, downloading again.
 4. [Torrents](04-torrents.md): magnet links, `.torrent` files, seeding.
 5. [Videos](05-video.md): the video of a page, quality, subtitles.
-6. [Link grabber](06-links.md): every file of a page or a list, copied links.
+6. [Link grabber](06-links.md): every file of a page or a list, exploring a site, copied
+   links.
 7. [Organising](07-organising.md): queues, speed limits, time slots, filing rules, history.
 8. [Options](08-options.md): every section, including updates and the proxy.
 9. [Browser extension](09-extension.md): Firefox, Chrome, Edge.

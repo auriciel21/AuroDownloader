@@ -6,7 +6,7 @@ import {
   canRelocate, canSetChecksum, parseChecksum, detailsOutdated, canChooseFiles, isFinishedDownload,
   isMagnet, shareRatio, qualityChoices, exactFormat, formatContent, parseMirrors, canAddMirror, sourceName,
   SOURCE_STATES, MAX_SOURCES, isMetalinkName, isMetalinkUrl, scanRequest, parseSizeText, linkFilter,
-  reclassifyLink,
+  reclassifyLink, DEFAULT_EXCLUDE, CRAWL_TEMPLATES, templateExtensions, matchingTemplate, crawlParams, siteSubDir,
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
@@ -787,4 +787,33 @@ test("FTP et SFTP : une source, et le serveur SSH d'une adresse comme le moteur 
   assert.ok(blockedByHostKey(task("a", "failed", { errorCode: "HOST_KEY_CHANGED" })));
   assert.ok(!blockedByHostKey(task("a", "failed", { errorCode: "AUTH_FAILED" })));
   assert.ok(!blockedByHostKey(task("a", "queued", { errorCode: "HOST_KEY_UNKNOWN" })));
+});
+
+test("exploration d'un site : modèles, paramètres et arborescence (SPEC 7.18 bis)", () => {
+  // Les modèles d'IDM : « … du site » à la profondeur 5, « … d'un niveau en dessous » à 1.
+  assert.equal(CRAWL_TEMPLATES.images.depth, 5);
+  assert.equal(CRAWL_TEMPLATES.audio.depth, 1);
+  const images = templateExtensions("images").split(", ");
+  assert.ok(images.includes("jpg") && images.includes("png") && !images.includes("pdf"));
+  const files = templateExtensions("files").split(", ");
+  assert.ok(files.includes("zip") && files.includes("pdf") && files.includes("mp4") && !files.includes("jpg"));
+  assert.equal(templateExtensions("inconnu"), "");
+  assert.equal(matchingTemplate(1, templateExtensions("documents")), "documents");
+  assert.equal(matchingTemplate(2, templateExtensions("documents")), "");
+  assert.equal(matchingTemplate(5, templateExtensions("video").replaceAll(", ", ",")), "video");
+  assert.equal(matchingTemplate(1, "pdf"), "");
+
+  const fields = { depth: "2", maxPages: "50", exclude: DEFAULT_EXCLUDE, sameFolder: true, ignoreRobots: false };
+  assert.deepEqual(crawlParams("https://a.example/", fields).params, {
+    pageUrl: "https://a.example/", depth: 2, maxPages: 50, exclude: DEFAULT_EXCLUDE, sameFolder: true, ignoreRobots: false,
+  });
+  for (const depth of ["0", "6", "1.5", ""]) assert.equal(crawlParams("u", { ...fields, depth }).error, "depth");
+  for (const maxPages of ["0", "2001", "x"]) assert.equal(crawlParams("u", { ...fields, maxPages }).error, "maxPages");
+  assert.equal(crawlParams("u", { ...fields, exclude: "(" }).error, "exclude");
+  assert.equal(crawlParams("u", { ...fields, exclude: "  " }).params.exclude, "");
+
+  assert.equal(siteSubDir("", "exemple.org/docs"), "exemple.org/docs");
+  assert.equal(siteSubDir("ISO", "exemple.org/a"), "ISO/exemple.org/a");
+  assert.equal(siteSubDir("a/b/c", "h/1/2/3/4/5/6"), "a/b/c/h/1/2/3/4");
+  assert.equal(siteSubDir(undefined, ""), "");
 });

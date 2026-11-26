@@ -146,7 +146,7 @@ before(async () => {
           case "update_check": return { checkedAt: 1_790_000_000, found: UPDATE.next };
           case "update_install": UPDATE.installs += 1; return null;
           case "update_open_page": UPDATE.pages.push(args.version); return null;
-          case "engine_status": return { state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope: "admin" } };
+          case "engine_status": return { state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan", "crawl"], scope: "admin" } };
           case "links_status": return { available: false, enabled: false };
           case "take_opened": return [];
           default: return null;
@@ -323,7 +323,7 @@ test("Options : une adresse de proxy refusée est liée à son champ, qui prend 
 test("Options sans droit d'administration : rien de réservé n'est demandé", async () => {
   await closeAll();
   const { document } = window;
-  const up = (scope) => listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope } } });
+  const up = (scope) => listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan", "crawl"], scope } } });
   up("control");
   await settle();
   try {
@@ -632,7 +632,7 @@ test("boîte d'ajout : moteur perdu, la boîte reste ouverte et le dit", async (
   assert.equal(urls.value, "https://exemple.org/garde.iso", "saisie gardée");
   assertAlertIn(box, /moteur ne répond pas/);
   assert.ok(!calls.slice(before).includes("task.add"));
-  listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan"], scope: "admin" } } });
+  listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan", "crawl"], scope: "admin" } } });
   await settle();
   box.close("cancel");
   await settle();
@@ -861,4 +861,144 @@ test("chaque élément qui prend le focus a un nom", () => {
     return !(el.getAttribute("aria-label") || labelled || el.labels?.length || el.textContent.trim() || el.title);
   });
   assert.deepEqual(nameless.map((el) => el.outerHTML.slice(0, 100)), []);
+});
+
+test("exploration d'un site : modèle, avancement, colonnes, arborescence, arrêt", async () => {
+  await closeAll();
+  const document = window.document;
+  const crawls = [];
+  const cancels = [];
+  const batches = [];
+  let ending = "done";
+  ENGINE["linkscan.crawl"] = (params) => {
+    crawls.push(params);
+    return { crawlId: `crawl-${crawls.length}` };
+  };
+  ENGINE["linkscan.crawlResult"] = ({ crawlId }) => ({
+    crawlId, state: ending, stop: ending === "done" ? "maxPages" : undefined, pagesRead: 3, pagesQueued: 0,
+    bytesRead: 10, pageUrl: "https://exemple.org/",
+    links: [
+      { url: "https://exemple.org/docs/a.pdf", name: "a.pdf", ext: "pdf", kind: "file", depth: 2, foundOn: "https://exemple.org/docs/", sitePath: "exemple.org/docs" },
+      { url: "https://exemple.org/p.html", name: "p.html", ext: "html", kind: "page", depth: 1, foundOn: "https://exemple.org/", sitePath: "exemple.org", visit: "robots" },
+    ],
+  });
+  ENGINE["linkscan.cancel"] = ({ crawlId }) => {
+    cancels.push(crawlId);
+    return { crawlId, state: "cancelled", pagesRead: 1, pagesQueued: 0, links: 2, bytesRead: 0 };
+  };
+  ENGINE["linkscan.probe"] = ({ urls }) => ({ items: urls.map((url) => ({ url, size: 1000, name: "x", kind: null })) });
+  ENGINE["task.addBatch"] = ({ items }) => {
+    batches.push(items);
+    return { tasks: items.map((_, index) => ({ index, taskId: `t${index}` })), errors: [] };
+  };
+  const progress = (crawlId, params) => listeners.engine({ payload: { kind: "message", message: {
+    method: "linkscan.progress", params: { rev, crawlId, pagesQueued: 0, bytesRead: 0, ...params } } } });
+  const $ = (id) => document.getElementById(id);
+  try {
+    $("tb-links").click();
+    await settle();
+    assert.ok($("links-dialog").open);
+    assert.equal($("l-crawl-box").hidden, false);
+    assert.deepEqual(await audit($("links-dialog")), []);
+
+    // Un modèle : exploration cochée, profondeur et extensions remplies ; changé à la main,
+    // le modèle redevient « Personnalisé ».
+    $("l-template").value = "documents";
+    $("l-template").dispatchEvent(new window.Event("change"));
+    assert.equal($("l-crawl").checked, true);
+    assert.equal($("l-depth").value, "1");
+    assert.match($("l-ext").value, /\bpdf\b/);
+    $("l-depth").value = "3";
+    $("l-depth").dispatchEvent(new window.Event("input"));
+    assert.equal($("l-template").value, "");
+    $("l-depth").value = "1";
+    $("l-depth").dispatchEvent(new window.Event("input"));
+    assert.equal($("l-template").value, "documents");
+
+    // Un texte : l'exploration demande une page.
+    $("l-source").value = "voir https://exemple.org/a.zip et https://exemple.org/b.zip";
+    $("l-scan").click();
+    await settle();
+    assert.equal(crawls.length, 0);
+    assert.match($("l-error").textContent, /adresse d'une page/);
+    // Une profondeur hors des bornes : refusée, liée au champ.
+    $("l-source").value = "https://exemple.org/";
+    $("l-depth").value = "9";
+    $("l-scan").click();
+    await settle();
+    assert.equal(crawls.length, 0);
+    assert.equal(document.activeElement, $("l-depth"));
+    assert.equal($("l-depth").getAttribute("aria-invalid"), "true");
+    $("l-depth").value = "1";
+
+    // Une page : lancée avec les réglages ; l'avancement s'affiche, la fin remplit le tableau.
+    $("l-scan").click();
+    await settle();
+    assert.deepEqual(crawls[0], {
+      pageUrl: "https://exemple.org/", depth: 1, maxPages: 200,
+      exclude: "(?i)logout|signout|deconnexion|déconnexion", sameFolder: false, ignoreRobots: false,
+    });
+    assert.equal($("l-crawling").hidden, false);
+    assert.equal($("l-scan").disabled, true);
+    progress("autre", { state: "running", pagesRead: 9, links: 9 });
+    progress("crawl-1", { state: "running", pagesRead: 2, links: 5, pagesQueued: 3 });
+    assert.equal($("l-progress").textContent, "2 page(s) lue(s), 3 en attente, 5 lien(s) trouvé(s)");
+    progress("crawl-1", { state: "done", pagesRead: 3, links: 2, stop: "maxPages" });
+    await settle();
+    assert.equal($("l-crawling").hidden, true);
+    assert.equal($("l-scan").disabled, false);
+    assert.match($("l-status").textContent, /^2 lien\(s\) trouvé\(s\) en explorant https:\/\/exemple\.org\/ \(3 page\(s\) lue\(s\)\) Limite de pages/);
+    const table = $("l-links");
+    assert.ok(table.classList.contains("crawled"));
+    let rows = [...table.tBodies[0].rows];
+    assert.equal(rows.length, 1, "filtre des documents : la page est masquée");
+    assert.equal(rows[0].cells[4].textContent, "2");
+    assert.equal(rows[0].cells[5].textContent, "https://exemple.org/docs/");
+    // Les pages montrées disent ce qu'il en est advenu.
+    $("l-ext").value = "";
+    $("l-ext").dispatchEvent(new window.Event("input"));
+    $("l-all").checked = true;
+    $("l-all").dispatchEvent(new window.Event("change"));
+    rows = [...table.tBodies[0].rows];
+    assert.equal(rows[1].cells[4].textContent, "1 (non lue : robots.txt)");
+    $("l-all").checked = false;
+    $("l-all").dispatchEvent(new window.Event("change"));
+
+    // Arborescence du site : le sous-dossier de chaque lien.
+    assert.equal($("l-tree-box").hidden, false);
+    $("l-tree").checked = true;
+    $("l-start").click();
+    await settle();
+    assert.equal(batches.length, 1, calls.slice(-5).join(", "));
+    assert.equal(batches[0][0].subDir, "exemple.org/docs");
+    assert.equal($("links-dialog").open, false);
+
+    // « Arrêter l'exploration » : ce qui a été trouvé est gardé.
+    ending = "cancelled";
+    $("tb-links").click();
+    await settle();
+    $("l-source").value = "https://exemple.org/";
+    $("l-crawl").checked = true;
+    $("l-scan").click();
+    await settle();
+    $("l-stop").focus();
+    $("l-stop").click();
+    await settle();
+    assert.deepEqual(cancels, ["crawl-2"]);
+    assert.match($("l-status").textContent, /^Exploration arrêtée : 2 lien\(s\)/);
+    assert.equal($("l-crawling").hidden, true);
+    assert.equal(document.activeElement, $("l-scan"), "focus rendu à « Analyser »");
+
+    // Fermer la boîte pendant une exploration l'arrête.
+    $("l-scan").click();
+    await settle();
+    $("links-dialog").close();
+    await settle();
+    assert.deepEqual(cancels, ["crawl-2", "crawl-3"]);
+    assert.equal($("l-crawling").hidden, true);
+  } finally {
+    for (const m of ["linkscan.crawl", "linkscan.crawlResult", "linkscan.cancel", "linkscan.probe", "task.addBatch"]) delete ENGINE[m];
+    $("l-crawl").checked = false;
+    await closeAll();
+  }
 });

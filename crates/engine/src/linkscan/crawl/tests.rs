@@ -677,3 +677,21 @@ fn site_paths_keep_the_tree_of_the_site() {
         assert!(part != ".." && part != ".");
     }
 }
+
+/// Les pages à ne pas ouvrir par défaut sont celles de la page (`model.js`, `index.html`).
+#[test]
+fn the_default_exclusion_is_that_of_the_page() {
+    let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src");
+    let model = std::fs::read_to_string(ui.join("model.js")).unwrap();
+    assert!(
+        model.contains(&format!(
+            "export const DEFAULT_EXCLUDE = \"{DEFAULT_EXCLUDE}\";"
+        )),
+        "DEFAULT_EXCLUDE diffère de ui/src/model.js"
+    );
+    let page = std::fs::read_to_string(ui.join("index.html")).unwrap();
+    assert!(
+        page.contains(&format!("id=\"l-exclude\" type=\"text\" spellcheck=\"false\" autocomplete=\"off\" value=\"{DEFAULT_EXCLUDE}\"")),
+        "valeur de l-exclude différente dans ui/src/index.html"
+    );
+}
