@@ -75,7 +75,7 @@ Windows n'est pas signé, SmartScreen avertit d'un « éditeur inconnu ».
 
 ## Compiler depuis les sources
 
-Il faut la chaîne Rust stable (1.89 ou plus récente). Sous Windows, les outils de
+Il faut la chaîne Rust stable (1.90 ou plus récente). Sous Windows, les outils de
 compilation C++ de Visual Studio (Build Tools) : SQLite est compilé avec le projet. Sous
 Linux, pour l'application de bureau, WebKitGTK 4.1 et ses fichiers de développement
 (`libwebkit2gtk-4.1-dev` et les paquets listés dans
