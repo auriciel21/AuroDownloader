@@ -356,3 +356,62 @@ fn starts_are_limited_and_can_be_held() {
     held.hold(false);
     assert!(held.take(t0).is_ok());
 }
+
+fn state_changed(from: &str, to: &str) -> Outgoing {
+    Outgoing::Message {
+        message: json!({
+            "jsonrpc": "2.0",
+            "method": "task.stateChanged",
+            "params": {"rev": 7, "taskId": "t1", "from": from, "to": to,
+                       "pauseReason": null, "errorCode": null},
+        }),
+    }
+}
+
+/// Démarrage en file (SPEC §4.6, 2026-11-26) : `queued` vers `active` seulement, jamais
+/// pendant `RESUME_GRACE` après une connexion (reprises au démarrage du moteur), ni sans
+/// connexion.
+#[test]
+fn a_queued_start_shows_the_window_outside_the_resume_grace() {
+    let start = state_changed("queued", "active");
+    assert!(start.announces_queued_start());
+    for (from, to) in [
+        ("retry_wait", "active"),
+        ("active", "paused"),
+        ("queued", "paused"),
+        ("verifying", "active"),
+        ("paused", "queued"),
+    ] {
+        assert!(
+            !state_changed(from, to).announces_queued_start(),
+            "{from} vers {to}"
+        );
+    }
+    let added = Outgoing::Message {
+        message: json!({"method": "task.added", "params": {"task": {"taskId": "t1"}}}),
+    };
+    assert!(!added.announces_queued_start());
+    assert!(!Outgoing::Resync.announces_queued_start());
+
+    let t0 = Instant::now();
+    let mut starts = QueuedStarts::default();
+    assert!(!starts.shows(&start, t0), "sans connexion");
+    let up = Outgoing::Status(Status::Up { engine: json!({}) });
+    assert!(!starts.shows(&up, t0));
+    assert!(
+        !starts.shows(&start, t0 + RESUME_GRACE / 2),
+        "reprise au démarrage"
+    );
+    assert!(starts.shows(&start, t0 + RESUME_GRACE));
+    assert!(!starts.shows(
+        &state_changed("retry_wait", "active"),
+        t0 + RESUME_GRACE * 2
+    ));
+    // Connexion perdue puis retrouvée : le délai repart.
+    let later = t0 + RESUME_GRACE * 3;
+    assert!(!starts.shows(&Outgoing::Status(Status::Connecting), later));
+    assert!(!starts.shows(&start, later), "connexion perdue");
+    assert!(!starts.shows(&up, later));
+    assert!(!starts.shows(&start, later + Duration::from_secs(1)));
+    assert!(starts.shows(&start, later + RESUME_GRACE));
+}

@@ -19,6 +19,10 @@ pub struct Prefs {
     /// Un téléchargement ajouté (extension, ligne de commande) fait apparaître la fenêtre
     /// au premier plan (SPEC §4.6).
     pub show_on_add: bool,
+    /// Un téléchargement qui attendait dans sa file démarre (place libérée, plage horaire
+    /// ouverte) : la fenêtre passe au premier plan (SPEC §4.6, 2026-11-26). Pas les
+    /// nouvelles tentatives, ni les reprises au démarrage du moteur.
+    pub show_on_start: bool,
     /// Une adresse de fichier ou un lien magnet copié fait apparaître une notification qui
     /// propose de l'ajouter (F-30, SPEC §7.18) ; désactivé par défaut.
     pub watch_clipboard: bool,
@@ -38,6 +42,7 @@ impl Default for Prefs {
             lang: String::new(),
             close_to_tray: true,
             show_on_add: true,
+            show_on_start: true,
             watch_clipboard: false,
             check_updates: true,
             last_update_check: None,
@@ -128,6 +133,7 @@ mod tests {
             lang: "en".into(),
             close_to_tray: false,
             show_on_add: false,
+            show_on_start: false,
             watch_clipboard: true,
             check_updates: false,
             last_update_check: Some(1_790_000_000),
@@ -146,6 +152,8 @@ mod tests {
         assert!(loaded.close_to_tray);
         // Fichier d'avant la préférence (2026-11-08) : la fenêtre apparaît aux ajouts.
         assert!(loaded.show_on_add);
+        // Fichier d'avant le démarrage en file (2026-11-26) : la fenêtre apparaît aussi.
+        assert!(loaded.show_on_start);
         // Fichier d'avant les mises à jour (étape 8b) : recherche active, avis à montrer.
         assert!(loaded.check_updates);
         assert_eq!(loaded.last_update_check, None);

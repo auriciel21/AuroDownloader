@@ -11,6 +11,10 @@ rubrique à l'autre.
   quitte l'application (les téléchargements continuent, par le moteur).
 - **Afficher la fenêtre au premier plan quand un téléchargement est ajouté** (par le
   navigateur ou la ligne de commande).
+- **Afficher la fenêtre au premier plan quand un téléchargement en file démarre** : quand
+  une place se libère dans sa file, ou à l'ouverture de sa plage horaire. Pas pour une
+  nouvelle tentative après une erreur passagère, ni pour les téléchargements qui reprennent
+  à l'ouverture de la session.
 - **Proposer d'ajouter les liens copiés** : voir [Analyse de liens](06-liens.md#liens-copiés).
 - **Mises à jour** : « Rechercher les mises à jour » (au plus une fois par jour, auprès de
   GitHub, qui voit l'adresse IP et la version utilisée, rien d'autre) et « Rechercher

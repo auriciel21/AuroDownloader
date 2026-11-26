@@ -11,6 +11,9 @@ to the next.
   quits the application (downloads go on, through the engine).
 - **Bring the window to the front when a download is added** (by the browser or the command
   line).
+- **Bring the window to the front when a queued download starts**: when a place frees up in
+  its queue, or when its time slot opens. Not for a new attempt after a temporary error, nor
+  for the downloads that resume when the session opens.
 - **Offer to add copied links**: see [Link grabber](06-links.md#copied-links).
 - **Updates**: "Check for updates" (at most once a day, from GitHub, which sees the IP address
   and the version in use, nothing else) and "Check now". A new version shows up in "New

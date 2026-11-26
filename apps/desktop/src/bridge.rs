@@ -85,6 +85,43 @@ impl Outgoing {
     pub fn announces_new_task(&self) -> bool {
         matches!(self, Outgoing::Message { message } if message["method"] == "task.added")
     }
+
+    /// Un téléchargement qui attendait sa place dans la file démarre (`queued` vers
+    /// `active`) : place libérée, plage horaire ouverte, reprise demandée. Pas une nouvelle
+    /// tentative après une erreur passagère (`retry_wait` vers `active`).
+    pub fn announces_queued_start(&self) -> bool {
+        matches!(self, Outgoing::Message { message }
+            if message["method"] == "task.stateChanged"
+                && message["params"]["from"] == "queued"
+                && message["params"]["to"] == "active")
+    }
+}
+
+/// Délai après une connexion au moteur pendant lequel un démarrage en file ne fait pas
+/// passer la fenêtre devant : au démarrage du moteur (ouverture de la session, application
+/// cachée dans la zone de notification), les téléchargements interrompus par son dernier
+/// arrêt repartent de la file.
+pub const RESUME_GRACE: Duration = Duration::from_secs(10);
+
+/// Décide si un démarrage en file fait passer la fenêtre devant (préférence
+/// `showOnStart`) : jamais pendant `RESUME_GRACE` après une connexion au moteur.
+#[derive(Debug, Default)]
+pub struct QueuedStarts {
+    up_at: Option<Instant>,
+}
+
+impl QueuedStarts {
+    /// Note ce que relaie la liaison ; vrai pour un démarrage en file à montrer.
+    pub fn shows(&mut self, out: &Outgoing, now: Instant) -> bool {
+        if let Outgoing::Status(status) = out {
+            self.up_at = matches!(status, Status::Up { .. }).then_some(now);
+            return false;
+        }
+        out.announces_queued_start()
+            && self
+                .up_at
+                .is_some_and(|up| now.saturating_duration_since(up) >= RESUME_GRACE)
+    }
 }
 
 /// Destination de ce que relaie la liaison.

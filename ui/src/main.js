@@ -4237,6 +4237,7 @@ function applyInfo(next) {
   $("pref-no-tray").hidden = info.tray || !caps.app;
   // Absente d'un ancien fichier de préférences : activée, comme le défaut de l'application.
   $("pref-show-on-add").checked = info.prefs.showOnAdd !== false;
+  $("pref-show-on-start").checked = info.prefs.showOnStart !== false;
   // Presse-papiers (F-30) : seulement avec un hôte qui sait le lire (pas l'interface distante).
   $("pref-clipboard").checked = info.prefs.watchClipboard === true;
   $("pref-clipboard-row").hidden = !host.watchesClipboard;
@@ -4715,6 +4716,7 @@ function wire() {
   $("pref-lang").addEventListener("change", (e) => savePrefs({ lang: e.target.value }));
   $("pref-tray").addEventListener("change", (e) => savePrefs({ closeToTray: e.target.checked }));
   $("pref-show-on-add").addEventListener("change", (e) => savePrefs({ showOnAdd: e.target.checked }));
+  $("pref-show-on-start").addEventListener("change", (e) => savePrefs({ showOnStart: e.target.checked }));
   // Mises à jour (étape 8b).
   $("pref-updates").addEventListener("change", (e) => savePrefs({ checkUpdates: e.target.checked }));
   $("update-check-now").addEventListener("click", checkUpdatesNow);

@@ -25,7 +25,7 @@ mod update;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use bridge::{Bridge, CallError, Outgoing, Retry, Sink, Status};
+use bridge::{Bridge, CallError, Outgoing, QueuedStarts, Retry, Sink, Status};
 use opened::Opened;
 use prefs::Prefs;
 use serde::Serialize;
@@ -119,21 +119,31 @@ impl TrayMenu {
 }
 
 /// Envoie à la page ce que relaie la liaison.
-struct WindowSink(AppHandle);
+struct WindowSink(AppHandle, Mutex<QueuedStarts>);
+
+impl WindowSink {
+    fn new(app: AppHandle) -> Self {
+        WindowSink(app, Mutex::new(QueuedStarts::default()))
+    }
+}
 
 impl Sink for WindowSink {
     fn send(&self, out: Outgoing) {
         let new_task = out.announces_new_task();
+        let queued_start = self
+            .1
+            .lock()
+            .unwrap()
+            .shows(&out, std::time::Instant::now());
         let _ = self.0.emit_to("main", "engine", out);
-        // Un téléchargement pris par l'extension ou la ligne de commande : la fenêtre passe
-        // au premier plan, pour qu'on le voie commencer (SPEC §4.6). Ajouté depuis la
-        // fenêtre, il la trouve déjà devant.
-        if new_task
-            && self
-                .0
-                .try_state::<App>()
-                .is_some_and(|state| state.prefs.lock().unwrap().show_on_add)
-        {
+        // Un téléchargement pris par l'extension ou la ligne de commande, ou qui démarre
+        // après avoir attendu dans sa file : la fenêtre passe au premier plan, pour qu'on
+        // le voie commencer (SPEC §4.6). Ajouté depuis la fenêtre, il la trouve déjà devant.
+        let wanted = self.0.try_state::<App>().is_some_and(|state| {
+            let prefs = state.prefs.lock().unwrap();
+            (new_task && prefs.show_on_add) || (queued_start && prefs.show_on_start)
+        });
+        if wanted {
             show(&self.0);
         }
     }
@@ -558,7 +568,7 @@ fn show(app: &AppHandle) {
 fn resync_if_missed(app: &AppHandle) {
     let bridge = app.state::<Arc<Bridge>>();
     if bridge.take_missed() {
-        WindowSink(app.clone()).send(Outgoing::Resync);
+        WindowSink::new(app.clone()).send(Outgoing::Resync);
     }
 }
 
@@ -773,7 +783,7 @@ fn main() {
                 app.try_state::<App>().map(|_| AppPrefs(app.clone()))
             });
 
-            let sink: Arc<dyn Sink> = Arc::new(WindowSink(app.handle().clone()));
+            let sink: Arc<dyn Sink> = Arc::new(WindowSink::new(app.handle().clone()));
             // Lancements d'`aurod` limités, et suspendus pendant une mise à jour (C6, C8).
             let starts = bridge::Starts::new();
             app.manage(Arc::clone(&starts));
