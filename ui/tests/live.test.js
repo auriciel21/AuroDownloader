@@ -172,6 +172,15 @@ before(async () => {
       try { globalThis[key] = window[key]; } catch { /* propriété en lecture seule */ }
     }
   }
+  // Fonctions héritées de la fenêtre (addEventListener vient d'EventTarget) : depuis
+  // Node 21, la liste des propriétés propres de la fenêtre de jsdom ne les donne plus.
+  for (let proto = Object.getPrototypeOf(window); proto && proto !== Object.prototype && proto !== window.Object.prototype; proto = Object.getPrototypeOf(proto)) {
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === "constructor" || key in globalThis) continue;
+      const value = Object.getOwnPropertyDescriptor(proto, key).value;
+      if (typeof value === "function") globalThis[key] = value;
+    }
+  }
   for (const key of ["Option", "Image", "Audio"]) globalThis[key] ??= window[key];
   // Absent de jsdom ; les identifiants de la page n'ont que des lettres, chiffres, - et _.
   globalThis.CSS ??= { escape: (text) => String(text).replace(/[^\w-]/g, (c) => `\\${c}`) };
