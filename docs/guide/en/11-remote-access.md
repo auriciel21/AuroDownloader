@@ -18,15 +18,17 @@ Options, Remote access:
 
 ## Adding a device
 
-"Add a device…": a name ("Phone"), then the **permissions**:
+"Add a device…": a **Device name** ("Phone"), then the **Permissions**:
 
 - Full control: add, stop, delete;
 - Add only;
 - View only.
 
-"Create the token" shows the page address and a **QR code**: scan it with the device, which
-opens the page signed in. The token can also be pasted by hand. It is shown only once;
-"Remove" a device cuts its access at once.
+"Create the token" shows the **Page address** and a **QR code**: scan it with the device,
+which opens the page signed in. Otherwise, open the address in its browser: the "Sign in to
+AuroDownloader" box asks for the **Token**, to copy from "Token, to paste into the page if
+needed" ("Copy"), then "Sign in". The token is shown only once; "Remove" a device cuts its
+access at once. On the device, "Sign out" (the page's toolbar) closes its session.
 
 ## What the remote page does not do
 

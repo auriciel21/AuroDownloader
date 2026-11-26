@@ -23,7 +23,7 @@ A changed limit applies at once, to running downloads too.
 
 ## Schedule
 
-"Schedule" sets, for a queue:
+"Schedule" sets, for the queue chosen in "Queue":
 
 - **Download only during these time slots**: days and hours ("Add a time slot"), for example
   Monday to Friday from 23:00 to 07:00. Outside the slots, the queue waits ("Paused
@@ -31,20 +31,26 @@ A changed limit applies at once, to running downloads too.
 - **When the queue has nothing left to download**: Do nothing, Put the computer to sleep or
   Shut down the computer. The action is announced a minute before, with a button to cancel it.
 
+"Save" applies the schedule; an open slot starts the queue's waiting downloads at once.
+
 ## Filing rules
 
 Options, Rules. A rule files the downloads added **without a chosen folder** (by the
 extension, copied links, the remote interface):
 
-- **If**: file types or extensions, site domains, regular expression on the address or the
-  file name (all criteria met; empty: any task).
+The "Filing rule" box has a **Name** and an **Enabled** box, then:
+
+- **If** (all criteria met; none: every download): **File types** (Archives, Documents,
+  Images, Music, Programs, Videos…) **or extensions** (`iso, pdf`; one ticked type or one
+  listed extension is enough), **Site domains**, **Address (regular expression)**, **File
+  name (regular expression)**.
 - **Then**:
   - a **folder**: full path, or relative to the download folder (`Videos/Talks`), created if
     missing;
   - a **file name**, a template with `{name}` (without the extension), `{ext}`, `{host}` and
     `{date}` (day added): for example `{date} {name}.{ext}`;
-  - a **command when the download ends**: a program (full path), its arguments, one per line,
-    and a time limit. Variables: `{path}` (the file), `{dir}`, `{name}`, `{size}`, `{sha256}`,
+  - a **Command when the download ends**: "Program (full path)", "Arguments, one per line",
+    and "Time limit (seconds)". Variables: `{path}` (the file), `{dir}`, `{name}`, `{size}`, `{sha256}`,
     `{id}`. For example, an antivirus with `{path}`. The command never goes through a shell;
     the download stays "Finishing" while it runs, then fails if it fails or runs past its time
     limit ("Resume" runs it again).
@@ -55,5 +61,11 @@ torrent only takes the folder. Rules can only be changed in the application on t
 
 ## History
 
-"History" lists finished downloads, even those removed from the list: search by name, folder
-or site, "Export as CSV…", "Clear history…".
+"History" lists finished downloads, even those removed from the list, most recent first:
+Finished, Name, Size, State (completed, failed, cancelled), Site.
+
+- **Search (name, folder or site)**: the list filters as you type.
+- **Show more**: the next entries, page by page.
+- **Export as CSV…**: the list, to open in a spreadsheet.
+- **Clear history…**: after confirmation ("Clear"), the history is emptied; the files stay on
+  disk.

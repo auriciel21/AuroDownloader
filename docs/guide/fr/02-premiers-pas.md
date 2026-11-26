@@ -7,13 +7,19 @@
   Aide. « Aide » ouvre un menu : Guide de l'utilisateur (F1), Raccourcis clavier, À propos.
 - **Catégories**, à gauche : Tous les téléchargements, Incomplets, Terminés, chacun avec ses
   types de fichier (Archives, Documents, Images, Musique, Programmes, Vidéos, Autres), puis
-  les files d'attente. Le nombre de téléchargements est à côté de chaque catégorie.
+  les files d'attente. Le nombre de téléchargements est à côté de chaque catégorie ; un clic
+  sur une catégorie ne montre qu'elle dans le tableau.
 - **Tableau**, au centre : Nom du fichier, Taille, Avancement, Statut, Temps restant, Débit,
   Ajouté le. Un clic sur un titre de colonne trie le tableau.
-- **Barre d'état**, en bas : ce qui se passe, et la limite de débit globale.
+- **Barre d'état**, en bas : ce qui se passe (téléchargements en cours, plages horaires,
+  lignes sélectionnées), et la **Limite de débit globale** : « Aucune limite », ou un palier de
+  128 Kio/s à 100 Mio/s, qui vaut aussitôt pour tous les téléchargements.
+
+Un fichier `.torrent` ou Metalink glissé sur la fenêtre ouvre « Ajouter des téléchargements »,
+déjà rempli.
 
 Au premier lancement, AuroDownloader vous dit qu'il cherche ses mises à jour une fois par jour
-au plus ; « Ne pas rechercher » coupe cette recherche.
+au plus ; « Ne pas rechercher » coupe cette recherche, « D'accord » la garde.
 
 ## Un premier téléchargement
 
@@ -46,8 +52,11 @@ montre.
 ## Fermer la fenêtre
 
 Fermer la fenêtre la replie dans la zone de notification (à côté de l'horloge) : les
-téléchargements continuent. L'icône de la zone de notification rouvre la fenêtre, ou quitte :
-« Quitter (les téléchargements continuent) » ou « Quitter et arrêter les téléchargements ».
+téléchargements continuent. Un clic sur l'icône de la zone de notification rouvre la fenêtre ;
+son menu (clic droit) propose « Ouvrir AuroDownloader », « Quitter (les téléchargements
+continuent) » et « Quitter et arrêter les téléchargements ». Le moteur, qui fait les
+téléchargements, est un programme à part : il continue après « Quitter », et l'application le
+retrouve à son prochain lancement.
 Ce comportement se règle dans les [Options](08-options.md#général).
 
 Au redémarrage de l'ordinateur, les téléchargements inachevés reprennent quand AuroDownloader

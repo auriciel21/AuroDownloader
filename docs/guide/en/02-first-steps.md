@@ -7,13 +7,17 @@
   guide (F1), Keyboard shortcuts, About.
 - **Categories**, on the left: All downloads, Unfinished, Finished, each with its file types
   (Archives, Documents, Images, Music, Programs, Videos, Other), then the queues. The number of
-  downloads is next to each category.
+  downloads is next to each category; clicking a category shows only it in the table.
 - **Table**, in the middle: File name, Size, Progress, Status, Time left, Speed, Added. Clicking
   a column header sorts the table.
-- **Status bar**, at the bottom: what is going on, and the global speed limit.
+- **Status bar**, at the bottom: what is going on (running downloads, time slots, selected
+  rows), and the **Global speed limit**: "No limit", or a step from 128 KiB/s to 100 MiB/s,
+  which applies at once to every download.
+
+A `.torrent` or Metalink file dropped on the window opens "Add downloads", already filled in.
 
 On first launch, AuroDownloader tells you it looks for updates at most once a day; "Don't
-check" turns that off.
+check" turns that off, "OK" keeps it.
 
 ## A first download
 
@@ -43,8 +47,10 @@ program or an installation package: "Show in folder" shows it.
 ## Closing the window
 
 Closing the window keeps the application in the notification area (next to the clock):
-downloads go on. The notification area icon reopens the window, or quits: "Quit (downloads
-continue)" or "Quit and stop downloads". This is set in the [Options](08-options.md#general).
+downloads go on. Clicking the notification area icon reopens the window; its menu (right
+click) offers "Open AuroDownloader", "Quit (downloads continue)" and "Quit and stop
+downloads". The engine, which does the downloading, is a separate program: it carries on after
+"Quit", and the application finds it again the next time it starts. This is set in the [Options](08-options.md#general).
 
 When the computer restarts, unfinished downloads resume when AuroDownloader starts again;
 "Start with the session" does that by itself.

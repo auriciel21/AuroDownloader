@@ -3,14 +3,18 @@
 ## Tous les fichiers d'une page
 
 1. « Liens » ouvre « Analyser des liens ».
-2. Collez l'adresse d'une page web, ou un texte qui contient des adresses, puis « Analyser » ;
-   ou « Importer une liste (texte, CSV)… ».
+2. Collez dans « Adresse d'une page web, ou texte contenant des adresses » l'adresse d'une
+   page, ou un texte qui contient des adresses, puis « Analyser » ; ou « Importer une liste
+   (texte, CSV)… ». La page est lue telle quelle : ses pages liées ne sont pas parcourues.
 3. AuroDownloader lit la page (sans exécuter de JavaScript) et liste les liens de fichiers,
    avec leur nom, leur taille et leur adresse. Les tailles se lisent auprès des serveurs,
    quatre à la fois.
-4. **Filtres** : extensions (`iso, zip`), taille minimale et maximale, expression régulière
-   sur l'adresse. « Montrer aussi les pages et les liens sans extension » montre le reste.
-5. Cochez (« Tout cocher », « Tout décocher »), choisissez le dossier, puis « Télécharger ».
+4. **Filtres** : Extensions (`iso, zip`), Taille minimale et Taille maximale (`10M`,
+   `1G`…), Expression régulière sur l'adresse. « Montrer aussi les pages et les liens sans
+   extension » montre le reste. Les filtres s'appliquent aussitôt au tableau (Télécharger,
+   Nom, Taille, Adresse).
+5. Cochez (« Tout cocher », « Tout décocher »), choisissez « Enregistrer dans » et, si besoin,
+   un « Sous-dossier », puis « Démarrer » ou « Télécharger plus tard ».
 
 Chaque lien devient un téléchargement ; un lien refusé n'empêche pas les autres.
 

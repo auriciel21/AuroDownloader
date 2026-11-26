@@ -3,13 +3,16 @@
 ## Every file of a page
 
 1. "Links" opens "Analyse links".
-2. Paste the address of a web page, or a text containing addresses, then "Analyse"; or "Import
-   a list (text, CSV)…".
+2. Paste into "Address of a web page, or text containing addresses" the address of a page,
+   or a text containing addresses, then "Analyse"; or "Import a list (text, CSV)…". The page
+   is read as is: its linked pages are not followed.
 3. AuroDownloader reads the page (without running JavaScript) and lists the file links, with
    their name, size and address. Sizes are asked from the servers, four at a time.
-4. **Filters**: extensions (`iso, zip`), minimum and maximum size, regular expression on the
-   address. "Also show pages and links without an extension" shows the rest.
-5. Tick ("Check all", "Uncheck all"), choose the folder, then "Download".
+4. **Filters**: Extensions (`iso, zip`), Minimum size and Maximum size (`10M`, `1G`…),
+   Regular expression on the address. "Also show pages and links without an extension" shows
+   the rest. The filters apply at once to the table (Download, Name, Size, Address).
+5. Tick ("Check all", "Uncheck all"), choose "Save to" and, if needed, a "Subfolder", then
+   "Start" or "Download later".
 
 Each link becomes a download; a refused link does not stop the others.
 

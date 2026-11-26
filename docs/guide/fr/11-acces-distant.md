@@ -19,15 +19,18 @@ Options, Accès à distance :
 
 ## Ajouter un appareil
 
-« Ajouter un appareil… » : un nom (« Téléphone »), puis les **droits** :
+« Ajouter un appareil… » : un **Nom de l'appareil** (« Téléphone »), puis les **Droits** :
 
 - Tout piloter : ajouter, arrêter, supprimer ;
 - Ajouter seulement ;
 - Regarder seulement.
 
-« Créer le jeton » montre l'adresse de la page et un **QR code** : scannez-le avec l'appareil,
-qui ouvre la page connectée. Le jeton peut aussi se coller à la main. Il n'est montré
-qu'une fois ; « Retirer » un appareil coupe aussitôt son accès.
+« Créer le jeton » montre l'**Adresse de la page** et un **QR code** : scannez-le avec
+l'appareil, qui ouvre la page connectée. Sinon, ouvrez l'adresse dans son navigateur : la boîte
+« Connexion à AuroDownloader » demande le **Jeton**, à copier depuis « Jeton, à coller dans la
+page si besoin » (« Copier »), puis « Se connecter ». Le jeton n'est montré qu'une fois ;
+« Retirer » un appareil coupe aussitôt son accès. Sur l'appareil, « Se déconnecter » (barre
+d'outils de la page) ferme sa session.
 
 ## Ce que la page distante ne fait pas
 
