@@ -277,7 +277,8 @@ enum Command {
               value_parser = clap::value_parser!(u32).range(1..=2000))]
         max_pages: Option<u32>,
         /// Pages à ne pas ouvrir (avec --depth), expression régulière sur l'adresse ; par
-        /// défaut les pages de déconnexion ; « '' » : aucune
+        /// défaut les pages de déconnexion et les liens de tri des listes de dossiers
+        /// (?C=M;O=A…) ; « '' » : aucune
         #[arg(long, value_name = "EXPRESSION", requires = "depth")]
         exclude: Option<String>,
         /// Seulement les pages sous le dossier de la page de départ (avec --depth)
@@ -310,7 +311,8 @@ enum Command {
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=2000))]
         max_pages: Option<u32>,
         /// Pages à ne pas ouvrir, expression régulière sur l'adresse ; par défaut les pages
-        /// de déconnexion ; « '' » : aucune
+        /// de déconnexion et les liens de tri des listes de dossiers (?C=M;O=A…) ; « '' » :
+        /// aucune
         #[arg(long, value_name = "EXPRESSION")]
         exclude: Option<String>,
         /// Seulement les pages sous le dossier de la page de départ

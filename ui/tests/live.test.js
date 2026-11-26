@@ -936,7 +936,7 @@ test("exploration d'un site : modèle, avancement, colonnes, arborescence, arrê
     await settle();
     assert.deepEqual(crawls[0], {
       pageUrl: "https://exemple.org/", depth: 1, maxPages: 200,
-      exclude: "(?i)logout|signout|deconnexion|déconnexion", sameFolder: false, ignoreRobots: false,
+      exclude: "(?i)logout|signout|deconnexion|déconnexion|[?&;]C=[NMSD][;&]O=[AD]", sameFolder: false, ignoreRobots: false,
     });
     assert.equal($("l-crawling").hidden, false);
     assert.equal($("l-scan").disabled, true);
@@ -1058,7 +1058,7 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     assert.deepEqual(adds, [{
       site: {
         pageUrl: "https://exemple.org/", depth: 2, maxPages: 200,
-        exclude: "(?i)logout|signout|deconnexion|déconnexion", sameFolder: false, ignoreRobots: false,
+        exclude: "(?i)logout|signout|deconnexion|déconnexion|[?&;]C=[NMSD][;&]O=[AD]", sameFolder: false, ignoreRobots: false,
         files: ["https://exemple.org/docs/a.pdf"],
       },
       startPaused: true,

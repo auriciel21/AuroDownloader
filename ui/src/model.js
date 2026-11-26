@@ -752,7 +752,7 @@ export function linkFilter({ extensions = "", min = "", max = "", regex = "", al
 
 /// Pages à ne pas ouvrir, par défaut (décision de l'utilisateur du 2026-11-26), comme
 /// `linkscan::crawl::DEFAULT_EXCLUDE` (comparées par un test).
-export const DEFAULT_EXCLUDE = "(?i)logout|signout|deconnexion|déconnexion";
+export const DEFAULT_EXCLUDE = "(?i)logout|signout|deconnexion|déconnexion|[?&;]C=[NMSD][;&]O=[AD]";
 
 /// Modèles de la boîte, à la manière d'IDM : profondeur et types de fichiers (le champ
 /// « Extensions ») ; le moteur n'en sait rien. « … du site » : profondeur 5 ; « … d'un

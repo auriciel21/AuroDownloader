@@ -35,7 +35,10 @@ pub const MAX_BYTES: u64 = 256 << 20;
 /// Explorations en cours au plus dans le moteur.
 pub const MAX_RUNNING: usize = 4;
 /// Pages à ne pas ouvrir, par défaut des clients (décision).
-pub const DEFAULT_EXCLUDE: &str = "(?i)logout|signout|deconnexion|déconnexion";
+// Liens de tri des listes de dossiers d'Apache (`?C=M;O=A`…) : la même liste, copiée
+// autant de fois (essai réel du 2026-11-26, décision de l'utilisateur).
+pub const DEFAULT_EXCLUDE: &str =
+    "(?i)logout|signout|deconnexion|déconnexion|[?&;]C=[NMSD][;&]O=[AD]";
 /// Lectures en même temps au plus (décision).
 const PARALLEL: usize = 2;
 /// Temps entre deux débuts de lecture, au moins (décision).

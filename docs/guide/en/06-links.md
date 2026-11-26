@@ -35,7 +35,8 @@ files they cite. Nothing is downloaded before you choose.
      and so on.
    - **Pages read at most**: 200 by default, 2,000 at most.
    - **Pages not to open (regular expression)**: by default the sign-out pages (`logout`,
-     `signout`, `déconnexion`…), which would close a session; empty the field to open
+     `signout`, `déconnexion`…), which would close a session, and the sort links of folder
+     listings (`?C=M;O=A`…), which give the same listing again; empty the field to open
      everything.
    - **Stay under the starting folder**: only the pages under the folder of the pasted page.
    - **Ignore robots.txt**: also reads the pages the site asks robots not to read; keep it

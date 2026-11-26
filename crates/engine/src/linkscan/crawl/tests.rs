@@ -327,7 +327,7 @@ async fn excluded_pages_are_never_opened() {
             "/",
             HTML,
             r#"<a href="/compte/Logout?x=1">sortir</a> <a href="/d%C3%A9connexion">d</a>
-               <a href="/page.html">p</a>"#,
+               <a href="/page.html">p</a> <a href="/?C=M;O=A">tri</a> <a href="/?C=N&amp;O=D">tri</a>"#,
         ),
         ("/compte/Logout?x=1", HTML, "déconnecté"),
         ("/d%C3%A9connexion", HTML, "déconnecté"),
@@ -343,6 +343,16 @@ async fn excluded_pages_are_never_opened() {
     assert_eq!(visit(&found, "Logout"), Some(Visit::Excluded));
     assert_eq!(visit(&found, "déconnexion"), Some(Visit::Excluded));
     assert_eq!(visit(&found, "page.html"), Some(Visit::Read));
+    // Les liens de tri d'une liste de dossier d'Apache : la même page.
+    for sort in ["/?C=M;O=A", "/?C=N&O=D"] {
+        let url = site.url(sort);
+        let link = found
+            .iter()
+            .find(|f| f.link.url == url.as_str())
+            .expect(sort);
+        assert_eq!(link.visit, Some(Visit::Excluded), "{sort}");
+        assert_eq!(site.asked(sort), 0);
+    }
     assert_eq!(site.asked("/compte/Logout?x=1"), 0);
     assert_eq!(site.asked("/d%C3%A9connexion"), 0);
     crate::testing::stop(&engine).await;

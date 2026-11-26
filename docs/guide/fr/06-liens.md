@@ -39,7 +39,8 @@ les fichiers qu'elles citent. Rien n'est téléchargé avant votre choix.
      qu'elles citent, et ainsi de suite.
    - **Pages lues au plus** : 200 par défaut, 2 000 au plus.
    - **Pages à ne pas ouvrir (expression régulière)** : par défaut les pages de déconnexion
-     (`logout`, `signout`, `déconnexion`…), qui fermeraient une session ; videz le champ pour
+     (`logout`, `signout`, `déconnexion`…), qui fermeraient une session, et les liens de tri
+     des listes de dossiers (`?C=M;O=A`…), qui redonnent la même liste ; videz le champ pour
      tout ouvrir.
    - **Rester sous le dossier de départ** : seulement les pages sous le dossier de la page
      collée.
