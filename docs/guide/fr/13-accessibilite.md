@@ -7,7 +7,7 @@ AuroDownloader se sert entièrement au clavier, et a été essayé avec NVDA (Wi
 
 | Touches | Effet |
 | --- | --- |
-| F1 | Ce guide (aussi dans Options, À propos) |
+| F1 | Ce guide (aussi par Aide, dans la barre d'outils, et dans Options, À propos) |
 | Ctrl+N ou Ctrl+L | Ajouter |
 | Tab, Maj+Tab | Barre d'outils, catégories, tableau |
 | Flèches haut et bas, Page préc., Page suiv., Début, Fin | Ligne précédente, suivante… |

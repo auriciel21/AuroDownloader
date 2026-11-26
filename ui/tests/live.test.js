@@ -353,6 +353,73 @@ test("menu contextuel ouvert au clavier", async () => {
   assert.equal(window.document.activeElement?.getAttribute("role"), "menuitem", "le focus entre dans le menu");
 });
 
+test("menu « Aide » : guide, raccourcis clavier et À propos, au clavier", async () => {
+  await closeAll();
+  const document = window.document;
+  const button = document.getElementById("tb-help");
+  const menu = document.getElementById("help-menu");
+  assert.equal(button.getAttribute("aria-haspopup"), "menu");
+  // Flèche vers le bas sur le bouton : menu ouvert, focus sur la première entrée.
+  button.focus();
+  key(button, "ArrowDown");
+  await settle();
+  assert.equal(menu.hidden, false, "menu ouvert");
+  assert.equal(button.getAttribute("aria-expanded"), "true");
+  assert.equal(document.activeElement?.dataset.help, "guide");
+  assert.deepEqual(await audit(menu), []);
+  key(document.activeElement, "ArrowDown");
+  assert.equal(document.activeElement?.dataset.help, "keys");
+  key(document.activeElement, "End");
+  assert.equal(document.activeElement?.dataset.help, "about");
+  // Échap : menu fermé, focus rendu au bouton.
+  key(document.activeElement, "Escape");
+  assert.equal(menu.hidden, true);
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+  assert.equal(document.activeElement, button);
+
+  // Raccourcis clavier : le guide s'ouvre sur leur section, qui prend le focus.
+  button.click();
+  await settle();
+  menu.querySelector('[data-help="keys"]').click();
+  await settle();
+  const guide = document.getElementById("guide-dialog");
+  assert.ok(guide.open, "guide ouvert");
+  assert.equal(document.activeElement?.id, "guide-13-accessibilite-clavier-dans-la-fenêtre");
+  assert.equal(menu.hidden, true);
+  guide.close();
+  await settle();
+
+  // Guide : au début.
+  button.click();
+  await settle();
+  menu.querySelector('[data-help="guide"]').click();
+  await settle();
+  assert.ok(guide.open);
+  assert.equal(document.activeElement, document.getElementById("guide-content"));
+  guide.close();
+  await settle();
+
+  // À propos : les Options, sur leur rubrique.
+  button.click();
+  await settle();
+  menu.querySelector('[data-help="about"]').click();
+  await settle();
+  const settings = document.getElementById("settings");
+  assert.ok(settings.open, "Options ouvertes");
+  assert.equal(document.getElementById("tab-about").getAttribute("aria-selected"), "true");
+  assert.equal(document.getElementById("panel-about").hidden, false);
+  settings.close();
+  await settle();
+});
+
+/// Les sections visées par « Raccourcis clavier » existent dans les deux copies du guide.
+test("menu « Aide » : la section des raccourcis existe dans chaque langue", () => {
+  for (const [langue, id] of [["fr", "guide-13-accessibilite-clavier-dans-la-fenêtre"], ["en", "guide-13-accessibility-keyboard-in-the-window"]]) {
+    const html = readFileSync(new URL(`../src/guide/${langue}.html`, import.meta.url), "utf8");
+    assert.ok(html.includes(`id="${id}"`), `${langue} : ${id}`);
+  }
+});
+
 test("Options, chaque rubrique", async () => {
   await closeAll();
   window.document.getElementById("tb-settings").click();

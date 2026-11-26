@@ -4442,22 +4442,28 @@ function wire() {
     $("tb-schedule").focus();
   });
   $("end-action-cancel").addEventListener("click", cancelEndAction);
-  $("tb-settings").addEventListener("click", () => {
-    selectTab($("tab-general"));
-    $("settings").showModal();
-    // Identifiants et interfaces : portée `admin` (SPEC §6.9) ; demandés sans elle, ils
-    // n'obtenaient qu'un refus (audit W15).
-    if (connected && caps.admin) loadLogins();
-    if (connected && caps.admin) loadHostKeys();
-    if (connected) loadRules();
-    if (connected && caps.admin) loadInterfaces();
-    if (connected && caps.qr && caps.admin) loadRemote();
-    if (connected && caps.plugins && caps.admin) loadPlugins();
-    if (connected && caps.admin) loadProxy();
-    renderLinks();
-    loadTools();
-    renderClipboardWarning();
+  $("tb-settings").addEventListener("click", () => openSettings());
+  // Menu « Aide » (2026-11-26) : guide, raccourcis clavier, À propos.
+  const helpMenu = $("help-menu");
+  $("tb-help").addEventListener("click", () => (helpMenu.hidden ? openHelpMenu() : closeHelpMenu()));
+  $("tb-help").addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      openHelpMenu(event.key === "ArrowUp");
+    }
   });
+  helpMenu.addEventListener("keydown", onHelpMenuKey);
+  helpMenu.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-help]");
+    if (item) runHelp(item.dataset.help);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!helpMenu.hidden && !helpMenu.contains(event.target) && !$("tb-help").contains(event.target)) {
+      closeHelpMenu(false);
+    }
+  });
+  addEventListener("blur", () => closeHelpMenu(false));
+  addEventListener("resize", () => closeHelpMenu(false));
   // Accès à distance (étape 3d).
   $("r-enabled").addEventListener("change", (e) => changeRemote(
     { "remote.enabled": e.target.checked },
@@ -4965,13 +4971,94 @@ function showUpdateProgress({ done, total }) {
   }
 }
 
+// ---------- Options et menu « Aide » ----------
+
+/// Ouvre les Options sur une rubrique (Général par défaut).
+function openSettings(tab = "tab-general") {
+  selectTab($(tab));
+  $("settings").showModal();
+  // Identifiants et interfaces : portée `admin` (SPEC §6.9) ; demandés sans elle, ils
+  // n'obtenaient qu'un refus (audit W15).
+  if (connected && caps.admin) loadLogins();
+  if (connected && caps.admin) loadHostKeys();
+  if (connected) loadRules();
+  if (connected && caps.admin) loadInterfaces();
+  if (connected && caps.qr && caps.admin) loadRemote();
+  if (connected && caps.plugins && caps.admin) loadPlugins();
+  if (connected && caps.admin) loadProxy();
+  renderLinks();
+  loadTools();
+  renderClipboardWarning();
+}
+
+let helpReturn = null;
+
+/// Ouvre le menu « Aide » sous son bouton ; le focus va à la première entrée (à la dernière
+/// avec la flèche vers le haut).
+function openHelpMenu(last = false) {
+  const menu = $("help-menu");
+  const button = $("tb-help");
+  helpReturn = button;
+  menu.hidden = false;
+  button.setAttribute("aria-expanded", "true");
+  const box = button.getBoundingClientRect();
+  const { width } = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(box.left, innerWidth - width - 4))}px`;
+  menu.style.top = `${box.bottom + 2}px`;
+  const items = [...menu.querySelectorAll("[data-help]")];
+  (last ? items[items.length - 1] : items[0]).focus();
+}
+
+function closeHelpMenu(restore = true) {
+  const menu = $("help-menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  $("tb-help").setAttribute("aria-expanded", "false");
+  if (restore) helpReturn?.focus();
+  helpReturn = null;
+}
+
+function onHelpMenuKey(event) {
+  const items = [...$("help-menu").querySelectorAll("[data-help]")];
+  const at = items.indexOf(document.activeElement);
+  switch (event.key) {
+    case "ArrowDown": items[(at + 1) % items.length]?.focus(); break;
+    case "ArrowUp": items[(at - 1 + items.length) % items.length]?.focus(); break;
+    case "Home": items[0]?.focus(); break;
+    case "End": items[items.length - 1]?.focus(); break;
+    case "Escape": closeHelpMenu(); break;
+    case "Tab": closeHelpMenu(); break;
+    default: return;
+  }
+  event.preventDefault();
+}
+
+/// Entrée du menu « Aide » : le focus revient d'abord au bouton, que la boîte ouverte
+/// rendra en se fermant.
+function runHelp(choice) {
+  closeHelpMenu();
+  switch (choice) {
+    case "guide": openGuide(); break;
+    case "keys": openGuide(GUIDE_KEYS[lang === "en" ? "en" : "fr"]); break;
+    case "about": openSettings("tab-about"); break;
+  }
+}
+
+/// Section des raccourcis clavier dans chaque guide (chapitre 13, « Accessibilité ») ;
+/// leur présence est vérifiée par les tests de la page.
+const GUIDE_KEYS = {
+  fr: "guide-13-accessibilite-clavier-dans-la-fenêtre",
+  en: "guide-13-accessibility-keyboard-in-the-window",
+};
+
 // ---------- Guide de l'utilisateur (étape 9d) ----------
 
 /// Copies du guide (ui/src/guide/<langue>.html, faites par scripts/guide.mjs), lues une fois.
 const guides = new Map();
 
 /// Ouvre le guide, dans la langue de la page ; par-dessus une boîte ouverte (Options).
-async function openGuide() {
+/// `section` : identifiant d'un titre du guide, qui défile en vue et prend le focus.
+async function openGuide(section) {
   const dialog = $("guide-dialog");
   if (dialog.open) return;
   const want = lang === "en" ? "en" : "fr";
@@ -4995,7 +5082,13 @@ async function openGuide() {
   }
   dialog.showModal();
   content.scrollTop = 0;
-  content.focus();
+  const target = typeof section === "string" ? $(section) : null;
+  if (target) {
+    target.scrollIntoView({ block: "start" });
+    target.focus();
+  } else {
+    content.focus();
+  }
 }
 
 /// Lien interne du guide : le titre visé défile en vue et prend le focus (le lecteur d'écran

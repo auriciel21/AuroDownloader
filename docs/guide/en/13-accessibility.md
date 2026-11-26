@@ -7,7 +7,7 @@ Orca (Linux) and TalkBack (Android).
 
 | Keys | Effect |
 | --- | --- |
-| F1 | This guide (also in Options, About) |
+| F1 | This guide (also from Help, in the toolbar, and in Options, About) |
 | Ctrl+N or Ctrl+L | Add |
 | Tab, Shift+Tab | Toolbar, categories, table |
 | Up and down arrows, Page Up, Page Down, Home, End | Previous row, next row… |

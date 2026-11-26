@@ -439,7 +439,7 @@ footer {
 
 /* ---------- Menu contextuel ---------- */
 
-#menu {
+#menu, #help-menu {
   position: fixed;
   z-index: 10;
   min-width: 210px;
@@ -449,7 +449,7 @@ footer {
   border-radius: 6px;
   box-shadow: var(--shadow);
 }
-#menu [role="menuitem"] {
+#menu [role="menuitem"], #help-menu [role="menuitem"] {
   display: block;
   width: 100%;
   border: none;
@@ -458,7 +458,9 @@ footer {
   padding: 4px 12px;
 }
 #menu [role="menuitem"]:hover:not(:disabled),
-#menu [role="menuitem"]:focus { background: var(--select-bg); color: var(--select-text); outline: none; }
+#menu [role="menuitem"]:focus,
+#help-menu [role="menuitem"]:hover,
+#help-menu [role="menuitem"]:focus { background: var(--select-bg); color: var(--select-text); outline: none; }
 .menu-separator { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* ---------- Boîtes de dialogue ---------- */
@@ -811,7 +813,7 @@ html[data-platform="linux"] .map .part.receiving .fill::after { animation: none;
   input, select, textarea { font-size: 16px; }
   button, select { min-height: 40px; }
   .link-filters { grid-template-columns: minmax(0, 1fr); }
-  #menu [role="menuitem"] { padding: 10px 14px; }
+  #menu [role="menuitem"], #help-menu [role="menuitem"] { padding: 10px 14px; }
 }
 
 /* ---------- Planification ---------- */

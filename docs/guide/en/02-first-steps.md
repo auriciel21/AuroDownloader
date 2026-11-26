@@ -3,7 +3,8 @@
 ## The window
 
 - **Toolbar**, at the top: Add, Video, Links, Resume, Stop, Resume all, Stop all, Delete,
-  Clear finished, Properties, Schedule, History, Options.
+  Clear finished, Properties, Schedule, History, Options, Help. "Help" opens a menu: User
+  guide (F1), Keyboard shortcuts, About.
 - **Categories**, on the left: All downloads, Unfinished, Finished, each with its file types
   (Archives, Documents, Images, Music, Programs, Videos, Other), then the queues. The number of
   downloads is next to each category.

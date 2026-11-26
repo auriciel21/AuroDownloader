@@ -102,17 +102,19 @@ async function until(pred) {
   for (let i = 0; i < 500 && !pred(); i++) await new Promise((r) => setTimeout(r, 10));
 }
 
-/// Envoie `text` ; attend que la page l'ait traité (erreur montrée, ou boîte fermée).
+/// Envoie `text` ; attend que la page l'ait traité : un nouveau message d'erreur montré, ou
+/// la boîte fermée. Pas seulement la requête partie : la page efface l'ancien message avant
+/// de lire la réponse, et une machine chargée la lit plus tard.
 async function submit(text) {
   const { document } = window;
   const field = document.getElementById("rl-token");
   const error = document.getElementById("rl-error");
-  const before = `${error.textContent}|${logins.length}`;
+  const before = error.textContent;
   field.value = text;
   field.focus();
   document.getElementById("rl-form").requestSubmit();
   await until(() => !document.getElementById("remote-login").open
-    || (`${error.textContent}|${logins.length}` !== before && !error.hidden));
+    || (error.textContent !== "" && error.textContent !== before && !error.hidden));
   await new Promise((r) => setTimeout(r, 20));
 }
 

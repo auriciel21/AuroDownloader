@@ -32,6 +32,7 @@
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></symbol>
     <symbol id="i-other" viewBox="0 0 24 24"><path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12zM14 3.5V8h4.5"/></symbol>
     <symbol id="i-schedule" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v3.5l2.5 1.5"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.6M12 16.6v.4"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8M12 8v4.5l3 1.8"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4.5H6.5v15H14M10.5 12h10M17 8.5l3.5 3.5-3.5 3.5"/></symbol>
@@ -75,6 +76,8 @@
       <svg aria-hidden="true"><use href="#i-history"/></svg><span data-i18n="Historique">Historique</span></button>
     <button type="button" id="tb-settings" class="tool">
       <svg aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="Options">Options</span></button>
+    <button type="button" id="tb-help" class="tool" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">
+      <svg aria-hidden="true"><use href="#i-help"/></svg><span data-i18n="Aide">Aide</span></button>
     <button type="button" id="tb-logout" class="tool" data-needs="remote">
       <svg aria-hidden="true"><use href="#i-logout"/></svg><span data-i18n="Se déconnecter">Se déconnecter</span></button>
   </div>
@@ -122,7 +125,15 @@
 
   <div id="announce" class="visually-hidden" aria-live="polite"></div>
 
-  <div id="menu" role="menu" hidden tabindex="-1">
+  <!-- Menu du bouton « Aide » de la barre d'outils. -->
+  <div id="help-menu" class="popup-menu" role="menu" aria-labelledby="tb-help" hidden tabindex="-1">
+    <button type="button" role="menuitem" data-help="guide" aria-keyshortcuts="F1" data-i18n="Guide de l'utilisateur (F1)">Guide de l'utilisateur (F1)</button>
+    <button type="button" role="menuitem" data-help="keys" data-i18n="Raccourcis clavier">Raccourcis clavier</button>
+    <div class="menu-separator" role="separator"></div>
+    <button type="button" role="menuitem" data-help="about" data-i18n="À propos">À propos</button>
+  </div>
+
+  <div id="menu" class="popup-menu" role="menu" hidden tabindex="-1">
     <button type="button" role="menuitem" data-command="open" data-needs="files" data-i18n="Ouvrir">Ouvrir</button>
     <button type="button" role="menuitem" data-command="reveal" data-needs="files" data-i18n="Afficher dans le dossier">Afficher dans le dossier</button>
     <button type="button" role="menuitem" data-command="restart" data-needs="control" data-i18n="Retélécharger…">Retélécharger…</button>

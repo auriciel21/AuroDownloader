@@ -557,6 +557,9 @@ export const EN = {
   // Guide de l'utilisateur (étape 9d).
   "Guide de l'utilisateur": "User guide",
   "Guide de l'utilisateur (F1)": "User guide (F1)",
+  // Bouton « Aide » de la barre d'outils (2026-11-26).
+  "Aide": "Help",
+  "Raccourcis clavier": "Keyboard shortcuts",
   "Contenu du guide": "Guide content",
   "Guide introuvable : {0}": "Guide not found: {0}",
   // Mises à jour de l'application (étape 8b).
