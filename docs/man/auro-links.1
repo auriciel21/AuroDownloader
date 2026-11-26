@@ -8,7 +8,7 @@ auro\-links \- Liens d\*(Aqune page, d\*(Aqun fichier texte ou CSV, ou de l\*(Aq
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH SYNOPSIS
-\fBauro links\fR [\fB\-e\fR|\fB\-\-ext\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-regex\fR] [\fB\-\-endpoint\fR] [\fB\-\-min\-size\fR] [\fB\-\-max\-size\fR] [\fB\-\-no\-start\fR] [\fB\-\-all\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-no\-sizes\fR] [\fB\-\-add\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-paused\fR] <\fISOURCE\fR> 
+\fBauro links\fR [\fB\-e\fR|\fB\-\-ext\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-regex\fR] [\fB\-\-endpoint\fR] [\fB\-\-min\-size\fR] [\fB\-\-max\-size\fR] [\fB\-\-no\-start\fR] [\fB\-\-all\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-no\-sizes\fR] [\fB\-\-add\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-paused\fR] [\fB\-\-depth\fR] [\fB\-\-max\-pages\fR] [\fB\-\-exclude\fR] [\fB\-\-same\-folder\fR] [\fB\-\-ignore\-robots\fR] [\fB\-\-tree\fR] <\fISOURCE\fR> 
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH DESCRIPTION
@@ -55,6 +55,24 @@ Dossier de destination (avec \-\-add)
 .TP
 \fB\-\-paused\fR
 Ajouter en pause (avec \-\-add)
+.TP
+\fB\-\-depth\fR \fI<NIVEAU>\fR
+Explorer le site de lien en lien, jusqu\*(Aqà ce niveau (1 à 5) : pages du même hôte, robots.txt respecté, 2 pages à la fois
+.TP
+\fB\-\-max\-pages\fR \fI<N>\fR
+Pages lues au plus (avec \-\-depth ; 200 par défaut, 2000 au plus)
+.TP
+\fB\-\-exclude\fR \fI<EXPRESSION>\fR
+Pages à ne pas ouvrir (avec \-\-depth), expression régulière sur l\*(Aqadresse ; par défaut les pages de déconnexion ; « \*(Aq\*(Aq » : aucune
+.TP
+\fB\-\-same\-folder\fR
+Seulement les pages sous le dossier de la page de départ (avec \-\-depth)
+.TP
+\fB\-\-ignore\-robots\fR
+Lire aussi les pages que robots.txt refuse aux robots (avec \-\-depth)
+.TP
+\fB\-\-tree\fR
+Garder l\*(Aqarborescence du site : hôte/dossiers sous le dossier de destination (avec \-\-depth et \-\-add)
 .TP
 <\fISOURCE\fR>
 Adresse d\*(Aqune page, fichier texte ou CSV, ou « \- »

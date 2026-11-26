@@ -70,6 +70,10 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         | "torrent.fetch"
         // Tailles des liens analysés : une requête vers chaque adresse (SPEC §7.18).
         | "linkscan.probe"
+        // Exploration d'un site (SPEC §7.18 bis) : les pages lues par le moteur.
+        | "linkscan.crawl"
+        | "linkscan.crawlResult"
+        | "linkscan.cancel"
         // Plugins d'hébergeurs (SPEC §7.20) : s'en servir à l'ajout, jamais en installer.
         | "plugin.match"
         | "plugin.resolve"

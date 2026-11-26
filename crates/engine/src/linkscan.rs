@@ -7,6 +7,12 @@
 //! (toute adresse trouvée) ; les filtres sont appliqués par les clients. Le HTML est
 //! parcouru par un petit lecteur de balises, sans arbre : seuls comptent les attributs qui
 //! portent des liens et les adresses écrites en clair.
+//!
+//! L'exploration d'un site (F-42, SPEC §7.18 bis) est dans [`crawl`], avec son lecteur de
+//! robots.txt ([`robots`]).
+
+pub mod crawl;
+pub mod robots;
 
 use std::collections::HashSet;
 
@@ -64,6 +70,21 @@ pub struct Link {
 /// portent un lien, puis adresses écrites en clair (scripts, texte). `base` est l'adresse
 /// de la page après ses redirections ; une balise `<base href>` la remplace.
 pub fn from_html(html: &str, base: &Url) -> Vec<Link> {
+    from_html_page(html, base).links
+}
+
+/// Une page lue : ses liens ([`from_html`]), et ceux de navigation, que l'exploration d'un
+/// site suit.
+#[derive(Debug, Default)]
+pub struct Page {
+    pub links: Vec<Link>,
+    /// Adresses citées par `href` de `a` et `area`, ou `src` de `frame` et `iframe` (SPEC
+    /// §7.18 bis), même si elles l'ont été d'abord ailleurs (une image, le texte).
+    pub follow: HashSet<String>,
+}
+
+/// [`from_html`], avec les liens de navigation.
+pub fn from_html_page(html: &str, base: &Url) -> Page {
     let mut found = Found::default();
     let mut base = base.clone();
     let mut based = false;
@@ -87,8 +108,10 @@ pub fn from_html(html: &str, base: &Url) -> Vec<Link> {
                         found.add_relative(&base, first);
                     }
                 }
-            } else {
-                found.add_relative(&base, &value);
+            } else if let Some(url) = found.add_relative(&base, &value)
+                && navigates(&tag.name, attr)
+            {
+                found.follow.insert(url);
             }
         }
     }
@@ -97,7 +120,18 @@ pub fn from_html(html: &str, base: &Url) -> Vec<Link> {
     for candidate in plain_urls(&decode_entities(&outside_tags(html).replace("\\/", "/"))) {
         found.add_absolute(&candidate);
     }
-    found.links
+    Page {
+        links: found.links,
+        follow: found.follow,
+    }
+}
+
+/// Les attributs d'un lien de navigation, que l'exploration d'un site suit.
+fn navigates(tag: &str, attr: &str) -> bool {
+    matches!(
+        (tag, attr),
+        ("a" | "area", "href") | ("frame" | "iframe", "src")
+    )
 }
 
 /// Le texte d'un document sans ses balises ni ses commentaires, chacun remplacé par une
@@ -156,21 +190,23 @@ fn carries_link(tag: &str, attr: &str) -> bool {
 struct Found {
     links: Vec<Link>,
     seen: HashSet<String>,
+    follow: HashSet<String>,
 }
 
 impl Found {
-    fn add_relative(&mut self, base: &Url, value: &str) {
+    /// Ajoute le lien s'il est nouveau ; rend son adresse HTTP(S) absolue s'il est retenu,
+    /// nouveau ou déjà vu (jamais celle d'un lien magnet, qui ne se suit pas).
+    fn add_relative(&mut self, base: &Url, value: &str) -> Option<String> {
         let value = value.trim();
         if value.is_empty() || value.starts_with('#') {
-            return;
+            return None;
         }
         if is_magnet(value) {
             self.add_absolute(value);
-            return;
+            return None;
         }
-        if let Ok(url) = base.join(value) {
-            self.add_url(url);
-        }
+        let url = base.join(value).ok()?;
+        self.add_url(url)
     }
 
     fn add_absolute(&mut self, value: &str) {
@@ -181,15 +217,19 @@ impl Found {
         }
     }
 
-    fn add_url(&mut self, mut url: Url) {
+    fn add_url(&mut self, mut url: Url) -> Option<String> {
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return;
+            return None;
         }
         url.set_fragment(None);
         let text = url.to_string();
-        if self.links.len() >= MAX_LINKS || !self.seen.insert(text.clone()) {
-            return;
+        if self.seen.contains(&text) {
+            return Some(text);
         }
+        if self.links.len() >= MAX_LINKS {
+            return None;
+        }
+        self.seen.insert(text.clone());
         let raw = name_from_url(&url).unwrap_or_default();
         let name = if raw.trim().is_empty() {
             sanitize(url.host_str().unwrap_or_default(), NameRules::native())
@@ -202,11 +242,12 @@ impl Found {
             _ => LinkKind::Page,
         };
         self.links.push(Link {
-            url: text,
+            url: text.clone(),
             name,
             ext,
             kind,
         });
+        Some(text)
     }
 
     fn add_magnet(&mut self, value: &str) {

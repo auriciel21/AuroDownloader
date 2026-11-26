@@ -255,8 +255,9 @@ impl Criteria {
     }
 }
 
-/// Compile une expression avec un automate borné.
-fn compile(pattern: &str) -> Result<Regex, regex::Error> {
+/// Compile une expression avec un automate borné (aussi les pages à ne pas ouvrir d'une
+/// exploration, SPEC §7.18 bis).
+pub(crate) fn compile(pattern: &str) -> Result<Regex, regex::Error> {
     RegexBuilder::new(pattern)
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)

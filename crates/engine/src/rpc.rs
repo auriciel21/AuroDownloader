@@ -124,6 +124,7 @@ impl From<EngineError> for RpcError {
             EngineError::PluginFailed(_) => Self::new(-32034, "PLUGIN_FAILED", message),
             EngineError::PluginNotFound(_) => Self::new(-32035, "PLUGIN_NOT_FOUND", message),
             EngineError::PluginChoice(_) => Self::new(-32036, "PLUGIN_CHOICE", message),
+            EngineError::CrawlBusy(_) => Self::new(-32038, "CRAWL_BUSY", message),
             EngineError::Store(_) | EngineError::DeleteFile { .. } | EngineError::Stopped => {
                 Self::internal(message)
             }

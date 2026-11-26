@@ -628,7 +628,7 @@ async fn rpc_post(
             "Content-Type: application/json attendu",
         );
     }
-    let Some(peer) = peer_of(&token) else {
+    let Some(peer) = peer_of(&token).map(Peer::one_shot) else {
         return plain(StatusCode::FORBIDDEN, "portée du jeton invalide");
     };
     let body = match read_body(request, MAX_MESSAGE, RPC_BODY_TIMEOUT).await {

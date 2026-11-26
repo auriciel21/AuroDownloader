@@ -121,6 +121,15 @@ téléchargement.
   par proptest), `Engine::scan_page`, `Engine::probe_links` (tailles, 4 à la fois),
   `net::Client::fetch_page` ; méthodes `linkscan.run`, `linkscan.probe`, `task.addBatch`.
   Les filtres sont dans les clients (`crates/cli/src/links.rs`, page).
+  Exploration d'un site (F-42, SPEC 7.18 bis, étape A du « Grabber », 2026-11-26) :
+  `linkscan::crawl` (parcours en largeur, même hôte, 2 lectures à la fois et 250 ms,
+  limites, `Judge` des pages, tâche `tokio` tenue par la connexion : `rpc::session::Ctx`,
+  arrêtée à sa fermeture ; `POST /rpc` la refuse, `Peer::one_shot`), `linkscan::robots`
+  (RFC 9309, fuzzing par proptest), `net::Client::fetch_text` (corps lu seulement pour une
+  page web à une adresse acceptée), `Engine::crawl_slot` (4 au plus) et `crawl_login`
+  (identifiants des sites, canal local seulement) ; méthodes `linkscan.crawl`,
+  `linkscan.crawlResult`, `linkscan.cancel`, notification `linkscan.progress` ; CLI
+  `auro links <page> --depth`.
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
@@ -391,6 +400,7 @@ cargo run -p auro-cli -- refresh <id> <nouvelle-url>       # lien expiré
 cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # miroirs
 cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> --select 0,2   # Metalink
 cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
+cargo run -p auro-cli -- links <page> --depth 2 --max-pages 300 -e pdf ; links … --add --tree -o .
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
 cargo run -p auro-cli -- plugin install <fichier.wasm> [--yes] ; plugin list ; plugin resolve <page>

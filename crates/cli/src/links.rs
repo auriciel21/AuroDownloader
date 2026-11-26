@@ -1,6 +1,7 @@
 //! `auro links` (F-29, F-31, SPEC §7.18) : les liens d'une page, d'un texte ou d'une liste
 //! importée, filtrés par la CLI (sorte, extension, expression régulière, taille), avec leur
-//! taille lue par le moteur ; `--add` les ajoute ensemble (`task.addBatch`).
+//! taille lue par le moteur ; `--add` les ajoute ensemble (`task.addBatch`). Avec `--depth`,
+//! le moteur explore le site de lien en lien (F-42, SPEC §7.18 bis).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
@@ -65,11 +66,27 @@ impl Filters {
     }
 }
 
+/// Exploration d'un site (F-42, SPEC §7.18 bis).
+#[derive(Debug, Clone)]
+pub struct Crawl {
+    /// Niveau le plus profond lu (1 à 5).
+    pub depth: u8,
+    pub max_pages: Option<u32>,
+    /// Pages à ne pas ouvrir ; vide : aucune.
+    pub exclude: String,
+    pub same_folder: bool,
+    pub ignore_robots: bool,
+    /// Garder l'arborescence du site (`sitePath`) à l'ajout.
+    pub tree: bool,
+}
+
 /// Ce que fait `auro links`.
 pub struct LinksOptions<'a> {
     /// Adresse d'une page, chemin d'un fichier texte ou CSV, ou « - » (entrée standard).
     pub source: &'a str,
     pub filters: Filters,
+    /// Explorer le site à partir de la page.
+    pub crawl: Option<Crawl>,
     /// Ne pas demander les tailles (aucune requête vers les fichiers).
     pub no_sizes: bool,
     /// Ajouter les liens gardés, dans ce dossier.
@@ -107,9 +124,86 @@ fn scan_params(source: &str) -> Result<Value> {
     Ok(json!({"text": String::from_utf8_lossy(&bytes)}))
 }
 
+/// Paramètres de `linkscan.crawl`.
+fn crawl_params(page: &str, crawl: &Crawl) -> Value {
+    let mut params = json!({
+        "pageUrl": page,
+        "depth": crawl.depth,
+        "exclude": crawl.exclude,
+        "sameFolder": crawl.same_folder,
+        "ignoreRobots": crawl.ignore_robots,
+    });
+    if let Some(n) = crawl.max_pages {
+        params["maxPages"] = json!(n);
+    }
+    params
+}
+
+/// Pourquoi une exploration finie s'est arrêtée, en clair ; rien si elle a tout lu.
+fn stop_reason(stop: &str) -> Option<&'static str> {
+    match stop {
+        "maxPages" => Some("limite de pages atteinte (--max-pages)"),
+        "maxBytes" => Some("256 Mio de pages lus"),
+        "maxLinks" => Some("10 000 liens trouvés"),
+        _ => None,
+    }
+}
+
+/// Explore le site à partir de `page` ; l'avancement sur la sortie d'erreur ; Ctrl-C arrête
+/// l'exploration et garde ce qui a été trouvé.
+async fn crawl_links(rpc: &mut Rpc, page: &str, crawl: &Crawl) -> Result<Vec<Value>> {
+    let started = rpc
+        .call("linkscan.crawl", crawl_params(page, crawl))
+        .await?;
+    let id = started["crawlId"].as_str().unwrap_or_default().to_owned();
+    loop {
+        let next = tokio::select! {
+            note = rpc.notification() => Some(note?),
+            _ = tokio::signal::ctrl_c() => None,
+        };
+        let Some((method, p)) = next else {
+            eprintln!();
+            eprintln!("arrêt demandé : l'exploration s'arrête, ce qui a été trouvé est gardé");
+            rpc.call("linkscan.cancel", json!({"crawlId": id})).await?;
+            break;
+        };
+        if method != "linkscan.progress" || p["crawlId"] != json!(id) {
+            continue;
+        }
+        eprint!(
+            "\r{} page(s) lue(s), {} en attente, {} lien(s)   ",
+            p["pagesRead"], p["pagesQueued"], p["links"]
+        );
+        if p["state"] != "running" {
+            eprintln!();
+            break;
+        }
+    }
+    let result = rpc
+        .call("linkscan.crawlResult", json!({"crawlId": id}))
+        .await?;
+    if result["state"] == "failed" {
+        bail!(
+            "exploration impossible : {} [{}]",
+            result["error"]["message"].as_str().unwrap_or_default(),
+            result["error"]["code"].as_str().unwrap_or_default()
+        );
+    }
+    if let Some(why) = result["stop"].as_str().and_then(stop_reason) {
+        eprintln!("exploration arrêtée : {why}");
+    }
+    Ok(result["links"].as_array().cloned().unwrap_or_default())
+}
+
 pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
-    let scan = rpc.call("linkscan.run", scan_params(opts.source)?).await?;
-    let mut found = scan["links"].as_array().cloned().unwrap_or_default();
+    let mut found = match &opts.crawl {
+        Some(crawl) if opts.source.contains("://") => crawl_links(rpc, opts.source, crawl).await?,
+        Some(_) => bail!("--depth explore un site : il faut l'adresse d'une page"),
+        None => {
+            let scan = rpc.call("linkscan.run", scan_params(opts.source)?).await?;
+            scan["links"].as_array().cloned().unwrap_or_default()
+        }
+    };
     // Tailles (500 au plus, liens magnet exclus) : celles des liens gardés, puis celles des
     // « pages » masquées, que le serveur dira peut-être des fichiers (SHA256SUMS…).
     let mut sizes: HashMap<String, u64> = HashMap::new();
@@ -184,11 +278,20 @@ pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
         bail!("aucun lien à ajouter");
     }
     let dest = crate::remote::dest_dir(dir)?;
+    let tree = opts.crawl.as_ref().is_some_and(|c| c.tree);
     let (mut added, mut refused) = (0, 0);
     for chunk in kept.chunks(BATCH_CHUNK) {
         let items: Vec<Value> = chunk
             .iter()
-            .map(|l| json!({"sources": [{"url": l["url"]}], "destDir": dest, "startPaused": opts.paused}))
+            .map(|l| {
+                let mut item = json!({"sources": [{"url": l["url"]}], "destDir": dest,
+                                      "startPaused": opts.paused});
+                // Arborescence du site (SPEC §7.18 bis) : hôte, puis dossiers.
+                if let Some(path) = l["sitePath"].as_str().filter(|p| tree && !p.is_empty()) {
+                    item["subDir"] = json!(path);
+                }
+                item
+            })
             .collect();
         let result = rpc.call("task.addBatch", json!({"items": items})).await?;
         for t in result["tasks"].as_array().into_iter().flatten() {
@@ -259,6 +362,30 @@ mod tests {
         assert!(
             !sized.keeps_size(Some(9)) && !sized.keeps_size(Some(21)) && !sized.keeps_size(None)
         );
+    }
+
+    #[test]
+    fn crawl_parameters_follow_the_options() {
+        let crawl = Crawl {
+            depth: 2,
+            max_pages: None,
+            exclude: String::new(),
+            same_folder: true,
+            ignore_robots: false,
+            tree: false,
+        };
+        assert_eq!(
+            crawl_params("https://a.example/", &crawl),
+            json!({"pageUrl": "https://a.example/", "depth": 2, "exclude": "",
+                   "sameFolder": true, "ignoreRobots": false})
+        );
+        let limited = Crawl {
+            max_pages: Some(30),
+            ..crawl
+        };
+        assert_eq!(crawl_params("https://a.example/", &limited)["maxPages"], 30);
+        assert_eq!(stop_reason("finished"), None);
+        assert!(stop_reason("maxPages").is_some());
     }
 
     #[test]

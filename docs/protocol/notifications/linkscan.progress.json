@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/linkscan.progress.json",
+  "title": "linkscan.progress",
+  "description": "Avancement d'une exploration, à la seule connexion qui l'a lancée (SPEC 7.18 bis).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "crawlId": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "running",
+            "done",
+            "cancelled",
+            "failed"
+          ]
+        },
+        "pagesRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pagesQueued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "links": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytesRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop": {
+          "enum": [
+            "finished",
+            "maxPages",
+            "maxBytes",
+            "maxLinks"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        },
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        }
+      },
+      "required": [
+        "crawlId",
+        "state",
+        "pagesRead",
+        "pagesQueued",
+        "links",
+        "bytesRead",
+        "rev"
+      ]
+    }
+  }
+}

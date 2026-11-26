@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/linkscan.crawlResult.json",
+  "title": "linkscan.crawlResult",
+  "description": "Avancement et liens trouvés d'une exploration de cette connexion (SPEC 7.18 bis).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "crawlId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "crawlId"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "crawlId": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "running",
+            "done",
+            "cancelled",
+            "failed"
+          ]
+        },
+        "pagesRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pagesQueued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "ext": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "file",
+                  "page",
+                  "magnet"
+                ]
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "foundOn": {
+                "type": "string"
+              },
+              "sitePath": {
+                "type": "string"
+              },
+              "visit": {
+                "enum": [
+                  "queued",
+                  "read",
+                  "depth",
+                  "offsite",
+                  "folder",
+                  "robots",
+                  "excluded",
+                  "failed",
+                  "limit"
+                ]
+              }
+            },
+            "required": [
+              "url",
+              "name",
+              "ext",
+              "kind",
+              "depth",
+              "foundOn",
+              "sitePath"
+            ]
+          }
+        },
+        "bytesRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop": {
+          "enum": [
+            "finished",
+            "maxPages",
+            "maxBytes",
+            "maxLinks"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        },
+        "pageUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "crawlId",
+        "state",
+        "pagesRead",
+        "pagesQueued",
+        "links",
+        "bytesRead",
+        "pageUrl"
+      ]
+    }
+  }
+}

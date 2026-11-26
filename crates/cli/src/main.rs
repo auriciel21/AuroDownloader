@@ -268,6 +268,28 @@ enum Command {
         /// Ajouter en pause (avec --add)
         #[arg(long, requires = "add")]
         paused: bool,
+        /// Explorer le site de lien en lien, jusqu'à ce niveau (1 à 5) : pages du même hôte,
+        /// robots.txt respecté, 2 pages à la fois
+        #[arg(long, value_name = "NIVEAU", value_parser = clap::value_parser!(u8).range(1..=5))]
+        depth: Option<u8>,
+        /// Pages lues au plus (avec --depth ; 200 par défaut, 2000 au plus)
+        #[arg(long, value_name = "N", requires = "depth",
+              value_parser = clap::value_parser!(u32).range(1..=2000))]
+        max_pages: Option<u32>,
+        /// Pages à ne pas ouvrir (avec --depth), expression régulière sur l'adresse ; par
+        /// défaut les pages de déconnexion ; « '' » : aucune
+        #[arg(long, value_name = "EXPRESSION", requires = "depth")]
+        exclude: Option<String>,
+        /// Seulement les pages sous le dossier de la page de départ (avec --depth)
+        #[arg(long, requires = "depth")]
+        same_folder: bool,
+        /// Lire aussi les pages que robots.txt refuse aux robots (avec --depth)
+        #[arg(long, requires = "depth")]
+        ignore_robots: bool,
+        /// Garder l'arborescence du site : hôte/dossiers sous le dossier de destination
+        /// (avec --depth et --add)
+        #[arg(long, requires_all = ["depth", "add"])]
+        tree: bool,
     },
     /// Contenu d'un fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers,
     /// rangs, empreintes et sources, sans rien ajouter
@@ -913,10 +935,26 @@ enum DirectAction {
     List,
 }
 
+/// Pile du fil qui exécute la commande.
+const MAIN_STACK: usize = 8 << 20;
+
 /// Codes de sortie (audit C12) : 0 tout fait ; 1 erreur, ou une partie refusée ; 2 usage
 /// (clap) ; 130 suivi arrêté par Ctrl-C.
 fn main() -> std::process::ExitCode {
-    match run() {
+    // Dans un fil à la pile plus grande : la description des commandes par clap dépasse,
+    // en mode debug, le 1 Mio du fil principal de Windows (2026-11-26, options de
+    // l'exploration d'un site).
+    let outcome = std::thread::Builder::new()
+        .name("auro".into())
+        .stack_size(MAIN_STACK)
+        .spawn(run)
+        .map_err(anyhow::Error::from)
+        .and_then(|thread| {
+            thread
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+    match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) if e.is::<remote::Interrupted>() => std::process::ExitCode::from(130),
         Err(e) => {
@@ -1092,6 +1130,12 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                     add,
                     dir,
                     paused,
+                    depth,
+                    max_pages,
+                    exclude,
+                    same_folder,
+                    ignore_robots,
+                    tree,
                 } => {
                     let regex = regex
                         .map(|r| regex::Regex::new(&r))
@@ -1108,9 +1152,20 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         max_size,
                         all,
                     };
+                    let crawl = depth.map(|depth| links::Crawl {
+                        depth,
+                        max_pages,
+                        exclude: exclude.unwrap_or_else(|| {
+                            auro_engine::linkscan::crawl::DEFAULT_EXCLUDE.to_owned()
+                        }),
+                        same_folder,
+                        ignore_robots,
+                        tree,
+                    });
                     let opts = links::LinksOptions {
                         source: &source,
                         filters,
+                        crawl,
                         no_sizes,
                         add: add.then_some(dir.as_path()),
                         paused,

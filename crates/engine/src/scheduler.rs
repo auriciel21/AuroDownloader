@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -514,6 +514,10 @@ pub enum EngineError {
         "le plugin a trouvé {0} liens sur cette page : les choisir (plugin.resolve, plugin.add)"
     )]
     PluginChoice(usize),
+
+    /// Trop d'explorations de sites en cours dans le moteur (F-42, SPEC §7.18 bis).
+    #[error("déjà {0} explorations de sites en cours : attendre la fin de l'une d'elles")]
+    CrawlBusy(usize),
 }
 
 /// Tâche à ajouter.
@@ -589,6 +593,16 @@ impl WeakEngine {
     /// Le moteur s'est arrêté.
     pub(crate) fn stopped(&self) -> watch::Receiver<bool> {
         self.rest.stopped.clone()
+    }
+}
+
+/// Place d'une exploration de site en cours (SPEC §7.18 bis), rendue à sa fin.
+#[derive(Debug)]
+pub(crate) struct CrawlSlot(Arc<AtomicUsize>);
+
+impl Drop for CrawlSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -870,6 +884,8 @@ enum Command {
     DeleteSchedule(String, Reply<()>),
     CancelEndAction(Reply<bool>),
     Logins(Reply<Vec<LoginView>>),
+    /// Identifiants enregistrés pour une adresse (exploration d'un site, SPEC §7.18 bis).
+    LoginFor(String, Reply<Option<store::logins::LoginRow>>),
     SetLogin(LoginChange, Reply<LoginView>),
     DeleteLogin(String, Reply<()>),
     /// Clés SSH acceptées (SFTP).
@@ -927,6 +943,8 @@ pub struct Engine {
     public_only: bool,
     /// Réseau utilisable, tel que l'application l'a dit (SPEC §7.15), tenu par la boucle.
     network_usable: Arc<AtomicBool>,
+    /// Explorations de sites en cours (SPEC §7.18 bis), partagé par les copies.
+    crawls: Arc<AtomicUsize>,
 }
 
 impl Engine {
@@ -1044,6 +1062,7 @@ impl Engine {
             plugins: Arc::new(crate::plugins::Plugins::new(&data_dir, config_proxy)),
             data_dir,
             network_usable,
+            crawls: Arc::default(),
         };
         // Liens expirés des tâches venues d'un plugin (SPEC §7.20) : poignée faible, qui
         // n'empêche pas le moteur de s'arrêter quand ses poignées disparaissent.
@@ -1896,6 +1915,50 @@ impl Engine {
     /// Annule l'action de fin annoncée ; `false` s'il n'y en avait pas.
     pub async fn cancel_end_action(&self) -> Result<bool, EngineError> {
         self.ask(Command::CancelEndAction).await
+    }
+
+    /// Le client HTTP de cette poignée (restreint au réseau public pour une connexion à
+    /// jeton).
+    pub(crate) fn http_client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Une place parmi les explorations de sites en cours (SPEC §7.18 bis : 4 au plus),
+    /// rendue quand elle est lâchée.
+    pub(crate) fn crawl_slot(&self) -> Result<CrawlSlot, EngineError> {
+        // Prise, puis rendue aussitôt si elle était de trop.
+        let slot = CrawlSlot(Arc::clone(&self.crawls));
+        if self.crawls.fetch_add(1, Ordering::SeqCst) >= crate::linkscan::crawl::MAX_RUNNING {
+            drop(slot);
+            return Err(EngineError::CrawlBusy(crate::linkscan::crawl::MAX_RUNNING));
+        }
+        Ok(slot)
+    }
+
+    /// Identifiants du site de `url` pour l'exploration d'un site (SPEC §7.18 bis) : sur le
+    /// canal local seulement (une connexion à jeton explore sans eux). `known` garde ceux
+    /// déjà lus dans le coffre, par identifiant. Un coffre muet ou un mot de passe absent :
+    /// aucun.
+    pub(crate) async fn crawl_login(
+        &self,
+        url: &str,
+        known: &mut HashMap<String, Arc<net::auth::Auth>>,
+    ) -> Option<Arc<net::auth::Auth>> {
+        if self.remote {
+            return None;
+        }
+        let row = self
+            .ask(|reply| Command::LoginFor(url.to_owned(), reply))
+            .await
+            .ok()??;
+        if let Some(auth) = known.get(&row.id) {
+            return Some(Arc::clone(auth));
+        }
+        let id = row.id.clone();
+        match transfer::reveal_auth(Some(row), &self.vault).await {
+            Ok(Some(auth)) => Some(Arc::clone(known.entry(id).or_insert(Arc::new(auth)))),
+            _ => None,
+        }
     }
 
     /// Identifiants de sites enregistrés, sans leurs mots de passe (SPEC §7.14).
@@ -3206,6 +3269,10 @@ impl Scheduler {
             }
             Command::CancelEndAction(reply) => {
                 let _ = reply.send(Ok(self.cancel_end_action()));
+            }
+            Command::LoginFor(url, reply) => {
+                let _ =
+                    reply.send(transfer::login_for(&self.conn, &url, false).map_err(Into::into));
             }
             Command::Logins(reply) => {
                 let rows = store::logins::list(&self.conn);

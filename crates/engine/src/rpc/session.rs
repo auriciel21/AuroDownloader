@@ -2,6 +2,7 @@
 //! l'ordre, notifications des événements auxquels il s'est abonné (SPEC §6.5, §6.10).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -13,6 +14,7 @@ use super::{
     MAX_MESSAGE, RpcError, Scope, checksum_json, end_action_json, methods, notification,
     queue_json, response, schedule_json, task_json,
 };
+use crate::linkscan::crawl;
 use crate::scheduler::{Engine, Event};
 use crate::store::settings::DOWNLOAD_DIR;
 use crate::store::tasks::TaskState;
@@ -34,11 +36,21 @@ pub(super) struct Topics {
     pub progress: bool,
 }
 
+/// Avancement d'une exploration annoncé au plus une fois par cet intervalle (SPEC
+/// §7.18 bis).
+const CRAWL_NOTES: Duration = Duration::from_millis(500);
+
 /// État d'une connexion, pour les méthodes.
 pub(super) struct Ctx {
     pub engine: Engine,
     out: mpsc::Sender<String>,
     events: Option<JoinHandle<()>>,
+    /// Exploration d'un site de cette connexion (SPEC §7.18 bis), et l'annonce de son
+    /// avancement : la fermeture de la connexion les arrête.
+    crawl: Option<crawl::Handle>,
+    crawl_notes: Option<JoinHandle<()>>,
+    /// Une seule requête, puis la connexion se ferme (`POST /rpc`).
+    pub one_shot: bool,
     /// Fermer la connexion après la réponse (version du protocole refusée).
     pub close_after: bool,
     /// Arrêter le moteur après la réponse (`engine.shutdown`).
@@ -62,11 +74,62 @@ impl Ctx {
             task.abort();
         }
     }
+
+    /// L'exploration de cette connexion, s'il y en a une.
+    pub fn crawl(&self) -> Option<&crawl::Handle> {
+        self.crawl.as_ref()
+    }
+
+    /// Garde l'exploration lancée, et annonce son avancement à cette connexion seule.
+    pub fn keep_crawl(&mut self, handle: crawl::Handle) {
+        self.forget_crawl();
+        let notes = crawl_notes(
+            self.engine.clone(),
+            self.out.clone(),
+            Arc::clone(handle.shared()),
+            handle.id.clone(),
+        );
+        self.crawl_notes = Some(tokio::spawn(notes));
+        self.crawl = Some(handle);
+    }
+
+    /// Arrête et oublie l'exploration de cette connexion.
+    pub fn forget_crawl(&mut self) {
+        if let Some(task) = self.crawl_notes.take() {
+            task.abort();
+        }
+        self.crawl = None;
+    }
 }
 
 impl Drop for Ctx {
     fn drop(&mut self) {
         self.stop_events();
+        self.forget_crawl();
+    }
+}
+
+/// Annonce l'avancement d'une exploration (`linkscan.progress`) : tout de suite, puis à
+/// chaque changement, au plus une fois par [`CRAWL_NOTES`], et une dernière fois à la fin.
+async fn crawl_notes(
+    engine: Engine,
+    out: mpsc::Sender<String>,
+    shared: Arc<crawl::Shared>,
+    id: String,
+) {
+    let mut changed = shared.watch();
+    loop {
+        let progress = shared.progress();
+        let mut params = methods::crawl_progress_json(&id, &progress);
+        params["rev"] = json!(engine.rev());
+        let note = notification("linkscan.progress", params);
+        if out.send(note.to_string()).await.is_err() || progress.state != crawl::State::Running {
+            return;
+        }
+        tokio::time::sleep(CRAWL_NOTES).await;
+        if changed.changed().await.is_err() {
+            return;
+        }
     }
 }
 
@@ -77,6 +140,8 @@ pub struct Peer {
     pub scope: Scope,
     /// Jeton de l'interface distante (SPEC §7.19) ; `None` : canal local.
     pub token_id: Option<String>,
+    /// Une seule requête, puis la connexion se ferme (`POST /rpc`).
+    pub one_shot: bool,
 }
 
 impl Peer {
@@ -86,6 +151,7 @@ impl Peer {
         Peer {
             scope: Scope::Admin,
             token_id: None,
+            one_shot: false,
         }
     }
 
@@ -98,7 +164,14 @@ impl Peer {
                 scope
             },
             token_id: Some(token_id.to_owned()),
+            one_shot: false,
         }
+    }
+
+    /// La même, pour une seule requête (`POST /rpc`) : rien ne doit lui survivre.
+    pub fn one_shot(mut self) -> Peer {
+        self.one_shot = true;
+        self
     }
 }
 
@@ -204,6 +277,9 @@ pub async fn serve_messages(
         close_after: false,
         shutdown_after: false,
         scope: peer.scope,
+        crawl: None,
+        crawl_notes: None,
+        one_shot: peer.one_shot,
     };
     loop {
         let message = tokio::select! {

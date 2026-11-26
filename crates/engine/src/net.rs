@@ -997,6 +997,57 @@ impl Client {
         Ok(Some((final_url, bytes)))
     }
 
+    /// Une page ou un robots.txt lus pendant l'exploration d'un site (F-42, SPEC §7.18 bis),
+    /// en répondant aux demandes d'identification avec `auth`. Le corps n'est lu que si
+    /// l'adresse d'arrivée convient à `arrival` (rien n'est lu d'un autre site) et, avec
+    /// `html_only`, si la réponse est une page web : un fichier n'est jamais téléchargé.
+    pub async fn fetch_text(
+        &self,
+        url: &Url,
+        want: TextWant,
+        auth: Option<&Auth>,
+        arrival: &(dyn Fn(&Url) -> bool + Send + Sync),
+    ) -> Result<Fetched, NetError> {
+        let response = self
+            .send(Method::GET, url, &HeaderMap::new(), None, auth)
+            .await?;
+        let final_url = response.url().clone();
+        if response.status() != StatusCode::OK {
+            return Ok(Fetched::Status {
+                status: response.status().as_u16(),
+                retry_after: retry_after_of(&response),
+            });
+        }
+        if !arrival(&final_url) {
+            return Ok(Fetched::Elsewhere { final_url });
+        }
+        if want.html_only {
+            let seen = Observed::from_headers(response.headers());
+            let page = seen.disposition_name.is_none()
+                && seen
+                    .content_type
+                    .as_deref()
+                    .is_none_or(|t| matches!(t, "text/html" | "application/xhtml+xml"));
+            if !page {
+                return Ok(Fetched::Other { final_url });
+            }
+        }
+        let mut body = Body::http(response, self.read);
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.chunk().await? {
+            if bytes.len() + chunk.len() > want.limit {
+                if !want.truncate {
+                    return Ok(Fetched::TooBig { final_url });
+                }
+                let room = want.limit - bytes.len();
+                bytes.extend_from_slice(&chunk[..room]);
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Fetched::Body { final_url, bytes })
+    }
+
     /// [`fetch_small`](Self::fetch_small) d'une adresse HTTP(S) écrite (fichier Metalink
     /// distant, SPEC §7.7).
     pub async fn fetch_small_at(
@@ -1114,6 +1165,35 @@ impl Client {
         }
         Ok(response)
     }
+}
+
+/// Ce que [`Client::fetch_text`] doit lire.
+#[derive(Debug, Clone, Copy)]
+pub struct TextWant {
+    /// Octets lus au plus.
+    pub limit: usize,
+    /// Au-delà de `limit` : le début du corps (robots.txt), sinon [`Fetched::TooBig`].
+    pub truncate: bool,
+    /// Seulement une page web (`text/html`, XHTML, ou sans type, sans nom de fichier).
+    pub html_only: bool,
+}
+
+/// Réponse lue par [`Client::fetch_text`].
+#[derive(Debug)]
+pub enum Fetched {
+    /// Réponse `200` lue, à l'adresse d'arrivée (après les redirections).
+    Body { final_url: Url, bytes: Vec<u8> },
+    /// Réponse `200` qui n'est pas une page web : un fichier, corps non lu.
+    Other { final_url: Url },
+    /// Plus long que la limite.
+    TooBig { final_url: Url },
+    /// Une redirection a mené à une adresse refusée : corps non lu.
+    Elsewhere { final_url: Url },
+    /// Une autre réponse.
+    Status {
+        status: u16,
+        retry_after: Option<Duration>,
+    },
 }
 
 /// Plage demandée par [`Client::get_range`], bornes incluses.

@@ -273,6 +273,9 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         "task.addBatch" => task_add_batch(ctx, &p).await,
         "linkscan.run" => linkscan_run(ctx, &p).await,
         "linkscan.probe" => linkscan_probe(ctx, &p).await,
+        "linkscan.crawl" => linkscan_crawl(ctx, &p),
+        "linkscan.crawlResult" => linkscan_crawl_result(ctx, &p),
+        "linkscan.cancel" => linkscan_cancel(ctx, &p),
         "task.get" => task_get(ctx, &p).await,
         "task.list" => task_list(ctx, &p).await,
         "task.update" => task_update(ctx, &p).await,
@@ -946,11 +949,11 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
         // Vidéo (SPEC §7.17) : Windows et Linux seulement. Analyse de liens (SPEC §7.18) et
-        // Metalink : depuis le 2026-11-11.
+        // Metalink : depuis le 2026-11-11. Exploration d'un site (§7.18 bis) : 2026-11-26.
         "capabilities": if crate::media::SUPPORTED {
-            json!(["torrent", "media", "linkscan", "metalink"])
+            json!(["torrent", "media", "linkscan", "metalink", "crawl"])
         } else {
-            json!(["torrent", "linkscan", "metalink"])
+            json!(["torrent", "linkscan", "metalink", "crawl"])
         },
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
@@ -1369,6 +1372,120 @@ async fn linkscan_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         result["pageUrl"] = json!(page);
     }
     Ok(result)
+}
+
+/// Identifiants des explorations, uniques pendant la vie du moteur.
+static NEXT_CRAWL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// `linkscan.crawl` (F-42, SPEC §7.18 bis) : lance l'exploration d'un site et rend aussitôt
+/// son identifiant ; l'avancement s'annonce par `linkscan.progress`. Une nouvelle
+/// exploration de la connexion arrête et oublie la précédente.
+fn linkscan_crawl(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
+    use crate::linkscan::crawl;
+    if ctx.one_shot {
+        // `POST /rpc` ferme la connexion après la réponse : l'exploration s'arrêterait.
+        return Err(RpcError::invalid_request(
+            "linkscan.crawl demande une connexion qui reste ouverte (WebSocket, canal local), \
+             pas POST /rpc",
+        ));
+    }
+    let url = p.required_str("pageUrl")?;
+    let start = crate::net::parse_url(&url).map_err(EngineError::Url)?;
+    let depth = match p.u32("depth")? {
+        None => 1,
+        Some(n) if (1..=u32::from(crawl::MAX_DEPTH)).contains(&n) => n as u8,
+        Some(_) => return Err(Params::wrong("depth", "entier de 1 à 5")),
+    };
+    let max_pages = match p.u32("maxPages")? {
+        None => crawl::DEFAULT_PAGES,
+        Some(n) if (1..=crawl::MAX_PAGES).contains(&n) => n,
+        Some(_) => return Err(Params::wrong("maxPages", "entier de 1 à 2000")),
+    };
+    let exclude = match p.str("exclude")? {
+        Some(text) if !text.trim().is_empty() => Some(
+            crate::rules::compile(&text)
+                .map_err(|e| RpcError::invalid_params(format!("exclude : {e}")))?,
+        ),
+        _ => None,
+    };
+    let settings = crawl::Settings {
+        depth,
+        max_pages,
+        exclude,
+        same_folder: p.bool_or("sameFolder", false)?,
+        ignore_robots: p.bool_or("ignoreRobots", false)?,
+        ..crawl::Settings::default()
+    };
+    // La précédente d'abord : sa place est rendue avant d'en demander une.
+    ctx.forget_crawl();
+    let id = format!(
+        "crawl-{}",
+        NEXT_CRAWL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let handle = crawl::start(&ctx.engine, id.clone(), start, settings)?;
+    ctx.keep_crawl(handle);
+    Ok(json!({"crawlId": id}))
+}
+
+/// L'exploration de cette connexion qui porte `crawlId`.
+fn crawl_of<'a>(ctx: &'a Ctx, p: &Params) -> Result<&'a crate::linkscan::crawl::Handle, RpcError> {
+    let id = p.required_str("crawlId")?;
+    ctx.crawl().filter(|h| h.id == id).ok_or_else(|| {
+        RpcError::new(
+            -32037,
+            "CRAWL_NOT_FOUND",
+            "exploration inconnue de cette connexion",
+        )
+    })
+}
+
+/// L'avancement d'une exploration, comme le porte `linkscan.progress` (SPEC §7.18 bis).
+pub(super) fn crawl_progress_json(id: &str, progress: &crate::linkscan::crawl::Progress) -> Value {
+    let mut value = json!({
+        "crawlId": id,
+        "state": progress.state.as_str(),
+        "pagesRead": progress.pages_read,
+        "pagesQueued": progress.pages_queued,
+        "links": progress.links,
+        "bytesRead": progress.bytes_read,
+    });
+    if let Some(stop) = progress.stop {
+        value["stop"] = json!(stop.as_str());
+    }
+    if let Some(error) = &progress.error {
+        value["error"] = json!({"code": error.code, "message": error.message});
+    }
+    value
+}
+
+/// `linkscan.crawlResult` (SPEC §7.18 bis) : l'avancement et les liens trouvés jusqu'ici.
+fn linkscan_crawl_result(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let handle = crawl_of(ctx, p)?;
+    let (progress, found) = handle.shared().result();
+    let mut result = crawl_progress_json(&handle.id, &progress);
+    result["pageUrl"] = json!(progress.page_url);
+    result["links"] = found
+        .iter()
+        .map(|f| {
+            let mut link = json!({
+                "url": f.link.url, "name": f.link.name, "ext": f.link.ext,
+                "kind": f.link.kind.as_str(), "depth": f.depth, "foundOn": f.found_on,
+                "sitePath": f.site_path,
+            });
+            if let Some(visit) = f.visit {
+                link["visit"] = json!(visit.as_str());
+            }
+            link
+        })
+        .collect();
+    Ok(result)
+}
+
+/// `linkscan.cancel` (SPEC §7.18 bis) : arrête l'exploration ; ses liens restent lisibles.
+fn linkscan_cancel(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let handle = crawl_of(ctx, p)?;
+    handle.cancel();
+    Ok(crawl_progress_json(&handle.id, &handle.shared().progress()))
 }
 
 /// `linkscan.probe` (SPEC §7.18) : taille et nom de chaque fichier (50 adresses au plus par

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/linkscan.crawl.json",
+  "title": "linkscan.crawl",
+  "description": "Lance l'exploration d'un site (SPEC 7.18 bis) ; l'avancement par linkscan.progress.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "pageUrl": {
+          "type": "string"
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "maxPages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "exclude": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sameFolder": {
+          "type": "boolean"
+        },
+        "ignoreRobots": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pageUrl"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "crawlId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "crawlId"
+      ]
+    }
+  }
+}

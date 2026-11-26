@@ -5135,3 +5135,137 @@ async fn r12_a_batch_of_additions_reaches_every_subscriber() {
     crate::testing::stop(&engine).await;
     assert!(complete, "un abonné n'a pas tout reçu");
 }
+
+/// Exploration d'un site par le protocole (SPEC §7.18 bis) : identifiant aussitôt,
+/// avancement annoncé à la seule connexion qui l'a lancée, liens à la fin ; annulation,
+/// paramètres refusés, `POST /rpc` refusé, place rendue à la fermeture de la connexion.
+#[tokio::test]
+async fn a_site_is_explored_through_the_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let greeted = c.result("engine.hello", hello()).await;
+    assert!(
+        greeted["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("crawl"))
+    );
+    let pages = crate::testing::serve(|r| {
+        let body = match r.path.as_str() {
+            "/" => r#"<a href="/a.html">a</a> <a href="/f.zip">f</a>"#,
+            "/a.html" => r#"<a href="/b/g.iso">g</a> <a href="/loin.html">l</a>"#,
+            _ => return crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+        };
+        crate::testing::reply("200 OK", &[("Content-Type", "text/html")], body.as_bytes())
+    });
+
+    let started = c
+        .result("linkscan.crawl", json!({"pageUrl": pages.url("/")}))
+        .await;
+    let id = started["crawlId"].as_str().unwrap().to_owned();
+    let end = c
+        .notification("linkscan.progress", |p| p["state"] != "running")
+        .await;
+    assert_eq!(end["crawlId"], json!(id));
+    assert_eq!(end["state"], "done", "{end}");
+    assert_eq!(end["stop"], "finished");
+    assert_eq!(end["pagesRead"], 2);
+    let result = c
+        .result("linkscan.crawlResult", json!({"crawlId": id}))
+        .await;
+    assert_eq!(result["pageUrl"], json!(pages.url("/")));
+    let links = result["links"].as_array().unwrap();
+    let g = links.iter().find(|l| l["name"] == "g.iso").unwrap();
+    assert_eq!(g["depth"], 2);
+    assert_eq!(g["foundOn"], json!(pages.url("/a.html")));
+    assert!(g["sitePath"].as_str().unwrap().ends_with("/b"), "{g}");
+    assert!(g.get("visit").is_none());
+    let loin = links.iter().find(|l| l["name"] == "loin.html").unwrap();
+    assert_eq!(loin["visit"], "depth");
+    // Finie : l'annuler ne change rien.
+    let cancelled = c.result("linkscan.cancel", json!({"crawlId": id})).await;
+    assert_eq!(cancelled["state"], "done");
+
+    // Inconnue, ou d'une autre connexion.
+    let mut other = TestClient::connect(&engine);
+    other.result("engine.hello", hello()).await;
+    for client in [&mut c, &mut other] {
+        assert_eq!(
+            client
+                .error_code("linkscan.crawlResult", json!({"crawlId": "crawl-0"}))
+                .await,
+            "CRAWL_NOT_FOUND"
+        );
+    }
+    assert_eq!(
+        other
+            .error_code("linkscan.cancel", json!({"crawlId": id}))
+            .await,
+        "CRAWL_NOT_FOUND"
+    );
+
+    // Paramètres refusés.
+    let page = pages.url("/");
+    for (params, code) in [
+        (json!({}), "INVALID_PARAMS"),
+        (json!({"pageUrl": page, "depth": 0}), "INVALID_PARAMS"),
+        (json!({"pageUrl": page, "depth": 6}), "INVALID_PARAMS"),
+        (json!({"pageUrl": page, "maxPages": 0}), "INVALID_PARAMS"),
+        (json!({"pageUrl": page, "maxPages": 2001}), "INVALID_PARAMS"),
+        (json!({"pageUrl": page, "exclude": "("}), "INVALID_PARAMS"),
+        (json!({"pageUrl": "ftp://hote/x"}), "URL_INVALID"),
+    ] {
+        assert_eq!(c.error_code("linkscan.crawl", params).await, code);
+    }
+
+    // Une nouvelle exploration oublie la précédente.
+    let first = c
+        .result("linkscan.crawl", json!({"pageUrl": page, "maxPages": 1}))
+        .await;
+    let second = c
+        .result("linkscan.crawl", json!({"pageUrl": page, "maxPages": 1}))
+        .await;
+    assert_ne!(first["crawlId"], second["crawlId"]);
+    assert_eq!(
+        c.error_code("linkscan.crawlResult", json!({"crawlId": first["crawlId"]}))
+            .await,
+        "CRAWL_NOT_FOUND"
+    );
+    c.notification("linkscan.progress", |p| {
+        p["crawlId"] == second["crawlId"] && p["state"] != "running"
+    })
+    .await;
+
+    // `POST /rpc` : une requête par connexion, refusée.
+    let mut once = TestClient::connect_as(&engine, super::Peer::local().one_shot());
+    assert_eq!(
+        once.error_code("linkscan.crawl", json!({"pageUrl": page}))
+            .await,
+        "INVALID_REQUEST"
+    );
+
+    // Connexions fermées pendant leur exploration : leurs places reviennent.
+    for _ in 0..crate::linkscan::crawl::MAX_RUNNING {
+        let mut busy = TestClient::connect(&engine);
+        busy.result("engine.hello", hello()).await;
+        busy.result("linkscan.crawl", json!({"pageUrl": page}))
+            .await;
+        drop(busy);
+    }
+    timeout(WAIT, async {
+        loop {
+            if let Ok(slots) = (0..crate::linkscan::crawl::MAX_RUNNING)
+                .map(|_| engine.crawl_slot())
+                .collect::<Result<Vec<_>, _>>()
+            {
+                drop(slots);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("places non rendues");
+    crate::testing::stop(&engine).await;
+}
