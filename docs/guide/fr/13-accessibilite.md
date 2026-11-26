@@ -18,8 +18,11 @@ AuroDownloader se sert entièrement au clavier, et a été essayé avec NVDA (Wi
 | Suppr | Supprimer… |
 | Maj+F10 ou touche Menu | Menu contextuel |
 | Échap | Fermer un menu ou une boîte ; le focus revient d'où il venait |
+| Alt+flèches, Alt+Début | Déplacer la boîte ouverte, la remettre au centre |
 | Flèches gauche et droite | Rubrique suivante ou précédente des Options |
 | Ctrl+plus, Ctrl+moins, Ctrl+0 | Agrandir, réduire, taille normale |
+| Ctrl+F, dans le guide | Rechercher dans le guide |
+| Entrée, Maj+Entrée ou F3, Maj+F3 | Résultat suivant, précédent (le nombre de résultats est annoncé) |
 
 Dans la boîte « Ajouter », Entrée démarre, Maj+Entrée passe à la ligne.
 

@@ -55,6 +55,8 @@ export function tauriHost() {
     openFile: (dir, name) => invoke("open_file", { dir, name }),
     revealFile: (dir, name) => invoke("reveal_file", { dir, name }),
     saveText: (name, text) => invoke("save_text", { name, text }),
+    // Impression de la page par la fenêtre (WebKitGTK n'imprime pas par window.print).
+    print: () => invoke("print_page"),
     quit: (stopEngine) => invoke("quit", { stopEngine }),
     onOpened: (fn) => listen("opened", () => fn()),
     takeOpened: () => invoke("take_opened"),

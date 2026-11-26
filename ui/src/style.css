@@ -21,6 +21,11 @@
   --warn-bg: #fff4d6;
   --warn-text: #5c4300;
   --error-bg: #fde7e6;
+  /* Résultats de la recherche dans le guide ; celui montré, plus marqué. */
+  --hit-bg: #fff0a8;
+  --hit-text: #1b1d21;
+  --hit-current-bg: #8a4f00;
+  --hit-current-text: #ffffff;
   --focus: #1f5fbf;
   --shadow: 0 6px 24px rgb(0 0 0 / 18%);
   /* Barres en relief : couleur de fond selon l'état, reflets par-dessus. */
@@ -59,6 +64,10 @@
     --warn-bg: #3d3214;
     --warn-text: #ffe3a0;
     --error-bg: #4a1f1d;
+    --hit-bg: #5c4a00;
+    --hit-text: #ffe9a0;
+    --hit-current-bg: #f0b44c;
+    --hit-current-text: #1b1d21;
     --focus: #9cc2ff;
     --shadow: 0 6px 24px rgb(0 0 0 / 55%);
     --meter-active: #3a7fd6;
@@ -477,6 +486,9 @@ dialog {
 dialog.wide { width: min(640px, calc(100vw - 32px)); }
 dialog::backdrop { background: rgb(0 0 0 / 40%); }
 dialog h2 { margin: 0 0 12px; font-size: 17px; overflow-wrap: anywhere; }
+/* Titre qui déplace sa boîte (glisser, ou Alt+flèches). */
+dialog .drag-handle { cursor: move; touch-action: none; user-select: none; }
+dialog.dragging { user-select: none; }
 dialog .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 dialog .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 dialog .check { display: flex; margin-bottom: 8px; }
@@ -912,6 +924,22 @@ input.port { width: 6.5em; }
 input.token { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
 /* Guide de l'utilisateur (étape 9d) : le fragment de scripts/guide.mjs, qui défile seul. */
 .guide { max-height: 65vh; overflow: auto; padding: 0 4px 8px; line-height: 1.45; }
+.guide-tools { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; flex-wrap: wrap; }
+.guide-tools input[type="search"] { flex: 1 1 14em; min-width: 0; }
+.guide-tools .icon-button { min-width: 2.2em; padding: 2px 6px; }
+#guide-count { min-width: 6em; }
+.guide mark.guide-hit { background: var(--hit-bg); color: var(--hit-text); border-radius: 2px; }
+.guide mark.guide-hit.current { background: var(--hit-current-bg); color: var(--hit-current-text); outline: 2px solid var(--hit-current-bg); }
+#print-area { display: none; }
+@media print {
+  body > *:not(#print-area) { display: none !important; }
+  body { background: #fff; color: #000; }
+  #print-area { display: block; max-height: none; overflow: visible; padding: 0; color: #000; }
+  #print-area a { color: #000; text-decoration: none; }
+  #print-area mark { background: none; color: inherit; outline: none; }
+  #print-area h2 { break-after: avoid; }
+  #print-area pre, #print-area table { break-inside: avoid; }
+}
 .guide h2 { font-size: 1.25em; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--row-line); }
 .guide section:first-child h2 { border-top: none; padding-top: 0; margin-top: 4px; }
 .guide h3 { font-size: 1.05em; margin: 14px 0 6px; }

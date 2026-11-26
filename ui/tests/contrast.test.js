@@ -55,6 +55,8 @@ const TEXT = [
   ["fail", "select-bg", "état « Échec » d'une ligne choisie"],
   ["fail", "hover", "état « Échec » d'une ligne survolée"],
   ["warn-text", "warn-bg", "bandeau d'avertissement"],
+  ["hit-text", "hit-bg", "résultat de la recherche du guide"],
+  ["hit-current-text", "hit-current-bg", "résultat montré de la recherche du guide"],
 ];
 
 // Composants et graphiques : 3:1 (1.4.11). Contour du focus, icônes, bords des champs.
@@ -70,6 +72,7 @@ const GRAPHIC = [
   ["fail", "panel", "icône Supprimer"],
   ["control-border", "panel", "bord des champs, listes et boutons"],
   ["control-border", "bg", "bord des champs, listes et boutons"],
+  ["hit-current-bg", "panel", "résultat montré, parmi le texte du guide"],
 ];
 
 for (const [theme, colors] of [["clair", light], ["sombre", dark]]) {

@@ -557,6 +557,15 @@ export const EN = {
   // Guide de l'utilisateur (étape 9d).
   "Guide de l'utilisateur": "User guide",
   "Guide de l'utilisateur (F1)": "User guide (F1)",
+  // Recherche et impression du guide (2026-11-26).
+  "Rechercher dans le guide": "Search the guide",
+  "Rechercher dans le guide…": "Search the guide…",
+  "Résultat précédent": "Previous result",
+  "Résultat suivant": "Next result",
+  "Résultat précédent (Maj+Entrée)": "Previous result (Shift+Enter)",
+  "Résultat suivant (Entrée)": "Next result (Enter)",
+  "Aucun résultat": "No results",
+  "Imprimer…": "Print…",
   // Bouton « Aide » de la barre d'outils (2026-11-26).
   "Aide": "Help",
   "Raccourcis clavier": "Keyboard shortcuts",

@@ -539,6 +539,16 @@ fn set_links(enabled: bool) -> Result<links::Status, String> {
     links::set(enabled)
 }
 
+/// Imprime la page (le guide : sa feuille de style d'impression ne garde que la copie de
+/// `#print-area`). Par la fenêtre : WebView2 y appelle `window.print`, WebKitGTK ouvre sa
+/// boîte d'impression, que `window.print` n'ouvre pas.
+#[tauri::command]
+fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .print()
+        .map_err(|e| format!("impression impossible : {e}"))
+}
+
 /// Quitte l'application ; avec `stop_engine`, arrête aussi le moteur, après sauvegarde.
 #[tauri::command]
 async fn quit(app: AppHandle, bridge: State<'_, Arc<Bridge>>, stop_engine: bool) -> Result<(), ()> {
@@ -715,6 +725,7 @@ fn main() {
             update_check,
             update_install,
             update_open_page,
+            print_page,
             quit
         ])
         .setup(move |app| {

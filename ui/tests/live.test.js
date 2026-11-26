@@ -412,6 +412,120 @@ test("menu « Aide » : guide, raccourcis clavier et À propos, au clavier", asy
   await settle();
 });
 
+test("guide : recherche sans casse ni accents, résultats suivants et précédents, impression", async () => {
+  await closeAll();
+  const document = window.document;
+  key(document.body, "F1");
+  await settle();
+  const dialog = document.getElementById("guide-dialog");
+  assert.ok(dialog.open);
+  const field = document.getElementById("guide-search");
+  const count = document.getElementById("guide-count");
+  assert.equal(field.value, "");
+  assert.equal(count.textContent, "");
+  assert.equal(count.getAttribute("role"), "status", "nombre de résultats annoncé");
+  assert.deepEqual(await audit(dialog), []);
+
+  // Ctrl+F : le champ de recherche.
+  key(document.getElementById("guide-content"), "f", { ctrlKey: true });
+  assert.equal(document.activeElement, field);
+  // « EMPREINTE » sans accent ni casse ; Entrée lance la recherche sans fermer la boîte.
+  field.value = "EMPREINTE";
+  key(field, "Enter");
+  assert.ok(dialog.open, "Entrée ne ferme pas le guide");
+  const hits = document.querySelectorAll("#guide-content mark.guide-hit");
+  assert.ok(hits.length >= 5, `${hits.length} résultats`);
+  assert.match(count.textContent, new RegExp(`^1 sur ${hits.length}$`));
+  assert.equal(document.querySelectorAll("#guide-content mark.current").length, 1);
+  assert.match(hits[0].textContent, /^empreinte$/i);
+  key(field, "Enter");
+  assert.match(count.textContent, /^2 sur /);
+  assert.ok(hits[1].classList.contains("current"));
+  key(field, "Enter", { shiftKey: true });
+  assert.match(count.textContent, /^1 sur /);
+  document.getElementById("guide-prev").click();
+  assert.match(count.textContent, new RegExp(`^${hits.length} sur `), "en boucle");
+  key(dialog, "F3");
+  assert.match(count.textContent, /^1 sur /);
+  // « deja » trouve « déjà ».
+  field.value = "deja";
+  key(field, "Enter");
+  assert.ok(document.querySelector("#guide-content mark.guide-hit")?.textContent.includes("é"));
+  // Rien de trouvé : dit, et les boutons sont inactifs.
+  field.value = "zzqqxx";
+  key(field, "Enter");
+  assert.equal(count.textContent, "Aucun résultat");
+  assert.equal(document.querySelectorAll("#guide-content mark").length, 0, "marques retirées");
+  assert.ok(document.getElementById("guide-next").disabled);
+
+  // Imprimer : une copie du guide, sans identifiants, par la fenêtre de l'application.
+  const before = calls.length;
+  document.getElementById("guide-print").click();
+  await settle();
+  assert.ok(calls.slice(before).includes("print_page"));
+  const area = document.getElementById("print-area");
+  assert.ok(area.querySelectorAll("section").length >= 10, "tout le guide");
+  assert.equal(area.querySelectorAll("[id]").length, 0, "aucun identifiant en double");
+  dialog.close();
+  await settle();
+  assert.equal(area.childNodes.length, 0, "copie retirée à la fermeture");
+
+  // Rouvert : la recherche repart de zéro.
+  key(document.body, "F1");
+  await settle();
+  assert.equal(field.value, "");
+  assert.equal(count.textContent, "");
+  dialog.close();
+});
+
+test("boîtes déplaçables : par le titre, par Alt+flèches, gardées à la réouverture", async () => {
+  await closeAll();
+  const document = window.document;
+  // Chaque boîte a son titre pour poignée.
+  for (const dialog of document.querySelectorAll("dialog")) {
+    const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
+    assert.ok(title?.classList.contains("drag-handle"), dialog.id);
+  }
+  document.getElementById("tb-settings").click();
+  await settle();
+  const settings = document.getElementById("settings");
+  assert.ok(settings.open);
+  assert.equal(settings.dataset.offset, undefined, "au centre");
+  // Au clavier, depuis n'importe quel élément de la boîte.
+  const tab = document.getElementById("tab-general");
+  tab.focus();
+  key(tab, "ArrowRight", { altKey: true });
+  assert.equal(settings.dataset.offset, "24 0");
+  key(tab, "ArrowDown", { altKey: true });
+  assert.equal(settings.dataset.offset, "24 24");
+  assert.equal(document.activeElement, tab, "le focus ne bouge pas");
+  // Alt+flèche vers le bas dans une liste déroulante : la liste, pas la boîte.
+  const select = document.getElementById("pref-lang");
+  select.focus();
+  key(select, "ArrowDown", { altKey: true });
+  assert.equal(settings.dataset.offset, "24 24");
+  // Rouverte : à la même place.
+  settings.close();
+  await settle();
+  document.getElementById("tb-settings").click();
+  await settle();
+  assert.equal(settings.dataset.offset, "24 24", "position gardée");
+  // Alt+Début : au centre.
+  key(document.getElementById("tab-general"), "Home", { altKey: true });
+  assert.equal(settings.dataset.offset, undefined);
+  // À la souris, par le titre.
+  const title = document.getElementById("settings-title");
+  const pointer = (type, x, y) => title.dispatchEvent(new window.MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
+  pointer("pointerdown", 100, 100);
+  pointer("pointermove", 160, 130);
+  assert.equal(settings.dataset.offset, "60 30");
+  pointer("pointerup", 160, 130);
+  pointer("pointermove", 300, 300);
+  assert.equal(settings.dataset.offset, "60 30", "plus rien après le relâchement");
+  settings.close();
+  await settle();
+});
+
 /// Les sections visées par « Raccourcis clavier » existent dans les deux copies du guide.
 test("menu « Aide » : la section des raccourcis existe dans chaque langue", () => {
   for (const [langue, id] of [["fr", "guide-13-accessibilite-clavier-dans-la-fenêtre"], ["en", "guide-13-accessibility-keyboard-in-the-window"]]) {

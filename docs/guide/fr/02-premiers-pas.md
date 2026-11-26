@@ -5,12 +5,18 @@
 - **Barre d'outils**, en haut : Ajouter, Vidéo, Liens, Reprendre, Arrêter, Tout reprendre,
   Tout arrêter, Supprimer, Retirer les finis, Propriétés, Planification, Historique, Options,
   Aide. « Aide » ouvre un menu : Guide de l'utilisateur (F1), Raccourcis clavier, À propos.
+  Dans le guide, « Rechercher dans le guide… » surligne chaque résultat (sans tenir compte des
+  majuscules ni des accents ; ▲ et ▼ passent de l'un à l'autre), et « Imprimer… » imprime tout
+  le guide.
 - **Catégories**, à gauche : Tous les téléchargements, Incomplets, Terminés, chacun avec ses
   types de fichier (Archives, Documents, Images, Musique, Programmes, Vidéos, Autres), puis
   les files d'attente. Le nombre de téléchargements est à côté de chaque catégorie ; un clic
   sur une catégorie ne montre qu'elle dans le tableau.
 - **Tableau**, au centre : Nom du fichier, Taille, Avancement, Statut, Temps restant, Débit,
   Ajouté le. Un clic sur un titre de colonne trie le tableau.
+- **Boîtes** (Ajouter, Propriétés, Options, guide…) : elles se déplacent en faisant glisser
+  leur titre, ou par Alt+flèches ; rouvertes, elles reprennent leur place jusqu'à la fermeture
+  de l'application. Alt+Début en remet une au centre.
 - **Barre d'état**, en bas : ce qui se passe (téléchargements en cours, plages horaires,
   lignes sélectionnées), et la **Limite de débit globale** : « Aucune limite », ou un palier de
   128 Kio/s à 100 Mio/s, qui vaut aussitôt pour tous les téléchargements.

@@ -1062,6 +1062,22 @@
   <dialog id="guide-dialog" class="wide" aria-labelledby="guide-title">
     <form method="dialog">
       <h2 id="guide-title" data-i18n="Guide de l'utilisateur">Guide de l'utilisateur</h2>
+      <!-- Recherche et impression (2026-11-26) : Entrée, Maj+Entrée ou F3 passent d'un
+           résultat à l'autre ; le nombre de résultats est annoncé. -->
+      <div class="guide-tools" role="search">
+        <input id="guide-search" type="search" spellcheck="false" autocomplete="off"
+          data-i18n-label="Rechercher dans le guide" aria-label="Rechercher dans le guide"
+          data-i18n-placeholder="Rechercher dans le guide…" placeholder="Rechercher dans le guide…"
+          aria-describedby="guide-count" aria-keyshortcuts="Control+F">
+        <button type="button" id="guide-prev" class="icon-button" aria-keyshortcuts="Shift+Enter Shift+F3"
+          data-i18n-label="Résultat précédent" aria-label="Résultat précédent"
+          data-i18n-title="Résultat précédent (Maj+Entrée)" title="Résultat précédent (Maj+Entrée)">&#9650;</button>
+        <button type="button" id="guide-next" class="icon-button" aria-keyshortcuts="Enter F3"
+          data-i18n-label="Résultat suivant" aria-label="Résultat suivant"
+          data-i18n-title="Résultat suivant (Entrée)" title="Résultat suivant (Entrée)">&#9660;</button>
+        <span id="guide-count" class="note" role="status" aria-live="polite"></span>
+        <button type="button" id="guide-print" data-i18n="Imprimer…">Imprimer…</button>
+      </div>
       <div id="guide-content" class="guide" role="region" tabindex="0"
         data-i18n-label="Contenu du guide" aria-label="Contenu du guide"></div>
       <div class="buttons end">
@@ -1069,6 +1085,9 @@
       </div>
     </form>
   </dialog>
+
+  <!-- Copie du guide pour l'impression : seule montrée sur le papier, jamais à l'écran. -->
+  <div id="print-area" class="guide" aria-hidden="true"></div>
 
   <!-- Mise à jour de l'application (étape 8b) : version trouvée, installée sur accord. -->
   <dialog id="update-dialog" aria-labelledby="update-title" aria-describedby="update-text">

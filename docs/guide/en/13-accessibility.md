@@ -18,8 +18,11 @@ Orca (Linux) and TalkBack (Android).
 | Delete | Delete… |
 | Shift+F10 or Menu key | Context menu |
 | Escape | Close a menu or a box; focus goes back where it came from |
+| Alt+arrows, Alt+Home | Move the open box, put it back in the centre |
 | Left and right arrows | Next or previous section of the Options |
 | Ctrl+plus, Ctrl+minus, Ctrl+0 | Zoom in, zoom out, normal size |
+| Ctrl+F, in the guide | Search the guide |
+| Enter, Shift+Enter or F3, Shift+F3 | Next, previous result (the number of results is announced) |
 
 In the "Add" box, Enter starts, Shift+Enter starts a new line.
 

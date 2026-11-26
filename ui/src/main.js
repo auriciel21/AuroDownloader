@@ -4212,6 +4212,7 @@ function selectTab(tab, focus = false) {
 }
 
 function onTabKey(event) {
+  if (event.altKey) return;
   const tabs = [...document.querySelectorAll('#settings [role="tab"]')];
   const at = tabs.indexOf(event.target);
   const go = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
@@ -4279,6 +4280,7 @@ function translatePage() {
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of document.querySelectorAll("[data-i18n-label]")) el.setAttribute("aria-label", t(el.dataset.i18nLabel));
   for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+  for (const el of document.querySelectorAll("[data-i18n-placeholder]")) el.placeholder = t(el.dataset.i18nPlaceholder);
 }
 
 async function savePrefs(change) {
@@ -4443,6 +4445,8 @@ function wire() {
   });
   $("end-action-cancel").addEventListener("click", cancelEndAction);
   $("tb-settings").addEventListener("click", () => openSettings());
+  // Boîtes déplaçables par leur titre, ou par Alt+flèches (2026-11-26).
+  makeDialogsMovable();
   // Menu « Aide » (2026-11-26) : guide, raccourcis clavier, À propos.
   const helpMenu = $("help-menu");
   $("tb-help").addEventListener("click", () => (helpMenu.hidden ? openHelpMenu() : closeHelpMenu()));
@@ -4763,6 +4767,34 @@ function wire() {
   });
   $("guide-open").addEventListener("click", openGuide);
   $("guide-content").addEventListener("click", followGuideLink);
+  // Recherche et impression du guide (2026-11-26).
+  let searchTimer = null;
+  $("guide-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => searchGuide($("guide-search").value), 200);
+  });
+  $("guide-search").addEventListener("keydown", (event) => {
+    // Entrée ne ferme pas la boîte (formulaire « dialog ») : elle passe au résultat suivant.
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    clearTimeout(searchTimer);
+    if (fold($("guide-search").value.trim()) !== guideQuery) searchGuide($("guide-search").value);
+    else stepGuide(event.shiftKey ? -1 : 1);
+  });
+  $("guide-dialog").addEventListener("keydown", (event) => {
+    if (event.key === "F3") {
+      event.preventDefault();
+      stepGuide(event.shiftKey ? -1 : 1);
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      $("guide-search").focus();
+      $("guide-search").select();
+    }
+  });
+  $("guide-prev").addEventListener("click", () => stepGuide(-1));
+  $("guide-next").addEventListener("click", () => stepGuide(1));
+  $("guide-print").addEventListener("click", printGuide);
+  $("guide-dialog").addEventListener("close", () => $("print-area").replaceChildren());
 }
 
 /// Page distante (étape 3c) : la session de ce navigateur, ouverte au besoin avec le jeton de
@@ -4971,6 +5003,93 @@ function showUpdateProgress({ done, total }) {
   }
 }
 
+// ---------- Boîtes déplaçables ----------
+
+/// Pas d'un déplacement au clavier (Alt+flèche), en pixels.
+const MOVE_STEP = 24;
+/// Part de la boîte qui reste toujours à l'écran : de quoi la reprendre par son titre.
+const KEEP_VISIBLE = 80;
+
+/// Chaque boîte se déplace par son titre (celui de `aria-labelledby`), à la souris ou au
+/// doigt, ou par Alt+flèches ; Alt+Début la remet au centre. Son décalage reste sur elle
+/// (`data-offset`, appliqué par la propriété `translate`) : rouverte, elle reprend sa place, jusqu'à la fermeture de
+/// l'application. Jamais hors de l'écran : bornée au déplacement, à l'ouverture et quand la
+/// fenêtre change de taille.
+function makeDialogsMovable() {
+  const dialogs = [...document.querySelectorAll("dialog")];
+  for (const dialog of dialogs) {
+    const handle = $(dialog.getAttribute("aria-labelledby") ?? "");
+    if (!handle) continue;
+    handle.classList.add("drag-handle");
+    handle.addEventListener("pointerdown", (event) => startDrag(event, dialog, handle));
+    // Rouverte : bornée à la fenêtre telle qu'elle est maintenant.
+    new window.MutationObserver(() => { if (dialog.open) placeDialog(dialog, ...offsetOf(dialog)); })
+      .observe(dialog, { attributes: true, attributeFilter: ["open"] });
+  }
+  addEventListener("resize", () => {
+    for (const dialog of dialogs) if (dialog.open) placeDialog(dialog, ...offsetOf(dialog));
+  });
+  // À la capture : avant les éléments de la boîte (onglets, tableaux), qui ont leurs flèches.
+  document.addEventListener("keydown", (event) => {
+    if (!event.altKey || event.ctrlKey || event.metaKey) return;
+    const dialog = document.activeElement?.closest?.("dialog[open]");
+    if (!dialog) return;
+    // Alt+flèche haut ou bas ouvre une liste déroulante : on la lui laisse.
+    if (document.activeElement.tagName === "SELECT" && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
+    const [x, y] = offsetOf(dialog);
+    const step = { ArrowLeft: [-MOVE_STEP, 0], ArrowRight: [MOVE_STEP, 0], ArrowUp: [0, -MOVE_STEP], ArrowDown: [0, MOVE_STEP] }[event.key];
+    if (step) placeDialog(dialog, x + step[0], y + step[1]);
+    else if (event.key === "Home") placeDialog(dialog, 0, 0);
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, { capture: true });
+}
+
+/// Décalage de la boîte par rapport à sa place au centre, en pixels.
+function offsetOf(dialog) {
+  const [x = "0", y = "0"] = (dialog.dataset.offset || "").split(" ");
+  return [Number(x) || 0, Number(y) || 0];
+}
+
+/// Pose la boîte au décalage voulu, borné pour que son titre reste à l'écran.
+function placeDialog(dialog, x, y) {
+  const [ox, oy] = offsetOf(dialog);
+  const box = dialog.getBoundingClientRect();
+  // Sans mise en page (boîte cachée), rien à borner.
+  if (box.width && box.height) {
+    const left = box.left - ox;
+    const top = box.top - oy;
+    x = Math.min(Math.max(x, KEEP_VISIBLE - left - box.width), innerWidth - KEEP_VISIBLE - left);
+    y = Math.min(Math.max(y, -top), innerHeight - KEEP_VISIBLE / 2 - top);
+  }
+  x = Math.round(x);
+  y = Math.round(y);
+  if (x || y) dialog.dataset.offset = `${x} ${y}`;
+  else delete dialog.dataset.offset;
+  dialog.style.translate = x || y ? `${x}px ${y}px` : "";
+}
+
+function startDrag(event, dialog, handle) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const [x0, y0] = offsetOf(dialog);
+  const startX = event.clientX;
+  const startY = event.clientY;
+  handle.setPointerCapture?.(event.pointerId);
+  dialog.classList.add("dragging");
+  const move = (e) => placeDialog(dialog, x0 + e.clientX - startX, y0 + e.clientY - startY);
+  const stop = () => {
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", stop);
+    handle.removeEventListener("pointercancel", stop);
+    dialog.classList.remove("dragging");
+  };
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+}
+
 // ---------- Options et menu « Aide » ----------
 
 /// Ouvre les Options sur une rubrique (Général par défaut).
@@ -5080,6 +5199,10 @@ async function openGuide(section) {
     content.innerHTML = html;
     content.dataset.lang = want;
   }
+  // Chaque ouverture repart d'une recherche vide.
+  clearGuideMarks();
+  $("guide-search").value = "";
+  showGuideCount();
   dialog.showModal();
   content.scrollTop = 0;
   const target = typeof section === "string" ? $(section) : null;
@@ -5088,6 +5211,107 @@ async function openGuide(section) {
     target.focus();
   } else {
     content.focus();
+  }
+}
+
+/// Texte comparé sans casse ni accents, de même longueur que l'original (positions
+/// identiques) : « Empreinte » trouve « empreinte », « deja » trouve « déjà ».
+function fold(text) {
+  let out = "";
+  for (const c of text) {
+    const f = c.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+    out += f.length === c.length ? f : c;
+  }
+  return out;
+}
+
+/// `NodeFilter.SHOW_TEXT` : nœuds de texte seulement (valeur du DOM, partout la même).
+const SHOW_TEXT = 4;
+
+/// Résultats de la recherche dans le guide : marques dans l'ordre du texte.
+let guideHits = [];
+let guideAt = -1;
+let guideQuery = "";
+
+function clearGuideMarks() {
+  const content = $("guide-content");
+  for (const mark of content.querySelectorAll("mark.guide-hit")) mark.replaceWith(mark.textContent);
+  content.normalize();
+  guideHits = [];
+  guideAt = -1;
+  guideQuery = "";
+}
+
+/// Surligne chaque occurrence (deux caractères au moins) et montre la première.
+function searchGuide(query) {
+  clearGuideMarks();
+  const wanted = fold(query.trim());
+  guideQuery = wanted;
+  if (wanted.length >= 2) {
+    const content = $("guide-content");
+    const walker = document.createTreeWalker(content, SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      const folded = fold(text);
+      let at = folded.indexOf(wanted);
+      if (at === -1) continue;
+      const parts = [];
+      let last = 0;
+      for (; at !== -1; at = folded.indexOf(wanted, at + wanted.length)) {
+        parts.push(text.slice(last, at));
+        const mark = document.createElement("mark");
+        mark.className = "guide-hit";
+        mark.textContent = text.slice(at, at + wanted.length);
+        parts.push(mark);
+        guideHits.push(mark);
+        last = at + wanted.length;
+      }
+      parts.push(text.slice(last));
+      node.replaceWith(...parts);
+    }
+  }
+  if (guideHits.length) showGuideHit(0);
+  else showGuideCount();
+}
+
+/// Résultat suivant (1) ou précédent (-1), en boucle.
+function stepGuide(step) {
+  if (!guideHits.length) return;
+  showGuideHit((guideAt + step + guideHits.length) % guideHits.length);
+}
+
+function showGuideHit(index) {
+  guideHits[guideAt]?.classList.remove("current");
+  guideAt = index;
+  const mark = guideHits[index];
+  mark.classList.add("current");
+  mark.scrollIntoView({ block: "center" });
+  showGuideCount();
+}
+
+/// « 3 sur 12 », « Aucun résultat », ou rien sans recherche ; annoncé (zone `status`).
+function showGuideCount() {
+  const count = $("guide-count");
+  const none = guideQuery.length >= 2 && !guideHits.length;
+  count.textContent = guideHits.length
+    ? t("{0} sur {1}", guideAt + 1, guideHits.length)
+    : none ? t("Aucun résultat") : "";
+  for (const id of ["guide-prev", "guide-next"]) $(id).disabled = guideHits.length < 2;
+}
+
+/// Imprime tout le guide, dans la langue montrée : une copie sans identifiants (ils sont
+/// déjà dans la boîte) est la seule partie de la page imprimée (style.css, @media print).
+async function printGuide() {
+  const copy = $("guide-content").cloneNode(true);
+  for (const el of [copy, ...copy.querySelectorAll("[id]")]) el.removeAttribute("id");
+  copy.removeAttribute("tabindex");
+  $("print-area").replaceChildren(...copy.childNodes);
+  try {
+    await (host.print ? host.print() : window.print());
+  } catch (e) {
+    showError(String(e?.message ?? e));
   }
 }
 

@@ -4,12 +4,17 @@
 
 - **Toolbar**, at the top: Add, Video, Links, Resume, Stop, Resume all, Stop all, Delete,
   Clear finished, Properties, Schedule, History, Options, Help. "Help" opens a menu: User
-  guide (F1), Keyboard shortcuts, About.
+  guide (F1), Keyboard shortcuts, About. In the guide, "Search the guide…" highlights every
+  result (ignoring case and accents; ▲ and ▼ move from one to the next), and "Print…" prints the
+  whole guide.
 - **Categories**, on the left: All downloads, Unfinished, Finished, each with its file types
   (Archives, Documents, Images, Music, Programs, Videos, Other), then the queues. The number of
   downloads is next to each category; clicking a category shows only it in the table.
 - **Table**, in the middle: File name, Size, Progress, Status, Time left, Speed, Added. Clicking
   a column header sorts the table.
+- **Boxes** (Add, Properties, Options, guide…): they move by dragging their title, or with
+  Alt+arrows; reopened, they keep their place until the application closes. Alt+Home puts one
+  back in the centre.
 - **Status bar**, at the bottom: what is going on (running downloads, time slots, selected
   rows), and the **Global speed limit**: "No limit", or a step from 128 KiB/s to 100 MiB/s,
   which applies at once to every download.

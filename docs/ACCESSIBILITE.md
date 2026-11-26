@@ -105,7 +105,7 @@ Colonnes :
 | 2.5.2 Annulation du pointeur | A | Oui | Oui | Oui | Les actions partent au relâchement (clics natifs) |
 | 2.5.3 Nom accessible dans l'étiquette | A | Oui | Oui | Oui | Les boutons à texte ont ce texte pour nom. Le bouton de ligne Android, icône seule, ajoute le nom du fichier à l'action |
 | 2.5.4 Activation par le mouvement | A | S. o. | S. o. | S. o. | Aucune |
-| 2.5.7 Mouvements de glissement | AA | Oui | Oui | Oui | Seul glisser : déposer un lien ou un `.torrent` sur la fenêtre, avec « Ajouter » pour équivalent. Le redimensionnement des champs de texte est natif et facultatif |
+| 2.5.7 Mouvements de glissement | AA | Écart (2026-11-26) | Oui | Oui | Déposer un lien ou un `.torrent` sur la fenêtre, avec « Ajouter » pour équivalent. Le redimensionnement des champs de texte est natif et facultatif. Depuis le 2026-11-26 (décision de l'utilisateur), une boîte se déplace en glissant son titre : commodité seulement, la boîte et la fenêtre restent entièrement utilisables sans la déplacer, et Alt+flèches la déplace au clavier (Alt+Début la remet au centre) ; mais aucun équivalent à un seul pointeur sans glisser : écart, noté |
 | 2.5.8 Taille de la cible (minimum) | AA | Corrigé | Corrigé | Oui | Page : la flèche de l'arborescence faisait 22 px de large, elle fait 24 px ; boutons de 28 px de haut ; cibles de 44 px en disposition étroite. Android : les choix des réglages faisaient 36 dp, ils font 48 dp (ATF) |
 | 3.1.1 Langue de la page | A | Oui | Oui | Oui | `lang` suit la langue choisie (français ou anglais) ; Android suit la langue du système |
 | 3.1.2 Langue d'un passage | AA | Oui | Oui | Oui | Noms de fichiers et adresses non traduits, sans langue propre ; aucun passage dans une autre langue |
