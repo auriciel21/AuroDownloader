@@ -1273,6 +1273,8 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             pieces: None,
             torrent,
             media,
+            // Copie d.un site : protocole à l.étape B2 (SPEC §7.18 ter).
+            site: None,
             mirrors,
             sub_dir: sub_dir_param(p)?,
             // Posés par la poignée restreinte d'une connexion à jeton (SPEC §7.19).

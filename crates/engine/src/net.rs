@@ -1048,6 +1048,36 @@ impl Client {
         Ok(Fetched::Body { final_url, bytes })
     }
 
+    /// Un `GET` dont le corps reste à lire (copie d'un site, SPEC §7.18 ter) : pages et
+    /// ressources s'écrivent sur le disque au fil de la lecture, sans tenir en mémoire.
+    /// Répond aux demandes d'identification avec `auth`.
+    pub async fn open_get(&self, url: &Url, auth: Option<&Auth>) -> Result<Opened, NetError> {
+        let response = self
+            .send(Method::GET, url, &HeaderMap::new(), None, auth)
+            .await?;
+        if response.status() != StatusCode::OK {
+            return Ok(Opened::Status {
+                status: response.status().as_u16(),
+                retry_after: retry_after_of(&response),
+            });
+        }
+        let final_url = response.url().clone();
+        let seen = Observed::from_headers(response.headers());
+        let charset = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(charset_of);
+        Ok(Opened::Ok {
+            final_url,
+            content_type: seen.content_type.clone(),
+            charset,
+            length: seen.file_length(),
+            attachment: seen.disposition_name.is_some(),
+            body: Box::new(Body::http(response, self.read)),
+        })
+    }
+
     /// [`fetch_small`](Self::fetch_small) d'une adresse HTTP(S) écrite (fichier Metalink
     /// distant, SPEC §7.7).
     pub async fn fetch_small_at(
@@ -1176,6 +1206,45 @@ pub struct TextWant {
     pub truncate: bool,
     /// Seulement une page web (`text/html`, XHTML, ou sans type, sans nom de fichier).
     pub html_only: bool,
+}
+
+/// Réponse ouverte par [`Client::open_get`].
+#[derive(Debug)]
+pub enum Opened {
+    /// Réponse `200` : en-têtes lus, corps à lire.
+    Ok {
+        /// Adresse d'arrivée, après les redirections.
+        final_url: Url,
+        /// Type annoncé, sans ses paramètres, en minuscules.
+        content_type: Option<String>,
+        /// Encodage annoncé par `Content-Type` (`charset=…`).
+        charset: Option<String>,
+        /// Taille annoncée, si le corps n'est pas transformé.
+        length: Option<u64>,
+        /// `Content-Disposition` donne un nom de fichier.
+        attachment: bool,
+        /// En boîte : le corps d'une réponse HTTP est gros à côté de l'autre variante.
+        body: Box<Body>,
+    },
+    /// Une autre réponse, corps non lu.
+    Status {
+        status: u16,
+        retry_after: Option<Duration>,
+    },
+}
+
+/// L'encodage d'un en-tête `Content-Type` (`text/html; charset="utf-8"`).
+fn charset_of(content_type: &str) -> Option<String> {
+    content_type
+        .split(';')
+        .skip(1)
+        .find_map(|param| {
+            let (key, value) = param.split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case("charset")
+                .then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .filter(|c| !c.is_empty() && c.len() <= 40)
 }
 
 /// Réponse lue par [`Client::fetch_text`].

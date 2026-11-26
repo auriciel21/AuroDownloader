@@ -20,7 +20,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::io::{available_name, part_path, same_name, sync_parent_dir};
+use crate::io::{available_name_as, part_path, same_name, sync_parent_dir};
 use crate::store::StoreError;
 use crate::store::claims::{self, ClaimKind};
 
@@ -52,7 +52,7 @@ pub fn claim(
     // Chaque échec laisse le nom à une autre tâche : le suivant l'évite. La borne ne sert
     // qu'à ne jamais boucler sans fin.
     for _ in 0..1000 {
-        let candidate = available_name(dir, wanted, &skip);
+        let candidate = available_name_as(dir, wanted, &skip, kind != ClaimKind::Dir);
         if !claims::insert(conn, &dir_text, &candidate, kind, task_id)? {
             // Réservé par une autre tâche, pas encore créé : un nom plus loin.
             skip.push(candidate);

@@ -283,7 +283,7 @@ fn is_magnet(text: &str) -> bool {
 }
 
 /// Extension d'un nom : après le dernier point, 1 à 10 lettres ou chiffres, en minuscules.
-fn extension(name: &str) -> Option<String> {
+pub(crate) fn extension(name: &str) -> Option<String> {
     let (stem, ext) = name.rsplit_once('.')?;
     if stem.is_empty() || ext.is_empty() || ext.len() > 10 {
         return None;

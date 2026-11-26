@@ -33,6 +33,7 @@ pub mod schedule;
 pub mod scheduler;
 pub mod secrets;
 pub mod segmenter;
+pub mod site;
 pub mod store;
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]

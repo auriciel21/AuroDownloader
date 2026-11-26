@@ -130,6 +130,15 @@ téléchargement.
   (identifiants des sites, canal local seulement) ; méthodes `linkscan.crawl`,
   `linkscan.crawlResult`, `linkscan.cancel`, notification `linkscan.progress` ; CLI
   `auro links <page> --depth`.
+  Copie d'un site (F-43, SPEC 7.18 ter, étape B du « Grabber », 2026-11-26) : tâche de sorte
+  `site` (migration 18 : `tasks` refaite pour la sorte, `Migration::rebuild` ; tables
+  `site_jobs` et `site_items`, `store::site`), `site::html` (liens d'une page par rôle,
+  réécriture octet pour octet), `site::css` (`url(…)`, `@import`), `site::layout` (de
+  l'adresse au chemin : un dossier par hôte, `@paramètres`, `.html` et `.css` ajoutés),
+  `site::run` (exploration avec le `Judge` de `linkscan::crawl`, lecture au fil de l'eau par
+  `net::Client::open_get` dans le `.part`, 2 par hôte et 4 en tout, fichiers cochés en
+  tâches HTTP internes, réécriture en `post_processing` depuis le brut, `delete_files`) ;
+  `transfer::Options::site_spacing` (`aurod --site-spacing-ms` pour le banc).
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
@@ -453,6 +462,9 @@ AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_torrent -
 # Banc de reprise des vidéos (aurod tué pendant les flux et la fusion ; faux yt-dlp et
 # ffmpeg imposés par aurod --media-ytdlp --media-ffmpeg --media-ffprobe) :
 AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_media -- --nocapture
+# Banc de reprise des copies de sites (aurod tué pendant l'exploration, les fichiers cochés et
+# la réécriture ; chaque copie finie comparée à une copie faite sans arrêt) :
+AURO_CRASH_CYCLES=150 cargo test --release -p auro-daemon --test crash_site -- --nocapture
 # Disque vraiment plein (Linux, WSL) : tmpfs de 8 Mio monté sans root, puis le test ignoré :
 D=$(mktemp -d); unshare -rm sh -c "mount -t tmpfs -o size=8m tmpfs $D && \
   AURO_FULL_DISK_DIR=$D cargo test -p auro-engine --lib -- --ignored really_full"
@@ -575,7 +587,9 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   `testing::Checker`. Toute modification du module `torrent` ou de `store::torrents` passe
   aussi celui des torrents (`crates/daemon/tests/crash_torrent.rs`, essaim local de
   `testing::swarm`). Toute modification du module `media` ou de `store::media` passe aussi celui des
-  vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`).
+  vidéos (`crates/daemon/tests/crash_media.rs`, faux outils de `testing::tools`). Toute
+  modification du module `site` ou de `store::site` passe aussi celui des copies de sites
+  (`crates/daemon/tests/crash_site.rs`, copies ajoutées en base moteur arrêté).
 - Guide de l'utilisateur (`docs/guide/fr` et `docs/guide/en`, mêmes fichiers numérotés et
   mêmes titres dans les deux langues) : tout changement de l'interface qui le concerne s'y
   reporte, dans les deux langues, avec les libellés exacts de la page (`index.html`,

@@ -117,6 +117,9 @@ pub struct Options {
     pub torrent: crate::torrent::Options,
     /// Outils de la vidéo (SPEC §7.17).
     pub media: crate::media::Options,
+    /// Temps entre deux débuts de lecture d'une copie de site sur un même hôte (SPEC
+    /// §7.18 ter : 250 ms ; plus court dans les tests).
+    pub site_spacing: Duration,
     /// Cause qu'enregistre la pause d'un arrêt demandé : `user` par défaut ; le
     /// planificateur la règle avant d'arrêter l'exécution pour une plage ou le réseau.
     pub stop_cause: StopCause,
@@ -163,6 +166,7 @@ impl Default for Options {
             neighbor_checksum: false,
             torrent: crate::torrent::Options::default(),
             media: crate::media::Options::default(),
+            site_spacing: crate::linkscan::crawl::SPACING,
             stop_cause: StopCause::default(),
         }
     }

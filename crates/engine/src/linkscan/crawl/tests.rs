@@ -526,10 +526,15 @@ async fn pages_are_read_two_at_a_time_250_ms_apart() {
     assert_eq!(progress.pages_read, 6);
     let starts = starts.lock().unwrap().clone();
     assert_eq!(starts.len(), 5);
+    // Arrivées mesurées par le serveur : une requête sur une connexion neuve arrive plus
+    // tard que la suivante, sur une connexion déjà ouverte (écart de 234 ms vu sous
+    // Windows, le 2026-11-26). Chaque écart garde une marge, et l'ensemble le rythme.
     for pair in starts.windows(2) {
         let gap = pair[1].duration_since(pair[0]);
-        assert!(gap >= Duration::from_millis(240), "{gap:?}");
+        assert!(gap >= Duration::from_millis(180), "{gap:?}");
     }
+    let span = starts[4].duration_since(starts[0]);
+    assert!(span >= Duration::from_millis(4 * 240), "{span:?}");
     assert!(site.server.peak_connections() <= 2);
     crate::testing::stop(&engine).await;
 }

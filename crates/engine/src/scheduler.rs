@@ -553,6 +553,8 @@ pub struct AddTask {
     pub torrent: Option<Vec<u8>>,
     /// Vidéo d'une page (SPEC §7.17) ; `url` est alors ignorée.
     pub media: Option<MediaRequest>,
+    /// Copie d'un site (SPEC §7.18 ter) ; `url` est alors ignorée.
+    pub site: Option<SiteRequest>,
     /// Miroirs du même fichier (SPEC §7.7, phase 6) : adresses HTTP(S) après la référence
     /// `url`, validées à la première exécution.
     pub mirrors: Vec<String>,
@@ -654,6 +656,26 @@ pub struct MediaRequest {
     /// Titre connu du client (`media.probe`), nom affiché en attendant la résolution.
     pub title: Option<String>,
 }
+
+/// Copie d'un site demandée par `task.add` (SPEC §7.18 ter) ; `None` : la valeur par
+/// défaut de l'exploration.
+#[derive(Debug, Clone, Default)]
+pub struct SiteRequest {
+    pub page_url: String,
+    pub depth: Option<u8>,
+    pub max_pages: Option<u32>,
+    /// Volume des pages et ressources, en octets.
+    pub max_bytes: Option<u64>,
+    /// Pages à ne pas ouvrir ; `None` ou vide : aucune.
+    pub exclude: Option<String>,
+    pub same_folder: bool,
+    pub ignore_robots: bool,
+    /// Fichiers cochés, adresses HTTP(S).
+    pub files: Vec<String>,
+}
+
+/// Fichiers cochés d'une copie au plus (SPEC §7.18 ter).
+pub const MAX_SITE_FILES: usize = 10_000;
 
 /// Sélecteur de formats par défaut : la meilleure vidéo et le meilleur son, sinon le
 /// meilleur format complet.
@@ -2290,6 +2312,7 @@ impl Engine {
             || !task.mirrors.is_empty()
             || task.torrent.is_some()
             || task.media.is_some()
+            || task.site.is_some()
         {
             return Ok(None);
         }
@@ -3633,6 +3656,11 @@ impl Scheduler {
                     "empreinte : une vidéo est assemblée sur place, sans empreinte publiée".into(),
                 ));
             }
+            if task.kind == TaskKind::Site {
+                return Err(EngineError::BadRequest(
+                    "empreinte : une copie de site a beaucoup de fichiers".into(),
+                ));
+            }
             // Fichier déjà sous son nom final (commande de fin en cours, ou en échec) :
             // l'empreinte ne serait jamais vérifiée, et `{sha256}` la donnerait à la commande
             // (audit P9).
@@ -3813,6 +3841,9 @@ impl Scheduler {
                 ));
             }
             return self.add_torrent(task, start);
+        }
+        if task.site.is_some() {
+            return self.add_site(task, start);
         }
         if task.media.is_some() {
             if !task.mirrors.is_empty() {
@@ -4032,6 +4063,105 @@ impl Scheduler {
                 format,
                 container: request.container.as_deref(),
                 subtitles: &request.subtitles,
+                public_only: task.public_only,
+            },
+            start,
+        )?;
+        Ok(self.added(task_id, start))
+    }
+
+    /// Copie d'un site (SPEC §7.18 ter) : réglages de l'exploration, volume, fichiers
+    /// cochés ; rien de ce qui fait un téléchargement d'un seul fichier.
+    fn add_site(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {
+        use crate::linkscan::crawl::{DEFAULT_PAGES, MAX_DEPTH, MAX_PAGES};
+        use crate::site::run::{DEFAULT_BYTES, MAX_BYTES, MIN_BYTES};
+        let request = task.site.clone().unwrap_or_default();
+        if task.media.is_some()
+            || task.torrent.is_some()
+            || task.pieces.is_some()
+            || task.plugin.is_some()
+            || task.checksum.is_some()
+            || task.file_name.is_some()
+            || !task.headers.is_empty()
+            || !task.mirrors.is_empty()
+        {
+            return Err(EngineError::BadRequest(
+                "site : ni sources, vidéo, nom, empreinte, en-têtes ni plugin".into(),
+            ));
+        }
+        let page = net::parse_url(&request.page_url)?;
+        Self::check_speed_limit(task.speed_limit_bps)?;
+        let depth = request.depth.unwrap_or(1);
+        let max_pages = request.max_pages.unwrap_or(DEFAULT_PAGES);
+        let max_bytes = request.max_bytes.unwrap_or(DEFAULT_BYTES);
+        if !(1..=MAX_DEPTH).contains(&depth)
+            || !(1..=MAX_PAGES).contains(&max_pages)
+            || !(MIN_BYTES..=MAX_BYTES).contains(&max_bytes)
+        {
+            return Err(EngineError::BadRequest(format!(
+                "site : profondeur de 1 à {MAX_DEPTH}, pages de 1 à {MAX_PAGES}, volume de \
+                 {} Mio à {} Gio",
+                MIN_BYTES >> 20,
+                MAX_BYTES >> 30
+            )));
+        }
+        let exclude = request
+            .exclude
+            .filter(|e| !e.is_empty())
+            .map(|e| {
+                crate::rules::compile(&e)
+                    .map(|_| e)
+                    .map_err(|err| EngineError::BadRequest(format!("site.exclude : {err}")))
+            })
+            .transpose()?;
+        if request.files.len() > MAX_SITE_FILES {
+            return Err(EngineError::BadRequest(format!(
+                "site.files : {MAX_SITE_FILES} fichiers au plus"
+            )));
+        }
+        let mut files: Vec<String> = Vec::with_capacity(request.files.len());
+        let mut seen = std::collections::HashSet::new();
+        for file in &request.files {
+            let mut url = net::parse_url(file)?;
+            url.set_fragment(None);
+            let url = url.to_string();
+            if seen.insert(url.clone()) {
+                files.push(url);
+            }
+        }
+        let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
+        let display_name = match page.port() {
+            Some(port) => format!("{}:{port}", page.host_str().unwrap_or_default()),
+            None => page.host_str().unwrap_or_default().to_owned(),
+        };
+        let settings = store::site::Settings {
+            depth,
+            max_pages,
+            max_bytes,
+            exclude,
+            same_folder: request.same_folder,
+            ignore_robots: request.ignore_robots,
+        };
+        let max_connections = task
+            .max_connections
+            .map(|c| u8::try_from(c.clamp(1, 32)).unwrap_or(32));
+        // Une copie n'a pas de règle de rangement (SPEC §7.18 ter).
+        let start = tasks::Start {
+            ruled: false,
+            ..start
+        };
+        let task_id = store::site::create_site_task(
+            &mut self.conn,
+            &store::site::NewSite {
+                queue_id: &queue_id,
+                page_url: page.as_str(),
+                display_name: &display_name,
+                dest_dir: &dest_dir,
+                speed_limit_bps: task.speed_limit_bps,
+                max_connections,
+                idempotency_key: task.idempotency_key.as_deref(),
+                settings: &settings,
+                files: &files,
                 public_only: task.public_only,
             },
             start,
@@ -4645,7 +4775,8 @@ impl Scheduler {
         if delete_files && task.state == TaskState::Completed {
             remove_files(&self.conn, &task, true)?;
         }
-        remove_files(&self.conn, &task, false)?;
+        // Une copie de site repart d'un dossier vide (SPEC §7.18 ter).
+        remove_files(&self.conn, &task, task.kind == TaskKind::Site)?;
         let from = tasks::restart_task(&mut self.conn, task_id)?;
         self.broken.remove(task_id);
         let id = task_id.to_owned();
@@ -4678,6 +4809,11 @@ impl Scheduler {
             TaskKind::Media => {
                 return Err(EngineError::BadRequest(format!(
                     "{action} : pas encore pour une vidéo"
+                )));
+            }
+            TaskKind::Site => {
+                return Err(EngineError::BadRequest(format!(
+                    "{action} : pas pour une copie de site"
                 )));
             }
             TaskKind::Http => {}
@@ -5634,6 +5770,7 @@ fn remove_files(conn: &Connection, task: &TaskRow, finished: bool) -> Result<(),
     let deleted = match task.kind {
         TaskKind::Torrent => torrent::delete_files(conn, task, finished),
         TaskKind::Media => media::run::delete_files(conn, task, finished),
+        TaskKind::Site => crate::site::run::delete_files(conn, task, finished),
         _ => return delete_file(if finished { path } else { part_path(&path) }),
     };
     deleted.map_err(|source| EngineError::DeleteFile { path, source })
@@ -5708,7 +5845,9 @@ async fn execute(
     let mut command_stop = stop.clone();
     // Commande de fin arrêtée avec le moteur (SPEC §7.21) : relancée telle quelle. Une
     // vidéo en `post_processing` peut aussi être en fusion : `media::run` le démêle.
-    let mut outcome = if task.state == TaskState::PostProcessing && task.kind != TaskKind::Media {
+    let mut outcome = if task.state == TaskState::PostProcessing
+        && !matches!(task.kind, TaskKind::Media | TaskKind::Site)
+    {
         Outcome::Completed(crate::postproc::final_path(&conn, task_id)?)
     } else {
         match task.kind {
@@ -5747,6 +5886,23 @@ async fn execute(
                     task_id,
                     &config.transfer,
                     stop.clone(),
+                    &mut on_progress,
+                )
+                .await?
+            }
+            // Copie d'un site (SPEC §7.18 ter) : ses fichiers cochés passent par
+            // `transfer::run`.
+            TaskKind::Site => {
+                let ctx = crate::site::run::Context {
+                    client: &client,
+                    opts: &config.transfer,
+                };
+                crate::site::run::run(
+                    &mut conn,
+                    &ctx,
+                    task_id,
+                    stop.clone(),
+                    &config.transfer.stop_cause,
                     &mut on_progress,
                 )
                 .await?

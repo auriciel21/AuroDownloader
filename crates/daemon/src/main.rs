@@ -6,6 +6,7 @@
 //! Il s'arrête proprement sur Ctrl-C, sur SIGTERM (Unix) ou par `engine.shutdown`.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use auro_engine::media;
@@ -71,6 +72,11 @@ struct Args {
     /// Essais : ce ffprobe, pris tel quel
     #[arg(long, value_name = "FICHIER", requires = "media_ytdlp")]
     media_ffprobe: Option<PathBuf>,
+
+    /// Essais : temps entre deux lectures d'une copie de site sur un même hôte, en
+    /// millisecondes, au lieu de 250 (banc de reprise des copies de sites)
+    #[arg(long, value_name = "MS")]
+    site_spacing_ms: Option<u64>,
 
     /// Désinstallation : efface du coffre du système les secrets de la base (cookies, mots
     /// de passe des sites et du proxy), sans toucher à ceux d'une autre base, puis sort ;
@@ -144,7 +150,18 @@ fn main() -> Result<()> {
         },
         _ => media::Options::default(),
     };
-    runtime.block_on(run(db, endpoint, client, planning, torrent, media))
+    // Essais seulement : le rythme des copies de sites (banc de reprise des copies).
+    let site_spacing = args
+        .site_spacing_ms
+        .map_or(auro_engine::linkscan::crawl::SPACING, Duration::from_millis);
+    runtime.block_on(run(
+        db,
+        endpoint,
+        client,
+        planning,
+        (torrent, media),
+        site_spacing,
+    ))
 }
 
 /// Un point d'accès autre que celui par défaut sert aux essais : sans `--db`, il ouvrirait
@@ -166,8 +183,8 @@ async fn run(
     endpoint: String,
     client: Client,
     planning: Planning,
-    torrent: torrent::Options,
-    media: media::Options,
+    (torrent, media): (torrent::Options, media::Options),
+    site_spacing: Duration,
 ) -> Result<()> {
     let engine = Engine::start(Config {
         db_path: db.clone(),
@@ -179,6 +196,7 @@ async fn run(
             neighbor_checksum: true,
             torrent,
             media,
+            site_spacing,
             ..Options::default()
         },
         disk_recheck: DISK_RECHECK,

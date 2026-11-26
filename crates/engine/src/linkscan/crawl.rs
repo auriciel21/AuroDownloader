@@ -41,9 +41,9 @@ const PARALLEL: usize = 2;
 /// Temps entre deux débuts de lecture, au moins (décision).
 pub const SPACING: Duration = Duration::from_millis(250);
 /// `Crawl-delay` pris en compte, au plus.
-const MAX_CRAWL_DELAY: Duration = Duration::from_secs(10);
+pub(crate) const MAX_CRAWL_DELAY: Duration = Duration::from_secs(10);
 /// Attente d'une nouvelle tentative après `429` ou `503`, au plus.
-const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
+pub(crate) const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 /// robots.txt lu au plus (RFC 9309 : 500 Kio au moins).
 const ROBOTS_LIMIT: usize = 500 << 10;
 /// Parties d'un `sitePath` au plus (celles d'un `subDir`).
@@ -327,22 +327,43 @@ pub fn start(
     Ok(Handle { id, shared, task })
 }
 
-/// Ce qu'une page peut être : même site, dossier, exclusion, robots.txt, profondeur.
+/// Ce qu'une page peut être : même site, dossier, exclusion, robots.txt, profondeur. Sert
+/// aussi à la copie d'un site (SPEC §7.18 ter).
 #[derive(Debug)]
-struct Judge {
+pub(crate) struct Judge {
     host: String,
     port: Option<u16>,
     https: bool,
     /// Dossier de départ, avec la case « Rester sous le dossier de départ ».
     folder: Option<String>,
     exclude: Option<Regex>,
-    robots: Robots,
+    pub(crate) robots: Robots,
     depth: u8,
 }
 
 impl Judge {
+    /// Le juge des pages d'une exploration partie de `page_url` (après ses redirections).
+    pub(crate) fn new(
+        page_url: &Url,
+        depth: u8,
+        exclude: Option<Regex>,
+        same_folder: bool,
+        robots: Robots,
+    ) -> Self {
+        let path = page_url.path();
+        Judge {
+            host: page_url.host_str().unwrap_or_default().to_owned(),
+            port: page_url.port(),
+            https: page_url.scheme() == "https",
+            folder: same_folder.then(|| path[..=path.rfind('/').unwrap_or(0)].to_owned()),
+            exclude,
+            robots,
+            depth,
+        }
+    }
+
     /// Pourquoi la page `url` ne se lit pas, quel que soit son niveau ; `None` si elle se lit.
-    fn refuses(&self, url: &Url) -> Option<Visit> {
+    pub(crate) fn refuses(&self, url: &Url) -> Option<Visit> {
         if url.host_str() != Some(self.host.as_str())
             || url.port() != self.port
             || (self.https && url.scheme() != "https")
@@ -368,7 +389,7 @@ impl Judge {
     }
 
     /// Ce qu'il advient d'une page de niveau `depth`.
-    fn visit(&self, url: &Url, depth: u8) -> Visit {
+    pub(crate) fn visit(&self, url: &Url, depth: u8) -> Visit {
         match self.refuses(url) {
             Some(Visit::Robots) | None if depth > self.depth => Visit::Depth,
             Some(visit) => visit,
@@ -445,18 +466,13 @@ async fn run(
     let spacing = settings
         .spacing
         .max(robots.crawl_delay.unwrap_or_default().min(MAX_CRAWL_DELAY));
-    let path = page_url.path();
-    let judge = Judge {
-        host: host.clone(),
-        port: page_url.port(),
-        https: page_url.scheme() == "https",
-        folder: settings
-            .same_folder
-            .then(|| path[..=path.rfind('/').unwrap_or(0)].to_owned()),
-        exclude: settings.exclude.clone(),
+    let judge = Judge::new(
+        &page_url,
+        settings.depth,
+        settings.exclude.clone(),
+        settings.same_folder,
         robots,
-        depth: settings.depth,
-    };
+    );
     let mut crawler = Crawler {
         client,
         engine,
@@ -483,7 +499,7 @@ async fn run(
 
 /// robots.txt du site de `page` ; avec les octets lus. Absent ou `4xx` : tout est permis ;
 /// `429`, `5xx` ou injoignable : rien (RFC 9309, §2.3.1).
-async fn read_robots(client: &Client, page: &Url) -> (Robots, u64) {
+pub(crate) async fn read_robots(client: &Client, page: &Url) -> (Robots, u64) {
     let Ok(url) = page.join("/robots.txt") else {
         return (Robots::allow_all(), 0);
     };

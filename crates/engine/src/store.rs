@@ -28,9 +28,13 @@ pub mod rules;
 pub mod schedules;
 pub mod segments;
 pub mod settings;
+pub mod site;
 pub mod sources;
 pub mod tasks;
 pub mod torrents;
+
+/// Reconstruction d'une table par une migration ([`Migration::rebuild`]).
+pub type Rebuild = fn(&rusqlite::Transaction<'_>) -> Result<(), StoreError>;
 
 /// Une étape de migration du schéma.
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +45,11 @@ pub struct Migration {
     pub name: &'static str,
     /// Script SQL appliqué dans une transaction.
     pub sql: &'static str,
+    /// Table refaite avant le script, dans la même transaction, clés étrangères coupées
+    /// (procédure en 12 étapes de SQLite) : seulement quand une contrainte doit changer,
+    /// ce que `ALTER TABLE` ne sait pas faire. `PRAGMA foreign_key_check` doit être vide
+    /// avant la validation.
+    pub rebuild: Option<Rebuild>,
 }
 
 /// Attente maximale d'une écriture bloquée par celle d'une autre connexion.
@@ -52,88 +61,158 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 1,
         name: "initial",
         sql: include_str!("../migrations/0001_initial.sql"),
+        rebuild: None,
     },
     Migration {
         version: 2,
         name: "idempotency_key",
         sql: include_str!("../migrations/0002_idempotency_key.sql"),
+        rebuild: None,
     },
     Migration {
         version: 3,
         name: "move_and_rename",
         sql: include_str!("../migrations/0003_move_and_rename.sql"),
+        rebuild: None,
     },
     Migration {
         version: 4,
         name: "site_logins",
         sql: include_str!("../migrations/0004_site_logins.sql"),
+        rebuild: None,
     },
     Migration {
         version: 5,
         name: "checksum_source",
         sql: include_str!("../migrations/0005_checksum_source.sql"),
+        rebuild: None,
     },
     Migration {
         version: 6,
         name: "media_streams",
         sql: include_str!("../migrations/0006_media_streams.sql"),
+        rebuild: None,
     },
     Migration {
         version: 7,
         name: "media_subtitles",
         sql: include_str!("../migrations/0007_media_subtitles.sql"),
+        rebuild: None,
     },
     Migration {
         version: 8,
         name: "remote",
         sql: include_str!("../migrations/0008_remote.sql"),
+        rebuild: None,
     },
     Migration {
         version: 9,
         name: "name_claims",
         sql: include_str!("../migrations/0009_name_claims.sql"),
+        rebuild: None,
     },
     Migration {
         version: 10,
         name: "plugins",
         sql: include_str!("../migrations/0010_plugins.sql"),
+        rebuild: None,
     },
     Migration {
         version: 11,
         name: "rules",
         sql: include_str!("../migrations/0011_rules.sql"),
+        rebuild: None,
     },
     Migration {
         version: 12,
         name: "pieces",
         sql: include_str!("../migrations/0012_pieces.sql"),
+        rebuild: None,
     },
     Migration {
         version: 13,
         name: "ftp_plain",
         sql: include_str!("../migrations/0013_ftp_plain.sql"),
+        rebuild: None,
     },
     Migration {
         version: 14,
         name: "sftp",
         sql: include_str!("../migrations/0014_sftp.sql"),
+        rebuild: None,
     },
     Migration {
         version: 15,
         name: "insecure_redirect",
         sql: include_str!("../migrations/0015_insecure_redirect.sql"),
+        rebuild: None,
     },
     Migration {
         version: 16,
         name: "media_duration",
         sql: include_str!("../migrations/0016_media_duration.sql"),
+        rebuild: None,
     },
     Migration {
         version: 17,
         name: "drop_segments_state_index",
         sql: include_str!("../migrations/0017_drop_segments_state_index.sql"),
+        rebuild: None,
+    },
+    Migration {
+        version: 18,
+        name: "site",
+        sql: include_str!("../migrations/0018_site.sql"),
+        rebuild: Some(rebuild_tasks_for_sites),
     },
 ];
+
+/// Contrainte de `tasks.kind` avant la migration 18, et après (SPEC §7.18 ter).
+const KIND_CHECK_BEFORE: &str = "CHECK (kind IN ('http','ftp','torrent','media'))";
+const KIND_CHECK_AFTER: &str = "CHECK (kind IN ('http','ftp','torrent','media','site'))";
+
+/// Migration 18 : `tasks.kind` reçoit `site`. SQLite ne change pas une contrainte : la
+/// table est refaite d'après son propre texte (colonnes ajoutées comprises, dans le même
+/// ordre), copiée, l'ancienne effacée, la nouvelle renommée, puis ses index et ses
+/// déclencheurs refaits. Les clés étrangères sont coupées par l'appelant : effacer
+/// `tasks` n'efface rien des tables qui la référencent.
+fn rebuild_tasks_for_sites(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+    let sql: String = tx.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tasks'",
+        [],
+        |r| r.get(0),
+    )?;
+    let head = "CREATE TABLE tasks (";
+    if !sql.starts_with(head) || sql.matches(KIND_CHECK_BEFORE).count() != 1 {
+        return Err(StoreError::BadValue(
+            "table tasks inattendue : migration 18 impossible".into(),
+        ));
+    }
+    let new_sql = sql.replacen(head, "CREATE TABLE tasks_new (", 1).replacen(
+        KIND_CHECK_BEFORE,
+        KIND_CHECK_AFTER,
+        1,
+    );
+    let mut stmt = tx.prepare(
+        "SELECT sql FROM sqlite_schema
+         WHERE tbl_name = 'tasks' AND type IN ('index', 'trigger') AND sql IS NOT NULL
+         ORDER BY type, name",
+    )?;
+    let others: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    tx.execute_batch(&new_sql)?;
+    tx.execute_batch(
+        "INSERT INTO tasks_new SELECT * FROM tasks;
+         DROP TABLE tasks;
+         ALTER TABLE tasks_new RENAME TO tasks;",
+    )?;
+    for other in others {
+        tx.execute_batch(&other)?;
+    }
+    Ok(())
+}
 
 /// Erreurs du module de stockage.
 #[derive(Debug, thiserror::Error)]
@@ -298,15 +377,58 @@ pub fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result<i64, S
     }
 
     for m in migrations.iter().filter(|m| m.version > current) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(m.sql)?;
-        tx.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-            params![m.version, now_ms()],
-        )?;
-        tx.commit()?;
+        match m.rebuild {
+            None => apply(conn, m)?,
+            Some(rebuild) => {
+                // Sans effet dans une transaction : coupées avant, rétablies après, même
+                // en cas d'échec.
+                let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+                conn.pragma_update(None, "foreign_keys", "OFF")?;
+                let applied = apply_rebuilding(conn, m, rebuild);
+                conn.pragma_update(None, "foreign_keys", fk)?;
+                applied?;
+            }
+        }
     }
     Ok(latest)
+}
+
+fn apply(conn: &mut Connection, m: &Migration) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(m.sql)?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+        params![m.version, now_ms()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Une migration qui refait une table (procédure en 12 étapes de SQLite), clés
+/// étrangères déjà coupées : aucune ligne ne doit en sortir orpheline.
+fn apply_rebuilding(
+    conn: &mut Connection,
+    m: &Migration,
+    rebuild: Rebuild,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    rebuild(&tx)?;
+    tx.execute_batch(m.sql)?;
+    let broken: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+        r.get(0)
+    })?;
+    if broken > 0 {
+        return Err(StoreError::BadValue(format!(
+            "migration {} : {broken} lignes sans leur ligne référencée",
+            m.version
+        )));
+    }
+    tx.execute(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+        params![m.version, now_ms()],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Copie cohérente de la base (même en mode WAL) avant une mise à jour du schéma.
@@ -351,7 +473,7 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 23] = [
+    const EXPECTED_TABLES: [&str; 25] = [
         "event_log",
         "file_moves",
         "history",
@@ -367,6 +489,8 @@ mod tests {
         "schema_migrations",
         "segments",
         "settings",
+        "site_items",
+        "site_jobs",
         "site_logins",
         "sources",
         "ssh_host_keys",
@@ -419,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_23_tables_of_the_spec() {
+    fn migrations_create_the_25_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());
@@ -464,6 +588,202 @@ mod tests {
         assert!(dir.path().join("auro.db.bak-v1").exists());
     }
 
+    /// Lignes de chaque table qui référence `tasks`, pour la migration 18.
+    fn fill_every_table_that_references_tasks(conn: &Connection, queue: &str) {
+        insert_task(conn, "t1", queue, "active").unwrap();
+        insert_task(conn, "t2", queue, "completed").unwrap();
+        conn.execute_batch(
+            "UPDATE tasks SET kind = 'media', idempotency_key = 'clé', requested_name = 'n',
+                    public_only = 1, insecure_redirect = 1 WHERE id = 't2';
+             INSERT INTO tasks (id, queue_id, kind, state, position, display_name, dest_dir,
+                                created_at, updated_at, parent_id)
+             VALUES ('t3', (SELECT queue_id FROM tasks WHERE id = 't1'), 'http', 'paused', 1,
+                     'flux', '/tmp', 0, 0, 't2');
+             INSERT INTO sources (id, task_id, url) VALUES ('s1', 't1', 'https://exemple.org/a');
+             INSERT INTO segments (task_id, idx, start_offset, end_offset, state, source_id)
+             VALUES ('t1', 0, 0, 99, 'pending', 's1');
+             INSERT INTO task_headers (task_id, name, value) VALUES ('t1', 'Referer', 'x');
+             INSERT INTO task_files (task_id, file_index, path, length) VALUES ('t1', 0, 'a', 1);
+             INSERT INTO torrents (task_id, info_hash) VALUES ('t1', 'abc');
+             INSERT INTO media_jobs (task_id, page_url, format_selector)
+             VALUES ('t2', 'https://exemple.org/v', 'b');
+             INSERT INTO media_streams (task_id, position, format_id, protocol, ext, has_video,
+                                        has_audio, file_name, child_id)
+             VALUES ('t2', 0, 'f', 'https', 'mp4', 1, 1, 'v.mp4', 't3');
+             INSERT INTO file_moves (task_id, from_path, to_path, dest_dir, file_name, phase,
+                                     started_at)
+             VALUES ('t1', '/a', '/b', '/', 'b', 'moving', 0);
+             INSERT INTO task_pieces (task_id, algo, length, hashes) VALUES ('t1', 'md5', 1, 'h');",
+        )
+        .unwrap();
+    }
+
+    fn rows_of_every_table(conn: &Connection) -> Vec<(String, i64)> {
+        table_names(conn)
+            .into_iter()
+            .filter(|t| t != "schema_migrations")
+            .map(|t| {
+                let n = conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                    .unwrap();
+                (t, n)
+            })
+            .collect()
+    }
+
+    fn task_indexes(conn: &Connection) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_schema
+                 WHERE type = 'index' AND tbl_name = 'tasks' AND sql IS NOT NULL ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// Migration 18 (SPEC §7.18 ter) : `tasks` refaite pour la sorte `site` sur une base
+    /// remplie. Toutes ses lignes et celles qui la référencent restent, avec leurs valeurs ;
+    /// ses index aussi ; les clés étrangères sont rétablies et toujours appliquées.
+    #[test]
+    fn migration_18_rebuilds_tasks_and_keeps_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auro.db");
+        let (before_rows, before_tasks, before_indexes) = {
+            let mut conn = Connection::open(&path).unwrap();
+            configure(&conn).unwrap();
+            migrate(&mut conn, &MIGRATIONS[..17]).unwrap();
+            let queue = tasks::ensure_queue(&conn, "default").unwrap();
+            fill_every_table_that_references_tasks(&conn, &queue);
+            let tasks: Vec<(String, String, Option<String>, i64)> = conn
+                .prepare("SELECT id, kind, parent_id, public_only FROM tasks ORDER BY id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            (rows_of_every_table(&conn), tasks, task_indexes(&conn))
+        };
+        assert_eq!(before_tasks.len(), 3);
+
+        let conn = open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), latest());
+        assert!(dir.path().join("auro.db.bak-v17").exists());
+        let after_rows: Vec<_> = rows_of_every_table(&conn)
+            .into_iter()
+            .filter(|(t, _)| t != "site_jobs" && t != "site_items")
+            .collect();
+        assert_eq!(after_rows, before_rows);
+        let after_tasks: Vec<(String, String, Option<String>, i64)> = conn
+            .prepare("SELECT id, kind, parent_id, public_only FROM tasks ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(after_tasks, before_tasks);
+        assert_eq!(task_indexes(&conn), before_indexes);
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+        let broken: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(broken, 0);
+
+        // La nouvelle sorte est permise, une sorte inconnue toujours refusée.
+        let queue: String = conn
+            .query_row("SELECT queue_id FROM tasks WHERE id = 't1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        insert_task(&conn, "t4", &queue, "queued").unwrap();
+        conn.execute("UPDATE tasks SET kind = 'site' WHERE id = 't4'", [])
+            .unwrap();
+        assert!(
+            conn.execute("UPDATE tasks SET kind = 'autre' WHERE id = 't4'", [])
+                .is_err()
+        );
+        // Les cascades suivent toujours `tasks` : retirer la vidéo retire son flux interne
+        // et ses lignes.
+        conn.execute("DELETE FROM tasks WHERE id = 't2'", [])
+            .unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM tasks WHERE id IN ('t2', 't3'))
+                      + (SELECT COUNT(*) FROM media_jobs) + (SELECT COUNT(*) FROM media_streams)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        conn.execute("DELETE FROM tasks WHERE id = 't1'", [])
+            .unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM sources) + (SELECT COUNT(*) FROM segments)
+                      + (SELECT COUNT(*) FROM task_headers) + (SELECT COUNT(*) FROM task_files)
+                      + (SELECT COUNT(*) FROM torrents) + (SELECT COUNT(*) FROM file_moves)
+                      + (SELECT COUNT(*) FROM task_pieces)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        // Une clé étrangère vers une tâche absente reste refusée.
+        assert!(
+            conn.execute(
+                "INSERT INTO sources (id, task_id, url) VALUES ('s9', 'absente', 'u')",
+                []
+            )
+            .is_err()
+        );
+    }
+
+    /// Une migration qui refait une table et laisserait une ligne orpheline est annulée,
+    /// et les clés étrangères sont rétablies quand même.
+    #[test]
+    fn a_rebuild_that_breaks_a_reference_is_rolled_back() {
+        fn breaks(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+            tx.execute_batch("DELETE FROM parent;")?;
+            Ok(())
+        }
+        const V1: Migration = Migration {
+            version: 1,
+            name: "un",
+            sql: "CREATE TABLE parent (id TEXT PRIMARY KEY);
+                  CREATE TABLE child (p TEXT REFERENCES parent(id));
+                  INSERT INTO parent VALUES ('a'); INSERT INTO child VALUES ('a');",
+            rebuild: None,
+        };
+        const V2: Migration = Migration {
+            version: 2,
+            name: "deux",
+            sql: "SELECT 1;",
+            rebuild: Some(breaks),
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        assert!(matches!(
+            migrate(&mut conn, &[V1, V2]),
+            Err(StoreError::BadValue(_))
+        ));
+        assert_eq!(current_version(&conn).unwrap(), 1);
+        let parents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM parent", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(parents, 1);
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+    }
+
     #[test]
     fn database_newer_than_engine_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -490,11 +810,13 @@ mod tests {
             version: 1,
             name: "ok",
             sql: "CREATE TABLE a (x INTEGER);",
+            rebuild: None,
         };
         const BAD: Migration = Migration {
             version: 2,
             name: "bad",
             sql: "CREATE TABLE b (x INTEGER); INSERT INTO table_inexistante VALUES (1);",
+            rebuild: None,
         };
         let mut conn = Connection::open_in_memory().unwrap();
         assert!(migrate(&mut conn, &[OK, BAD]).is_err());
@@ -513,6 +835,7 @@ mod tests {
             version: 2,
             name: "trou",
             sql: "SELECT 1;",
+            rebuild: None,
         }];
         let mut conn = Connection::open_in_memory().unwrap();
         assert!(matches!(
@@ -544,11 +867,13 @@ mod tests {
             version: 1,
             name: "un",
             sql: "CREATE TABLE a (x INTEGER);",
+            rebuild: None,
         };
         const V2: Migration = Migration {
             version: 2,
             name: "deux",
             sql: "CREATE TABLE b (x INTEGER);",
+            rebuild: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auro.db");

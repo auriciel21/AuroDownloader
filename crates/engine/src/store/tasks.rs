@@ -20,6 +20,8 @@ pub enum TaskKind {
     Torrent,
     /// Vidéo (SPEC §7.17) : page lue par yt-dlp, flux téléchargés puis fusionnés.
     Media,
+    /// Copie d'un site pour la navigation hors ligne (SPEC §7.18 ter).
+    Site,
 }
 
 impl TaskKind {
@@ -28,6 +30,7 @@ impl TaskKind {
             TaskKind::Http => "http",
             TaskKind::Torrent => "torrent",
             TaskKind::Media => "media",
+            TaskKind::Site => "site",
         }
     }
 
@@ -36,6 +39,7 @@ impl TaskKind {
             "http" => Some(TaskKind::Http),
             "torrent" => Some(TaskKind::Torrent),
             "media" => Some(TaskKind::Media),
+            "site" => Some(TaskKind::Site),
             _ => None,
         }
     }

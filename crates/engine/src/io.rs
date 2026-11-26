@@ -135,6 +135,12 @@ pub(crate) fn fold_name(name: &str) -> String {
 /// passer par `crate::claims::claim`, qui note la réservation puis prend le nom sur
 /// le disque.
 pub fn available_name(dir: &Path, name: &str, reserved: &[String]) -> String {
+    available_name_as(dir, name, reserved, true)
+}
+
+/// [`available_name`] ; sans `extension`, le numéro va à la fin du nom (un dossier :
+/// `exemple.org (1)`, jamais `exemple (1).org`).
+pub fn available_name_as(dir: &Path, name: &str, reserved: &[String], extension: bool) -> String {
     let free = |n: &str| {
         let path = dir.join(n);
         !path.exists() && !part_path(&path).exists() && !reserved.iter().any(|r| same_name(r, n))
@@ -143,7 +149,7 @@ pub fn available_name(dir: &Path, name: &str, reserved: &[String]) -> String {
         return name.to_owned();
     }
     let (stem, ext) = match name.rfind('.') {
-        Some(dot) if dot > 0 => name.split_at(dot),
+        Some(dot) if dot > 0 && extension => name.split_at(dot),
         _ => (name, ""),
     };
     (1u32..)
@@ -889,6 +895,12 @@ mod tests {
         assert_eq!(available_name(dir.path(), "a.iso", &[]), "a (2).iso");
         std::fs::write(dir.path().join("LISEZMOI"), b"").unwrap();
         assert_eq!(available_name(dir.path(), "LISEZMOI", &[]), "LISEZMOI (1)");
+        // Un dossier n'a pas d'extension (copie d'un site, dossier d'un torrent).
+        std::fs::create_dir(dir.path().join("exemple.org")).unwrap();
+        assert_eq!(
+            available_name_as(dir.path(), "exemple.org", &[], false),
+            "exemple.org (1)"
+        );
         let long = "é".repeat(125);
         std::fs::write(dir.path().join(&long), b"").unwrap();
         let other = available_name(dir.path(), &long, &[]);
