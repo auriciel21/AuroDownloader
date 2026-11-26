@@ -322,7 +322,11 @@ Mise en œuvre (phase 3, décisions du 2026-11-07 : Firefox, Chrome et Edge ense
     publication se fait sans elle (avertissement de SmartScreen, « éditeur inconnu ») ; elle
     s'active d'elle-même quand SignPath Foundation a accepté le projet et que ses secrets
     existent. La signature des mises à jour (clé de Tauri) et celle de l'APK restent
-    obligatoires.
+    obligatoires. **Décision de l'utilisateur du 2026-11-26 : SignPath n'est pas retenue** ;
+    les installateurs Windows sont publiés non signés, et l'utilisateur en est averti avant
+    l'installation : notes de chaque publication (ajoutées par `release.yml` sans les secrets
+    de SignPath, après `latest.json`), README et guide (chapitre « Installation »). Les
+    étapes de SignPath restent dans le workflow, inactives sans ses secrets.
   - **APK Android** : signé par la clé de l'utilisateur (créée par lui, gardée en secret
     GitHub), joint à chaque publication ; F-Droid et Play Store plus tard ; pas de mise à
     jour silencieuse (N-14).
@@ -2032,7 +2036,7 @@ Ce qui suit n'est pas un avis juridique ; un juriste doit le valider avant la pr
 - **Presse-papiers du bureau, phase 6, étape 2c (2026-11-11).** Nouvelles dépendances de l'application de bureau : `arboard` (lecture du texte du presse-papiers) et sa dépendance Windows `clipboard-win`, sous Boost Software License 1.0 (BSL-1.0), ajoutée à `deny.toml` : licence permissive (conserver l'avis de licence dans les copies du code source, rien pour les binaires), que la FSF classe compatible avec la GPL ; `tauri-winrt-notification` (MIT ou Apache-2.0, Windows) et `notify-rust` (MIT ou Apache-2.0, Linux) pour les notifications avec clic.
 - **Vidéo, étape 4a (2026-11-09).** Nouvelles dépendances du moteur : `zip` (MIT, Windows), `tar` et `xz2` (MIT ou Apache-2.0, Linux ; `xz2` compile liblzma, du domaine public et sous 0BSD), `aws-lc-rs` en direct (déjà présente). yt-dlp (Unlicense) et ffmpeg (builds GPL de BtbN) ne sont ni liés ni fournis : le moteur les télécharge sur la demande de l'utilisateur et les lance comme processus séparés. La clé publique de yt-dlp copiée dans le dépôt vient d'un projet en Unlicense.
 - **Nom et marques.** Le projet porte un nom original ; il n'utilise ni les noms, ni les logos, ni le code d'IDM, JDownloader, FDM ou d'autres produits.
-- **Boutiques d'applications.** Les règles de Google Play limitent les applications qui téléchargent des contenus de plateformes en dehors de leurs conditions d'utilisation ; je ne les ai pas relues pour ce document. La distribution visée en priorité est F-Droid et un APK signé, avec l'étude d'une version Play sans module vidéo, à confirmer après lecture des règles en vigueur.
+- **Boutiques d'applications.** Les règles de Google Play limitent les applications qui téléchargent des contenus de plateformes en dehors de leurs conditions d'utilisation ; je ne les ai pas relues pour ce document. La distribution visée est un APK signé (publications GitHub), puis F-Droid. **Google Play est exclu** (décision de l'utilisateur du 2026-11-26).
 
 ## 9. Tests, risques et feuille de route
 

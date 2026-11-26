@@ -59,8 +59,9 @@ page:
 The browser extension is not yet in the browser stores; it can be loaded from the
 `extension` folder.
 
-`SHA256SUMS` lists the checksum of every file of a release. If the Windows installer is not
-signed, SmartScreen warns about an "unknown publisher".
+`SHA256SUMS` lists the checksum of every file of a release. The Windows installer is not
+signed: SmartScreen warns about an "unknown publisher"; choose "More info", then "Run
+anyway", if you did get it from the Releases page.
 
 ## Documentation
 

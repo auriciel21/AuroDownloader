@@ -788,7 +788,7 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   l'utilisateur ; clé des mises à jour créée par l'utilisateur, jamais par Claude ;
   `latest.json` des publications GitHub ; `.deb` averti seulement) dépôt
   GitHub (créé et poussé par l'utilisateur, jamais par Claude), CI Windows, Linux et
-  émulateur Android, ARM64 construits non essayés, signature SignPath (facultative depuis le 2026-11-18), mise à jour Tauri
+  émulateur Android, ARM64 construits non essayés, signature SignPath (facultative depuis le 2026-11-18, non retenue le 2026-11-26 : installateurs Windows non signés, utilisateurs avertis dans les notes de publication, le README et le guide ; Google Play exclu), mise à jour Tauri
   signée proposée puis installée sur accord ; 9. guide de l'utilisateur en français et en
   anglais (`docs/guide`), page de manuel, README ; 10. porte (banc de 1 000 reprises sur
   1 Gio, performance, tout le 9.1).

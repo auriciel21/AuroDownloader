@@ -2,7 +2,8 @@ name: Publication
 
 # Publication d'une version (SPEC 4.6, phase 7, étape 8c ; décisions du 2026-11-18) :
 # l'utilisateur pousse une étiquette v0.x.y ; tout est construit, les installateurs Windows
-# sont signés par SignPath quand ses secrets existent (facultatif), les mises à jour par la
+# sont signés par SignPath quand ses secrets existent (non retenue le 2026-11-26 : non signés,
+# avertissement dans les notes), les mises à jour par la
 # clé de l'utilisateur, l'APK par son magasin de clés ; un BROUILLON de publication est
 # préparé, que l'utilisateur relit et publie. Procédure : docs/PUBLICATION.md.
 #
@@ -270,6 +271,26 @@ jobs:
           cat dist/latest.json
           (cd dist && sha256sum $(ls | grep -v -e '\.sig$' -e '^SHA256SUMS$') > SHA256SUMS)
           cat dist/SHA256SUMS
+      # Installateurs Windows non signés (décision de l'utilisateur du 2026-11-26 : pas de
+      # SignPath) : l'utilisateur en est averti sur la page de la publication, avant de
+      # télécharger. Ajouté après latest.json : la boîte de mise à jour ne le montre pas.
+      - name: Avertissement Windows
+        env:
+          HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        run: |
+          [ "$HAS_SIGNPATH" = true ] && exit 0
+          cat >> notes.md <<'FIN'
+
+          ---
+
+          **Windows** : l'installateur n'est pas signé. Windows peut afficher « Windows a protégé
+          votre ordinateur » et « éditeur inconnu » : choisissez « Informations complémentaires »,
+          puis « Exécuter quand même », si vous l'avez bien pris sur cette page.
+
+          **Windows**: the installer is not signed. Windows may show "Windows protected your PC"
+          and "unknown publisher": choose "More info", then "Run anyway", if you did get it from
+          this page.
+          FIN
       - name: Brouillon
         env:
           GH_TOKEN: ${{ github.token }}

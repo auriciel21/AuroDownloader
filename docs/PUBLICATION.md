@@ -11,7 +11,7 @@ Vue d'ensemble :
 | Dépôt `auriciel21/AuroDownloader`, public | GitHub | Oui |
 | Clé des mises à jour (Tauri) | Machine du mainteneur, secrets GitHub, clé publique dans `tauri.conf.json` | Oui |
 | Magasin de clés Android | Machine du mainteneur, secrets GitHub | Oui |
-| Signature Windows par SignPath Foundation | Compte SignPath, secrets et variables GitHub | Non : sans elle, installateurs non signés |
+| Signature Windows par SignPath Foundation | Compte SignPath, secrets et variables GitHub | Non retenue (2026-11-26) : installateurs non signés, utilisateurs avertis |
 
 ## 1. Créer le dépôt et y pousser le code
 
@@ -83,10 +83,14 @@ signée par la même clé.
 4. **Sauvegarde** : comme pour la clé des mises à jour. Perdu, les utilisateurs devront
    désinstaller l'application pour installer une version signée d'une autre clé.
 
-## 4. Signature Windows par SignPath (facultative)
+## 4. Signature Windows par SignPath (non retenue)
 
-Sans elle, Windows SmartScreen affiche « éditeur inconnu » à l'installation ; tout le reste
-fonctionne. Elle s'active d'elle-même quand le secret `SIGNPATH_API_TOKEN` existe.
+**Décision du 2026-11-26 : pas de SignPath.** Les installateurs Windows sont publiés non
+signés : SmartScreen affiche « éditeur inconnu » à l'installation, tout le reste fonctionne.
+L'utilisateur en est averti avant l'installation : le workflow ajoute l'avertissement aux
+notes de chaque publication, et le README et le guide le disent. Rien à faire dans cette
+section ; elle reste pour mémoire, si la décision change un jour. La signature s'active
+d'elle-même quand le secret `SIGNPATH_API_TOKEN` existe.
 
 1. Relire les conditions de SignPath Foundation (`signpath.org`, page des conditions) : elles
    peuvent changer. Au 2026-11-18 : licence libre reconnue par l'OSI (GPL-3.0 : oui), dépôt
@@ -129,7 +133,8 @@ fonctionne. Elle s'active d'elle-même quand le secret `SIGNPATH_API_TOKEN` exis
    - vérifie la version, la clé publique et les secrets ;
    - construit les installateurs NSIS (x64 et ARM64), les `.deb` et AppImage (x64 et
      aarch64), l'APK (arm64) ;
-   - fait signer les installateurs Windows par SignPath si elle est configurée ;
+   - fait signer les installateurs Windows par SignPath si elle est configurée (non retenue :
+     sinon, ajoute aux notes l'avertissement des installateurs non signés) ;
    - signe les installateurs et les AppImage pour la mise à jour, puis l'APK ;
    - prépare un **brouillon** de publication avec `latest.json` et `SHA256SUMS`.
 5. Relire le brouillon (onglet « Releases ») : quatre installateurs ou AppImage avec leur
@@ -149,7 +154,7 @@ Une publication ratée : supprimer le brouillon et l'étiquette (`git push origi
   compilation d'aws-lc sous Windows ARM64 peut demander un outil de plus (clang, NASM) ;
 - l'émulateur Android de la CI (tests instrumentés) ;
 - l'AppImage aarch64 (outil de Tauri pour cette architecture) ;
-- SignPath, quand elle sera configurée.
+- l'avertissement des installateurs non signés à la fin des notes du brouillon.
 
 La première version publiée sert d'essai de bout en bout de la mise à jour : installer la
 version précédente, publier la suivante, vérifier que l'application la propose, l'installe et

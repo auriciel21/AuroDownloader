@@ -60,8 +60,10 @@ Une fois la version 1 sortie, depuis la page des
 L'extension de navigateur n'est pas encore dans les boutiques des navigateurs ; elle se
 charge depuis le dossier `extension`.
 
-`SHA256SUMS` donne l'empreinte de chaque fichier d'une publication. Si l'installateur
-Windows n'est pas signé, SmartScreen avertit d'un « éditeur inconnu ».
+`SHA256SUMS` donne l'empreinte de chaque fichier d'une publication. L'installateur Windows
+n'est pas signé : SmartScreen avertit d'un « éditeur inconnu » ; choisissez « Informations
+complémentaires », puis « Exécuter quand même », si vous l'avez bien pris sur la page des
+publications.
 
 ## Documentation
 
