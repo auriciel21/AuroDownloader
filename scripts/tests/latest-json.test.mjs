@@ -1,4 +1,4 @@
-// latest.json des mises à jour (étape 8c) : node --test scripts/tests/
+// latest.json des mises à jour (étape 8c) : node --test scripts/tests/*.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { latestJson, PLATFORMS } from "../latest-json.mjs";

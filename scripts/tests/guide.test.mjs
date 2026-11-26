@@ -1,4 +1,4 @@
-// Guide de l'utilisateur (étapes 9c et 9d) : node --test scripts/tests/
+// Guide de l'utilisateur (étapes 9c et 9d) : node --test scripts/tests/*.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";

@@ -46,8 +46,8 @@ Hors périmètre :
   boîte).
 
 **Lancement.**
-- Page et extension : `cd ui && npm ci --ignore-scripts`, puis `node --test ui/tests/
-  extension/tests/`. axe-core et jsdom sont des dépendances de développement, jamais
+- Page et extension : `cd ui && npm ci --ignore-scripts`, puis `node --test ui/tests/*.test.js
+  extension/tests/*.test.cjs`. axe-core et jsdom sont des dépendances de développement, jamais
   livrées (SPEC 8.3).
 - Android : sur un appareil, par `am instrument` (`CLAUDE.md`).
 - Les trois tourneront dans l'intégration continue de l'étape 8 ; Android y tournera sur

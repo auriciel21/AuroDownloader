@@ -275,7 +275,7 @@ téléchargement.
   éteindre la machine de l'utilisateur.
 - `extension` : extension navigateur (SPEC 4.5, F-37), Manifest V3 pour Firefox, Chrome et
   Edge ; `decide.js` (décision de capture, `.torrent` et liens magnet, testée par
-  `node --test extension/tests/`), `background.js`, `content.js` (clic avec Alt, clic sur un
+  `node --test extension/tests/*.test.cjs`), `background.js`, `content.js` (clic avec Alt, clic sur un
   lien magnet), `popup.*` et `video.js` (fenêtre de l'icône : vidéo de la page ; qualités
   recopiées de `ui/src/model.js`, comparées par les tests), `options.*`, `_locales` (en, fr).
   Accessibilité (étape 7b) : `tests/a11y.test.cjs` (axe-core et jsdom pris dans `ui/node_modules`).
@@ -458,9 +458,9 @@ AURO_DAEMON=../../target/release/aurod cargo run --release -- --endpoint <essai>
 # d'essai Ubuntu-24.04, avec npm 10.9.2 dans ~/tools/npm, lancé par
 # `node ~/tools/npm/bin/npm-cli.js`) ; dépendances des tests d'accessibilité d'abord :
 cd ui && npm ci --ignore-scripts && cd ..
-node --test ui/tests/
-node --test extension/tests/
-node --test scripts/tests/
+node --test ui/tests/*.test.js
+node --test extension/tests/*.test.cjs
+node --test scripts/tests/*.test.mjs
 # Guide de l'utilisateur (docs/guide, étape 9c) : copie de l'application refaite, vérifiée :
 node scripts/guide.mjs ; node scripts/guide.mjs --check
 # Version (cinq fichiers ; docs/PUBLICATION.md) : affichée, réglée, vérifiée :

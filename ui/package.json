@@ -1,10 +1,10 @@
 {
   "name": "auro-ui",
   "private": true,
-  "description": "Page de l'application de bureau et de l'interface web distante ; tests : node --test tests/",
+  "description": "Page de l'application de bureau et de l'interface web distante ; tests : node --test tests/*.test.js",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.js"
   },
   "devDependencies": {
     "axe-core": "4.10.3",

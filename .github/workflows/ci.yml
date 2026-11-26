@@ -95,9 +95,10 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: ui
       - run: node --check ui/src/main.js
-      - run: node --test ui/tests/ extension/tests/
+      # Fichiers nommés par le shell : depuis Node 21, `--test` ne prend plus un dossier.
+      - run: node --test ui/tests/*.test.js extension/tests/*.test.cjs
       # Scripts de publication (latest.json, étape 8c) et de version.
-      - run: node --test scripts/tests/
+      - run: node --test scripts/tests/*.test.mjs
       - name: Versions accordées (scripts/version.sh)
         run: |
           sh scripts/version.sh --check "$(sed -n 's/^  "version": "\(.*\)",$/\1/p' apps/desktop/tauri.conf.json)"
