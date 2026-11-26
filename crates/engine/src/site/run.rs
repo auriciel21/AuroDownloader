@@ -356,6 +356,32 @@ async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
     if length.is_some_and(|l| l > request.limit) {
         return Fetch::TooBig;
     }
+    // Une page sans type annoncé (serveurs de fichiers : `README`, `00-INDEX`…) : du HTML
+    // seulement si elle commence par une balise ; du texte brut garde son lien en ligne.
+    let mut head: Vec<u8> = Vec::new();
+    if request.page && content_type.is_none() {
+        loop {
+            match looks_like_html(&head) {
+                Some(true) => break,
+                Some(false) => return Fetch::NotHtml,
+                None if head.len() >= SNIFF_BYTES => return Fetch::NotHtml,
+                None => {}
+            }
+            throttle.ready().await;
+            match body.chunk().await {
+                Ok(Some(chunk)) => {
+                    throttle.pay(chunk.len());
+                    head.extend_from_slice(&chunk);
+                }
+                // Vide, ou rien que des espaces.
+                Ok(None) => return Fetch::NotHtml,
+                Err(e) => return Fetch::Net(e),
+            }
+        }
+        if head.len() as u64 > request.limit {
+            return Fetch::TooBig;
+        }
+    }
     let mut file = match std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -365,7 +391,10 @@ async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
         Ok(file) => file,
         Err(e) => return Fetch::Disk(e),
     };
-    let mut size: u64 = 0;
+    let mut size = head.len() as u64;
+    if let Err(e) = file.write_all(&head) {
+        return Fetch::Disk(e);
+    }
     loop {
         throttle.ready().await;
         let chunk = match body.chunk().await {
@@ -393,6 +422,22 @@ async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
         Ok(Err(e)) => Fetch::Disk(e),
         Err(e) => Fetch::Disk(std::io::Error::other(e)),
     }
+}
+
+/// Octets lus au plus pour reconnaître une page sans type annoncé.
+const SNIFF_BYTES: usize = 1024;
+
+/// Le début d'une page sans type annoncé ressemble-t-il à du HTML ? Après une marque d'ordre
+/// des octets et des espaces, une balise (`<`) ; `None` tant que rien d'autre n'est lu.
+fn looks_like_html(head: &[u8]) -> Option<bool> {
+    // UTF-16 : laissé tel quel à la réécriture (SPEC §7.18 ter), mais bien une page.
+    if head.starts_with(&[0xFF, 0xFE]) || head.starts_with(&[0xFE, 0xFF]) {
+        return Some(true);
+    }
+    let text = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
+    text.iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .map(|&b| b == b'<')
 }
 
 /// Une page à suivre ? Une adresse de sorte page (extension de page web, ou aucune),

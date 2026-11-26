@@ -489,6 +489,66 @@ async fn dead_links_and_oversized_resources_stay_online() {
     crate::testing::stop(&engine).await;
 }
 
+/// Une page sans type annoncé (serveur de fichiers) : du HTML si elle commence par une
+/// balise, sinon son lien reste en ligne (essai réel du 2026-11-26 sur deb.debian.org).
+#[tokio::test]
+async fn a_page_without_a_type_is_html_only_if_it_starts_with_a_tag() {
+    let html =
+        br#"<html><a href="/LISEZMOI">l</a> <a href="/notes">n</a> <a href="/vide">v</a></html>"#;
+    let site = Site::with(&[("/", HTML, html)], |r| {
+        let body: &[u8] = match r.path.as_str() {
+            "/LISEZMOI" => b"Texte brut, sans balise.\n<p> plus loin",
+            "/notes" => b"\xEF\xBB\xBF\n  <!doctype html><p>notes</p>",
+            "/vide" => b"  \n ",
+            _ => return None,
+        };
+        Some(reply(
+            "200 OK",
+            &[("Content-Length", &body.len().to_string())],
+            body,
+        ))
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let id = add(&engine, dir.path(), request(&site, 1, &[])).await;
+    let task = finished(&engine, &id).await;
+    assert_eq!(task.state, TaskState::Completed, "{:?}", task.error_detail);
+    let (main, _) = site.hosts();
+    let root = dir.path().join(&main);
+    let index = read(&root.join(&main).join("index.html"));
+    assert!(
+        index.contains(&format!(r#"<a href="{}">"#, site.url("/LISEZMOI"))),
+        "{index}"
+    );
+    assert!(index.contains(r#"<a href="notes.html">"#), "{index}");
+    assert!(
+        index.contains(&format!(r#"<a href="{}">"#, site.url("/vide"))),
+        "{index}"
+    );
+    assert!(read(&root.join(&main).join("notes.html")).contains("<p>notes</p>"));
+    let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
+    let errors: Vec<_> = store_site::items(&conn, &id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|i| i.error)
+        .collect();
+    assert_eq!(errors, ["NOT_HTML", "NOT_HTML"]);
+    assert!(!root.join(&main).join("LISEZMOI.html").exists());
+    crate::testing::stop(&engine).await;
+}
+
+#[test]
+fn the_start_of_a_page_without_a_type_is_recognised() {
+    use super::looks_like_html;
+    assert_eq!(looks_like_html(b""), None);
+    assert_eq!(looks_like_html(b"  \r\n"), None);
+    assert_eq!(looks_like_html(b" <html>"), Some(true));
+    assert_eq!(looks_like_html(b"\xEF\xBB\xBF<!DOCTYPE html>"), Some(true));
+    assert_eq!(looks_like_html(b"\xFF\xFE<\x00"), Some(true));
+    assert_eq!(looks_like_html(b"What's in /debian/doc?"), Some(false));
+    assert_eq!(looks_like_html(b"\xEF\xBB\xBFtexte"), Some(false));
+}
+
 #[tokio::test]
 async fn a_start_page_that_is_not_html_fails_the_copy() {
     let site = Site::new(&[("/", "application/zip", b"PK")]);
