@@ -1,7 +1,8 @@
 //! `auro links` (F-29, F-31, SPEC §7.18) : les liens d'une page, d'un texte ou d'une liste
 //! importée, filtrés par la CLI (sorte, extension, expression régulière, taille), avec leur
 //! taille lue par le moteur ; `--add` les ajoute ensemble (`task.addBatch`). Avec `--depth`,
-//! le moteur explore le site de lien en lien (F-42, SPEC §7.18 bis).
+//! le moteur explore le site de lien en lien (F-42, SPEC §7.18 bis). [`find`] sert aussi à
+//! `auro site`, qui coche les fichiers gardés (F-43, SPEC §7.18 ter).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
@@ -64,6 +65,15 @@ impl Filters {
             self.min_size.is_none_or(|m| s >= m) && self.max_size.is_none_or(|m| s <= m)
         })
     }
+}
+
+/// Extensions données en option (« .ISO, zip ») : en minuscules, sans point ni vide.
+pub fn extensions(given: &[String]) -> Vec<String> {
+    given
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect()
 }
 
 /// Exploration d'un site (F-42, SPEC §7.18 bis).
@@ -195,32 +205,54 @@ async fn crawl_links(rpc: &mut Rpc, page: &str, crawl: &Crawl) -> Result<Vec<Val
     Ok(result["links"].as_array().cloned().unwrap_or_default())
 }
 
-pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
-    let mut found = match &opts.crawl {
-        Some(crawl) if opts.source.contains("://") => crawl_links(rpc, opts.source, crawl).await?,
+/// Liens trouvés, gardés par les filtres, avec les tailles lues.
+pub struct Found {
+    /// Liens trouvés en tout.
+    pub found: usize,
+    pub kept: Vec<Value>,
+    pub sizes: HashMap<String, u64>,
+}
+
+impl Found {
+    pub fn size_of(&self, link: &Value) -> Option<u64> {
+        link["url"]
+            .as_str()
+            .and_then(|u| self.sizes.get(u))
+            .copied()
+    }
+}
+
+/// Les liens d'une source (ou d'un site exploré), filtrés, et leurs tailles (sauf
+/// `no_sizes`).
+pub async fn find(
+    rpc: &mut Rpc,
+    source: &str,
+    crawl: Option<&Crawl>,
+    filters: &Filters,
+    no_sizes: bool,
+) -> Result<Found> {
+    let mut found = match crawl {
+        Some(crawl) if source.contains("://") => crawl_links(rpc, source, crawl).await?,
         Some(_) => bail!("--depth explore un site : il faut l'adresse d'une page"),
         None => {
-            let scan = rpc.call("linkscan.run", scan_params(opts.source)?).await?;
+            let scan = rpc.call("linkscan.run", scan_params(source)?).await?;
             scan["links"].as_array().cloned().unwrap_or_default()
         }
     };
     // Tailles (500 au plus, liens magnet exclus) : celles des liens gardés, puis celles des
     // « pages » masquées, que le serveur dira peut-être des fichiers (SHA256SUMS…).
     let mut sizes: HashMap<String, u64> = HashMap::new();
-    if !opts.no_sizes {
+    if !no_sizes {
         let wide = Filters {
             all: true,
-            ..opts.filters.clone()
+            ..filters.clone()
         };
         let probed = |l: &&Value| l["kind"] != "magnet";
-        let first = found
-            .iter()
-            .filter(probed)
-            .filter(|l| opts.filters.keeps(l));
+        let first = found.iter().filter(probed).filter(|l| filters.keeps(l));
         let then = found
             .iter()
             .filter(probed)
-            .filter(|l| !opts.filters.keeps(l) && l["kind"] == "page" && wide.keeps(l));
+            .filter(|l| !filters.keeps(l) && l["kind"] == "page" && wide.keeps(l));
         let urls: Vec<String> = first
             .chain(then)
             .filter_map(|l| l["url"].as_str().map(str::to_owned))
@@ -248,22 +280,35 @@ pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
             }
         }
     }
-    let mut kept: Vec<Value> = found
-        .iter()
-        .filter(|l| opts.filters.keeps(l))
-        .cloned()
-        .collect();
+    let mut kept: Vec<Value> = found.iter().filter(|l| filters.keeps(l)).cloned().collect();
     let size_of = |l: &Value| l["url"].as_str().and_then(|u| sizes.get(u)).copied();
-    kept.retain(|l| opts.filters.keeps_size(size_of(l)));
+    kept.retain(|l| filters.keeps_size(size_of(l)));
+    Ok(Found {
+        found: found.len(),
+        kept,
+        sizes,
+    })
+}
+
+pub async fn links(rpc: &mut Rpc, opts: LinksOptions<'_>) -> Result<()> {
+    let found = find(
+        rpc,
+        opts.source,
+        opts.crawl.as_ref(),
+        &opts.filters,
+        opts.no_sizes,
+    )
+    .await?;
+    let kept = &found.kept;
     for (i, l) in kept.iter().enumerate() {
-        let shown = size_of(l).map_or_else(|| "?".to_owned(), size);
+        let shown = found.size_of(l).map_or_else(|| "?".to_owned(), size);
         println!(
             "{i:>4}  {shown:>10}  {}  {}",
             l["name"].as_str().unwrap_or_default(),
             l["url"].as_str().unwrap_or_default()
         );
     }
-    let hidden = found.len() - kept.len();
+    let hidden = found.found - kept.len();
     match hidden {
         0 => println!("{} lien(s)", kept.len()),
         n => println!(

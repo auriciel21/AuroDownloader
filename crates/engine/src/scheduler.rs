@@ -357,6 +357,8 @@ pub struct Include {
     pub sources: bool,
     /// Fichiers d'un torrent (SPEC §7.16).
     pub files: bool,
+    /// Éléments d'une copie de site (SPEC §7.18 ter).
+    pub items: bool,
 }
 
 /// Une tâche avec ses segments, ses sources et ses fichiers, si demandés.
@@ -371,6 +373,17 @@ pub struct TaskDetails {
     pub files: Option<Vec<store::torrents::TorrentFile>>,
     /// Empreintes de morceaux d'un Metalink et leurs tours (F-12, SPEC §7.9), si elle en a.
     pub pieces: Option<store::pieces::TaskPieces>,
+    /// Copie d'un site (SPEC §7.18 ter) ; `None` pour une autre sorte de tâche.
+    pub site: Option<SiteDetails>,
+}
+
+/// Copie d'un site (SPEC §7.18 ter) : sa demande, ses nombres d'éléments et, sur demande
+/// (`include: ["items"]`), ses éléments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteDetails {
+    pub job: store::site::SiteJob,
+    pub counts: store::site::Counts,
+    pub items: Option<Vec<store::site::Item>>,
 }
 
 /// État complet du moteur à une révision donnée (`sync.snapshot`, SPEC §6.10).
@@ -4740,12 +4753,26 @@ impl Scheduler {
         } else {
             None
         };
+        let site = if task.kind == TaskKind::Site {
+            Some(SiteDetails {
+                job: store::site::load_job(&self.conn, task_id)?,
+                counts: store::site::counts(&self.conn, task_id)?,
+                items: if include.items {
+                    Some(store::site::items(&self.conn, task_id)?)
+                } else {
+                    None
+                },
+            })
+        } else {
+            None
+        };
         Ok(TaskDetails {
             task,
             segments,
             sources,
             files,
             pieces: store::pieces::load(&self.conn, task_id)?,
+            site,
         })
     }
 

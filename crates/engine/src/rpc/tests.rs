@@ -5269,3 +5269,205 @@ async fn a_site_is_explored_through_the_protocol() {
     .expect("places non rendues");
     crate::testing::stop(&engine).await;
 }
+
+/// Copie d'un site par le protocole (SPEC §7.18 ter) : capacité, `task.add` avec `site`,
+/// avancement avec les nombres d'éléments, `task.get` et ses éléments ; paramètres refusés.
+#[tokio::test]
+async fn a_site_is_copied_through_the_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let greeted = c.result("engine.hello", hello()).await;
+    assert!(
+        greeted["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("site"))
+    );
+    c.result(
+        "events.subscribe",
+        json!({"topics": ["tasks", "progress"], "progressIntervalMs": 100}),
+    )
+    .await;
+    let pages = crate::testing::serve(|r| {
+        let (kind, body): (&str, &[u8]) = match r.path.as_str() {
+            "/" => (
+                "text/html",
+                br#"<a href="/a.html">a</a> <img src="/i.png"> <img src="/manque.png">"#,
+            ),
+            "/a.html" => (
+                "text/html",
+                br#"<link rel="stylesheet" href="/s.css"><a href="/">accueil</a>"#,
+            ),
+            "/s.css" => ("text/css", b"body { background: url(i.png) }"),
+            "/i.png" => ("image/png", b"\x89PNG image"),
+            _ => return crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+        };
+        let len = body.len().to_string();
+        crate::testing::reply(
+            "200 OK",
+            &[("Content-Type", kind), ("Content-Length", &len)],
+            body,
+        )
+    });
+    let file = site(64 * 1024);
+    let file_url = file.url("/f.bin");
+
+    let id = c
+        .result(
+            "task.add",
+            json!({
+                "site": {"pageUrl": pages.url("/"), "depth": 2, "maxPages": 10, "files": [file_url]},
+                "destDir": dir_text(dir.path()),
+            }),
+        )
+        .await["taskId"]
+        .clone();
+    let progress = c
+        .notification("task.progress", |p| {
+            p["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["taskId"] == id && i.get("site").is_some())
+        })
+        .await;
+    let item = progress["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["taskId"] == id)
+        .unwrap()
+        .clone();
+    assert!(item["totalBytes"].is_null(), "{item}");
+    assert!(item["site"]["pages"].is_u64(), "{item}");
+    c.notification("task.stateChanged", |p| {
+        p["taskId"] == id && p["to"] == "completed"
+    })
+    .await;
+
+    let task = c.result("task.get", json!({"taskId": id})).await;
+    assert_eq!(task["kind"], "site");
+    let port = reqwest::Url::parse(&pages.url("/"))
+        .unwrap()
+        .port()
+        .unwrap();
+    assert_eq!(task["displayName"], format!("127.0.0.1:{port}"));
+    let copy = &task["site"];
+    assert_eq!(copy["pageUrl"], json!(pages.url("/")));
+    assert_eq!(copy["depth"], 2);
+    assert_eq!(copy["maxPages"], 10);
+    assert_eq!(copy["stop"], "finished", "{copy}");
+    assert_eq!(copy["pages"], 2, "{copy}");
+    assert_eq!(copy["resources"], 2, "{copy}");
+    assert_eq!(copy["files"], 1, "{copy}");
+    assert_eq!(copy["failed"], 1, "{copy}");
+    assert!(copy.get("items").is_none());
+    let start = copy["startPath"].as_str().unwrap();
+    assert!(start.ends_with("/index.html"), "{start}");
+    let root = dir.path().join(task["fileName"].as_str().unwrap());
+    assert!(root.join(start).is_file());
+
+    let task = c
+        .result("task.get", json!({"taskId": id, "include": ["items"]}))
+        .await;
+    let items = task["site"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 6, "{items:?}");
+    let dead = items.iter().find(|i| i["state"] == "failed").unwrap();
+    assert!(
+        dead["url"].as_str().unwrap().ends_with("/manque.png"),
+        "{dead}"
+    );
+    assert_eq!(dead["error"], "HTTP_STATUS");
+    let ticked = items.iter().find(|i| i["kind"] == "file").unwrap();
+    assert_eq!(ticked["state"], "done");
+    assert_eq!(ticked["size"], 64 * 1024);
+    assert!(root.join(ticked["path"].as_str().unwrap()).is_file());
+
+    // Refusés.
+    let page = pages.url("/");
+    let to = dir_text(dir.path());
+    let too_many: Vec<String> = (0..=10_000).map(|i| format!("{page}{i}.zip")).collect();
+    for (params, code) in [
+        (json!({"site": "texte"}), "INVALID_PARAMS"),
+        (json!({"site": {}}), "INVALID_PARAMS"),
+        (
+            json!({"site": {"pageUrl": page}, "sources": [{"url": page}]}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page}, "media": {"pageUrl": page}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page}, "plugin": false}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page}, "fileName": "x"}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page}, "headers": {"Referer": page}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page}, "checksum": {"algo": "md5", "value": "00"}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "depth": 0}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "depth": 6}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "depth": 300}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "maxPages": 0}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "maxPages": 2001}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "maxBytes": 1000}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "maxBytes": -1}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "exclude": "("}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "files": [1]}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            json!({"site": {"pageUrl": page, "files": too_many}}),
+            "INVALID_PARAMS",
+        ),
+        (json!({"site": {"pageUrl": "ftp://hote/x"}}), "URL_INVALID"),
+        (
+            json!({"site": {"pageUrl": page, "files": ["ftp://hote/x"]}}),
+            "URL_INVALID",
+        ),
+    ] {
+        let mut params = params;
+        params["destDir"] = json!(to);
+        assert_eq!(
+            c.error_code("task.add", params.clone()).await,
+            code,
+            "{params}"
+        );
+    }
+    crate::testing::stop(&engine).await;
+}

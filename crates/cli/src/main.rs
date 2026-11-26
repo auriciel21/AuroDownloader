@@ -291,6 +291,71 @@ enum Command {
         #[arg(long, requires_all = ["depth", "add"])]
         tree: bool,
     },
+    /// Copie un site pour la navigation hors ligne : pages lues de lien en lien (même hôte,
+    /// robots.txt respecté), avec leurs images, styles, scripts et polices, liens réécrits
+    /// vers la copie. Avec -e, --regex, --min-size ou --max-size, explore d'abord le site et
+    /// copie aussi les fichiers gardés (comme auro links). Suit la copie jusqu'à la fin ;
+    /// Ctrl-C la met en pause
+    Site {
+        /// Adresse de la page de départ
+        page: String,
+        /// Dossier de destination ; la copie y prend un dossier au nom de l'hôte
+        #[arg(short = 'o', long, default_value = ".")]
+        dir: PathBuf,
+        /// Niveau le plus profond (1 à 5) : 1, la page et les pages qu'elle cite
+        #[arg(long, value_name = "NIVEAU", default_value_t = 1,
+              value_parser = clap::value_parser!(u8).range(1..=5))]
+        depth: u8,
+        /// Pages copiées au plus (200 par défaut, 2000 au plus)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=2000))]
+        max_pages: Option<u32>,
+        /// Pages à ne pas ouvrir, expression régulière sur l'adresse ; par défaut les pages
+        /// de déconnexion ; « '' » : aucune
+        #[arg(long, value_name = "EXPRESSION")]
+        exclude: Option<String>,
+        /// Seulement les pages sous le dossier de la page de départ
+        #[arg(long)]
+        same_folder: bool,
+        /// Lire aussi les pages que robots.txt refuse aux robots
+        #[arg(long)]
+        ignore_robots: bool,
+        /// Volume des pages et ressources (1M à 20G, 1G par défaut) ; atteint, la copie
+        /// s'arrête d'explorer
+        #[arg(long, value_name = "TAILLE", value_parser = parse_volume)]
+        max_volume: Option<u64>,
+        /// Fichiers à copier aussi, par leurs extensions : « pdf,zip »
+        #[arg(
+            short = 'e',
+            long = "ext",
+            value_name = "EXTENSIONS",
+            value_delimiter = ','
+        )]
+        extensions: Vec<String>,
+        /// Fichiers à copier aussi : expression régulière que leur adresse doit contenir
+        #[arg(long, value_name = "EXPRESSION")]
+        regex: Option<String>,
+        /// Taille minimale d'un fichier copié (500K, 2M, 1G) ; une taille inconnue l'écarte
+        #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+        min_size: Option<u64>,
+        /// Taille maximale d'un fichier copié ; une taille inconnue l'écarte
+        #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+        max_size: Option<u64>,
+        /// Ne pas demander la taille des fichiers trouvés
+        #[arg(long, conflicts_with_all = ["min_size", "max_size"])]
+        no_sizes: bool,
+        /// Connexions par fichier copié (1 à 32 ; automatique sinon)
+        #[arg(short = 'c', long, value_parser = connections())]
+        connections: Option<u32>,
+        /// File (nom ou identifiant)
+        #[arg(short = 'q', long)]
+        queue: Option<String>,
+        /// Limite de débit de la copie (500K, 2M…)
+        #[arg(short = 'l', long, value_name = "DÉBIT", value_parser = display::parse_limit)]
+        limit: Option<Limit>,
+        /// Ajouter en pause, sans suivre
+        #[arg(long)]
+        paused: bool,
+    },
     /// Contenu d'un fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers,
     /// rangs, empreintes et sources, sans rien ajouter
     Metalink {
@@ -516,7 +581,17 @@ enum VideoAction {
 #[derive(Clone)]
 struct Selection(Vec<u32>);
 
-/// « 0,2-4 » : rangs et intervalles, sans doublon.
+/// Volume d'une copie de site (SPEC §7.18 ter) : une taille de 1 Mio à 20 Gio.
+fn parse_volume(text: &str) -> Result<u64, String> {
+    use auro_engine::site::run::{MAX_BYTES, MIN_BYTES};
+    let bytes = parse_size(text)?;
+    if (MIN_BYTES..=MAX_BYTES).contains(&bytes) {
+        Ok(bytes)
+    } else {
+        Err(format!("{text} : de 1M à 20G"))
+    }
+}
+
 /// Une taille : « 800000 », « 500K », « 2M », « 1.5G » (unités binaires).
 fn parse_size(text: &str) -> Result<u64, String> {
     match display::parse_limit(text) {
@@ -527,6 +602,7 @@ fn parse_size(text: &str) -> Result<u64, String> {
     }
 }
 
+/// « 0,2-4 » : rangs et intervalles, sans doublon.
 fn parse_selection(text: &str) -> Result<Selection, String> {
     let rank = |t: &str| {
         t.trim()
@@ -1029,6 +1105,64 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             };
             remote::get(target, remote::NewTask::File(&url, &opts)).await
         }
+        Command::Site {
+            page,
+            dir,
+            depth,
+            max_pages,
+            exclude,
+            same_folder,
+            ignore_robots,
+            max_volume,
+            extensions,
+            regex,
+            min_size,
+            max_size,
+            no_sizes,
+            connections,
+            queue,
+            limit,
+            paused,
+        } => {
+            let regex = regex
+                .map(|r| regex::Regex::new(&r))
+                .transpose()
+                .context("--regex : expression illisible")?;
+            let extensions = links::extensions(&extensions);
+            // Sans filtre, aucun fichier, et aucune exploration avant l'ajout (SPEC §7.18 ter).
+            let chosen = !extensions.is_empty()
+                || regex.is_some()
+                || min_size.is_some()
+                || max_size.is_some();
+            let files = chosen.then(|| links::Filters {
+                extensions,
+                regex,
+                min_size,
+                max_size,
+                all: false,
+            });
+            let opts = remote::SiteOptions {
+                dir: &dir,
+                crawl: links::Crawl {
+                    depth,
+                    max_pages,
+                    exclude: exclude.unwrap_or_else(|| {
+                        auro_engine::linkscan::crawl::DEFAULT_EXCLUDE.to_owned()
+                    }),
+                    same_folder,
+                    ignore_robots,
+                    tree: false,
+                },
+                max_volume,
+                files,
+                no_sizes,
+                connections,
+                queue: queue.as_deref(),
+                limit: limit.and_then(|l| l.0),
+                paused,
+            };
+            remote::get(target, remote::NewTask::Site(&page, &opts)).await
+        }
         Command::Video {
             action: VideoAction::Get { page, args },
         } => {
@@ -1142,11 +1276,7 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                         .transpose()
                         .context("--regex : expression illisible")?;
                     let filters = links::Filters {
-                        extensions: extensions
-                            .iter()
-                            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
-                            .filter(|e| !e.is_empty())
-                            .collect(),
+                        extensions: links::extensions(&extensions),
                         regex,
                         min_size,
                         max_size,

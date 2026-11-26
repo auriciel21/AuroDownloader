@@ -833,6 +833,16 @@ impl ProgressBatch {
                 item["uploadedBytes"] = json!(uploaded);
                 item["uploadBps"] = json!(p.upload_bps.unwrap_or(0));
             }
+            // Copie d'un site (SPEC §7.18 ter, depuis le 2026-11-26) : ses éléments.
+            if let Some(c) = p.site {
+                item["site"] = json!({
+                    "pages": c.pages,
+                    "resources": c.resources,
+                    "files": c.files,
+                    "failed": c.failed,
+                    "queued": c.queued,
+                });
+            }
             items.push(item);
         }
         Some(notification(
@@ -857,6 +867,7 @@ mod tests {
             upload_bps: None,
             seeding: false,
             merging: false,
+            site: None,
         }
     }
 

@@ -100,10 +100,61 @@ pub struct Line {
     pub peers: bool,
     /// Torrent : débit d'envoi aux autres pairs.
     pub upload_bps: Option<u64>,
+    /// Copie d'un site (SPEC §7.18 ter) : ses éléments, à la place des connexions.
+    pub site: Option<SiteLine>,
+}
+
+/// Éléments d'une copie de site, tels que `task.progress` les donne.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SiteLine {
+    pub pages: u64,
+    pub resources: u64,
+    pub files: u64,
+    pub failed: u64,
+    pub queued: u64,
+}
+
+impl SiteLine {
+    /// Ceux de `site` d'un avancement ou d'une tâche, s'il y en a.
+    pub fn of(value: &serde_json::Value) -> Option<SiteLine> {
+        let n = |key: &str| value[key].as_u64().unwrap_or(0);
+        value.is_object().then(|| SiteLine {
+            pages: n("pages"),
+            resources: n("resources"),
+            files: n("files"),
+            failed: n("failed"),
+            queued: n("queued"),
+        })
+    }
+
+    /// « 12 page(s), 40 ressource(s), 2 fichier(s), 3 en échec ».
+    pub fn render(&self) -> String {
+        let mut text = format!(
+            "{} page(s), {} ressource(s), {} fichier(s)",
+            self.pages, self.resources, self.files
+        );
+        if self.failed > 0 {
+            text.push_str(&format!(", {} en échec", self.failed));
+        }
+        text
+    }
 }
 
 impl Line {
     pub fn render(&self) -> String {
+        // Copie d'un site : volume inconnu jusqu'à la fin, éléments plutôt que connexions.
+        if let Some(site) = &self.site {
+            let queued = match site.queued {
+                0 => String::new(),
+                n => format!(", {n} en attente"),
+            };
+            return format!(
+                "{}{queued}  {}  {}/s",
+                site.render(),
+                size(self.done),
+                size(self.bps)
+            );
+        }
         let done = match self.total {
             Some(total) if total > 0 => format!(
                 "{:5.1} %  {} / {}",

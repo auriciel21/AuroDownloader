@@ -178,7 +178,12 @@ fn written(conn: &Connection, task_id: &str) -> Result<u64, TransferError> {
         .sum())
 }
 
-fn progress(received: u64, merging: bool) -> Progress {
+/// Temps entre deux relevés des nombres d'éléments pendant l'exploration (une requête
+/// sur tous les éléments de la copie).
+const COUNTS_EVERY: Duration = Duration::from_millis(500);
+
+/// Avancement de la copie : octets écrits, et ses nombres d'éléments (`task.progress`).
+fn progress(received: u64, merging: bool, counts: site::Counts) -> Progress {
     Progress {
         received,
         total: None,
@@ -189,6 +194,7 @@ fn progress(received: u64, merging: bool) -> Progress {
         upload_bps: None,
         seeding: false,
         merging,
+        site: Some(counts),
     }
 }
 
@@ -232,7 +238,11 @@ async fn copy(
         change_state(conn, task_id, &Change::to(TaskState::PostProcessing))?;
     }
     // Annoncé par le planificateur, comme la fusion d'une vidéo.
-    on_progress(progress(written(conn, task_id)?, true));
+    on_progress(progress(
+        written(conn, task_id)?,
+        true,
+        site::counts(conn, task_id)?,
+    ));
     links(conn, task_id, &root).await
 }
 
@@ -425,6 +435,8 @@ struct Explorer {
     net_failures: u32,
     logins: HashMap<String, Option<Arc<Auth>>>,
     stopped: bool,
+    /// Derniers nombres d'éléments annoncés, et quand ils ont été relevés.
+    counts: Option<(Instant, site::Counts)>,
 }
 
 impl Explorer {
@@ -491,6 +503,7 @@ impl Explorer {
             net_failures: 0,
             logins: HashMap::new(),
             stopped: false,
+            counts: None,
         })
     }
 
@@ -511,6 +524,19 @@ impl Explorer {
             self.job.settings.same_folder,
             robots,
         )));
+    }
+
+    /// Nombres d'éléments de la copie, relevés au plus toutes les [`COUNTS_EVERY`].
+    fn counts(&mut self, conn: &Connection) -> Result<site::Counts, TransferError> {
+        let now = Instant::now();
+        if let Some((at, counts)) = self.counts
+            && now.duration_since(at) < COUNTS_EVERY
+        {
+            return Ok(counts);
+        }
+        let counts = site::counts(conn, &self.task_id)?;
+        self.counts = Some((now, counts));
+        Ok(counts)
     }
 
     /// Identifiants du site d'une adresse : canal local seulement (SPEC §7.18 bis).
@@ -579,7 +605,8 @@ impl Explorer {
                         return Ok(Some(end));
                     }
                     site::save_progress(conn, &self.task_id, self.written)?;
-                    on_progress(progress(self.written, false));
+                    let counts = self.counts(conn)?;
+                    on_progress(progress(self.written, false, counts));
                 }
                 () = sleep_until(wake.unwrap_or_else(Instant::now)), if wake.is_some() => {}
                 () = wait_stop(stop) => {
@@ -1104,7 +1131,9 @@ async fn file(
             }
             _ => {}
         }
-        let mut forward = |p: Progress| on_progress(progress(base + p.received, false));
+        // Les nombres ne changent pas pendant un fichier.
+        let counts = site::counts(conn, &task.id)?;
+        let mut forward = |p: Progress| on_progress(progress(base + p.received, false, counts));
         let outcome = transfer::run(
             conn,
             ctx.client,

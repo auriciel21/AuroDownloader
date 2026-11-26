@@ -55,6 +55,39 @@
               "uploadBps": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "site": {
+                "description": "Copie d'un site (SPEC 7.18 ter) : ses éléments ; depuis le 2026-11-26.",
+                "type": "object",
+                "properties": {
+                  "pages": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "resources": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "files": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "failed": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "queued": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "pages",
+                  "resources",
+                  "files",
+                  "failed",
+                  "queued"
+                ]
               }
             },
             "required": [

@@ -1,0 +1,81 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-site 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-site \- Copie un site pour la navigation hors ligne : pages lues de lien en lien (même hôte, robots.txt respecté), avec leurs images, styles, scripts et polices, liens réécrits vers la copie. Avec \-e, \-\-regex, \-\-min\-size ou \-\-max\-size, explore d\*(Aqabord le site et copie aussi les fichiers gardés (comme auro links). Suit la copie jusqu\*(Aqà la fin ; Ctrl\-C la met en pause
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro site\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-depth\fR] [\fB\-\-endpoint\fR] [\fB\-\-max\-pages\fR] [\fB\-\-exclude\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-same\-folder\fR] [\fB\-\-ignore\-robots\fR] [\fB\-\-max\-volume\fR] [\fB\-e\fR|\fB\-\-ext\fR] [\fB\-\-regex\fR] [\fB\-\-min\-size\fR] [\fB\-\-max\-size\fR] [\fB\-\-no\-sizes\fR] [\fB\-c\fR|\fB\-\-connections\fR] [\fB\-q\fR|\fB\-\-queue\fR] [\fB\-l\fR|\fB\-\-limit\fR] [\fB\-\-paused\fR] <\fIPAGE\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Copie un site pour la navigation hors ligne : pages lues de lien en lien (même hôte, robots.txt respecté), avec leurs images, styles, scripts et polices, liens réécrits vers la copie. Avec \-e, \-\-regex, \-\-min\-size ou \-\-max\-size, explore d\*(Aqabord le site et copie aussi les fichiers gardés (comme auro links). Suit la copie jusqu\*(Aqà la fin ; Ctrl\-C la met en pause
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-o\fR, \fB\-\-dir\fR \fI<DIR>\fR [default: .]
+Dossier de destination ; la copie y prend un dossier au nom de l\*(Aqhôte
+.TP
+\fB\-\-depth\fR \fI<NIVEAU>\fR [default: 1]
+Niveau le plus profond (1 à 5) : 1, la page et les pages qu\*(Aqelle cite
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-max\-pages\fR \fI<N>\fR
+Pages copiées au plus (200 par défaut, 2000 au plus)
+.TP
+\fB\-\-exclude\fR \fI<EXPRESSION>\fR
+Pages à ne pas ouvrir, expression régulière sur l\*(Aqadresse ; par défaut les pages de déconnexion ; « \*(Aq\*(Aq » : aucune
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-same\-folder\fR
+Seulement les pages sous le dossier de la page de départ
+.TP
+\fB\-\-ignore\-robots\fR
+Lire aussi les pages que robots.txt refuse aux robots
+.TP
+\fB\-\-max\-volume\fR \fI<TAILLE>\fR
+Volume des pages et ressources (1M à 20G, 1G par défaut) ; atteint, la copie s\*(Aqarrête d\*(Aqexplorer
+.TP
+\fB\-e\fR, \fB\-\-ext\fR \fI<EXTENSIONS>\fR
+Fichiers à copier aussi, par leurs extensions : « pdf,zip »
+.TP
+\fB\-\-regex\fR \fI<EXPRESSION>\fR
+Fichiers à copier aussi : expression régulière que leur adresse doit contenir
+.TP
+\fB\-\-min\-size\fR \fI<TAILLE>\fR
+Taille minimale d\*(Aqun fichier copié (500K, 2M, 1G) ; une taille inconnue l\*(Aqécarte
+.TP
+\fB\-\-max\-size\fR \fI<TAILLE>\fR
+Taille maximale d\*(Aqun fichier copié ; une taille inconnue l\*(Aqécarte
+.TP
+\fB\-\-no\-sizes\fR
+Ne pas demander la taille des fichiers trouvés
+.TP
+\fB\-c\fR, \fB\-\-connections\fR \fI<CONNECTIONS>\fR
+Connexions par fichier copié (1 à 32 ; automatique sinon)
+.TP
+\fB\-q\fR, \fB\-\-queue\fR \fI<QUEUE>\fR
+File (nom ou identifiant)
+.TP
+\fB\-l\fR, \fB\-\-limit\fR \fI<DÉBIT>\fR
+Limite de débit de la copie (500K, 2M…)
+.TP
+\fB\-\-paused\fR
+Ajouter en pause, sans suivre
+.TP
+<\fIPAGE\fR>
+Adresse de la page de départ

@@ -138,7 +138,10 @@ téléchargement.
   `site::run` (exploration avec le `Judge` de `linkscan::crawl`, lecture au fil de l'eau par
   `net::Client::open_get` dans le `.part`, 2 par hôte et 4 en tout, fichiers cochés en
   tâches HTTP internes, réécriture en `post_processing` depuis le brut, `delete_files`) ;
-  `transfer::Options::site_spacing` (`aurod --site-spacing-ms` pour le banc).
+  `transfer::Options::site_spacing` (`aurod --site-spacing-ms` pour le banc) ; protocole
+  (étape B2) : `site` de `task.add`, de `task.get` (`include: ["items"]`) et de
+  `task.progress` (`Progress::site`), capacité `site` ; CLI `auro site` (`crates/cli` :
+  `remote::add_site`, fichiers cochés par `links::find`).
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,
@@ -410,6 +413,7 @@ cargo run -p auro-cli -- get <url> --mirror <url>… ; mirror <id> [<url>]   # m
 cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> --select 0,2   # Metalink
 cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
 cargo run -p auro-cli -- links <page> --depth 2 --max-pages 300 -e pdf ; links … --add --tree -o .
+cargo run -p auro-cli -- site <page> -o . --depth 2 --max-volume 500M ; site <page> -e pdf,zip   # copie hors ligne
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
 cargo run -p auro-cli -- plugin install <fichier.wasm> [--yes] ; plugin list ; plugin resolve <page>

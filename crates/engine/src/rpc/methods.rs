@@ -16,7 +16,7 @@ use crate::metalink::Metalink;
 use crate::schedule::Rules;
 use crate::scheduler::{
     AddTask, EngineError, Include, LoginChange, LoginView, MediaRequest, MetalinkSource,
-    QueueChange, TaskDetails, TaskUpdate,
+    QueueChange, SiteRequest, TaskDetails, TaskUpdate,
 };
 use crate::store::history::{Cursor, HistoryFilter, HistoryRow};
 use crate::store::settings::{
@@ -949,11 +949,12 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
         "engine": {"version": env!("CARGO_PKG_VERSION"), "platform": std::env::consts::OS},
         "protocol": format!("{major}.{minor}"),
         // Vidéo (SPEC §7.17) : Windows et Linux seulement. Analyse de liens (SPEC §7.18) et
-        // Metalink : depuis le 2026-11-11. Exploration d'un site (§7.18 bis) : 2026-11-26.
+        // Metalink : depuis le 2026-11-11. Exploration d'un site (§7.18 bis) et copie d'un
+        // site (§7.18 ter) : 2026-11-26.
         "capabilities": if crate::media::SUPPORTED {
-            json!(["torrent", "media", "linkscan", "metalink", "crawl"])
+            json!(["torrent", "media", "linkscan", "metalink", "crawl", "site"])
         } else {
-            json!(["torrent", "linkscan", "metalink", "crawl"])
+            json!(["torrent", "linkscan", "metalink", "crawl", "site"])
         },
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
@@ -1191,18 +1192,31 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         }
         Some(_) => return Err(Params::wrong("media", "objet")),
     };
+    // Copie d'un site (SPEC §7.18 ter) : `site` à la place de `sources`.
+    let site = match p.get("site") {
+        None => None,
+        Some(Value::Object(s)) => {
+            if media.is_some() || p.get("sources").is_some() || p.get("plugin").is_some() {
+                return Err(RpcError::invalid_params(
+                    "site : ni sources, media ni plugin",
+                ));
+            }
+            Some(site_request(s)?)
+        }
+        Some(_) => return Err(Params::wrong("site", "objet")),
+    };
     let no_sources = Vec::new();
-    let sources = match &media {
-        Some(_) => &no_sources,
-        None => p
-            .get("sources")
+    let sources = if media.is_some() || site.is_some() {
+        &no_sources
+    } else {
+        p.get("sources")
             .and_then(Value::as_array)
-            .ok_or_else(|| RpcError::invalid_params("sources manquant"))?,
+            .ok_or_else(|| RpcError::invalid_params("sources manquant"))?
     };
     // Une adresse (`url`, lien magnet compris), ou un fichier `.torrent` en base64
     // (`torrent`, SPEC §7.16).
     let (url, torrent) = match sources.as_slice() {
-        [] if media.is_some() => ("", None),
+        [] if media.is_some() || site.is_some() => ("", None),
         [one] => match (one.get("url"), one.get("torrent")) {
             (Some(url), None) => (
                 url.as_str()
@@ -1273,8 +1287,7 @@ async fn task_add(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             pieces: None,
             torrent,
             media,
-            // Copie d.un site : protocole à l.étape B2 (SPEC §7.18 ter).
-            site: None,
+            site,
             mirrors,
             sub_dir: sub_dir_param(p)?,
             // Posés par la poignée restreinte d'une connexion à jeton (SPEC §7.19).
@@ -1803,6 +1816,39 @@ fn media_request(m: &serde_json::Map<String, Value>) -> Result<MediaRequest, Rpc
     })
 }
 
+/// `site` de `task.add` (SPEC §7.18 ter) : `pageUrl`, et `depth`, `maxPages`, `maxBytes`,
+/// `exclude`, `sameFolder`, `ignoreRobots`, `files` facultatifs ; bornes vérifiées par le
+/// moteur.
+fn site_request(s: &serde_json::Map<String, Value>) -> Result<SiteRequest, RpcError> {
+    // Les noms des erreurs portent le préfixe `site.`.
+    let p = Params(
+        s.iter()
+            .map(|(k, v)| (format!("site.{k}"), v.clone()))
+            .collect(),
+    );
+    let depth = p
+        .u32("site.depth")?
+        .map(|d| u8::try_from(d).map_err(|_| Params::wrong("site.depth", "entier de 1 à 5")))
+        .transpose()?;
+    let max_bytes = p
+        .get("site.maxBytes")
+        .map(|v| {
+            v.as_u64()
+                .ok_or_else(|| Params::wrong("site.maxBytes", "entier positif"))
+        })
+        .transpose()?;
+    Ok(SiteRequest {
+        page_url: p.required_str("site.pageUrl")?,
+        depth,
+        max_pages: p.u32("site.maxPages")?,
+        max_bytes,
+        exclude: p.str("site.exclude")?,
+        same_folder: p.bool("site.sameFolder")?,
+        ignore_robots: p.bool("site.ignoreRobots")?,
+        files: p.strings("site.files")?.unwrap_or_default(),
+    })
+}
+
 /// `task.get` : la tâche, et sur demande (`include`) ses segments et ses sources.
 async fn task_get(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
     let mut include = Include::default();
@@ -1812,6 +1858,8 @@ async fn task_get(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
             "sources" => include.sources = true,
             // Fichiers d'un torrent (SPEC §7.16, depuis le 2026-11-09).
             "files" => include.files = true,
+            // Éléments d'une copie de site (SPEC §7.18 ter, depuis le 2026-11-26).
+            "items" => include.items = true,
             other => {
                 return Err(RpcError::invalid_params(format!(
                     "include : valeur inconnue {other}"
@@ -1879,6 +1927,43 @@ fn details_json(d: &TaskDetails) -> Value {
                 })
             })
             .collect();
+    }
+    // Copie d'un site (SPEC §7.18 ter, depuis le 2026-11-26) : demande, page de départ
+    // copiée, raison de la fin de l'exploration, nombres ; éléments sur demande.
+    if let Some(s) = &d.site {
+        let settings = &s.job.settings;
+        task["site"] = json!({
+            "pageUrl": s.job.page_url,
+            "startPath": s.job.start_path,
+            "depth": settings.depth,
+            "maxPages": settings.max_pages,
+            "maxBytes": settings.max_bytes,
+            "exclude": settings.exclude,
+            "sameFolder": settings.same_folder,
+            "ignoreRobots": settings.ignore_robots,
+            "stop": s.job.stop,
+            "pages": s.counts.pages,
+            "resources": s.counts.resources,
+            "files": s.counts.files,
+            "failed": s.counts.failed,
+            "skipped": s.counts.skipped,
+            "queued": s.counts.queued,
+        });
+        if let Some(items) = &s.items {
+            task["site"]["items"] = items
+                .iter()
+                .map(|i| {
+                    json!({
+                        "url": i.url,
+                        "kind": i.kind.as_sql(),
+                        "state": i.state.as_sql(),
+                        "path": i.path,
+                        "size": i.size,
+                        "error": i.error,
+                    })
+                })
+                .collect();
+        }
     }
     // Empreintes de morceaux d'un Metalink (F-12, SPEC §7.9, depuis le 2026-11-17) :
     // nombre, longueur, algorithme, morceaux retéléchargés et tours depuis la relance.

@@ -83,6 +83,7 @@
           "/usr/share/man/man1/auro-schedule-list.1": "../../docs/man/auro-schedule-list.1",
           "/usr/share/man/man1/auro-schedule-set.1": "../../docs/man/auro-schedule-set.1",
           "/usr/share/man/man1/auro-schedule.1": "../../docs/man/auro-schedule.1",
+          "/usr/share/man/man1/auro-site.1": "../../docs/man/auro-site.1",
           "/usr/share/man/man1/auro-token-create.1": "../../docs/man/auro-token-create.1",
           "/usr/share/man/man1/auro-token-list.1": "../../docs/man/auro-token-list.1",
           "/usr/share/man/man1/auro-token-revoke.1": "../../docs/man/auro-token-revoke.1",

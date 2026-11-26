@@ -42,7 +42,8 @@
       "enum": [
         "http",
         "torrent",
-        "media"
+        "media",
+        "site"
       ]
     },
     "taskState": {
@@ -1033,6 +1034,50 @@
         "plugin": {
           "description": "false : l'adresse telle quelle, sans plugin (SPEC 7.20).",
           "type": "boolean"
+        },
+        "site": {
+          "description": "Copie d'un site à la place de sources (SPEC 7.18 ter) ; depuis le 2026-11-26.",
+          "type": "object",
+          "properties": {
+            "pageUrl": {
+              "type": "string"
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "maxPages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 21474836480
+            },
+            "exclude": {
+              "type": "string"
+            },
+            "sameFolder": {
+              "type": "boolean"
+            },
+            "ignoreRobots": {
+              "type": "boolean"
+            },
+            "files": {
+              "description": "Fichiers cochés, adresses HTTP(S) ; 10 000 au plus.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10000
+            }
+          },
+          "required": [
+            "pageUrl"
+          ]
         }
       }
     }

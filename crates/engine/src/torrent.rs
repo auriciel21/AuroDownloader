@@ -986,6 +986,7 @@ impl Counters {
             upload_bps,
             seeding,
             merging: false,
+            site: None,
         }
     }
 }

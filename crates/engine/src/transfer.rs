@@ -230,6 +230,9 @@ pub struct Progress {
     pub seeding: bool,
     /// Vidéo en fusion (`post_processing`, SPEC §7.17) : la tâche vient d'y passer.
     pub merging: bool,
+    /// Copie d'un site (SPEC §7.18 ter) : ses nombres d'éléments ; `None` pour une autre
+    /// sorte de tâche.
+    pub site: Option<crate::store::site::Counts>,
 }
 
 /// Un segment qu'une connexion reçoit en ce moment.
@@ -1286,6 +1289,7 @@ async fn read_part<T: Send + 'static>(
         upload_bps: None,
         seeding: false,
         merging: false,
+        site: None,
     };
     on_progress(report(0));
     let read = Arc::new(AtomicU64::new(0));
@@ -2379,6 +2383,7 @@ fn progress(
         upload_bps: None,
         seeding: false,
         merging: false,
+        site: None,
     }
 }
 

@@ -969,7 +969,10 @@ mod limits_and_space {
         fn free(_: &Path) -> std::io::Result<u64> {
             Ok(FREE.load(Ordering::SeqCst))
         }
-        let len: usize = 4 * 1024 * 1024;
+        // 16 Mio à 3,2 Mo/s (4 connexions) : plus de 5 s. La place se mesure dans la boucle
+        // des points de contrôle, derrière leur vidage, qui peut prendre une seconde sous
+        // WSL : avec 4 Mio, tout était parfois reçu avant la mesure.
+        let len: usize = 16 * 1024 * 1024;
         let pace = Pace {
             chunk: 16 * 1024,
             delay: Duration::from_millis(20),
@@ -1135,11 +1138,12 @@ mod checkpoints {
     use super::*;
     use crate::testing::{Pace, same_as_served, serve_file_paced};
 
-    /// Arrêt brutal, à 600 ms, d'un téléchargement qui en dure plus de 1 300 (4 Mio, 4
+    /// Arrêt brutal, à 2 s, d'un téléchargement qui en dure plus de 5 (16 Mio, 4
     /// connexions à 800 Kio/s), points de contrôle par intervalle hors d'atteinte. Renvoie
-    /// les octets enregistrés, après avoir vérifié que chacun est sur disque, exact.
+    /// les octets enregistrés, après avoir vérifié que chacun est sur disque, exact. (À
+    /// 600 ms, une préparation ralentie par d'autres tests n'avait parfois rien reçu.)
     async fn saved_before_a_crash(checkpoint_bytes: u64) -> u64 {
-        let len: u64 = 4 * 1024 * 1024;
+        let len: u64 = 16 * 1024 * 1024;
         let pace = Pace {
             chunk: 16 * 1024,
             delay: Duration::from_millis(20),
@@ -1153,7 +1157,7 @@ mod checkpoints {
         };
         let (_, stop) = watch::channel(false);
         let run = case.run_opts(&opts, stop);
-        let crashed = tokio::time::timeout(Duration::from_millis(600), run).await;
+        let crashed = tokio::time::timeout(Duration::from_secs(2), run).await;
         assert!(crashed.is_err(), "téléchargement fini avant l'arrêt");
 
         let part = case.part("rapide.bin");

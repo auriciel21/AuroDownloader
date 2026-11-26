@@ -126,6 +126,7 @@ fn execute(
             eta: None,
             peers: false,
             upload_bps: None,
+            site: None,
         };
         status.show(&[line.render()]);
     };

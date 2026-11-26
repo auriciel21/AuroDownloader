@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::display::{self, Limit, Line, Status, size};
+use crate::display::{self, Limit, Line, SiteLine, Status, size};
 use auro_cli::client::{EngineRefused, Rpc, Target};
 use auro_engine::io::checksum::Checksum;
 use auro_engine::io::{BoundedReadError, read_bounded};
@@ -375,10 +375,109 @@ pub async fn video_add(rpc: &mut Rpc, pages: &[String], opts: &VideoOptions<'_>)
     Ok(())
 }
 
-/// Ce que `auro get` ou `auro video get` ajoute avant de le suivre.
+/// Ce que `auro site` ajoute (F-43, SPEC §7.18 ter).
+pub struct SiteOptions<'a> {
+    pub dir: &'a Path,
+    /// Exploration de la copie, et de la recherche des fichiers à cocher.
+    pub crawl: crate::links::Crawl,
+    /// Volume des pages et ressources ; celui du moteur par défaut (1 Gio).
+    pub max_volume: Option<u64>,
+    /// Fichiers à cocher : ceux que ces filtres gardent, après une exploration ; aucun
+    /// sans filtre.
+    pub files: Option<crate::links::Filters>,
+    pub no_sizes: bool,
+    pub connections: Option<u32>,
+    pub queue: Option<&'a str>,
+    pub limit: Option<u64>,
+    pub paused: bool,
+}
+
+/// Pourquoi l'exploration d'une copie s'est arrêtée avant la fin, en clair.
+fn site_stop(stop: &str) -> Option<&'static str> {
+    match stop {
+        "maxPages" => Some("limite de pages atteinte (--max-pages)"),
+        "maxBytes" => Some("volume atteint (--max-volume)"),
+        "maxItems" => Some("20 000 éléments trouvés"),
+        _ => None,
+    }
+}
+
+/// `site` de `task.add` (SPEC §7.18 ter).
+fn site_params(page: &str, opts: &SiteOptions<'_>, files: &[String]) -> Value {
+    let mut site = json!({
+        "pageUrl": page,
+        "depth": opts.crawl.depth,
+        "exclude": opts.crawl.exclude,
+        "sameFolder": opts.crawl.same_folder,
+        "ignoreRobots": opts.crawl.ignore_robots,
+    });
+    if let Some(n) = opts.crawl.max_pages {
+        site["maxPages"] = json!(n);
+    }
+    if let Some(v) = opts.max_volume {
+        site["maxBytes"] = json!(v);
+    }
+    if !files.is_empty() {
+        site["files"] = json!(files);
+    }
+    site
+}
+
+/// Les fichiers à cocher parmi les liens gardés : adresses HTTP(S), ni pages ni liens
+/// magnet.
+fn site_files(kept: &[Value]) -> Vec<String> {
+    kept.iter()
+        .filter(|l| l["kind"] != "page" && l["kind"] != "magnet")
+        .filter_map(|l| l["url"].as_str())
+        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn add_site(rpc: &mut Rpc, page: &str, opts: &SiteOptions<'_>) -> Result<String> {
+    let mut files = Vec::new();
+    if let Some(filters) = &opts.files {
+        let found =
+            crate::links::find(rpc, page, Some(&opts.crawl), filters, opts.no_sizes).await?;
+        files = site_files(&found.kept);
+        let known: u64 = found.kept.iter().filter_map(|l| found.size_of(l)).sum();
+        println!(
+            "{} fichier(s) coché(s) sur {} lien(s) trouvé(s), {} connus",
+            files.len(),
+            found.found,
+            size(known)
+        );
+        if files.len() > auro_engine::scheduler::MAX_SITE_FILES {
+            bail!(
+                "{} fichiers gardés : {} au plus ; filtres à resserrer (-e, --regex, \
+                 --min-size, --max-size)",
+                files.len(),
+                auro_engine::scheduler::MAX_SITE_FILES
+            );
+        }
+    }
+    let mut params = json!({
+        "site": site_params(page, opts, &files),
+        "startPaused": opts.paused,
+    });
+    set_dest(&mut params, Some(opts.dir))?;
+    if let Some(c) = opts.connections {
+        params["maxConnections"] = json!(c);
+    }
+    if let Some(l) = opts.limit {
+        params["speedLimitBps"] = json!(l);
+    }
+    if let Some(queue) = opts.queue {
+        params["queueId"] = json!(queue_id(rpc, queue).await?);
+    }
+    add_task(rpc, params).await
+}
+
+/// Ce que `auro get`, `auro video get` ou `auro site` ajoute avant de le suivre.
 pub enum NewTask<'a> {
     File(&'a str, &'a AddOptions<'a>),
     Video(&'a str, &'a VideoOptions<'a>),
+    Site(&'a str, &'a SiteOptions<'a>),
 }
 
 /// Ajoute une tâche et la suit jusqu'à la fin ; Ctrl-C la met en pause.
@@ -417,6 +516,11 @@ pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
         },
         NewTask::Video(page, opts) => {
             let id = add_video(&mut rpc, page, opts).await?;
+            println!("Tâche {id}");
+            vec![id]
+        }
+        NewTask::Site(page, opts) => {
+            let id = add_site(&mut rpc, page, opts).await?;
             println!("Tâche {id}");
             vec![id]
         }
@@ -462,6 +566,25 @@ fn report(task: &Value) -> Result<()> {
     match task["state"].as_str().unwrap_or_default() {
         "completed" => {
             println!("Terminé : {}", dir.join(name).display());
+            // Copie d'un site (SPEC §7.18 ter) : la page à ouvrir, et ce qui a été copié.
+            let copy = &task["site"];
+            if let Some(start) = copy["startPath"].as_str() {
+                // Parties séparées par `/` : chemin du système.
+                let page = start
+                    .split('/')
+                    .fold(dir.join(name), |p, part| p.join(part));
+                println!("Page de départ : {}", page.display());
+            }
+            if let Some(line) = SiteLine::of(copy) {
+                let skipped = match copy["skipped"].as_u64().unwrap_or(0) {
+                    0 => String::new(),
+                    n => format!(", {n} laissé(s) par les limites"),
+                };
+                println!("{}{skipped}", line.render());
+                if let Some(why) = copy["stop"].as_str().and_then(site_stop) {
+                    println!("Exploration arrêtée : {why}");
+                }
+            }
             Ok(())
         }
         // Torrent reçu en entier, qui partage jusqu'au ratio (SPEC §7.16).
@@ -1095,6 +1218,9 @@ impl Follow {
                 match (&t.line, t.state.as_str()) {
                     (_, "queued") => format!("{name:<32}  en file"),
                     (_, "retry_wait") => format!("{name:<32}  nouvelle tentative bientôt"),
+                    (_, "post_processing") if t.kind == "site" => {
+                        format!("{name:<32}  réécriture des liens")
+                    }
                     (_, "post_processing") => format!("{name:<32}  assemblage des flux (ffmpeg)"),
                     (line, "verifying") => {
                         let total = line.as_ref().and_then(|l| l.total).filter(|&n| n > 0);
@@ -1196,6 +1322,7 @@ impl Follow {
                                 eta: item["etaS"].as_u64(),
                                 peers: t.kind == "torrent",
                                 upload_bps: item["uploadBps"].as_u64(),
+                                site: SiteLine::of(&item["site"]),
                             });
                         }
                     }
@@ -2406,4 +2533,98 @@ pub async fn plugin_add(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crawl() -> crate::links::Crawl {
+        crate::links::Crawl {
+            depth: 2,
+            max_pages: None,
+            exclude: String::new(),
+            same_folder: true,
+            ignore_robots: false,
+            tree: false,
+        }
+    }
+
+    #[test]
+    fn a_site_copy_sends_its_settings_and_only_the_files_it_kept() {
+        let dir = Path::new(".");
+        let opts = SiteOptions {
+            dir,
+            crawl: crawl(),
+            max_volume: None,
+            files: None,
+            no_sizes: false,
+            connections: None,
+            queue: None,
+            limit: None,
+            paused: false,
+        };
+        assert_eq!(
+            site_params("https://a.example/", &opts, &[]),
+            json!({"pageUrl": "https://a.example/", "depth": 2, "exclude": "",
+                   "sameFolder": true, "ignoreRobots": false})
+        );
+        let limited = SiteOptions {
+            crawl: crate::links::Crawl {
+                max_pages: Some(30),
+                ..crawl()
+            },
+            max_volume: Some(100 << 20),
+            ..opts
+        };
+        let files = vec!["https://a.example/f.zip".to_owned()];
+        let params = site_params("https://a.example/", &limited, &files);
+        assert_eq!(params["maxPages"], 30);
+        assert_eq!(params["maxBytes"], 100 << 20);
+        assert_eq!(params["files"], json!(files));
+
+        let link = |url: &str, kind: &str| json!({"url": url, "kind": kind});
+        let kept = [
+            link("https://a.example/f.zip", "file"),
+            link("http://a.example/v.mp4", "video"),
+            link("https://a.example/autre.html", "page"),
+            link("magnet:?xt=urn:btih:abc", "magnet"),
+            link("ftp://a.example/g.iso", "file"),
+        ];
+        assert_eq!(
+            site_files(&kept),
+            vec!["https://a.example/f.zip", "http://a.example/v.mp4"]
+        );
+        assert_eq!(site_stop("finished"), None);
+        assert!(site_stop("maxBytes").unwrap().contains("--max-volume"));
+    }
+
+    #[test]
+    fn a_site_copy_shows_its_items() {
+        let line = SiteLine::of(
+            &json!({"pages": 3, "resources": 10, "files": 1, "failed": 2,
+                                         "queued": 4}),
+        )
+        .unwrap();
+        assert_eq!(
+            line.render(),
+            "3 page(s), 10 ressource(s), 1 fichier(s), 2 en échec"
+        );
+        assert_eq!(SiteLine::of(&Value::Null), None);
+        let progress = Line {
+            done: 2048,
+            total: None,
+            bps: 1024,
+            connections: 0,
+            eta: None,
+            peers: false,
+            upload_bps: None,
+            site: Some(line),
+        };
+        assert!(
+            progress
+                .render()
+                .starts_with("3 page(s), 10 ressource(s), 1 fichier(s), 2 en échec, 4 en attente")
+        );
+    }
 }

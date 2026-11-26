@@ -537,6 +537,7 @@ async fn download(
         upload_bps: None,
         seeding: false,
         merging: true,
+        site: None,
     });
     finish(conn, status, task_id, resolution.duration_s).await
 }
@@ -826,6 +827,7 @@ async fn direct(
                 upload_bps: None,
                 seeding: false,
                 merging: false,
+                site: None,
             });
         };
         let outcome = transfer::run(
@@ -953,6 +955,7 @@ async fn fragmented(
                                 upload_bps: None,
                                 seeding: false,
                                 merging: false,
+                                site: None,
                             });
                         }
                     }
