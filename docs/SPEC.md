@@ -116,6 +116,7 @@ Le produit compte 41 exigences fonctionnelles, regroupées en neuf domaines. Pri
 | F-30 | Détection d'un lien dans le presse-papiers, désactivée par défaut | S |
 | F-31 | Import d'une liste d'adresses (texte, CSV) | S |
 | F-42 | Explorer un site de lien en lien (même hôte, profondeur, limites, robots.txt) et en extraire les fichiers, avec les filtres de F-29 ; demandée le 2026-11-26 (section 7.18 bis) | S |
+| F-43 | Copier un site pour la navigation hors ligne : pages explorées, images, styles, scripts et polices, fichiers choisis, liens réécrits ; demandée le 2026-11-26 (section 7.18 ter) | S |
 
 ### 2.8 Post-traitement et historique
 
@@ -743,6 +744,57 @@ ALTER TABLE media_jobs ADD COLUMN duration_s REAL;
 -- choisissant les segments par leur état (la clé primaire couvre la tâche).
 DROP INDEX IF EXISTS idx_segments_state;
 
+-- Migration 0018 (2026-11-26, section 7.18 ter, F-43) : copie d'un site pour la navigation
+-- hors ligne. La contrainte de tasks.kind reçoit 'site' : SQLite ne change pas une
+-- contrainte CHECK, la table tasks est refaite selon la procédure en 12 étapes de SQLite
+-- (clés étrangères coupées hors de la transaction, nouvelle table, copie, ancienne
+-- effacée, nouvelle renommée, index refaits, PRAGMA foreign_key_check vide exigé avant la
+-- validation, clés rétablies ; base copiée avant, comme pour toute migration). Seule
+-- migration de ce genre : le lanceur des migrations en connaît la marque.
+-- CHECK (kind IN ('http','ftp','torrent','media','site'))
+-- Réglages et avancement d'une copie. phase : copy (exploration, pages et ressources),
+-- files (fichiers cochés), links (réécriture, en post_processing), done. stop : raison de
+-- la fin de l'exploration (finished, maxPages, maxBytes, maxItems). start_url : page de
+-- départ après redirections, start_path son chemin copié (relatif au dossier de la tâche).
+CREATE TABLE site_jobs (
+  task_id       TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  page_url      TEXT NOT NULL,
+  start_url     TEXT,
+  start_path    TEXT,
+  depth         INTEGER NOT NULL CHECK (depth BETWEEN 1 AND 5),
+  max_pages     INTEGER NOT NULL CHECK (max_pages BETWEEN 1 AND 2000),
+  max_bytes     INTEGER NOT NULL CHECK (max_bytes > 0),
+  exclude       TEXT,
+  same_folder   INTEGER NOT NULL DEFAULT 0 CHECK (same_folder IN (0, 1)),
+  ignore_robots INTEGER NOT NULL DEFAULT 0 CHECK (ignore_robots IN (0, 1)),
+  phase         TEXT NOT NULL DEFAULT 'copy' CHECK (phase IN ('copy','files','links','done')),
+  stop          TEXT
+);
+-- Éléments d'une copie, dans l'ordre de leur découverte. state : queued (à lire), fetched
+-- (page ou style lu, brut dans son .part vidé sur disque, ses liens relevés : attend la
+-- réécriture), done (nom final pris et vidé sur disque), failed (lien laissé en ligne ;
+-- error : code de la section 6.8, ou TOO_BIG), skipped (limite atteinte avant sa lecture).
+-- path : chemin pris, relatif au dossier de la tâche, parties séparées par '/' ; noté
+-- dans la transaction qui libère sa réservation. final_url : adresse après redirections.
+-- child_id : tâche HTTP interne d'un fichier coché.
+CREATE TABLE site_items (
+  task_id   TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  seq       INTEGER NOT NULL,
+  url       TEXT NOT NULL,
+  final_url TEXT,
+  kind      TEXT NOT NULL CHECK (kind IN ('page','style','resource','file')),
+  depth     INTEGER,
+  state     TEXT NOT NULL DEFAULT 'queued'
+              CHECK (state IN ('queued','fetched','done','failed','skipped')),
+  path      TEXT,
+  size      INTEGER,
+  child_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  error     TEXT,
+  PRIMARY KEY (task_id, seq),
+  UNIQUE (task_id, url)
+);
+CREATE INDEX site_items_state ON site_items (task_id, state, seq);
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);   -- retiré par la migration 0017
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -767,7 +819,7 @@ connexion perdue remet son segment en `pending`), `segments.attempts`, `segments
 | `verifying` | Vérification de l'empreinte du fichier complet | `active` (morceaux faux à télécharger de nouveau, section 7.9, depuis le 2026-11-17), `paused`, `post_processing`, `completed`, `failed` |
 | `post_processing` | Rangement, renommage, extraction, commande externe | `completed`, `failed`, `seeding` (torrent dont la commande de fin a réussi, section 7.21, depuis le 2026-11-16) |
 
-Une tâche `post_processing` interrompue par un arrêt du moteur reprend au démarrage : sa fusion recommence (section 7.17), ou sa commande de fin (section 7.21). Pause et annulation n'y font rien : le fichier est fait, la fusion ou la commande va jusqu'au bout (ou jusqu'à son délai).
+Une tâche `post_processing` interrompue par un arrêt du moteur reprend au démarrage : sa fusion recommence (section 7.17), sa commande de fin (section 7.21), ou la réécriture des liens d'une copie de site (section 7.18 ter, depuis le brut de chaque page). Pause et annulation n'y font rien : le fichier est fait, la fusion ou la commande va jusqu'au bout (ou jusqu'à son délai).
 | `seeding` | Torrent terminé, partage en cours | `completed`, `cancelled` |
 | `completed` | Fichier final en place | état terminal |
 | `failed` | Échec définitif, cause dans `error_code` | `queued` (relance manuelle) |
@@ -835,7 +887,7 @@ Le premier appel d'un client est `engine.hello`. Il annonce la plage de versions
       "rev":1042}}
 ```
 
-Capacités annoncées par ce moteur : `torrent` depuis le 2026-11-09 (section 7.16) ; `media` sous Windows et Linux (section 7.17) ; `linkscan` et `metalink` depuis le 2026-11-11 (sections 7.18 et 7.7) ; `crawl` depuis le 2026-11-26 (section 7.18 bis) ; avant, aucune.
+Capacités annoncées par ce moteur : `torrent` depuis le 2026-11-09 (section 7.16) ; `media` sous Windows et Linux (section 7.17) ; `linkscan` et `metalink` depuis le 2026-11-11 (sections 7.18 et 7.7) ; `crawl` depuis le 2026-11-26 (section 7.18 bis) ; `site` à venir (étape B, section 7.18 ter) ; avant, aucune.
 
 Aucune plage commune : le moteur répond par l'erreur `PROTOCOL_UNSUPPORTED` et ferme la connexion.
 
@@ -847,7 +899,7 @@ Paramètre facultatif `scope` (depuis le 2026-11-07) : la portée que le client 
 | --- | --- | --- |
 | `engine.hello` | `client`, `protocol`, `scope` | Version retenue, capacités, `rev`, `scope` |
 | `engine.shutdown` | `graceful` | Arrêt après sauvegarde de l'état |
-| `task.add` | `sources[]`, `queueId`, `destDir`, `subDir`, `fileName`, `maxConnections`, `speedLimitBps`, `checksum`, `headers`, `startPaused`, `idempotencyKey`, `plugin` (faux : l'adresse telle quelle même pour un site d'un plugin, section 7.20) | `taskId` |
+| `task.add` | `sources[]`, `queueId`, `destDir`, `subDir`, `fileName`, `maxConnections`, `speedLimitBps`, `checksum`, `headers`, `startPaused`, `idempotencyKey`, `plugin` (faux : l'adresse telle quelle même pour un site d'un plugin, section 7.20), `site` (copie d'un site à la place de `sources`, section 7.18 ter, conçue le 2026-11-26) | `taskId` |
 | `task.addBatch` | `items[]` de paramètres `task.add` (1 000 au plus) | `tasks[]` (`index`, `taskId`), `errors[]` (`index`, `code`, `message`) |
 | `task.get` | `taskId`, `include` (`segments`, `sources`, `files`) | Tâche complète ; pour une tâche venue d'un plugin, `plugin` : `page`, `pluginId`, `name` (null si le plugin a été retiré) (section 7.20, depuis le 2026-11-12) ; pour une tâche aux empreintes de morceaux, `pieces` : `count`, `length`, `algo`, `redone` (morceaux retéléchargés), `rounds` (tours depuis la dernière relance) ; chaque source a `badPieces` (section 7.9, depuis le 2026-11-17) |
 | `task.list` | `queueId`, `states[]`, `limit` (au moins 1), `cursor` | `items[]`, `nextCursor`, `rev` |
@@ -1118,6 +1170,7 @@ Quand une tâche échoue, `error_code` indique la cause. Le moteur décide seul 
 | `TORRENT_SESSION` | oui | La session des torrents ne démarre pas (port d'écoute pris, réseau) ; depuis le 2026-11-09, section 7.16 |
 | `TORRENT_FAILED` | non | Erreur du torrent lui-même : métadonnées invalides, refus de la bibliothèque, même torrent déjà en cours ; depuis le 2026-11-09, section 7.16 |
 | `EXTRACTOR_FAILED` | non | yt-dlp n'a pas pu résoudre la page |
+| `SITE_NOT_HTML` | non | Copie d'un site : la page de départ n'est pas une page HTML (section 7.18 ter, conçue le 2026-11-26) |
 | `TOOLS_MISSING` | non | yt-dlp ou ffmpeg n'est pas installé (section 7.17, depuis le 2026-11-09) |
 | `MERGE_FAILED` | non | ffmpeg n'a pas pu fusionner les flux, ou ffprobe refuse le fichier produit (section 7.17) |
 | `ADDRESS_FORBIDDEN` | non | Tâche ajoutée ou modifiée par une connexion à jeton : une adresse (redirection ou miroir compris) mène au réseau interne (section 7.19, depuis le 2026-11-11) |
@@ -1886,7 +1939,7 @@ F-29 (texte ou page, filtres), F-31 (import d'une liste), F-30 (presse-papiers).
 
 ### 7.18 bis Exploration d'un site (étape A, conception du 2026-11-26)
 
-F-42, demandée par l'utilisateur le 2026-11-26 sur le modèle du « Grabber » d'IDM, en trois étapes : **A**, l'exploration (cette section) ; **B**, la copie du site pour la navigation hors ligne (pages enregistrées avec leurs images, styles et scripts, liens réécrits) ; **C**, les projets enregistrés et leur lancement programmé. B et C restent à concevoir. Les décisions de l'utilisateur du 2026-11-26 sont marquées « décision » ; le reste est un choix par défaut, à revoir à l'essai.
+F-42, demandée par l'utilisateur le 2026-11-26 sur le modèle du « Grabber » d'IDM, en trois étapes : **A**, l'exploration (cette section) ; **B**, la copie du site pour la navigation hors ligne (pages enregistrées avec leurs images, styles et scripts, liens réécrits) ; **C**, les projets enregistrés et leur lancement programmé. B est conçue à la section 7.18 ter ; C reste à concevoir. Les décisions de l'utilisateur du 2026-11-26 sont marquées « décision » ; le reste est un choix par défaut, à revoir à l'essai.
 - **Principe** : le moteur lit les pages d'un site de lien en lien et rend les liens trouvés, comme l'analyse d'une page (section 7.18) : mêmes champs, mêmes filtres des clients, mêmes tailles (`linkscan.probe`), même ajout groupé (`task.addBatch`). Rien n'est téléchargé avant le choix de l'utilisateur. L'analyse d'une seule page (`linkscan.run`) reste telle quelle.
 - **Parcours** : en largeur. La page de départ est au niveau 0 ; ses liens suivis sont lus au niveau 1, et ainsi de suite jusqu'à la profondeur choisie. Liens suivis : `href` de `a` et `area`, `src` de `frame` et `iframe`, de sorte `page` (section 7.18), en HTTP(S) ; jamais les images, scripts, sources des médias ni les adresses écrites en clair dans le texte. Une adresse n'est lue qu'une fois (sans ancre ; l'adresse après redirection compte aussi comme lue). Une page au-delà de la profondeur choisie est relevée sans être lue.
 - **Pages suivies** (décision) : seulement celles du même hôte que la page de départ après ses redirections (nom exact et port : `www.exemple.org` et `exemple.org` sont deux hôtes) ; le schéma peut passer de `http` à `https`, jamais l'inverse. Case « Rester sous le dossier de départ » (décochée) : seulement les pages dont le chemin commence par le dossier de la page de départ. Une redirection vers un autre hôte (ou hors du dossier, exclue, refusée par robots.txt) : la page d'arrivée n'est pas lue, son corps n'est pas demandé au-delà des en-têtes ; le lien est relevé avec la raison.
@@ -1914,6 +1967,63 @@ F-42, demandée par l'utilisateur le 2026-11-26 sur le modèle du « Grabber » 
 - **Tests** : faux site local (niveaux, boucles, autre hôte, redirections, robots.txt : `Allow`, `Disallow`, `*`, `$`, `4xx`, `5xx`, groupe nommé ; pages exclues, page non HTML abandonnée sans être lue, page trop grosse, `401` et identifiants, jeton sans identifiants, limites de pages, de volume et de liens, rythme mesuré, annulation, fermeture de la connexion, 4 explorations au plus) ; fuzzing du lecteur de robots.txt (proptest) ; schémas de `docs/protocol` ; banc `crash_daemon` (`rpc` et planificateur touchés).
 - **Bureau et page** (étape A2, 2026-11-26) : section « Exploration du site » de « Analyser des liens », si le moteur annonce `crawl` (case, « Modèle », « Profondeur (1 à 5) », « Pages lues au plus », « Pages à ne pas ouvrir (expression régulière) », « Rester sous le dossier de départ », « Ignorer robots.txt ») ; « Analyser » lance l'exploration d'une adresse de page (un texte est refusé) ; l'avancement s'affiche sans être annoncé à chaque page (le début et la fin le sont) ; « Arrêter l'exploration » ; la fin remplit le tableau, colonnes « Niveau » (avec, pour une page, ce qu'il en est advenu) et « Trouvé sur » ; « Garder l'arborescence du site » (`subDir` : le sous-dossier choisi puis `sitePath`, 8 parties au plus). Fermer la boîte, ou perdre la connexion au moteur, arrête l'exploration. Le modèle « Tous les fichiers sauf pages et images » prend les extensions des archives, documents, musique, programmes et vidéos (le filtre ne sait pas exclure) ; un fichier d'extension inconnue n'y est pas.
 - Mise en œuvre : A1. moteur (module `linkscan::crawl`, lecteur `linkscan::robots`), protocole et CLI (faite le 2026-11-26 : `net::Client::fetch_text` lit une page sans télécharger un fichier ni lire une page d'arrivée refusée ; `Engine::crawl_slot` et `crawl_login` ; exploration tenue par `rpc::session::Ctx`, arrêtée à la fermeture de la connexion ; `Peer::one_shot` pour `POST /rpc` ; schémas de `docs/protocol` et corpus de la CLI ; `auro links --depth`) ; A2. bureau et page, modèles, guide dans les deux langues (faite le 2026-11-26 ; essai de l'interface validé par l'utilisateur le même jour sur la variante d'essai, dossier `deb.debian.org/debian/doc/` : exploration, modèle, arrêt, ajout avec l'arborescence du site, texte refusé) ; A3. essais réels (dossier public de `deb.debian.org`, site libre) et essai de l'interface par l'utilisateur sur la variante d'essai.
+
+### 7.18 ter Copie d'un site pour la navigation hors ligne (étape B, conception du 2026-11-26)
+
+F-43, étape B du « Grabber » (section 7.18 bis). Les décisions de l'utilisateur du 2026-11-26 sont marquées « décision » ; le reste est un choix par défaut, à revoir à l'essai.
+- **Principe** (décision : une tâche du moteur) : une tâche de sorte `site`, durable comme les autres : une ligne « Site : exemple.org » dans la liste, avancement, pause, reprise, reprise après un arrêt du moteur, historique. Elle lit le site avec les règles de l'exploration (section 7.18 bis : même hôte, profondeur, pages lues au plus, pages à ne pas ouvrir, dossier de départ, robots.txt, rythme, identifiants), enregistre chaque page lue avec ce qu'il faut pour l'afficher, ainsi que les fichiers choisis, puis réécrit les liens pour qu'on navigue dans la copie sans réseau. « Ouvrir » ouvre la page de départ copiée dans le navigateur ; « Ouvrir le dossier », le dossier de la copie.
+- **Exploration de la tâche** (choix par défaut) : la tâche explore elle-même, avec les réglages de l'exploration montrée dans la boîte « Liens » ; elle ne reprend pas sa liste. Les pages sont donc lues deux fois (l'aperçu, puis la copie), mais la copie n'accepte rien d'un client sans le vérifier, garde ses pages sur disque au fil de la lecture, et la même tâche sert les projets programmés de l'étape C. Si le site a changé entre les deux, la copie suit le site.
+- **Ressources d'affichage** (décision : images, styles, scripts, polices) : relevées dans chaque page copiée, d'où qu'elles viennent :
+  - images : `src`, `srcset` (tous les candidats) et `data-src` de `img` ; `srcset` de `source` (dans `picture`) ; `poster` de `video` ; `src` de `input type="image"` ; `background` (attribut ancien des tableaux et de `body`) ; `href` et `xlink:href` de `image` et `use` (SVG dans la page) ;
+  - `href` de `link` dont `rel` contient `stylesheet`, `icon`, `apple-touch-icon` ou `mask-icon`, ou `preload` et `modulepreload` (avec `as` à `style`, `script`, `font` ou `image`, ou sans `as` pour `modulepreload`) ;
+  - `src` de `script` ;
+  - dans les styles (fichiers `.css`, blocs `<style>`, attributs `style`) : `url(…)` et `@import`, styles importés compris (polices, images de fond) ; une adresse n'est relevée qu'une fois, ce qui arrête les boucles d'imports.
+  - Jamais les sources des vidéos et des sons (`src` de `video`, `audio`, `source` sans `srcset`, `track`), ni `embed` et `object` : ce sont des fichiers, copiés seulement s'ils sont cochés. Ni les adresses `data:`, `javascript:`, `mailto:`, `tel:`, ni les adresses calculées par un script (aucun JavaScript n'est exécuté).
+  - robots.txt ne vaut que pour les pages, comme dans l'étape A : une ressource d'affichage n'est pas une page lue.
+- **Fichiers cités** (décision) : ceux que l'utilisateur a cochés dans le tableau de la boîte « Liens » (`files[]` de `task.add`), copiés dans l'arborescence comme le reste ; les liens des pages vers eux deviennent locaux. Un fichier coché que l'exploration de la tâche ne rencontre plus est copié quand même (à sa place dans l'arborescence). Chacun se télécharge comme une tâche HTTP interne de la tâche du site (`tasks.parent_id`, comme les flux d'une vidéo, section 7.17) : segments, reprise par plages, nombre de connexions, limites de débit ; le planificateur ne la lance jamais seule.
+- **Autres sites** (décision) : leurs pages ne sont jamais copiées ; leurs ressources d'affichage le sont, chacune sous le dossier de son hôte ; leurs fichiers cochés aussi.
+- **Ce qui n'est pas copié** (décision) : un lien vers une page non copiée (au-delà de la profondeur, autre site, refusée, exclue, en échec), un fichier non coché, une ressource trop grosse ou en échec : le lien est réécrit vers son adresse en ligne, absolue, comme le fait wget avec `--convert-links`.
+- **Rangement sur le disque** (décision : un nouveau dossier à chaque copie ; choix par défaut pour le reste) :
+  - dossier de la copie : `<dossier choisi>/<sous-dossier>/<hôte>`, réservé par `claims` (règle 7 de la section 5.6) : une deuxième copie du même site prend `exemple.org (2)`, sans toucher à la première. La mise à jour d'une copie existante (seulement ce qui a changé) est l'étape C ;
+  - dans ce dossier, un sous-dossier par hôte, celui du site compris : `exemple.org (2)/exemple.org/doc/index.html`, `exemple.org (2)/cdn.exemple.net/css/site.css` (disposition de wget ; aucun nom du site ne peut heurter un nom du moteur) ;
+  - puis les dossiers et le nom de l'adresse, chaque partie décodée (`%C3%A9` lu `é`) et nettoyée comme un nom de fichier (F-09, `net::filename::sanitize`) ; un chemin qui finit par `/` (ou vide) prend `index.html` ; le port s'ajoute à l'hôte (`exemple.org+8080`) ; une adresse avec paramètres garde leur texte nettoyé derrière un `@` (`page.php@id=3`, comme wget sous Windows) ;
+  - le nom garde ou reçoit l'extension de son type, pour que le navigateur le lise hors ligne : `.html` pour une page qui n'a ni `.html` ni `.htm` (`/a-propos` devient `a-propos.html`, `page.php@id=3.html`), `.css` pour un style ;
+  - une partie de plus de 100 caractères est raccourcie, avec 8 caractères de son empreinte SHA-256 pour rester unique ; le dossier de la copie et 16 niveaux au plus (les plus profonds réunis en une partie) ;
+  - les noms en double (casse ignorée sous Windows, `index.html` et `index.htm`…) sont réglés par `claims`, comme tout nom pris : le chemin réellement pris est enregistré avec l'élément, et la réécriture suit le chemin enregistré, jamais celui recalculé.
+- **Lecture** (choix par défaut) :
+  - pages : comme l'exploration (4 Mio au plus, HTML seulement, `429` et `503` réessayés une fois) ; une page au-delà de 4 Mio n'est pas copiée (lien en ligne) ;
+  - ressources d'affichage (décision : 50 Mio au plus chacune) : `GET` d'un seul tenant, quel que soit le type rendu ; au-delà de 50 Mio (annoncés par `Content-Length` ou atteints en lisant), la lecture s'arrête, le `.part` s'efface et le lien reste en ligne ;
+  - une redirection est suivie (même règles que l'exploration pour une page) ; la ressource est rangée sous son adresse demandée, et l'adresse d'arrivée la désigne aussi dans la réécriture ;
+  - une réponse en erreur (`4xx`, `5xx` après la nouvelle tentative) laisse l'élément en échec et son lien en ligne, sans arrêter la tâche : un site a toujours des liens morts. Une erreur de réseau (hôte injoignable, délai, coupure) n'est pas un échec de l'élément : trois de suite sur l'hôte du site arrêtent l'exécution en `retry_wait` (`NET_UNREACHABLE` ou `NET_TIMEOUT`, réessais de la section 7.8), qui reprend où elle en était ;
+  - une page de départ injoignable fait échouer la tâche comme toute source (`NET_UNREACHABLE`, `HTTP_STATUS`, réessais compris) ; une page de départ qui n'est pas du HTML : `failed` `SITE_NOT_HTML` (nouveau code, sans réessai).
+- **Rythme** (choix par défaut, dans l'esprit de l'étape A) : pour chaque hôte, 2 requêtes au plus en même temps et 250 ms au moins entre deux débuts (allongé par `Crawl-delay` pour l'hôte du site) ; 4 requêtes au plus en tout pour la tâche. Les fichiers cochés passent après les pages et les ressources, un à la fois, avec le nombre de connexions d'une tâche ordinaire (ce sont des téléchargements demandés par l'utilisateur).
+- **Limites** (décision : 1 Gio par défaut, réglable jusqu'à 20 Gio ; 50 Mio par ressource ; aucune limite par fichier coché) : le volume compte les pages et les ressources d'affichage enregistrées ; les fichiers cochés n'y entrent pas (leurs tailles sont sous les yeux de l'utilisateur dans le tableau ; choix par défaut, à confirmer). Pages : celles de l'exploration (200 par défaut, 2 000 au plus). Éléments en tout (pages, ressources, fichiers) : 20 000 au plus. Une limite atteinte arrête l'exploration : ce qui reste en attente n'est pas copié (lien en ligne), la tâche passe aux fichiers cochés puis à la réécriture, et finit `completed` en disant la limite (`stop` : `maxPages`, `maxBytes`, `maxItems`).
+- **Réécriture des liens** (décision : à la fin) : une fois tout téléchargé, la tâche passe à `post_processing` et réécrit chaque page et chaque style copiés :
+  - attributs réécrits : ceux des ressources d'affichage ci-dessus, `href` de `a` et `area`, `src` de `frame` et `iframe`, tous les candidats d'un `srcset` ; dans les styles, `url(…)` et `@import` ;
+  - adresse copiée : chemin relatif depuis le fichier réécrit, encodé pour une adresse (`%20` pour une espace, `%23` pour `#`, `%3F` pour `?`, UTF-8 encodé), ancre (`#…`) gardée ; adresse non copiée : son adresse en ligne absolue, résolue par rapport à la page (et à sa `<base href>`), ancre gardée ;
+  - `<base href>` est retiré (les chemins relatifs se calculent depuis le fichier) ; `integrity` est retiré d'un `link` ou d'un `script` réécrit vers une copie locale (un style réécrit change d'empreinte, et un navigateur refuse l'empreinte d'un fichier local) ;
+  - seule la valeur des attributs et des `url(…)` change : le reste de la page est gardé octet pour octet, encodage compris (pages en UTF-8 et dans les encodages compatibles avec l'ASCII ; une page en UTF-16 ou UTF-32 est gardée telle quelle, liens non réécrits). Si l'en-tête `Content-Type` donnait l'encodage et que la page ne le dit pas, `<meta charset="…">` est ajouté au début de `<head>` ;
+  - les scripts sont copiés tels quels : une adresse qu'ils calculent mène au site en ligne (limite connue) ; les liens de `<meta http-equiv="refresh">` non plus.
+- **Fiabilité** (règles de la section 5.6) :
+  - chaque élément prend son nom par `claims` ; ses octets vont dans son `.part`, vidé sur disque (`sync_data`), puis il prend son nom final, et seulement ensuite l'élément est enregistré fait ;
+  - une page et un style gardent leur contenu brut dans leur `.part` jusqu'à la réécriture : leurs liens sont relevés et mis en attente dans la transaction qui les enregistre « lus » ; la réécriture lit le `.part` brut, écrit le contenu réécrit dans un fichier voisin réservé, le vide sur disque, le renomme au nom final, enregistre l'élément fait, puis efface le `.part`. Elle part toujours du brut : refaite après un arrêt, elle donne le même fichier ;
+  - après un arrêt du moteur, la tâche reprend depuis la table des éléments : ceux faits restent, ceux en cours repartent de zéro (pages et ressources) ou de leurs segments (fichiers cochés), l'exploration continue avec les pages en attente et leur niveau. robots.txt est relu à chaque reprise ;
+  - manque de place : pause `disk_full`, comme toute tâche (section 7.6 bis) ;
+  - une tâche du site finit par `postproc::finish`, sans règle de rangement (section 7.21 : ni dossier ni commande de fin pour une copie de site, choix par défaut).
+- **Retrait et retéléchargement** (choix par défaut) : « Retirer et effacer les fichiers » efface les fichiers que la tâche a écrits (ceux de ses éléments, `.part` compris), puis les dossiers devenus vides, dossier de la copie compris ; jamais un fichier que la tâche n'a pas écrit. `task.restart` efface de même, puis recopie dans le même dossier. `task.update` refuse `fileName`, `url`, `checksum` et `destDir` (`INVALID_PARAMS`) ; `task.addSource`, `task.setFiles` et « Déplacer » aussi (comme pour une vidéo) ; `maxConnections` vaut pour les fichiers cochés, `speedLimitBps` pour toute la tâche.
+- **Identifiants et réseau** : comme l'exploration : identifiants des sites sur le canal local seulement ; une tâche ajoutée par une connexion à jeton (`tasks.public_only`) copie sans eux, et seulement depuis le réseau public, ressources et fichiers compris ; proxy (F-07). Ni cookies ni en-têtes de tâche dans l'étape B.
+- **Protocole** (choix par défaut) : capacité `site` annoncée par `engine.hello` ; portée `add`, comme tout `task.add`.
+  - `task.add` accepte `site` à la place de `sources` : `pageUrl`, et facultatifs `depth`, `maxPages`, `exclude`, `sameFolder`, `ignoreRobots` (mêmes valeurs et mêmes défauts que `linkscan.crawl`), `maxBytes` (1 Mio à 20 Gio, 1 Gio par défaut) et `files[]` (adresses HTTP(S) des fichiers cochés, 10 000 au plus). Avec `destDir`, `subDir`, `queueId`, `startPaused`, `speedLimitBps`, `maxConnections`, `idempotencyKey` ; `site` avec `sources`, `media`, `fileName`, `checksum`, `headers` ou `plugin` : `INVALID_PARAMS`. La tâche porte `kind: site` et pour nom affiché « exemple.org ».
+  - `task.get` ajoute `site` : `pageUrl`, `startPath` (chemin de la page de départ copiée, relatif au dossier de la tâche, connu après sa lecture), réglages, `stop`, nombres `pages`, `resources`, `files` (copiés), `failed`, `skipped` ; avec `include: ["items"]`, `items[]` (`url`, `kind` : `page`, `style`, `resource` ou `file` ; `state`, `path`, `size`, `error`).
+  - `task.progress` porte pour une tâche du site `site` : `pages`, `resources`, `files`, `failed`, `queued` ; `doneBytes` compte tout ce qui est écrit, `totalBytes` reste `null` (le volume n'est connu qu'à la fin).
+- **Journaux** (N-12) : identifiant de la tâche, hôte (`host`), nombres ; jamais une adresse ni un chemin de page.
+- **Interfaces** (décision : la boîte « Liens » et la CLI ; Android plus tard) :
+  - boîte « Analyser des liens » : après une exploration, case « Copier le site pour la navigation hors ligne » (si le moteur annonce `site`, page distante comprise) : « Ajouter » crée une seule tâche du site, avec les réglages de l'exploration et les fichiers cochés (les lignes de sorte `page` cochées sont ignorées : les pages sont copiées par l'exploration) ; « Garder l'arborescence du site » ne s'applique pas (la copie la garde toujours) et se désactive ;
+  - liste : ligne « Site : exemple.org », avancement en nombres (pages, ressources, fichiers), sans pourcentage ; Propriétés : page de départ, dossier de la copie, réglages, nombres, éléments en échec avec leur raison ; « Ouvrir » et « Ouvrir le dossier » ;
+  - CLI : `auro mirror <page> [-o <dossier>] [--depth …] [--max-pages …] [--exclude …] [--same-folder] [--ignore-robots] [--max-size 1G]`, avec les filtres de `auro links` (`-e`, `--min-size`…) pour choisir les fichiers : la CLI explore d'abord (`linkscan.crawl`), filtre, puis ajoute la tâche avec les fichiers retenus ; sans filtre, aucun fichier. Elle suit la tâche comme `auro get` ; `--paused` l'ajoute en pause.
+- **Limites connues** : pas de JavaScript (pages faites par un script : copie vide ou incomplète) ; pas de formulaire de connexion ni de cookies ; liens calculés par un script vers le site en ligne ; une copie ne se met pas à jour (étape C).
+- **Tests** : faux site local (pages, styles avec `@import` et polices, images `srcset`, ressources d'un autre hôte, liens morts, ressource de plus de 50 Mio, page en UTF-16, `<base href>`, `integrity`, adresses à paramètres, noms en double sans casse, chemins trop longs, fichiers cochés d'un autre hôte) ; réécriture comparée au fichier attendu et sans réseau (chaque lien local mène à un fichier copié) ; propriété de la réécriture (proptest : seule la valeur des liens change) ; limites de volume, de pages et d'éléments ; rythme par hôte ; arrêts réseau en `retry_wait` ; jeton (réseau public, sans identifiants) ; migration de la table `tasks` sur une base remplie (toutes ses lignes et celles qui la référencent gardées, clés étrangères vérifiées) ; schémas de `docs/protocol`. Nouveau banc `crash_site` (`crates/daemon/tests/crash_site.rs`) : `aurod` tué pendant que plusieurs copies tournent (pages, ressources, fichier coché, réécriture) ; après chaque arrêt, aucune page à moitié réécrite sous son nom final, aucun `.part` orphelin, et à la fin chaque copie est identique à celle d'une copie sans arrêt. Plus `crash_resume` (`store` et la migration) et `crash_daemon` (planificateur).
+- Mise en œuvre : B1. moteur : migration, éléments, lecture et rangement, réécriture, reprise, banc `crash_site` ; B2. protocole et CLI (`auro mirror`) ; B3. bureau et page (case de la boîte « Liens », ligne, Propriétés, « Ouvrir »), guide dans les deux langues ; B4. essais réels (dossier public de `deb.debian.org`, site libre) et essai de l'interface par l'utilisateur sur la variante d'essai.
 
 ### 7.19 Interface web distante (phase 6, étape 3, conception du 2026-11-11)
 
@@ -2165,7 +2275,7 @@ Les phases s'enchaînent dans l'ordre ; chaque porte (losange) est un critère �
 
 Phase 7, plan du 2026-11-12 (décisions de l'utilisateur) : contrat du protocole (schémas JSON, client de la version précédente) ; journaux et diagnostic (N-12) ; exigences S entrées dans la v1 : proxy (F-07), règles de rangement et commande de fin (F-32, F-34), segment fautif (F-12), FTP, FTPS et SFTP (F-08) ; accessibilité (contrôles WCAG 2.2 AA et tests automatiques, essais réels NVDA, Orca et TalkBack par l'utilisateur) ; dépôt GitHub et intégration continue (Windows, Linux, émulateur Android), ARM64 construits sans essai sur matériel réel, installateurs Windows signés par SignPath (rendue facultative le 2026-11-18), mise à jour du bureau signée, proposée au plus une fois par jour et installée sur accord ; guide de l'utilisateur en français et en anglais ; porte : tous les tests bloquants de la section 9.1, dont le banc de 1 000 reprises sur 1 Gio.
 
-Hors plan, demande de l'utilisateur du 2026-11-26 : exploration d'un site, à la manière du « Grabber » d'IDM (F-42, section 7.18 bis), en trois étapes : A. exploration (conçue le 2026-11-26 ; A1 moteur, protocole et CLI, A2 bureau et page, A3 essais réels) ; B. copie du site pour la navigation hors ligne ; C. projets enregistrés et programmés. B et C restent à concevoir.
+Hors plan, demande de l'utilisateur du 2026-11-26 : exploration d'un site, à la manière du « Grabber » d'IDM (F-42, section 7.18 bis), en trois étapes : A. exploration (conçue le 2026-11-26 ; A1 moteur, protocole et CLI, A2 bureau et page, A3 essais réels) ; B. copie du site pour la navigation hors ligne (F-43, section 7.18 ter, conçue le 2026-11-26 ; B1 moteur, B2 protocole et CLI, B3 bureau et page, B4 essais réels) ; C. projets enregistrés et programmés, à concevoir.
 
 En phase 1, la ligne de commande appelle le moteur comme une bibliothèque ; l'API JSON-RPC (section 6) arrive en phase 2, avec l'application de bureau.
 
