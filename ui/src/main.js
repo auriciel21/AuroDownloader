@@ -281,9 +281,15 @@ const taskName = (task) => task.kind === "site"
 /// Éléments d'une copie de site : « 12 page(s), 40 ressource(s), 2 fichier(s) ».
 function siteCountsText(counts) {
   if (!counts) return "";
-  const text = t("{0} page(s), {1} ressource(s), {2} fichier(s)", counts.pages ?? 0, counts.resources ?? 0, counts.files ?? 0);
-  return counts.failed ? t("{0}, {1} en échec", text, counts.failed) : text;
+  let text = t("{0} page(s), {1} ressource(s), {2} fichier(s)", counts.pages ?? 0, counts.resources ?? 0, counts.files ?? 0);
+  if (counts.failed) text = t("{0}, {1} en échec", text, counts.failed);
+  // Pas des pages web (fichiers texte sans type…) : leur lien reste en ligne, sans échec.
+  if (counts.online) text = t("{0}, {1} laissé(s) en ligne", text, counts.online);
+  return text;
 }
+
+/// Code d'erreur d'un élément laissé en ligne sans échec (`store::site::LEFT_ONLINE`).
+const LEFT_ONLINE = "NOT_HTML";
 const queueName = (queue) => (QUEUE_LABELS[queue.name] ? t(QUEUE_LABELS[queue.name]) : queue.name);
 
 function viewLabel(key) {
@@ -1252,10 +1258,17 @@ function renderSite(task) {
   const copied = siteCountsText(counts);
   set("site-counts", copy.skipped ? t("{0}, {1} laissé(s) par les limites", copied, copy.skipped) : copied);
   set("site-stop", copy.stop ? t(SITE_STOPS[copy.stop] ?? copy.stop) : t("en cours"));
-  const failed = (copy.items ?? []).filter((i) => i.state === "failed");
-  $("d-site-failed-box").hidden = !failed.length;
-  const body = $("d-site-failed").tBodies[0];
-  body.replaceChildren(...failed.slice(0, MAX_ROWS).map((i) => {
+  const notCopied = (copy.items ?? []).filter((i) => i.state === "failed");
+  siteItems("failed", notCopied.filter((i) => i.error !== LEFT_ONLINE));
+  siteItems("online", notCopied.filter((i) => i.error === LEFT_ONLINE));
+}
+
+/// Une liste d'éléments d'une copie de site (« en échec », « laissés en ligne »), avec leur
+/// raison ; cachée vide.
+function siteItems(which, items) {
+  $(`d-site-${which}-box`).hidden = !items.length;
+  const body = $(`d-site-${which}`).tBodies[0];
+  body.replaceChildren(...items.slice(0, MAX_ROWS).map((i) => {
     const row = document.createElement("tr");
     for (const text of [i.url, errorText(i.error, t)]) {
       const cell = document.createElement("td");

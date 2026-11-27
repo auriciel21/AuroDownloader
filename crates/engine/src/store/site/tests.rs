@@ -153,11 +153,17 @@ fn a_page_read_queues_its_links_once_in_the_same_transaction() {
             resources: 1,
             files: 0,
             failed: 1,
+            online: 0,
             skipped: 0,
             queued: 0,
             bytes: 1500,
         }
     );
+    // Pas une page web : laissé en ligne, compté hors des échecs.
+    give_up(&conn, &id, 1, ItemState::Failed, Some(LEFT_ONLINE)).unwrap();
+    let c = counts(&conn, &id).unwrap();
+    assert_eq!((c.failed, c.online), (0, 1));
+    give_up(&conn, &id, 1, ItemState::Failed, Some("HTTP_STATUS")).unwrap();
     assert_eq!(
         item(&conn, &id, 1).unwrap().error.as_deref(),
         Some("HTTP_STATUS")

@@ -5362,6 +5362,7 @@ async fn a_site_is_copied_through_the_protocol() {
     assert_eq!(copy["resources"], 2, "{copy}");
     assert_eq!(copy["files"], 1, "{copy}");
     assert_eq!(copy["failed"], 1, "{copy}");
+    assert_eq!(copy["online"], 0, "{copy}");
     assert!(copy.get("items").is_none());
     let start = copy["startPath"].as_str().unwrap();
     assert!(start.ends_with("/index.html"), "{start}");

@@ -1946,6 +1946,7 @@ fn details_json(d: &TaskDetails) -> Value {
             "resources": s.counts.resources,
             "files": s.counts.files,
             "failed": s.counts.failed,
+            "online": s.counts.online,
             "skipped": s.counts.skipped,
             "queued": s.counts.queued,
         });

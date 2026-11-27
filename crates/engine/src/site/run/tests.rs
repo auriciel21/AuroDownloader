@@ -533,6 +533,9 @@ async fn a_page_without_a_type_is_html_only_if_it_starts_with_a_tag() {
         .filter_map(|i| i.error)
         .collect();
     assert_eq!(errors, ["NOT_HTML", "NOT_HTML"]);
+    // Laissés en ligne, pas en échec.
+    let counts = store_site::counts(&conn, &id).unwrap();
+    assert_eq!((counts.pages, counts.failed, counts.online), (2, 0, 2));
     assert!(!root.join(&main).join("LISEZMOI.html").exists());
     crate::testing::stop(&engine).await;
 }

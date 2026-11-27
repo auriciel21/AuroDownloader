@@ -1085,10 +1085,11 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     const site = {
       pageUrl: "https://exemple.org/", startPath: "exemple.org/index.html", depth: 2, maxPages: 200,
       maxBytes: 1024 * MIB, exclude: "", sameFolder: true, ignoreRobots: false, stop: "maxPages",
-      pages: 3, resources: 7, files: 1, failed: 1, skipped: 4, queued: 0,
+      pages: 3, resources: 7, files: 1, failed: 1, online: 1, skipped: 4, queued: 0,
       items: [
         { url: "https://exemple.org/", kind: "page", state: "done", path: "exemple.org/index.html", size: 100, error: null },
         { url: "https://exemple.org/manque.png", kind: "resource", state: "failed", path: null, size: null, error: "HTTP_STATUS" },
+        { url: "https://exemple.org/LISEZMOI", kind: "page", state: "failed", path: null, size: null, error: "NOT_HTML" },
       ],
     };
     ENGINE["task.get"] = ({ taskId }) => taskId === "copie"
@@ -1105,10 +1106,14 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     assert.equal($("d-site-page").textContent, "https://exemple.org/");
     assert.equal($("d-site-start").textContent, "exemple.org/index.html");
     assert.match($("d-site-settings").textContent, /^profondeur 2, 200 pages au plus, .* au plus, sous le dossier de départ$/);
-    assert.equal($("d-site-counts").textContent, "3 page(s), 7 ressource(s), 1 fichier(s), 1 en échec, 4 laissé(s) par les limites");
+    assert.equal($("d-site-counts").textContent, "3 page(s), 7 ressource(s), 1 fichier(s), 1 en échec, 1 laissé(s) en ligne, 4 laissé(s) par les limites");
     assert.equal($("d-site-stop").textContent, "arrêtée : limite de pages atteinte");
     const failed = [...$("d-site-failed").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
     assert.deepEqual(failed, [["https://exemple.org/manque.png", "refusé par le serveur"]]);
+    // Pas une page web : à part, pas en échec.
+    assert.equal($("d-site-online-box").hidden, false);
+    const online = [...$("d-site-online").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
+    assert.deepEqual(online, [["https://exemple.org/LISEZMOI", "pas une page web"]]);
     assert.equal($("d-open").hidden, false);
     assert.deepEqual(await audit($("details")), []);
     const before = calls.length;

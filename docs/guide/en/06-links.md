@@ -87,7 +87,9 @@ of the site: "Keep the tree of the site" does not apply.
 During the copy, the list shows the pages, resources and files copied instead of a
 percentage (the size is only known at the end). Once finished, **Open** shows the start page
 in the browser, and **Show in folder** the folder of the copy. The Properties give the start
-page, the settings, the numbers of items and the failed items with their reason.
+page, the settings, the numbers of items, the failed items with their reason, and apart
+the links left online because they do not lead to a web page (a text file, for example):
+these are not failures.
 
 Limits: pages made by a script (JavaScript) are copied as the server sends them, often empty;
 a login form is not filled in; the copy stops exploring after 1 GiB of pages and resources.

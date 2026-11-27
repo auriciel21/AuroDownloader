@@ -111,6 +111,8 @@ pub struct SiteLine {
     pub resources: u64,
     pub files: u64,
     pub failed: u64,
+    /// Liens laissés en ligne, pas des pages web : pas des échecs.
+    pub online: u64,
     pub queued: u64,
 }
 
@@ -123,11 +125,12 @@ impl SiteLine {
             resources: n("resources"),
             files: n("files"),
             failed: n("failed"),
+            online: n("online"),
             queued: n("queued"),
         })
     }
 
-    /// « 12 page(s), 40 ressource(s), 2 fichier(s), 3 en échec ».
+    /// « 12 page(s), 40 ressource(s), 2 fichier(s), 3 en échec, 1 laissé(s) en ligne ».
     pub fn render(&self) -> String {
         let mut text = format!(
             "{} page(s), {} ressource(s), {} fichier(s)",
@@ -135,6 +138,9 @@ impl SiteLine {
         );
         if self.failed > 0 {
             text.push_str(&format!(", {} en échec", self.failed));
+        }
+        if self.online > 0 {
+            text.push_str(&format!(", {} laissé(s) en ligne", self.online));
         }
         text
     }

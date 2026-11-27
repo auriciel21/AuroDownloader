@@ -840,6 +840,7 @@ impl ProgressBatch {
                     "resources": c.resources,
                     "files": c.files,
                     "failed": c.failed,
+                    "online": c.online,
                     "queued": c.queued,
                 });
             }

@@ -95,8 +95,9 @@ toujours l'arborescence du site : « Garder l'arborescence du site » ne s'appli
 Pendant la copie, la liste montre les pages, ressources et fichiers copiés au lieu d'un
 pourcentage (le volume n'est connu qu'à la fin). Une fois finie, **Ouvrir** montre la page de
 départ dans le navigateur, et **Afficher dans le dossier** le dossier de la copie. Les
-Propriétés donnent la page de départ, les réglages, les nombres d'éléments et les éléments en
-échec avec leur raison.
+Propriétés donnent la page de départ, les réglages, les nombres d'éléments, les éléments en
+échec avec leur raison, et à part les liens laissés en ligne parce qu'ils ne mènent pas à une
+page web (un fichier texte, par exemple) : ce ne sont pas des échecs.
 
 Limites : les pages faites par un script (JavaScript) sont copiées telles que le serveur les
 envoie, souvent vides ; un formulaire de connexion n'est pas rempli ; la copie s'arrête

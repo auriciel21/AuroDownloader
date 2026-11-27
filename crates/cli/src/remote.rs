@@ -2610,6 +2610,11 @@ mod tests {
             line.render(),
             "3 page(s), 10 ressource(s), 1 fichier(s), 2 en échec"
         );
+        let online = SiteLine::of(&json!({"pages": 1, "online": 2})).unwrap();
+        assert_eq!(
+            online.render(),
+            "1 page(s), 0 ressource(s), 0 fichier(s), 2 laissé(s) en ligne"
+        );
         assert_eq!(SiteLine::of(&Value::Null), None);
         let progress = Line {
             done: 2048,

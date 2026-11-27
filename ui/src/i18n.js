@@ -592,6 +592,8 @@ export const EN = {
   "Site : {0}": "Site: {0}",
   "{0} page(s), {1} ressource(s), {2} fichier(s)": "{0} page(s), {1} resource(s), {2} file(s)",
   "{0}, {1} en échec": "{0}, {1} failed",
+  "{0}, {1} laissé(s) en ligne": "{0}, {1} left online",
+  "Liens laissés en ligne": "Links left online",
   "{0}, {1} laissé(s) par les limites": "{0}, {1} left out by the limits",
   "profondeur {0}": "depth {0}",
   "{0} pages au plus": "{0} pages at most",

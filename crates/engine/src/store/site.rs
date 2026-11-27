@@ -636,7 +636,12 @@ pub struct Counts {
     pub resources: u64,
     /// Fichiers cochés copiés.
     pub files: u64,
+    /// Éléments en échec (lien laissé en ligne), hors `online`.
     pub failed: u64,
+    /// Liens laissés en ligne parce qu'ils ne mènent pas à une page web (`NOT_HTML` : un
+    /// fichier texte sans type annoncé…) : pas des échecs (décision de l'utilisateur du
+    /// 2026-11-27, après l'essai de l'interface).
+    pub online: u64,
     pub skipped: u64,
     pub queued: u64,
     /// Octets des pages et ressources enregistrées (le volume limité, hors fichiers
@@ -644,28 +649,33 @@ pub struct Counts {
     pub bytes: u64,
 }
 
+/// Code d'erreur d'un élément laissé en ligne sans échec (`Counts::online`).
+pub const LEFT_ONLINE: &str = "NOT_HTML";
+
 pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT kind, state, COUNT(*), COALESCE(SUM(size), 0)
-         FROM site_items WHERE task_id = ?1 GROUP BY kind, state",
+        "SELECT kind, state, error IS ?2, COUNT(*), COALESCE(SUM(size), 0)
+         FROM site_items WHERE task_id = ?1 GROUP BY 1, 2, 3",
     )?;
-    let rows = stmt.query_map([task_id], |r| {
+    let rows = stmt.query_map(params![task_id, LEFT_ONLINE], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
+            r.get::<_, bool>(2)?,
             r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
         ))
     })?;
     let mut c = Counts::default();
     for row in rows {
-        let (kind, state, n, size) = row?;
+        let (kind, state, online, n, size) = row?;
         let n = u64::try_from(n).unwrap_or(0);
         let size = u64::try_from(size).unwrap_or(0);
         let kind = ItemKind::from_sql(&kind).ok_or_else(|| bad(task_id, "sorte"))?;
         let state = ItemState::from_sql(&state).ok_or_else(|| bad(task_id, "état"))?;
         match state {
             ItemState::Queued => c.queued += n,
+            ItemState::Failed if online => c.online += n,
             ItemState::Failed => c.failed += n,
             ItemState::Skipped => c.skipped += n,
             ItemState::Fetched | ItemState::Done => {

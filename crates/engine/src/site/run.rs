@@ -1338,6 +1338,7 @@ async fn links(conn: &mut Connection, task_id: &str, root: &Path) -> Result<End,
         resources = counts.resources,
         files = counts.files,
         failed = counts.failed,
+        online = counts.online,
         "copie d'un site finie"
     );
     Ok(End::Completed(root.to_path_buf()))
