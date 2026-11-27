@@ -635,6 +635,30 @@ fn free_port() -> SocketAddr {
     probe.local_addr().unwrap()
 }
 
+/// Écoute du moteur (`supervise`) ouverte sur un port libre de la boucle locale. Le port
+/// choisi peut être pris par un autre test avant que le moteur ne l'ouvre (« Address
+/// already in use », vu sous Linux le 2026-11-26) : un autre est alors essayé.
+async fn listen_on_a_free_port(engine: &Engine) -> (SocketAddr, RemoteState) {
+    for attempt in 0..5 {
+        let addr = free_port();
+        let shown = addr.to_string();
+        // L'adresse d'abord : activée sans elle, l'écoute prendrait celle par défaut.
+        engine.set_remote_listen(Some(addr)).await.unwrap();
+        if attempt == 0 {
+            engine.set_flag(Flag::RemoteEnabled, true).await.unwrap();
+        }
+        let state = state_until(engine, |s| {
+            s.listen.as_deref() == Some(shown.as_str())
+                && (s.listening || s.error.as_deref().is_some_and(|e| e.contains(&shown)))
+        })
+        .await;
+        if state.listening {
+            return (addr, state);
+        }
+    }
+    panic!("aucun port libre pour l'écoute");
+}
+
 /// L'écoute en TLS (forcée ici sur la boucle locale, comme hors d'elle) : certificat
 /// fabriqué à côté de la base, son empreinte dans l'état ; requêtes, session `Secure` et
 /// WebSocket chiffrés ; refus d'un client en clair ou qui attend un autre certificat ;
@@ -645,10 +669,7 @@ async fn the_network_listener_serves_tls_with_its_certificate() {
     let engine = engine(dir.path());
     let (_, token) = engine.create_token("téléphone", "control").await.unwrap();
     tokio::spawn(super::supervise(engine.clone(), true));
-    let addr = free_port();
-    engine.set_remote_listen(Some(addr)).await.unwrap();
-    engine.set_flag(Flag::RemoteEnabled, true).await.unwrap();
-    let state = state_until(&engine, |s| s.listening).await;
+    let (addr, state) = listen_on_a_free_port(&engine).await;
     assert!(state.tls, "{state:?}");
     assert_eq!(state.urls, [format!("https://{addr}")]);
     let cert = state.certificate.expect("certificat");
@@ -849,16 +870,14 @@ async fn the_generated_certificate_is_renewed_when_due() {
     use super::tls::{BACKDATE_S, RENEW_BEFORE_MS, VALIDITY_S};
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path());
-    let addr = free_port();
-    // Un certificat dont l'échéance tombe dans cinq secondes.
+    // Un certificat dont l'échéance tombe dans cinq secondes ; ses noms ne dépendent pas du
+    // port.
     let due = crate::store::now_ms() + 5000;
     let made_at = ((due + RENEW_BEFORE_MS) / 1000 + BACKDATE_S - VALIDITY_S) * 1000;
-    let names = super::tls::wanted_names(addr, &[]);
+    let names = super::tls::wanted_names(free_port(), &[]);
     let old = super::tls::generated(dir.path(), &names, made_at).unwrap();
     tokio::spawn(super::supervise(engine.clone(), true));
-    engine.set_remote_listen(Some(addr)).await.unwrap();
-    engine.set_flag(Flag::RemoteEnabled, true).await.unwrap();
-    let state = state_until(&engine, |s| s.listening).await;
+    let (addr, state) = listen_on_a_free_port(&engine).await;
     assert_eq!(
         state.certificate.unwrap().fingerprint,
         old.fingerprint,
