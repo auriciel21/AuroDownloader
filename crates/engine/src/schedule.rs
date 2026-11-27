@@ -233,8 +233,24 @@ fn window_from_json(value: &Value) -> Result<Window, String> {
     })
 }
 
+/// Prochaine heure locale (millisecondes) après `after`, à la minute `minute` du jour, un des
+/// jours de `days` (bit 0 : lundi … bit 6 : dimanche ; 0 : n'importe quel jour) : le
+/// programme d'un projet (SPEC §7.18 quater).
+pub fn next_at(minute: u16, days: u8, after: i64) -> i64 {
+    let today = after.div_euclid(DAY_MS) * DAY_MS;
+    let at = i64::from(minute) * MINUTE_MS;
+    (0..=7)
+        .map(|d| today + d * DAY_MS + at)
+        .filter(|&candidate| candidate > after)
+        .find(|&candidate| {
+            let (weekday, _) = day_and_minute(candidate);
+            days & 0x7F == 0 || days & (1 << (weekday - 1)) != 0
+        })
+        .unwrap_or(today + 7 * DAY_MS + at)
+}
+
 /// « HH:MM », de 00:00 à 23:59.
-fn parse_hhmm(text: &str) -> Option<u16> {
+pub(crate) fn parse_hhmm(text: &str) -> Option<u16> {
     let (h, m) = text.split_once(':')?;
     // Deux chiffres de chaque côté : `parse` accepterait aussi « +1 ».
     let two_digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
@@ -245,7 +261,7 @@ fn parse_hhmm(text: &str) -> Option<u16> {
     (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
-fn hhmm(minutes: u16) -> String {
+pub(crate) fn hhmm(minutes: u16) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
@@ -260,6 +276,19 @@ mod tests {
 
     fn rules(value: Value) -> Rules {
         Rules::from_json(&value).unwrap()
+    }
+
+    #[test]
+    fn the_next_run_of_a_project_is_the_next_chosen_day_at_its_hour() {
+        // Lundi 08:00, programme à 09:30 : le jour même ; à 10:00 : le lendemain.
+        assert_eq!(next_at(570, 0, at(0, 8, 0)), at(0, 9, 30));
+        assert_eq!(next_at(570, 0, at(0, 10, 0)), at(1, 9, 30));
+        // Exactement à l'heure : la suivante.
+        assert_eq!(next_at(570, 0, at(0, 9, 30)), at(1, 9, 30));
+        // Du lundi au vendredi (bits 0 à 4), un vendredi soir : le lundi suivant.
+        assert_eq!(next_at(570, 0b001_1111, at(4, 20, 0)), at(7, 9, 30));
+        // Le dimanche seulement (bit 6), un dimanche après l'heure : une semaine plus tard.
+        assert_eq!(next_at(0, 0b100_0000, at(6, 0, 1)), at(13, 0, 0));
     }
 
     #[test]

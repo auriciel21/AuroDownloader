@@ -100,6 +100,8 @@ impl From<EngineError> for RpcError {
                 Self::new(-32011, "INVALID_STATE", message)
             }
             EngineError::QueueNotFound(_) => Self::new(-32012, "QUEUE_NOT_FOUND", message),
+            EngineError::ProjectNotFound(_) => Self::new(-32039, "PROJECT_NOT_FOUND", message),
+            EngineError::ProjectExists(_) => Self::new(-32040, "PROJECT_EXISTS", message),
             EngineError::ScheduleNotFound(_) => Self::new(-32013, "SCHEDULE_NOT_FOUND", message),
             EngineError::LoginNotFound(_) => Self::new(-32014, "LOGIN_NOT_FOUND", message),
             EngineError::Url(_) => Self::new(-32020, "URL_INVALID", message),

@@ -136,7 +136,8 @@ téléchargement.
   choix, état `ignored` et sa raison, `store::site::reason`, à part des échecs techniques ;
   migration 20 : mode `files`, filtres d'un projet, lancements `run`/`fetched_run`,
   validateurs, table `projects` ; mise à jour sur place, `Engine::update_site`,
-  `store::site::begin_update`, SPEC 7.18 quater), `site::html` (liens d'une page par rôle,
+  `store::site::begin_update`, SPEC 7.18 quater ; projets : `store::projects`,
+  `scheduler::projects`, `Engine::set_project`, `run_project`, `schedule::next_at`), `site::html` (liens d'une page par rôle,
   réécriture octet pour octet), `site::css` (`url(…)`, `@import`), `site::layout` (de
   l'adresse au chemin : un dossier par hôte, `@paramètres`, `.html` et `.css` ajoutés),
   `site::run` (exploration avec le `Judge` de `linkscan::crawl`, lecture au fil de l'eau par

@@ -1215,6 +1215,8 @@ Les erreurs suivent JSON-RPC : `code` numérique, `message` lisible, et `data.co
 | -32036 | `PLUGIN_CHOICE` | `task.add` d'une page dont le plugin trouve plusieurs liens : les choisir par `plugin.resolve` et `plugin.add` (section 7.20) |
 | -32037 | `CRAWL_NOT_FOUND` | Exploration inconnue de cette connexion, ou oubliée (section 7.18 bis, conçue le 2026-11-26) |
 | -32038 | `CRAWL_BUSY` | Déjà 4 explorations en cours dans le moteur (section 7.18 bis) |
+| -32039 | `PROJECT_NOT_FOUND` | Projet inconnu (section 7.18 quater, depuis le 2026-11-27) |
+| -32040 | `PROJECT_EXISTS` | Un autre projet porte déjà ce nom, sans tenir compte de la casse (section 7.18 quater) |
 
 `INSUFFICIENT_SPACE` n'est pas encore renvoyé : `task.add` ne connaît pas la taille, que seule la préparation apprend (section 7.1). Un manque de place met la tâche en pause, cause `disk_full`, code `DISK_FULL` (sections 6.8 et 7.6 bis).
 
@@ -2125,7 +2127,7 @@ F-44, étape C du « Grabber » (section 7.18 bis). Les décisions de l'utilisat
   - boîte « Projets » (barre d'outils, page distante comprise) : liste (nom, page, programme, prochain lancement, dernier lancement et ses nombres), « Lancer », « Modifier » (rouvre la boîte « Liens » remplie, qui enregistre le projet au lieu d'ajouter), « Supprimer » ;
   - CLI : `auro project list`, `auro project add <page> --name <nom> [mêmes options que links et site] [--copy] [--at HH:MM --days 1-5]` (un nom existant est remplacé avec `--replace`), `auro project run <nom|id> [--wait]`, `auro project remove <nom|id>`.
 - **Limites connues** : pas de suppression des fichiers disparus du site (décision) ; une page sans validateur est toujours relue ; pas de mise à jour d'une copie faite hors d'un projet ; pas de projets sur Android.
-- Mise en œuvre : C1. moteur : migration 20, mode `files`, filtres, mise à jour sur place, programme, banc `crash_site` étendu ; C2. protocole et CLI ; C3. bureau et page, guide dans les deux langues ; C4. essais réels et essai de l'interface par l'utilisateur.
+- Mise en œuvre : C1. moteur : migration 20, mode `files`, filtres, mise à jour sur place, programme, banc `crash_site` étendu (C1a, faite le 2026-11-27 : copie ; C1b, faite le même jour : `store::projects`, `scheduler::projects`, contrôle des projets dus à chaque tour de la boucle avec l'horloge des plages ; un projet modifié recopie ses réglages et ses filtres dans sa copie avant une mise à jour, et crée une nouvelle copie si sa page ou son mode a changé ; une copie en pause est reprise, une copie annulée ou retirée en fait créer une nouvelle ; un nom de 1 à 100 caractères) ; C2. protocole et CLI ; C3. bureau et page, guide dans les deux langues ; C4. essais réels et essai de l'interface par l'utilisateur.
 
 ### 7.19 Interface web distante (phase 6, étape 3, conception du 2026-11-11)
 

@@ -773,6 +773,7 @@ async fn each_change_raises_the_revision_by_one() {
                 | Event::SettingChanged { rev, .. }
                 | Event::ScheduleChanged { rev, .. }
                 | Event::ScheduleRemoved { rev, .. }
+                | Event::ProjectChanged { rev, .. }
                 | Event::TokenRevoked { rev, .. }
                 | Event::EndAction { rev, .. } => revs.push(rev),
                 Event::StateChanged { rev, to, .. } => {
@@ -1218,6 +1219,7 @@ async fn a_due_retry_that_cannot_start_does_not_spin_the_loop() {
     scheduler.recheck_disk();
     scheduler.check_interface();
     scheduler.refresh_schedules(false);
+    scheduler.check_projects();
     scheduler.check_end_action();
     scheduler.start_runnable();
     assert!(
@@ -1275,6 +1277,7 @@ async fn an_idle_loop_wakes_only_for_what_it_watches() {
         scheduler.recheck_disk();
         scheduler.check_interface();
         scheduler.refresh_schedules(false);
+        scheduler.check_projects();
         scheduler.check_end_action();
         scheduler.start_runnable();
         scheduler.next_wake()

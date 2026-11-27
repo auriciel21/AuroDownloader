@@ -55,6 +55,7 @@ use crate::torrent::{self, Torrents};
 use crate::transfer::{self, LiveSegment, Options, Outcome, Progress, TransferError};
 
 mod planning;
+mod projects;
 #[cfg(test)]
 mod tests;
 
@@ -335,6 +336,12 @@ pub enum Event {
         rev: u64,
         schedule_id: String,
     },
+    /// Projet créé, modifié, lancé ou supprimé (`removed`, SPEC §7.18 quater).
+    ProjectChanged {
+        rev: u64,
+        project_id: String,
+        removed: bool,
+    },
     /// Action de fin annoncée (`Some`), puis exécutée ou annulée (`None`) ; `error` si
     /// le système l'a refusée.
     EndAction {
@@ -427,6 +434,12 @@ pub enum EngineError {
 
     #[error("file inconnue : {0}")]
     QueueNotFound(String),
+
+    #[error("projet inconnu : {0}")]
+    ProjectNotFound(String),
+
+    #[error("un projet porte déjà ce nom : {0}")]
+    ProjectExists(String),
 
     #[error("planification inconnue : {0}")]
     ScheduleNotFound(String),
@@ -697,6 +710,85 @@ pub struct SiteRequest {
 /// Fichiers cochés d'une copie au plus (SPEC §7.18 ter).
 pub const MAX_SITE_FILES: usize = 10_000;
 
+/// Une copie vérifiée : page, réglages, fichiers cochés sans doublon, filtres.
+pub(crate) struct CheckedSite {
+    pub page: reqwest::Url,
+    pub settings: store::site::Settings,
+    pub files: Vec<String>,
+    pub filters: Option<store::site::Filters>,
+}
+
+/// Vérifie une copie demandée (SPEC §7.18 ter et quater) : celle de `task.add`, ou celle
+/// qu'un projet lancera.
+pub(crate) fn check_site(request: &SiteRequest) -> Result<CheckedSite, EngineError> {
+    use crate::linkscan::crawl::{DEFAULT_PAGES, MAX_DEPTH, MAX_PAGES};
+    use crate::site::run::{DEFAULT_BYTES, MAX_BYTES, MIN_BYTES};
+    let page = net::parse_url(&request.page_url)?;
+    let depth = request.depth.unwrap_or(1);
+    let max_pages = request.max_pages.unwrap_or(DEFAULT_PAGES);
+    let max_bytes = request.max_bytes.unwrap_or(DEFAULT_BYTES);
+    if !(1..=MAX_DEPTH).contains(&depth)
+        || !(1..=MAX_PAGES).contains(&max_pages)
+        || !(MIN_BYTES..=MAX_BYTES).contains(&max_bytes)
+    {
+        return Err(EngineError::BadRequest(format!(
+            "site : profondeur de 1 à {MAX_DEPTH}, pages de 1 à {MAX_PAGES}, volume de \
+             {} Mio à {} Gio",
+            MIN_BYTES >> 20,
+            MAX_BYTES >> 30
+        )));
+    }
+    let exclude = request
+        .exclude
+        .clone()
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            crate::rules::compile(&e)
+                .map(|_| e)
+                .map_err(|err| EngineError::BadRequest(format!("site.exclude : {err}")))
+        })
+        .transpose()?;
+    if request.files.len() > MAX_SITE_FILES {
+        return Err(EngineError::BadRequest(format!(
+            "site.files : {MAX_SITE_FILES} fichiers au plus"
+        )));
+    }
+    let filters = request.filters.clone().map(check_filters).transpose()?;
+    if filters.is_some() && !request.files.is_empty() {
+        return Err(EngineError::BadRequest(
+            "site : des fichiers cochés ou des filtres, pas les deux".into(),
+        ));
+    }
+    if request.files_only && filters.is_none() && request.files.is_empty() {
+        return Err(EngineError::BadRequest(
+            "site : fichiers seuls, sans fichier coché ni filtre".into(),
+        ));
+    }
+    let mut files: Vec<String> = Vec::with_capacity(request.files.len());
+    let mut seen = std::collections::HashSet::new();
+    for file in &request.files {
+        let mut url = net::parse_url(file)?;
+        url.set_fragment(None);
+        let url = url.to_string();
+        if seen.insert(url.clone()) {
+            files.push(url);
+        }
+    }
+    Ok(CheckedSite {
+        page,
+        settings: store::site::Settings {
+            depth,
+            max_pages,
+            max_bytes,
+            exclude,
+            same_folder: request.same_folder,
+            ignore_robots: request.ignore_robots,
+        },
+        files,
+        filters,
+    })
+}
+
 /// Filtres d'un projet vérifiés : extensions en minuscules sans point ni doublon,
 /// expression valide, taille mini au plus égale à la maxi.
 fn check_filters(mut f: store::site::Filters) -> Result<store::site::Filters, EngineError> {
@@ -854,6 +946,23 @@ enum Command {
     UpdateSite {
         task_id: String,
         reply: Reply<()>,
+    },
+    Projects {
+        reply: Reply<Vec<store::projects::Project>>,
+    },
+    SetProject {
+        project_id: Option<String>,
+        spec: Box<store::projects::ProjectSpec>,
+        remote: bool,
+        reply: Reply<String>,
+    },
+    DeleteProject {
+        project_id: String,
+        reply: Reply<()>,
+    },
+    RunProject {
+        project_id: String,
+        reply: Reply<String>,
     },
     Relocate {
         task_id: String,
@@ -1666,6 +1775,41 @@ impl Engine {
             reply,
         })
         .await
+    }
+
+    /// Projets enregistrés, par nom (SPEC §7.18 quater).
+    pub async fn projects(&self) -> Result<Vec<store::projects::Project>, EngineError> {
+        self.ask(|reply| Command::Projects { reply }).await
+    }
+
+    /// Crée (sans `project_id`) ou remplace un projet ; `remote` : par une connexion à jeton.
+    pub async fn set_project(
+        &self,
+        project_id: Option<String>,
+        spec: store::projects::ProjectSpec,
+        remote: bool,
+    ) -> Result<String, EngineError> {
+        self.ask(|reply| Command::SetProject {
+            project_id,
+            spec: Box::new(spec),
+            remote,
+            reply,
+        })
+        .await
+    }
+
+    /// Supprime un projet ; sa tâche et ses fichiers restent.
+    pub async fn delete_project(&self, project_id: &str) -> Result<(), EngineError> {
+        let project_id = project_id.to_owned();
+        self.ask(|reply| Command::DeleteProject { project_id, reply })
+            .await
+    }
+
+    /// Lance un projet ; rend sa tâche.
+    pub async fn run_project(&self, project_id: &str) -> Result<String, EngineError> {
+        let project_id = project_id.to_owned();
+        self.ask(|reply| Command::RunProject { project_id, reply })
+            .await
     }
 
     /// Met à jour une copie de site finie ou en échec, dans son dossier (SPEC §7.18 quater) :
@@ -2660,6 +2804,8 @@ struct Scheduler {
     last_run: u64,
     /// Plages horaires et action de fin (F-16).
     planning: planning::State,
+    /// Prochain lancement prévu d'un projet (millisecondes Unix) ; `None` : à relire.
+    projects_due: Option<Option<i64>>,
     /// Les copies vers un autre volume (SPEC §7.12) y signalent leur fin.
     moved: mpsc::UnboundedSender<(String, std::io::Result<()>)>,
     moved_rx: Option<mpsc::UnboundedReceiver<(String, std::io::Result<()>)>>,
@@ -2718,6 +2864,8 @@ impl Scheduler {
         // Limite d'envoi (torrents) : lue ici ; une base illisible la laisse ouverte.
         let upload_limit = settings::upload_limit(&conn).ok().flatten();
         torrents.set_limits(download_limit, upload_limit);
+        // Prochain lancement prévu d'un projet ; une base illisible le relit au premier tour.
+        let projects_due = store::projects::next_due(&conn).ok();
         // Outils de la vidéo : `tools/` à côté de la base, sauf réglage contraire.
         let tools = media::SUPPORTED.then(|| {
             let dir = config.transfer.media.dir.clone().unwrap_or_else(|| {
@@ -2758,6 +2906,7 @@ impl Scheduler {
             prepared,
             last_run: 0,
             planning: planning::State::default(),
+            projects_due,
             moved,
             moved_rx: Some(moved_rx),
             network_usable,
@@ -2787,6 +2936,7 @@ impl Scheduler {
                 self.recheck_disk();
                 self.check_interface();
                 self.refresh_schedules(false);
+                self.check_projects();
                 self.check_end_action();
                 self.retry_requeues();
                 self.start_runnable();
@@ -2824,7 +2974,9 @@ impl Scheduler {
     /// contrôle des plages horaires ou action de fin, au plus une minute.
     fn next_wake(&self) -> Duration {
         let now = Instant::now();
-        let cap = Duration::from_secs(60).min(self.planning_wake(now));
+        let cap = Duration::from_secs(60)
+            .min(self.planning_wake(now))
+            .min(self.projects_wake(now));
         // La place libre : seulement si une tâche l'attend (audit P27).
         let cap = match self.disk_waiting.get() {
             true => cap.min(self.next_disk_check.saturating_duration_since(now)),
@@ -3266,6 +3418,23 @@ impl Scheduler {
                     self.visible(&task_id)
                         .and_then(|()| self.update_site(&task_id)),
                 );
+            }
+            Command::Projects { reply } => {
+                let _ = reply.send(self.projects());
+            }
+            Command::SetProject {
+                project_id,
+                spec,
+                remote,
+                reply,
+            } => {
+                let _ = reply.send(self.set_project(project_id, *spec, remote));
+            }
+            Command::DeleteProject { project_id, reply } => {
+                let _ = reply.send(self.delete_project(&project_id));
+            }
+            Command::RunProject { project_id, reply } => {
+                let _ = reply.send(self.run_project(&project_id));
             }
             Command::Relocate {
                 task_id,
@@ -4141,8 +4310,6 @@ impl Scheduler {
     /// Copie d'un site (SPEC §7.18 ter) : réglages de l'exploration, volume, fichiers
     /// cochés ; rien de ce qui fait un téléchargement d'un seul fichier.
     fn add_site(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {
-        use crate::linkscan::crawl::{DEFAULT_PAGES, MAX_DEPTH, MAX_PAGES};
-        use crate::site::run::{DEFAULT_BYTES, MAX_BYTES, MIN_BYTES};
         let request = task.site.clone().unwrap_or_default();
         if task.media.is_some()
             || task.torrent.is_some()
@@ -4157,69 +4324,17 @@ impl Scheduler {
                 "site : ni sources, vidéo, nom, empreinte, en-têtes ni plugin".into(),
             ));
         }
-        let page = net::parse_url(&request.page_url)?;
         Self::check_speed_limit(task.speed_limit_bps)?;
-        let depth = request.depth.unwrap_or(1);
-        let max_pages = request.max_pages.unwrap_or(DEFAULT_PAGES);
-        let max_bytes = request.max_bytes.unwrap_or(DEFAULT_BYTES);
-        if !(1..=MAX_DEPTH).contains(&depth)
-            || !(1..=MAX_PAGES).contains(&max_pages)
-            || !(MIN_BYTES..=MAX_BYTES).contains(&max_bytes)
-        {
-            return Err(EngineError::BadRequest(format!(
-                "site : profondeur de 1 à {MAX_DEPTH}, pages de 1 à {MAX_PAGES}, volume de \
-                 {} Mio à {} Gio",
-                MIN_BYTES >> 20,
-                MAX_BYTES >> 30
-            )));
-        }
-        let exclude = request
-            .exclude
-            .filter(|e| !e.is_empty())
-            .map(|e| {
-                crate::rules::compile(&e)
-                    .map(|_| e)
-                    .map_err(|err| EngineError::BadRequest(format!("site.exclude : {err}")))
-            })
-            .transpose()?;
-        if request.files.len() > MAX_SITE_FILES {
-            return Err(EngineError::BadRequest(format!(
-                "site.files : {MAX_SITE_FILES} fichiers au plus"
-            )));
-        }
-        let filters = request.filters.map(check_filters).transpose()?;
-        if filters.is_some() && !request.files.is_empty() {
-            return Err(EngineError::BadRequest(
-                "site : des fichiers cochés ou des filtres, pas les deux".into(),
-            ));
-        }
-        if request.files_only && filters.is_none() && request.files.is_empty() {
-            return Err(EngineError::BadRequest(
-                "site : fichiers seuls, sans fichier coché ni filtre".into(),
-            ));
-        }
-        let mut files: Vec<String> = Vec::with_capacity(request.files.len());
-        let mut seen = std::collections::HashSet::new();
-        for file in &request.files {
-            let mut url = net::parse_url(file)?;
-            url.set_fragment(None);
-            let url = url.to_string();
-            if seen.insert(url.clone()) {
-                files.push(url);
-            }
-        }
+        let CheckedSite {
+            page,
+            settings,
+            files,
+            filters,
+        } = check_site(&request)?;
         let (dest_dir, queue_id) = self.destination(task.dest_dir, task.queue_id, task.remote)?;
         let display_name = match page.port() {
             Some(port) => format!("{}:{port}", page.host_str().unwrap_or_default()),
             None => page.host_str().unwrap_or_default().to_owned(),
-        };
-        let settings = store::site::Settings {
-            depth,
-            max_pages,
-            max_bytes,
-            exclude,
-            same_folder: request.same_folder,
-            ignore_robots: request.ignore_robots,
         };
         let max_connections = task
             .max_connections

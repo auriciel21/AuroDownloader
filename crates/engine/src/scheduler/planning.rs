@@ -31,7 +31,7 @@ pub(super) struct State {
 }
 
 impl Scheduler {
-    fn now_local(&self) -> LocalNow {
+    pub(super) fn now_local(&self) -> LocalNow {
         (self.config.planning.clock)(&self.conn)
     }
 

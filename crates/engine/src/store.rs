@@ -23,6 +23,7 @@ pub mod media;
 pub mod moves;
 pub mod pieces;
 pub mod plugins;
+pub mod projects;
 pub mod remote;
 pub mod rules;
 pub mod schedules;
@@ -482,7 +483,7 @@ pub fn now_ms() -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const EXPECTED_TABLES: [&str; 26] = [
@@ -536,7 +537,7 @@ mod tests {
         .unwrap();
     }
 
-    fn insert_task(
+    pub(crate) fn insert_task(
         conn: &Connection,
         id: &str,
         queue: &str,

@@ -197,6 +197,11 @@ pub struct Filters {
 }
 
 impl Filters {
+    /// Aucun filtre : ni extension, ni expression, ni taille.
+    pub fn is_empty(&self) -> bool {
+        self.extensions.is_empty() && self.regex.is_none() && !self.sized()
+    }
+
     /// Un filtre de taille : la taille se lit avant le téléchargement.
     pub fn sized(&self) -> bool {
         self.min_size.is_some() || self.max_size.is_some()
@@ -447,6 +452,40 @@ pub fn load_job(conn: &Connection, task_id: &str) -> Result<SiteJob, StoreError>
         filters,
         run,
     })
+}
+
+/// Réglages d'une copie remplacés avant une mise à jour (ceux d'un projet modifié, SPEC
+/// §7.18 quater) ; son mode et sa page restent.
+pub fn set_settings(
+    conn: &Connection,
+    task_id: &str,
+    settings: &Settings,
+    filters: Option<&Filters>,
+    keep_tree: bool,
+) -> Result<(), StoreError> {
+    let size = |v: Option<u64>| v.map(|v| to_i64(v, "taille")).transpose();
+    conn.execute(
+        "UPDATE site_jobs SET depth = ?2, max_pages = ?3, max_bytes = ?4, exclude = ?5,
+                             same_folder = ?6, ignore_robots = ?7, keep_tree = ?8,
+                             filter_ext = ?9, filter_regex = ?10, filter_min = ?11,
+                             filter_max = ?12
+         WHERE task_id = ?1",
+        params![
+            task_id,
+            settings.depth,
+            settings.max_pages,
+            to_i64(settings.max_bytes, "volume")?,
+            settings.exclude,
+            settings.same_folder,
+            settings.ignore_robots,
+            keep_tree,
+            filters.map(Filters::extensions_sql),
+            filters.and_then(|f| f.regex.clone()),
+            size(filters.and_then(|f| f.min_size))?,
+            size(filters.and_then(|f| f.max_size))?
+        ],
+    )?;
+    Ok(())
 }
 
 /// Numéro du lancement d'une copie.
