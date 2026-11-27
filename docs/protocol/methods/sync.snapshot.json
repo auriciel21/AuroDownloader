@@ -48,6 +48,12 @@
         },
         "endAction": {
           "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/endAction"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/project"
+          }
         }
       },
       "required": [
@@ -60,7 +66,8 @@
         "networkMetered",
         "torrentInterfaceUp",
         "schedules",
-        "endAction"
+        "endAction",
+        "projects"
       ]
     }
   }

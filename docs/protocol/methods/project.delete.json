@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/project.delete.json",
+  "title": "project.delete",
+  "description": "Supprime un projet ; sa tâche et ses fichiers restent. Portée admin.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ]
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}

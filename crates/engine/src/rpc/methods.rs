@@ -9,7 +9,8 @@ use serde_json::{Map, Value, json};
 use super::scope::{self, Scope};
 use super::session::{Ctx, Topics};
 use super::{
-    PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, queue_json, schedule_json, task_json,
+    PROTOCOL_VERSIONS, RpcError, end_action_json, negotiate, project_json, queue_json,
+    schedule_json, task_json,
 };
 use crate::io::checksum::Checksum;
 use crate::metalink::Metalink;
@@ -703,8 +704,32 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
                 "networkMetered": s.network_metered,
                 "torrentInterfaceUp": s.torrent_interface_up,
                 "schedules": s.schedules.iter().map(schedule_json).collect::<Vec<_>>(),
+                "projects": s.projects.iter().map(project_json).collect::<Vec<_>>(),
                 "endAction": end_action_json(s.end_action.as_ref()),
             }))
+        }
+        // Projets enregistrés et programmés (SPEC §7.18 quater, depuis le 2026-11-27).
+        "project.list" => {
+            let items = ctx.engine.projects().await?;
+            Ok(json!({"items": items.iter().map(project_json).collect::<Vec<_>>()}))
+        }
+        "project.set" => {
+            let spec = project_spec(&p)?;
+            let id = ctx.engine.set_project(p.str("projectId")?, spec).await?;
+            Ok(json!({"projectId": id}))
+        }
+        "project.delete" => {
+            ctx.engine
+                .delete_project(&p.required_str("projectId")?)
+                .await?;
+            Ok(json!({}))
+        }
+        "project.run" => {
+            let task_id = ctx
+                .engine
+                .run_project(&p.required_str("projectId")?)
+                .await?;
+            Ok(json!({"taskId": task_id}))
         }
         "schedule.list" => {
             let items = ctx.engine.schedules().await?;
@@ -950,11 +975,11 @@ fn hello(ctx: &mut Ctx, p: &Params) -> Result<Value, RpcError> {
         "protocol": format!("{major}.{minor}"),
         // Vidéo (SPEC §7.17) : Windows et Linux seulement. Analyse de liens (SPEC §7.18) et
         // Metalink : depuis le 2026-11-11. Exploration d'un site (§7.18 bis) et copie d'un
-        // site (§7.18 ter) : 2026-11-26.
+        // site (§7.18 ter) : 2026-11-26. Projets (§7.18 quater) : 2026-11-27.
         "capabilities": if crate::media::SUPPORTED {
-            json!(["torrent", "media", "linkscan", "metalink", "crawl", "site"])
+            json!(["torrent", "media", "linkscan", "metalink", "crawl", "site", "projects"])
         } else {
-            json!(["torrent", "linkscan", "metalink", "crawl", "site"])
+            json!(["torrent", "linkscan", "metalink", "crawl", "site", "projects"])
         },
         "rev": ctx.engine.rev(),
         "scope": ctx.scope.as_str(),
@@ -1816,6 +1841,102 @@ fn media_request(m: &serde_json::Map<String, Value>) -> Result<MediaRequest, Rpc
     })
 }
 
+/// Un projet de `project.set` (SPEC §7.18 quater) : `name`, `pageUrl`, réglages de
+/// l'exploration, `filters`, `copySite` (vrai par défaut), `keepTree`, `destDir`, `queueId`,
+/// `schedule` (`{time: "HH:MM", days: [1..7]}`, jours vides : une seule fois ; absent ou
+/// `null` : à la main). Bornes vérifiées par le moteur.
+fn project_spec(p: &Params) -> Result<crate::store::projects::ProjectSpec, RpcError> {
+    use crate::linkscan::crawl::DEFAULT_PAGES;
+    use crate::site::run::DEFAULT_BYTES;
+    use crate::store::projects::{ProjectSpec, Schedule};
+    let depth = p
+        .u32("depth")?
+        .map(|d| u8::try_from(d).map_err(|_| Params::wrong("depth", "entier de 1 à 5")))
+        .transpose()?
+        .unwrap_or(1);
+    let size = |object: &Map<String, Value>, key: &str| -> Result<Option<u64>, RpcError> {
+        match object.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| Params::wrong(&format!("filters.{key}"), "entier positif")),
+        }
+    };
+    let filters = match p.get("filters") {
+        None => crate::store::site::Filters::default(),
+        Some(Value::Object(f)) => crate::store::site::Filters {
+            extensions: match f.get("extensions") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|i| i.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| Params::wrong("filters.extensions", "tableau de textes"))?,
+                Some(_) => return Err(Params::wrong("filters.extensions", "tableau de textes")),
+            },
+            regex: match f.get("regex") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(r)) => Some(r.clone()),
+                Some(_) => return Err(Params::wrong("filters.regex", "texte")),
+            },
+            min_size: size(f, "minSize")?,
+            max_size: size(f, "maxSize")?,
+        },
+        Some(_) => return Err(Params::wrong("filters", "objet")),
+    };
+    let schedule = match p.get("schedule") {
+        None => None,
+        Some(Value::Object(s)) => {
+            let minute = s
+                .get("time")
+                .and_then(Value::as_str)
+                .and_then(crate::schedule::parse_hhmm)
+                .ok_or_else(|| Params::wrong("schedule.time", "heure HH:MM"))?;
+            let mut days = 0u8;
+            for day in s
+                .get("days")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let day = day
+                    .as_u64()
+                    .filter(|d| (1..=7).contains(d))
+                    .ok_or_else(|| Params::wrong("schedule.days", "jours de 1 à 7"))?;
+                days |= 1 << (day - 1);
+            }
+            Some(Schedule { minute, days })
+        }
+        Some(_) => return Err(Params::wrong("schedule", "objet {time, days} ou null")),
+    };
+    Ok(ProjectSpec {
+        name: p.required_str("name")?,
+        page_url: p.required_str("pageUrl")?,
+        settings: crate::store::site::Settings {
+            depth,
+            max_pages: p.u32("maxPages")?.unwrap_or(DEFAULT_PAGES),
+            max_bytes: p
+                .get("maxBytes")
+                .map(|v| {
+                    v.as_u64()
+                        .ok_or_else(|| Params::wrong("maxBytes", "entier positif"))
+                })
+                .transpose()?
+                .unwrap_or(DEFAULT_BYTES),
+            exclude: p.str("exclude")?.filter(|e| !e.is_empty()),
+            same_folder: p.bool("sameFolder")?,
+            ignore_robots: p.bool("ignoreRobots")?,
+        },
+        filters,
+        copy_site: p.bool_or("copySite", true)?,
+        keep_tree: p.bool("keepTree")?,
+        dest_dir: p.str("destDir")?,
+        queue_id: p.str("queueId")?,
+        schedule,
+    })
+}
+
 /// `site` de `task.add` (SPEC §7.18 ter) : `pageUrl`, et `depth`, `maxPages`, `maxBytes`,
 /// `exclude`, `sameFolder`, `ignoreRobots`, `files` facultatifs ; bornes vérifiées par le
 /// moteur.
@@ -1944,6 +2065,17 @@ fn details_json(d: &TaskDetails) -> Value {
             "sameFolder": settings.same_folder,
             "ignoreRobots": settings.ignore_robots,
             "stop": s.job.stop,
+            // Projets (SPEC §7.18 quater, depuis le 2026-11-27) : mode, filtres, lancement.
+            "mode": s.job.mode.as_sql(),
+            "keepTree": s.job.keep_tree,
+            "filters": s.job.filters.as_ref().map(|f| json!({
+                "extensions": f.extensions,
+                "regex": f.regex,
+                "minSize": f.min_size,
+                "maxSize": f.max_size,
+            })),
+            "run": s.job.run,
+            "unchanged": s.counts.unchanged,
             "pages": s.counts.pages,
             "resources": s.counts.resources,
             "files": s.counts.files,
@@ -1953,8 +2085,10 @@ fn details_json(d: &TaskDetails) -> Value {
             "queued": s.counts.queued,
         });
         if let Some(items) = &s.items {
+            // Le lancement en cours : ceux d'avant restent sur le disque, sans compter.
             task["site"]["items"] = items
                 .iter()
+                .filter(|i| i.run == s.job.run)
                 .map(|i| {
                     json!({
                         "url": i.url,

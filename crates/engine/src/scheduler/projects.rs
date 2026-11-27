@@ -58,6 +58,7 @@ impl Scheduler {
         project_id: Option<String>,
         mut spec: ProjectSpec,
         remote: bool,
+        public_only: bool,
     ) -> Result<String, EngineError> {
         spec.name = spec.name.trim().to_owned();
         if spec.name.is_empty() || spec.name.chars().count() > MAX_PROJECT_NAME {
@@ -85,15 +86,10 @@ impl Scheduler {
                 }
                 id
             }
-            None => projects::create(&self.conn, &spec, next, remote)?,
+            None => projects::create(&self.conn, &spec, next, public_only)?,
         };
         self.projects_due = None;
-        let project_id = id.clone();
-        self.emit(|rev| Event::ProjectChanged {
-            rev,
-            project_id,
-            removed: false,
-        });
+        self.project_changed(&id);
         Ok(id)
     }
 
@@ -107,7 +103,7 @@ impl Scheduler {
         self.emit(|rev| Event::ProjectChanged {
             rev,
             project_id,
-            removed: true,
+            project: None,
         });
         Ok(())
     }
@@ -172,13 +168,22 @@ impl Scheduler {
         };
         let now = self.now_local().utc_ms;
         projects::mark_run(&self.conn, project_id, &task_id, now)?;
-        let id = project_id.to_owned();
+        self.project_changed(project_id);
+        Ok(task_id)
+    }
+
+    /// Annonce un projet tel qu'il est maintenant.
+    fn project_changed(&self, project_id: &str) {
+        let project = projects::get(&self.conn, project_id)
+            .ok()
+            .flatten()
+            .map(Box::new);
+        let project_id = project_id.to_owned();
         self.emit(|rev| Event::ProjectChanged {
             rev,
-            project_id: id,
-            removed: false,
+            project_id,
+            project,
         });
-        Ok(task_id)
     }
 
     /// La copie `task_id` est-elle celle que le projet lancerait : même page, même mode ?
@@ -223,12 +228,7 @@ impl Scheduler {
                 .filter(|s| s.days != 0)
                 .map(|s| self.next_run_of(s));
             let _ = projects::set_next_run(&self.conn, &project.id, next);
-            let id = project.id.clone();
-            self.emit(|rev| Event::ProjectChanged {
-                rev,
-                project_id: id,
-                removed: false,
-            });
+            self.project_changed(&project.id);
         }
         self.projects_due = Some(projects::next_due(&self.conn).ok().flatten());
     }

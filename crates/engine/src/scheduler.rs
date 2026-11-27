@@ -336,11 +336,11 @@ pub enum Event {
         rev: u64,
         schedule_id: String,
     },
-    /// Projet créé, modifié, lancé ou supprimé (`removed`, SPEC §7.18 quater).
+    /// Projet créé, modifié ou lancé (`project`), ou supprimé (`None`, SPEC §7.18 quater).
     ProjectChanged {
         rev: u64,
         project_id: String,
-        removed: bool,
+        project: Option<Box<store::projects::Project>>,
     },
     /// Action de fin annoncée (`Some`), puis exécutée ou annulée (`None`) ; `error` si
     /// le système l'a refusée.
@@ -399,6 +399,8 @@ pub struct Snapshot {
     pub rev: u64,
     pub tasks: Vec<TaskRow>,
     pub schedules: Vec<ScheduleView>,
+    /// Projets enregistrés (SPEC §7.18 quater).
+    pub projects: Vec<store::projects::Project>,
     pub end_action: Option<PendingEnd>,
     pub queues: Vec<QueueRow>,
     /// Limite de débit globale (`None` : aucune).
@@ -954,6 +956,7 @@ enum Command {
         project_id: Option<String>,
         spec: Box<store::projects::ProjectSpec>,
         remote: bool,
+        public_only: bool,
         reply: Reply<String>,
     },
     DeleteProject {
@@ -1782,17 +1785,20 @@ impl Engine {
         self.ask(|reply| Command::Projects { reply }).await
     }
 
-    /// Crée (sans `project_id`) ou remplace un projet ; `remote` : par une connexion à jeton.
+    /// Crée (sans `project_id`) ou remplace un projet. Par une connexion à jeton, son dossier
+    /// reste sous celui des téléchargements et le projet qu'elle crée ne joint que le réseau
+    /// public (SPEC §7.19).
     pub async fn set_project(
         &self,
         project_id: Option<String>,
         spec: store::projects::ProjectSpec,
-        remote: bool,
     ) -> Result<String, EngineError> {
+        let (remote, public_only) = (self.remote, self.public_only);
         self.ask(|reply| Command::SetProject {
             project_id,
             spec: Box::new(spec),
             remote,
+            public_only,
             reply,
         })
         .await
@@ -3426,9 +3432,10 @@ impl Scheduler {
                 project_id,
                 spec,
                 remote,
+                public_only,
                 reply,
             } => {
-                let _ = reply.send(self.set_project(project_id, *spec, remote));
+                let _ = reply.send(self.set_project(project_id, *spec, remote, public_only));
             }
             Command::DeleteProject { project_id, reply } => {
                 let _ = reply.send(self.delete_project(&project_id));
@@ -3723,6 +3730,7 @@ impl Scheduler {
             rev: self.current_rev(),
             tasks: tasks::find_tasks(&self.conn, &TaskFilter::default())?,
             schedules: self.schedule_views()?,
+            projects: self.projects()?,
             end_action: self.planning.pending.clone(),
             queues: tasks::list_queues(&self.conn)?,
             download_limit: settings::download_limit(&self.conn)?,

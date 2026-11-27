@@ -1,0 +1,87 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-project-add 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-project\-add \- Enregistre un projet : fichiers seuls (ceux que gardent \-e, \-\-regex, \-\-min\-size, \-\-max\-size ; tous sans filtre), ou copie du site avec \-\-copy (fichiers aussi avec un filtre). Un nom déjà pris est refusé, sauf avec \-\-replace
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro project add\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-o\fR|\fB\-\-dir\fR] [\fB\-\-copy\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-tree\fR] [\fB\-\-ca\-cert\fR] [\fB\-\-depth\fR] [\fB\-\-max\-pages\fR] [\fB\-\-exclude\fR] [\fB\-\-same\-folder\fR] [\fB\-\-ignore\-robots\fR] [\fB\-\-max\-volume\fR] [\fB\-e\fR|\fB\-\-ext\fR] [\fB\-\-regex\fR] [\fB\-\-min\-size\fR] [\fB\-\-max\-size\fR] [\fB\-q\fR|\fB\-\-queue\fR] [\fB\-\-at\fR] [\fB\-\-days\fR] [\fB\-\-replace\fR] <\fB\-\-name\fR> <\fIPAGE\fR> 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Enregistre un projet : fichiers seuls (ceux que gardent \-e, \-\-regex, \-\-min\-size, \-\-max\-size ; tous sans filtre), ou copie du site avec \-\-copy (fichiers aussi avec un filtre). Un nom déjà pris est refusé, sauf avec \-\-replace
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-name\fR \fI<NAME>\fR
+Nom du projet
+.TP
+\fB\-o\fR, \fB\-\-dir\fR \fI<DIR>\fR
+Dossier de destination ; celui des téléchargements du moteur par défaut
+.TP
+\fB\-\-copy\fR
+Copier le site pour la navigation hors ligne (pages, images, styles…), plutôt que les fichiers seuls
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-tree\fR
+Fichiers seuls : les ranger sous <hôte>/<chemin>, plutôt qu\*(Aqà plat
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.TP
+\fB\-\-depth\fR \fI<NIVEAU>\fR [default: 1]
+Niveau le plus profond (1 à 5) : 1, la page et les pages qu\*(Aqelle cite
+.TP
+\fB\-\-max\-pages\fR \fI<N>\fR
+Pages lues au plus (200 par défaut, 2000 au plus)
+.TP
+\fB\-\-exclude\fR \fI<EXPRESSION>\fR
+Pages à ne pas ouvrir, expression régulière sur l\*(Aqadresse ; par défaut les pages de déconnexion et les liens de tri des listes de dossiers ; « \*(Aq\*(Aq » : aucune
+.TP
+\fB\-\-same\-folder\fR
+Seulement les pages sous le dossier de la page de départ
+.TP
+\fB\-\-ignore\-robots\fR
+Lire aussi les pages que robots.txt refuse aux robots
+.TP
+\fB\-\-max\-volume\fR \fI<TAILLE>\fR
+Volume des pages et ressources d\*(Aqune copie (1M à 20G, 1G par défaut)
+.TP
+\fB\-e\fR, \fB\-\-ext\fR \fI<EXTENSIONS>\fR
+Fichiers gardés, par leurs extensions : « pdf,zip »
+.TP
+\fB\-\-regex\fR \fI<EXPRESSION>\fR
+Fichiers gardés : expression régulière que leur adresse doit contenir
+.TP
+\fB\-\-min\-size\fR \fI<TAILLE>\fR
+Taille minimale d\*(Aqun fichier gardé (500K, 2M, 1G) ; une taille inconnue l\*(Aqécarte
+.TP
+\fB\-\-max\-size\fR \fI<TAILLE>\fR
+Taille maximale d\*(Aqun fichier gardé ; une taille inconnue l\*(Aqécarte
+.TP
+\fB\-q\fR, \fB\-\-queue\fR \fI<QUEUE>\fR
+File (nom ou identifiant)
+.TP
+\fB\-\-at\fR \fI<HH:MM>\fR
+Lancer à cette heure (HH:MM, heure de la machine du moteur) ; sans \-\-days, une seule fois. Un lancement manqué (machine éteinte) se fait au démarrage suivant
+.TP
+\fB\-\-days\fR \fI<DAYS>\fR
+Jours du programme : « 1\-5 », « 6,7 » ou « tous » (1 : lundi, 7 : dimanche)
+.TP
+\fB\-\-replace\fR
+Remplacer le projet de ce nom (sa tâche et ses lancements restent)
+.TP
+<\fIPAGE\fR>
+Adresse de la page de départ

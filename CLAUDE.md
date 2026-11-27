@@ -424,6 +424,7 @@ cargo run -p auro-cli -- metalink <fichier.meta4|adresse> ; get <fichier.meta4> 
 cargo run -p auro-cli -- links <page|liste.csv|-> -e iso,zip --min-size 10M ; links … --add -o .
 cargo run -p auro-cli -- links <page> --depth 2 --max-pages 300 -e pdf ; links … --add --tree -o .
 cargo run -p auro-cli -- site <page> -o . --depth 2 --max-volume 500M ; site <page> -e pdf,zip   # copie hors ligne
+cargo run -p auro-cli -- project add <page> --name Docs -e pdf --at 03:30 --days 1-5 ; project list ; project run Docs --wait ; project remove Docs
 cargo run -p auro-cli -- login set <site> -u <nom> ; login list ; login remove <site>
 cargo run -p auro-cli -- token create <nom> --scope control ; token list ; token revoke <nom|id>
 cargo run -p auro-cli -- plugin install <fichier.wasm> [--yes] ; plugin list ; plugin resolve <page>

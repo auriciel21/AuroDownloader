@@ -33,6 +33,8 @@ auro metalink <fichier.meta4> ; auro get <fichier.meta4> --select 0,2
 auro add fichier.torrent ; auro files <id> --select 0,2-4
 auro links <page> -e iso,zip --min-size 10M --add -o .
 auro site <page> -o . --depth 2 ; auro site <page> -e pdf   # copie hors ligne
+auro project add <page> --name Docs -e pdf --at 03:30 --days 1-5   # projet programmé
+auro project list ; auro project run Docs --wait ; auro project remove Docs
 auro video info <page> ; auro video get <page> --subs fr,en
 auro limit 2M ; auro limit --upload 500K ; auro limit 1M --queue Nuit
 auro schedule set --days 1-5 --from 23:00 --to 07:00 --then sleep

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/project.set.json",
+  "title": "project.set",
+  "description": "Crée (sans projectId) ou remplace un projet, vérifié comme la copie qu'il lancera (SPEC 7.18 quater). Portée admin.",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pageUrl": {
+          "type": "string"
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "maxPages": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exclude": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sameFolder": {
+          "type": "boolean"
+        },
+        "ignoreRobots": {
+          "type": "boolean"
+        },
+        "filters": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/projectFilters"
+        },
+        "copySite": {
+          "type": "boolean"
+        },
+        "keepTree": {
+          "type": "boolean"
+        },
+        "destDir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queueId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schedule": {
+          "oneOf": [
+            {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/projectSchedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "pageUrl"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ]
+    }
+  }
+}

@@ -5473,3 +5473,129 @@ async fn a_site_is_copied_through_the_protocol() {
     }
     crate::testing::stop(&engine).await;
 }
+
+/// Projets (SPEC §7.18 quater) par le protocole : enregistrés, annoncés, listés, dans
+/// l'instantané, lancés, supprimés ; refus.
+#[tokio::test]
+async fn projects_are_set_announced_run_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let mut c = TestClient::connect(&engine);
+    let greeted = c.result("engine.hello", hello()).await;
+    assert!(
+        greeted["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("projects"))
+    );
+    c.result("events.subscribe", json!({"topics": ["queues"]}))
+        .await;
+    let pages = crate::testing::serve(|r| match r.path.as_str() {
+        "/" => crate::testing::reply(
+            "200 OK",
+            &[("Content-Type", "text/html"), ("Content-Length", "29")],
+            br#"<a href="/doc.pdf">pdf</a>   "#,
+        ),
+        "/doc.pdf" => crate::testing::reply("200 OK", &[("Content-Length", "4")], b"%PDF"),
+        _ => crate::testing::reply("404 Not Found", &[("Content-Length", "0")], b""),
+    });
+    let dest = dir.path().to_string_lossy().into_owned();
+    let params = json!({
+        "name": "Docs",
+        "pageUrl": pages.url("/"),
+        "depth": 1,
+        "filters": {"extensions": ["PDF"], "minSize": 1},
+        "copySite": false,
+        "destDir": dest,
+        "schedule": {"time": "03:30", "days": [3, 1]},
+    });
+    let id = c.result("project.set", params.clone()).await["projectId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let note = c.notification("project.updated", |_| true).await;
+    let project = note["project"].clone();
+    assert_eq!(project["projectId"], id.as_str());
+    assert_eq!(
+        project["filters"]["extensions"],
+        json!(["pdf"]),
+        "{project}"
+    );
+    assert_eq!(
+        project["schedule"],
+        json!({"time": "03:30", "days": [1, 3]})
+    );
+    assert!(project["nextRunAt"].as_i64().is_some(), "{project}");
+    assert_eq!(project["copySite"], false);
+    assert_eq!(project["taskId"], Value::Null);
+    let listed = c.result("project.list", json!({})).await;
+    assert_eq!(listed["items"], json!([project]));
+    let snapshot = c.result("sync.snapshot", json!({})).await;
+    assert_eq!(snapshot["projects"], json!([project]));
+
+    let task = c.result("project.run", json!({"projectId": id})).await["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let note = c
+        .notification("project.updated", |n| n["project"]["taskId"].is_string())
+        .await;
+    assert_eq!(note["project"]["taskId"], task.as_str());
+    let got = c.result("task.get", json!({"taskId": task})).await;
+    assert_eq!(got["kind"], "site");
+    assert_eq!(got["site"]["mode"], "files");
+    assert_eq!(got["site"]["filters"]["extensions"], json!(["pdf"]));
+    assert_eq!(got["site"]["run"], 1);
+
+    for (method, params, code) in [
+        ("project.set", params.clone(), "PROJECT_EXISTS"),
+        ("project.set", json!({"name": "X"}), "INVALID_PARAMS"),
+        (
+            "project.set",
+            json!({"name": "X", "pageUrl": pages.url("/"), "depth": 9}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "project.set",
+            json!({"name": "X", "pageUrl": pages.url("/"), "schedule": {"time": "25:00", "days": []}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "project.set",
+            json!({"name": "X", "pageUrl": pages.url("/"), "filters": {"extensions": [3]}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "project.set",
+            json!({"projectId": "inconnu", "name": "X", "pageUrl": pages.url("/"), "destDir": dest}),
+            "PROJECT_NOT_FOUND",
+        ),
+        (
+            "project.run",
+            json!({"projectId": "inconnu"}),
+            "PROJECT_NOT_FOUND",
+        ),
+        (
+            "project.delete",
+            json!({"projectId": "inconnu"}),
+            "PROJECT_NOT_FOUND",
+        ),
+    ] {
+        assert_eq!(
+            c.error_code(method, params.clone()).await,
+            code,
+            "{method} {params}"
+        );
+    }
+
+    c.result("project.delete", json!({"projectId": id})).await;
+    let note = c
+        .notification("project.updated", |n| n["project"].is_null())
+        .await;
+    assert_eq!(note["projectId"], id.as_str());
+    assert_eq!(
+        c.result("project.list", json!({})).await["items"],
+        json!([])
+    );
+    crate::testing::stop(&engine).await;
+}

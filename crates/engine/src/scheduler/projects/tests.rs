@@ -148,19 +148,19 @@ async fn a_project_is_saved_run_and_updated_in_place() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine(dir.path(), clock_a);
     let id = engine
-        .set_project(None, spec("Docs", &server, dir.path()), false)
+        .set_project(None, spec("Docs", &server, dir.path()))
         .await
         .unwrap();
     // Un nom déjà pris, sans tenir compte de la casse ; un nom vide.
     let taken = engine
-        .set_project(None, spec(" docs ", &server, dir.path()), false)
+        .set_project(None, spec(" docs ", &server, dir.path()))
         .await;
     assert!(
         matches!(taken, Err(EngineError::ProjectExists(_))),
         "{taken:?}"
     );
     let empty = engine
-        .set_project(None, spec("  ", &server, dir.path()), false)
+        .set_project(None, spec("  ", &server, dir.path()))
         .await;
     assert!(
         matches!(empty, Err(EngineError::BadRequest(_))),
@@ -169,7 +169,7 @@ async fn a_project_is_saved_run_and_updated_in_place() {
     // Une copie invalide est refusée à l'enregistrement.
     let mut bad = spec("Autre", &server, dir.path());
     bad.settings.depth = 9;
-    assert!(engine.set_project(None, bad, false).await.is_err());
+    assert!(engine.set_project(None, bad).await.is_err());
 
     let task_id = engine.run_project(&id).await.unwrap();
     // Sa copie tourne : un second lancement est refusé.
@@ -200,10 +200,7 @@ async fn a_project_is_saved_run_and_updated_in_place() {
     // Modifié (une autre page) : une nouvelle copie au lancement suivant.
     let mut moved = spec("Docs", &server, dir.path());
     moved.page_url = server.url("/?autre");
-    engine
-        .set_project(Some(id.clone()), moved, false)
-        .await
-        .unwrap();
+    engine.set_project(Some(id.clone()), moved).await.unwrap();
     let other = engine.run_project(&id).await.unwrap();
     assert_ne!(other, task_id);
     finished(&engine, &other).await;
@@ -243,7 +240,6 @@ async fn a_missed_run_happens_once_and_a_busy_project_skips_its_turn() {
                 }),
                 ..spec("Une fois", &server, dir.path())
             },
-            false,
         )
         .await
         .unwrap();
@@ -281,7 +277,6 @@ async fn a_missed_run_happens_once_and_a_busy_project_skips_its_turn() {
                 }),
                 ..spec("Chaque jour", &server, dir.path())
             },
-            false,
         )
         .await
         .unwrap();

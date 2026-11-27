@@ -358,6 +358,12 @@ enum Command {
         #[arg(long)]
         paused: bool,
     },
+    /// Projets : explorations enregistrées sous un nom, relancées à la main ou à heure fixe ;
+    /// la copie se met à jour sur place (ce qui n'a pas changé sur le serveur est gardé)
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
     /// Contenu d'un fichier Metalink (.meta4, .metalink ; fichier ou adresse) : fichiers,
     /// rangs, empreintes et sources, sans rien ajouter
     Metalink {
@@ -694,6 +700,95 @@ enum LoginAction {
     },
     /// Retire les identifiants d'un site
     Remove { site: String },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Liste les projets : page, programme, prochain et dernier lancement
+    List,
+    /// Enregistre un projet : fichiers seuls (ceux que gardent -e, --regex, --min-size,
+    /// --max-size ; tous sans filtre), ou copie du site avec --copy (fichiers aussi avec un
+    /// filtre). Un nom déjà pris est refusé, sauf avec --replace
+    Add(Box<ProjectArgs>),
+    /// Lance un projet (nom ou identifiant) : sa copie mise à jour sur place, reprise ou
+    /// créée ; avec --wait, la suit jusqu'à la fin (Ctrl-C la met en pause)
+    Run {
+        project: String,
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Supprime un projet (nom ou identifiant) ; sa tâche et ses fichiers restent
+    Remove { project: String },
+}
+
+/// Un projet à enregistrer (`auro project add`).
+#[derive(clap::Args)]
+struct ProjectArgs {
+    /// Adresse de la page de départ
+    page: String,
+    /// Nom du projet
+    #[arg(long)]
+    name: String,
+    /// Dossier de destination ; celui des téléchargements du moteur par défaut
+    #[arg(short = 'o', long)]
+    dir: Option<PathBuf>,
+    /// Copier le site pour la navigation hors ligne (pages, images, styles…), plutôt
+    /// que les fichiers seuls
+    #[arg(long)]
+    copy: bool,
+    /// Fichiers seuls : les ranger sous <hôte>/<chemin>, plutôt qu'à plat
+    #[arg(long, conflicts_with = "copy")]
+    tree: bool,
+    /// Niveau le plus profond (1 à 5) : 1, la page et les pages qu'elle cite
+    #[arg(long, value_name = "NIVEAU", default_value_t = 1,
+          value_parser = clap::value_parser!(u8).range(1..=5))]
+    depth: u8,
+    /// Pages lues au plus (200 par défaut, 2000 au plus)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=2000))]
+    max_pages: Option<u32>,
+    /// Pages à ne pas ouvrir, expression régulière sur l'adresse ; par défaut les pages
+    /// de déconnexion et les liens de tri des listes de dossiers ; « '' » : aucune
+    #[arg(long, value_name = "EXPRESSION")]
+    exclude: Option<String>,
+    /// Seulement les pages sous le dossier de la page de départ
+    #[arg(long)]
+    same_folder: bool,
+    /// Lire aussi les pages que robots.txt refuse aux robots
+    #[arg(long)]
+    ignore_robots: bool,
+    /// Volume des pages et ressources d'une copie (1M à 20G, 1G par défaut)
+    #[arg(long, value_name = "TAILLE", value_parser = parse_volume)]
+    max_volume: Option<u64>,
+    /// Fichiers gardés, par leurs extensions : « pdf,zip »
+    #[arg(
+        short = 'e',
+        long = "ext",
+        value_name = "EXTENSIONS",
+        value_delimiter = ','
+    )]
+    extensions: Vec<String>,
+    /// Fichiers gardés : expression régulière que leur adresse doit contenir
+    #[arg(long, value_name = "EXPRESSION")]
+    regex: Option<String>,
+    /// Taille minimale d'un fichier gardé (500K, 2M, 1G) ; une taille inconnue l'écarte
+    #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+    min_size: Option<u64>,
+    /// Taille maximale d'un fichier gardé ; une taille inconnue l'écarte
+    #[arg(long, value_name = "TAILLE", value_parser = parse_size)]
+    max_size: Option<u64>,
+    /// File (nom ou identifiant)
+    #[arg(short = 'q', long)]
+    queue: Option<String>,
+    /// Lancer à cette heure (HH:MM, heure de la machine du moteur) ; sans --days, une
+    /// seule fois. Un lancement manqué (machine éteinte) se fait au démarrage suivant
+    #[arg(long, value_name = "HH:MM")]
+    at: Option<String>,
+    /// Jours du programme : « 1-5 », « 6,7 » ou « tous » (1 : lundi, 7 : dimanche)
+    #[arg(long, value_parser = parse_days, requires = "at")]
+    days: Option<Days>,
+    /// Remplacer le projet de ce nom (sa tâche et ses lancements restent)
+    #[arg(long)]
+    replace: bool,
 }
 
 #[derive(Subcommand)]
@@ -1171,6 +1266,13 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
             let opts = args.options(false);
             remote::get(target, remote::NewTask::Video(&page, &opts)).await
         }
+        Command::Project {
+            action:
+                ProjectAction::Run {
+                    project,
+                    wait: true,
+                },
+        } => remote::get(target, remote::NewTask::Project(&project)).await,
         Command::Engine { action } => engine(action, target).await,
         command => {
             let mut rpc = client::connect(target).await?;
@@ -1427,6 +1529,67 @@ async fn engine_command(command: Command, target: &Target) -> Result<()> {
                 Command::Dir { path, reset } => {
                     remote::download_dir(&mut rpc, path.as_deref(), reset).await
                 }
+                Command::Project { action } => match action {
+                    ProjectAction::List => remote::projects(&mut rpc).await,
+                    ProjectAction::Add(args) => {
+                        let ProjectArgs {
+                            page,
+                            name,
+                            dir,
+                            copy,
+                            tree,
+                            depth,
+                            max_pages,
+                            exclude,
+                            same_folder,
+                            ignore_robots,
+                            max_volume,
+                            extensions,
+                            regex,
+                            min_size,
+                            max_size,
+                            queue,
+                            at,
+                            days,
+                            replace,
+                        } = *args;
+                        let opts = remote::ProjectOptions {
+                            name: &name,
+                            page: &page,
+                            dir: dir.as_deref(),
+                            copy,
+                            tree,
+                            crawl: links::Crawl {
+                                depth,
+                                max_pages,
+                                exclude: exclude.unwrap_or_else(|| {
+                                    auro_engine::linkscan::crawl::DEFAULT_EXCLUDE.to_owned()
+                                }),
+                                same_folder,
+                                ignore_robots,
+                                tree: false,
+                            },
+                            max_volume,
+                            extensions: links::extensions(&extensions),
+                            regex,
+                            min_size,
+                            max_size,
+                            queue: queue.as_deref(),
+                            at: at.as_deref(),
+                            days: days.map(|d| d.0).unwrap_or_default(),
+                            replace,
+                        };
+                        remote::project_add(&mut rpc, &opts).await
+                    }
+                    ProjectAction::Run { project, .. } => {
+                        let task = remote::project_run(&mut rpc, &project).await?;
+                        println!("Tâche {task} ; pour la suivre : auro watch");
+                        Ok(())
+                    }
+                    ProjectAction::Remove { project } => {
+                        remote::project_remove(&mut rpc, &project).await
+                    }
+                },
                 Command::Login { action } => match action {
                     LoginAction::List => remote::logins(&mut rpc).await,
                     LoginAction::Set {

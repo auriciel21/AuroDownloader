@@ -392,6 +392,188 @@ pub struct SiteOptions<'a> {
     pub paused: bool,
 }
 
+/// Un projet à enregistrer (SPEC §7.18 quater).
+pub struct ProjectOptions<'a> {
+    pub name: &'a str,
+    pub page: &'a str,
+    /// `None` : le dossier des téléchargements du moteur.
+    pub dir: Option<&'a Path>,
+    pub copy: bool,
+    pub tree: bool,
+    pub crawl: crate::links::Crawl,
+    pub max_volume: Option<u64>,
+    pub extensions: Vec<String>,
+    pub regex: Option<String>,
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    pub queue: Option<&'a str>,
+    /// Heure du programme ; `None` : à la main.
+    pub at: Option<&'a str>,
+    /// Jours du programme (1 à 7) ; vide : une seule fois.
+    pub days: Vec<u8>,
+    pub replace: bool,
+}
+
+/// Un projet par son identifiant, ou son nom sans tenir compte de la casse.
+async fn find_project(rpc: &mut Rpc, which: &str) -> Result<Option<Value>> {
+    let list = rpc.call("project.list", json!({})).await?;
+    Ok(list["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p["projectId"] == which
+                || p["name"]
+                    .as_str()
+                    .is_some_and(|n| n.to_lowercase() == which.to_lowercase())
+        })
+        .cloned())
+}
+
+async fn project_id(rpc: &mut Rpc, which: &str) -> Result<String> {
+    find_project(rpc, which)
+        .await?
+        .and_then(|p| p["projectId"].as_str().map(str::to_owned))
+        .with_context(|| format!("projet inconnu : {which} (auro project list)"))
+}
+
+/// Les jours d'un programme, en clair : « une fois », « chaque jour », « lun-ven ».
+fn project_days_text(days: &[Value]) -> String {
+    match days.len() {
+        0 => "une fois".to_owned(),
+        7 => "chaque jour".to_owned(),
+        _ => days_text(days),
+    }
+}
+
+/// Un projet, sur trois lignes.
+fn project_lines(p: &Value) -> String {
+    let mode = if p["copySite"] == true {
+        "copie du site"
+    } else {
+        "fichiers seuls"
+    };
+    let schedule = match p["schedule"].as_object() {
+        Some(s) => format!(
+            "{} à {} ; prochain lancement : {}",
+            project_days_text(
+                s.get("days")
+                    .and_then(Value::as_array)
+                    .map_or(&[][..], Vec::as_slice)
+            ),
+            s.get("time").and_then(Value::as_str).unwrap_or("?"),
+            local_time(p["nextRunAt"].as_i64())
+        ),
+        None => "à la main".to_owned(),
+    };
+    let mut last = format!(
+        "dernier lancement : {}",
+        local_time(p["lastRunAt"].as_i64())
+    );
+    if let Some(task) = p["taskId"].as_str() {
+        last.push_str(&format!(", tâche {task}"));
+    }
+    if let Some(at) = p["lastSkippedAt"].as_i64() {
+        last.push_str(&format!(
+            " ; sauté le {} (encore en cours)",
+            local_time(Some(at))
+        ));
+    }
+    format!(
+        "{}  ({mode})  {}\n  {schedule}\n  {last}",
+        p["name"].as_str().unwrap_or("?"),
+        p["pageUrl"].as_str().unwrap_or("?")
+    )
+}
+
+/// Les projets enregistrés.
+pub async fn projects(rpc: &mut Rpc) -> Result<()> {
+    let list = rpc.call("project.list", json!({})).await?;
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Aucun projet. Pour en créer un : auro project add <page> --name <nom>");
+    }
+    for p in &items {
+        println!("{}", project_lines(p));
+    }
+    Ok(())
+}
+
+/// Enregistre un projet, ou le remplace avec `replace`.
+pub async fn project_add(rpc: &mut Rpc, opts: &ProjectOptions<'_>) -> Result<()> {
+    let existing = find_project(rpc, opts.name).await?;
+    if existing.is_some() && !opts.replace {
+        bail!(
+            "un projet porte déjà ce nom : {} (--replace pour le remplacer)",
+            opts.name
+        );
+    }
+    let mut params = json!({
+        "name": opts.name,
+        "pageUrl": opts.page,
+        "depth": opts.crawl.depth,
+        "exclude": opts.crawl.exclude,
+        "sameFolder": opts.crawl.same_folder,
+        "ignoreRobots": opts.crawl.ignore_robots,
+        "filters": {
+            "extensions": opts.extensions,
+            "regex": opts.regex,
+            "minSize": opts.min_size,
+            "maxSize": opts.max_size,
+        },
+        "copySite": opts.copy,
+        "keepTree": opts.tree,
+        "schedule": opts.at.map(|at| json!({"time": at, "days": opts.days})),
+    });
+    if let Some(pages) = opts.crawl.max_pages {
+        params["maxPages"] = json!(pages);
+    }
+    if let Some(volume) = opts.max_volume {
+        params["maxBytes"] = json!(volume);
+    }
+    if let Some(dir) = opts.dir {
+        params["destDir"] = json!(std::path::absolute(dir)?.to_string_lossy());
+    }
+    if let Some(queue) = opts.queue {
+        params["queueId"] = json!(queue_id(rpc, queue).await?);
+    }
+    if let Some(p) = &existing {
+        params["projectId"] = p["projectId"].clone();
+    }
+    let id = rpc.call("project.set", params).await?["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let verb = if existing.is_some() {
+        "remplacé"
+    } else {
+        "enregistré"
+    };
+    println!("Projet {} {verb} ({id}).", opts.name);
+    if let Some(p) = find_project(rpc, &id).await? {
+        println!("{}", project_lines(&p));
+    }
+    Ok(())
+}
+
+/// Lance un projet ; rend sa tâche.
+pub async fn project_run(rpc: &mut Rpc, which: &str) -> Result<String> {
+    let id = project_id(rpc, which).await?;
+    let task = rpc.call("project.run", json!({"projectId": id})).await?;
+    task["taskId"]
+        .as_str()
+        .map(str::to_owned)
+        .context("réponse sans tâche")
+}
+
+/// Supprime un projet ; sa tâche et ses fichiers restent.
+pub async fn project_remove(rpc: &mut Rpc, which: &str) -> Result<()> {
+    let id = project_id(rpc, which).await?;
+    rpc.call("project.delete", json!({"projectId": id})).await?;
+    println!("Projet {which} supprimé ; sa tâche et ses fichiers restent.");
+    Ok(())
+}
+
 /// Pourquoi l'exploration d'une copie s'est arrêtée avant la fin, en clair.
 fn site_stop(stop: &str) -> Option<&'static str> {
     match stop {
@@ -478,6 +660,8 @@ pub enum NewTask<'a> {
     File(&'a str, &'a AddOptions<'a>),
     Video(&'a str, &'a VideoOptions<'a>),
     Site(&'a str, &'a SiteOptions<'a>),
+    /// Un projet lancé (nom ou identifiant, SPEC §7.18 quater).
+    Project(&'a str),
 }
 
 /// Ajoute une tâche et la suit jusqu'à la fin ; Ctrl-C la met en pause.
@@ -521,6 +705,11 @@ pub async fn get(target: &Target, new: NewTask<'_>) -> Result<()> {
         }
         NewTask::Site(page, opts) => {
             let id = add_site(&mut rpc, page, opts).await?;
+            println!("Tâche {id}");
+            vec![id]
+        }
+        NewTask::Project(which) => {
+            let id = project_run(&mut rpc, which).await?;
             println!("Tâche {id}");
             vec![id]
         }
@@ -1214,6 +1403,12 @@ impl Follow {
                 match (&t.line, t.state.as_str()) {
                     (_, "queued") => format!("{name:<32}  en file"),
                     (_, "retry_wait") => format!("{name:<32}  nouvelle tentative bientôt"),
+                    // Fichiers seuls : rien à réécrire, la copie se termine.
+                    (Some(line), "post_processing")
+                        if t.kind == "site" && line.site.is_some_and(|s| s.files_only) =>
+                    {
+                        format!("{name:<32}  fin de la copie")
+                    }
                     (_, "post_processing") if t.kind == "site" => {
                         format!("{name:<32}  réécriture des liens")
                     }
@@ -2593,6 +2788,57 @@ mod tests {
         );
         assert_eq!(site_stop("finished"), None);
         assert!(site_stop("maxBytes").unwrap().contains("--max-volume"));
+    }
+
+    /// Projets (SPEC §7.18 quater) : bilan d'une mise à jour, de fichiers seuls, et un projet
+    /// en trois lignes.
+    #[test]
+    fn a_project_and_its_runs_are_shown() {
+        let update = SiteLine::of(&json!({"pages": 3, "resources": 2, "files": 1,
+                                         "unchanged": 5, "mode": "copy"}))
+        .unwrap();
+        assert_eq!(update.render(), "6 téléchargée(s), 5 inchangée(s)");
+        assert!(
+            update.report().ends_with(
+                "
+Inchangées : 5"
+            ),
+            "{}",
+            update.report()
+        );
+        let files = SiteLine::of(&json!({"pages": 4, "files": 2, "mode": "files"})).unwrap();
+        assert_eq!(
+            files.downloaded(),
+            2,
+            "les pages lues ne sont pas téléchargées"
+        );
+        assert!(
+            files
+                .report()
+                .starts_with("Téléchargées : 2 (4 page(s) lue(s))"),
+            "{}",
+            files.report()
+        );
+        let project = json!({
+            "projectId": "p1", "name": "Docs", "pageUrl": "https://exemple.org/",
+            "copySite": false, "schedule": {"time": "03:30", "days": [1, 2, 3, 4, 5]},
+            "nextRunAt": null, "lastRunAt": null, "taskId": null, "lastSkippedAt": null,
+        });
+        let lines = project_lines(&project);
+        assert!(
+            lines.starts_with("Docs  (fichiers seuls)  https://exemple.org/"),
+            "{lines}"
+        );
+        assert!(lines.contains("lun-ven à 03:30"), "{lines}");
+        assert!(lines.contains("dernier lancement : jamais"), "{lines}");
+        let manual = json!({"name": "A", "pageUrl": "u", "copySite": true, "schedule": null});
+        assert!(project_lines(&manual).contains("(copie du site)"));
+        assert!(project_lines(&manual).contains("à la main"));
+        assert_eq!(project_days_text(&[]), "une fois");
+        assert_eq!(
+            project_days_text(&(1..=7).map(|d| json!(d)).collect::<Vec<_>>()),
+            "chaque jour"
+        );
     }
 
     #[test]

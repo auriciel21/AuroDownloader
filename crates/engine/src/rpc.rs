@@ -147,6 +147,44 @@ fn notification(method: &str, params: Value) -> Value {
     json!({"jsonrpc": "2.0", "method": method, "params": params})
 }
 
+/// Un projet tel que le protocole le décrit (SPEC §7.18 quater).
+pub(crate) fn project_json(p: &crate::store::projects::Project) -> Value {
+    let s = &p.spec;
+    let schedule = s.schedule.map(|sc| {
+        json!({
+            "time": crate::schedule::hhmm(sc.minute),
+            "days": (1u8..=7).filter(|d| sc.days & (1 << (d - 1)) != 0).collect::<Vec<_>>(),
+        })
+    });
+    json!({
+        "projectId": p.id,
+        "name": s.name,
+        "pageUrl": s.page_url,
+        "depth": s.settings.depth,
+        "maxPages": s.settings.max_pages,
+        "maxBytes": s.settings.max_bytes,
+        "exclude": s.settings.exclude,
+        "sameFolder": s.settings.same_folder,
+        "ignoreRobots": s.settings.ignore_robots,
+        "filters": {
+            "extensions": s.filters.extensions,
+            "regex": s.filters.regex,
+            "minSize": s.filters.min_size,
+            "maxSize": s.filters.max_size,
+        },
+        "copySite": s.copy_site,
+        "keepTree": s.keep_tree,
+        "destDir": s.dest_dir,
+        "queueId": s.queue_id,
+        "schedule": schedule,
+        "nextRunAt": p.next_run_at,
+        "taskId": p.task_id,
+        "lastRunAt": p.last_run_at,
+        "lastSkippedAt": p.last_skipped_at,
+        "publicOnly": p.public_only,
+    })
+}
+
 /// Une tâche telle que le protocole la décrit (noms en casse mixte, SPEC §6.1).
 pub fn task_json(t: &TaskRow) -> Value {
     json!({

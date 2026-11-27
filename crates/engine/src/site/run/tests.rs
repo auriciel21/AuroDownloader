@@ -350,6 +350,9 @@ async fn a_files_only_copy_takes_the_files_of_its_filters_and_nothing_else() {
     assert_eq!(zip.error.as_deref(), Some(store_site::reason::FILTERED));
     let counts = store_site::counts(&conn, &id).unwrap();
     assert_eq!((counts.pages, counts.resources, counts.files), (3, 0, 1));
+    assert!(counts.files_only);
+    // Aucune page gardée : pas de page de départ à ouvrir.
+    assert_eq!(store_site::load_job(&conn, &id).unwrap().start_path, None);
     crate::testing::stop(&engine).await;
 }
 

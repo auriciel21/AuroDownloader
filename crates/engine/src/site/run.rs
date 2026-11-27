@@ -980,12 +980,10 @@ impl Explorer {
                 match item.kind {
                     ItemKind::Page | ItemKind::Style => {
                         if seq == 0 {
-                            site::set_start(
-                                conn,
-                                &self.task_id,
-                                final_url.as_str(),
-                                item.path.as_deref().unwrap_or_default(),
-                            )?;
+                            // Fichiers seuls : aucune page gardée, donc pas de page de départ.
+                            let start = (self.job.mode == Mode::Copy)
+                                .then(|| item.path.as_deref().unwrap_or_default());
+                            site::set_start(conn, &self.task_id, final_url.as_str(), start)?;
                             self.set_judge(&final_url).await;
                         }
                         let found = match std::fs::read(&part) {

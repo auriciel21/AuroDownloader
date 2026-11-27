@@ -504,7 +504,7 @@ pub fn set_start(
     conn: &Connection,
     task_id: &str,
     start_url: &str,
-    start_path: &str,
+    start_path: Option<&str>,
 ) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE site_jobs SET start_url = ?2, start_path = ?3 WHERE task_id = ?1",
@@ -1087,6 +1087,8 @@ pub struct Counts {
     pub skipped: u64,
     /// Ressources et fichiers d'un lancement précédent, gardés tels quels (mise à jour).
     pub unchanged: u64,
+    /// Fichiers seuls (mode `files`) : les pages sont lues, pas téléchargées.
+    pub files_only: bool,
     pub queued: u64,
     /// Octets des pages et ressources enregistrées (le volume limité, hors fichiers
     /// cochés).
@@ -1095,11 +1097,15 @@ pub struct Counts {
 
 /// Nombres du lancement en cours.
 pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
-    let run = job_run(conn, task_id).or_else(|e| match e {
-        // Une tâche sans copie (pas encore créée) : aucun élément.
-        StoreError::BadValue(_) => Ok(0),
-        e => Err(e),
-    })?;
+    let (run, files_only): (i64, bool) = conn
+        .query_row(
+            "SELECT run, mode = 'files' FROM site_jobs WHERE task_id = ?1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        // Une tâche sans copie : aucun élément.
+        .unwrap_or((0, false));
     let mut stmt = conn.prepare(
         "SELECT kind, state, fetched_run IS ?2, COUNT(*), COALESCE(SUM(size), 0)
          FROM site_items WHERE task_id = ?1 AND run = ?2 GROUP BY 1, 2, 3",
@@ -1123,6 +1129,7 @@ pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
         .unwrap_or(0);
     let mut c = Counts {
         ignored: u64::try_from(over).unwrap_or(0),
+        files_only,
         ..Counts::default()
     };
     for row in rows {

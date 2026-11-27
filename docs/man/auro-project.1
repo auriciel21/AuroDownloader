@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auro-project 1  AuroDownloader AuroDownloader
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+auro\-project \- Projets : explorations enregistrées sous un nom, relancées à la main ou à heure fixe ; la copie se met à jour sur place (ce qui n\*(Aqa pas changé sur le serveur est gardé)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBauro project\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-\-endpoint\fR] [\fB\-\-no\-start\fR] [\fB\-\-ca\-cert\fR] <\fIsubcommands\fR>
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+Projets : explorations enregistrées sous un nom, relancées à la main ou à heure fixe ; la copie se met à jour sur place (ce qui n\*(Aqa pas changé sur le serveur est gardé)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Affiche l\*(Aqaide (\-h : résumé)
+.TP
+\fB\-\-endpoint\fR \fI<NOM>\fR
+Point d\*(Aqaccès du moteur : canal nommé (Windows) ou socket (Unix)
+.TP
+\fB\-\-no\-start\fR
+Ne pas démarrer le moteur s\*(Aqil ne tourne pas
+.TP
+\fB\-\-ca\-cert\fR \fI<FICHIER>\fR
+Autorités de certification à ajouter à celles du système (fichier PEM) : pour `probe`, `direct` et le moteur démarré par cette commande. La validation des certificats reste stricte
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+auro\-project\-list(1)
+Liste les projets : page, programme, prochain et dernier lancement
+.TP
+auro\-project\-add(1)
+Enregistre un projet : fichiers seuls (ceux que gardent \-e, \-\-regex, \-\-min\-size, \-\-max\-size ; tous sans filtre), ou copie du site avec \-\-copy (fichiers aussi avec un filtre). Un nom déjà pris est refusé, sauf avec \-\-replace
+.TP
+auro\-project\-run(1)
+Lance un projet (nom ou identifiant) : sa copie mise à jour sur place, reprise ou créée ; avec \-\-wait, la suit jusqu\*(Aqà la fin (Ctrl\-C la met en pause)
+.TP
+auro\-project\-remove(1)
+Supprime un projet (nom ou identifiant) ; sa tâche et ses fichiers restent

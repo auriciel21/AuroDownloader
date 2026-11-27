@@ -58,7 +58,7 @@ impl Scope {
 pub fn required(method: &str, params: &Value) -> Option<Scope> {
     Some(match method {
         "engine.hello" => return None,
-        "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list"
+        "task.get" | "task.list" | "queue.list" | "limits.get" | "schedule.list" | "project.list"
         | "settings.get" | "events.subscribe" | "events.unsubscribe" | "sync.snapshot"
         | "history.list"
         // État des outils de la vidéo (SPEC §7.17).
@@ -96,6 +96,10 @@ pub fn required(method: &str, params: &Value) -> Option<Scope> {
         // Effacer l'historique ne touche ni aux tâches ni aux fichiers (F-35).
         | "history.clear" => Scope::Control,
         "engine.shutdown" | "schedule.set" | "schedule.delete" | "settings.set" => Scope::Admin,
+        // Projets (SPEC §7.18 quater) : un projet fait lire le réseau à heure fixe ; le
+        // lancer est un ajout, à la main.
+        "project.set" | "project.delete" => Scope::Admin,
+        "project.run" => Scope::Control,
         // Identifiants de sites (SPEC §7.14) : même la liste (noms d'utilisateur).
         "login.list" | "login.set" | "login.delete" => Scope::Admin,
         // Clés des serveurs SSH (SFTP, SPEC §7.22) : accepter une clé décide de la confiance.

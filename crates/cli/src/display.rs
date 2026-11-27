@@ -114,7 +114,11 @@ pub struct SiteLine {
     pub failed: u64,
     /// Ignorés, laissés en ligne par choix (robots.txt, exclusion, autre site, limites…).
     pub ignored: u64,
+    /// Gardés tels quels par une mise à jour (SPEC §7.18 quater).
+    pub unchanged: u64,
     pub queued: u64,
+    /// Fichiers seuls : les pages sont lues, pas téléchargées.
+    pub files_only: bool,
 }
 
 impl SiteLine {
@@ -127,13 +131,20 @@ impl SiteLine {
             files: n("files"),
             failed: n("failed"),
             ignored: n("ignored"),
+            unchanged: n("unchanged"),
             queued: n("queued"),
+            files_only: value["mode"] == "files",
         })
     }
 
-    /// Éléments copiés : pages, ressources et fichiers.
+    /// Éléments copiés : pages, ressources et fichiers ; les fichiers seuls pour des
+    /// fichiers seuls.
     pub fn downloaded(&self) -> u64 {
-        self.pages + self.resources + self.files
+        if self.files_only {
+            self.files
+        } else {
+            self.pages + self.resources + self.files
+        }
     }
 
     /// « 54 téléchargée(s), 3 échec(s), 37 ignorée(s) » (avancement).
@@ -145,22 +156,34 @@ impl SiteLine {
         if self.ignored > 0 {
             text.push_str(&format!(", {} ignorée(s)", self.ignored));
         }
+        if self.unchanged > 0 {
+            text.push_str(&format!(", {} inchangée(s)", self.unchanged));
+        }
         text
     }
 
-    /// Le bilan d'une copie, sur trois lignes.
+    /// Le bilan d'une copie, sur trois lignes ; une de plus pour une mise à jour.
     pub fn report(&self) -> String {
-        format!(
-            "Téléchargées : {} ({} page(s), {} ressource(s), {} fichier(s))\n\
+        let detail = if self.files_only {
+            format!("{} page(s) lue(s)", self.pages)
+        } else {
+            format!(
+                "{} page(s), {} ressource(s), {} fichier(s)",
+                self.pages, self.resources, self.files
+            )
+        };
+        let mut text = format!(
+            "Téléchargées : {} ({detail})\n\
              Échecs techniques : {}\n\
              Ignorées / laissées en ligne : {}",
             self.downloaded(),
-            self.pages,
-            self.resources,
-            self.files,
             self.failed,
             self.ignored
-        )
+        );
+        if self.unchanged > 0 {
+            text.push_str(&format!("\nInchangées : {}", self.unchanged));
+        }
+        text
     }
 }
 

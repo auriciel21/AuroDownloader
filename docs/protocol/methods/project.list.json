@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/methods/project.list.json",
+  "title": "project.list",
+  "description": "Les projets enregistrés, par nom (SPEC 7.18 quater).",
+  "$defs": {
+    "params": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/project"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurodownloader.org/protocol/notifications/project.updated.json",
+  "title": "project.updated",
+  "description": "Un projet créé, modifié ou lancé ; project nul : supprimé (sujet queues, SPEC 7.18 quater).",
+  "$defs": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "rev": {
+          "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/rev"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "project": {
+          "oneOf": [
+            {
+              "$ref": "https://aurodownloader.org/protocol/common.json#/$defs/project"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rev",
+        "projectId",
+        "project"
+      ]
+    }
+  }
+}

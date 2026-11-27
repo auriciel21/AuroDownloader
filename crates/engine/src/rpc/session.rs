@@ -697,6 +697,19 @@ async fn describe(
             "schedule.updated",
             json!({"rev": rev, "schedule": schedule_json(&view)}),
         )),
+        // Projets (SPEC §7.18 quater) : avec les planifications ; `project` nul, supprimé.
+        Event::ProjectChanged {
+            rev,
+            project_id,
+            project,
+        } if topics.queues => Some(notification(
+            "project.updated",
+            json!({
+                "rev": rev,
+                "projectId": project_id,
+                "project": project.as_deref().map(crate::rpc::project_json),
+            }),
+        )),
         Event::ScheduleRemoved { rev, schedule_id } if topics.queues => Some(notification(
             "schedule.removed",
             json!({"rev": rev, "scheduleId": schedule_id}),
@@ -841,7 +854,9 @@ impl ProgressBatch {
                     "files": c.files,
                     "failed": c.failed,
                     "ignored": c.ignored,
+                    "unchanged": c.unchanged,
                     "queued": c.queued,
+                    "mode": if c.files_only { "files" } else { "copy" },
                 });
             }
             items.push(item);

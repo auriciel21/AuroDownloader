@@ -171,6 +171,7 @@ fn a_page_read_queues_its_links_once_in_the_same_transaction() {
             ignored: 0,
             skipped: 0,
             unchanged: 0,
+            files_only: false,
             queued: 0,
             bytes: 1500,
         }
@@ -394,7 +395,7 @@ fn a_restart_starts_again_with_the_same_files_and_no_children() {
         &conn,
         &id,
         "https://exemple.org/doc/",
-        "exemple.org/doc/index.html",
+        Some("exemple.org/doc/index.html"),
     )
     .unwrap();
     set_phase(&conn, &id, Phase::Links).unwrap();
