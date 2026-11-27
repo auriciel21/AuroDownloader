@@ -32,7 +32,8 @@ use std::time::{Duration, SystemTime};
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_ENCODING,
     CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG, HeaderMap, HeaderName, HeaderValue,
-    IF_RANGE, LAST_MODIFIED, PROXY_AUTHORIZATION, RANGE, RETRY_AFTER, WWW_AUTHENTICATE,
+    IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE, LAST_MODIFIED, PROXY_AUTHORIZATION, RANGE,
+    RETRY_AFTER, WWW_AUTHENTICATE,
 };
 use reqwest::{Method, Response, StatusCode, Url, redirect};
 
@@ -1050,11 +1051,32 @@ impl Client {
 
     /// Un `GET` dont le corps reste à lire (copie d'un site, SPEC §7.18 ter) : pages et
     /// ressources s'écrivent sur le disque au fil de la lecture, sans tenir en mémoire.
-    /// Répond aux demandes d'identification avec `auth`.
-    pub async fn open_get(&self, url: &Url, auth: Option<&Auth>) -> Result<Opened, NetError> {
-        let response = self
-            .send(Method::GET, url, &HeaderMap::new(), None, auth)
-            .await?;
+    /// Répond aux demandes d'identification avec `auth`. Avec `known` (validateurs d'une
+    /// copie précédente, SPEC §7.18 quater), la requête est conditionnelle : `If-None-Match`,
+    /// sinon `If-Modified-Since` ; un `304` revient en [`Opened::Status`].
+    pub async fn open_get(
+        &self,
+        url: &Url,
+        auth: Option<&Auth>,
+        known: Option<(Option<&str>, Option<&str>)>,
+    ) -> Result<Opened, NetError> {
+        let mut headers = HeaderMap::new();
+        if let Some((etag, last_modified)) = known {
+            match (etag, last_modified) {
+                (Some(etag), _) => {
+                    if let Ok(v) = HeaderValue::from_str(etag) {
+                        headers.insert(IF_NONE_MATCH, v);
+                    }
+                }
+                (None, Some(date)) => {
+                    if let Ok(v) = HeaderValue::from_str(date) {
+                        headers.insert(IF_MODIFIED_SINCE, v);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        let response = self.send(Method::GET, url, &headers, None, auth).await?;
         if response.status() != StatusCode::OK {
             return Ok(Opened::Status {
                 status: response.status().as_u16(),
@@ -1074,6 +1096,8 @@ impl Client {
             charset,
             length: seen.file_length(),
             attachment: seen.disposition_name.is_some(),
+            etag: seen.etag.clone(),
+            last_modified: seen.last_modified.clone(),
             body: Box::new(Body::http(response, self.read)),
         })
     }
@@ -1187,8 +1211,9 @@ impl Client {
             .map_err(|_| NetError::ReadTimeout(self.read))?
             .map_err(NetError::from_reqwest)?;
         // Une redirection qui arrive jusqu'ici n'a pas été suivie : reqwest rend telle
-        // quelle celle qui vise un autre protocole (file://, ftp://…).
-        if response.status().is_redirection() {
+        // quelle celle qui vise un autre protocole (file://, ftp://…). `304` répond à une
+        // requête conditionnelle (mise à jour d'une copie, SPEC §7.18 quater).
+        if response.status().is_redirection() && response.status() != StatusCode::NOT_MODIFIED {
             return Err(NetError::RedirectNotFollowed {
                 status: response.status().as_u16(),
             });
@@ -1223,6 +1248,9 @@ pub enum Opened {
         length: Option<u64>,
         /// `Content-Disposition` donne un nom de fichier.
         attachment: bool,
+        /// Validateurs de la réponse, pour une mise à jour (SPEC §7.18 quater).
+        etag: Option<String>,
+        last_modified: Option<String>,
         /// En boîte : le corps d'une réponse HTTP est gros à côté de l'autre variante.
         body: Box<Body>,
     },

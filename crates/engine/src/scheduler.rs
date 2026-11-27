@@ -685,10 +685,47 @@ pub struct SiteRequest {
     pub ignore_robots: bool,
     /// Fichiers cochés, adresses HTTP(S).
     pub files: Vec<String>,
+    /// Fichiers seuls (SPEC §7.18 quater) : les pages lues sans être gardées.
+    pub files_only: bool,
+    /// Fichiers seuls : sous `<hôte>/<chemin>` plutôt qu'à plat.
+    pub keep_tree: bool,
+    /// Filtres d'un projet : les fichiers sont pris pendant l'exploration (pas de fichiers
+    /// cochés avec eux).
+    pub filters: Option<store::site::Filters>,
 }
 
 /// Fichiers cochés d'une copie au plus (SPEC §7.18 ter).
 pub const MAX_SITE_FILES: usize = 10_000;
+
+/// Filtres d'un projet vérifiés : extensions en minuscules sans point ni doublon,
+/// expression valide, taille mini au plus égale à la maxi.
+fn check_filters(mut f: store::site::Filters) -> Result<store::site::Filters, EngineError> {
+    let mut seen = std::collections::HashSet::new();
+    f.extensions = f
+        .extensions
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|e| !e.is_empty() && seen.insert(e.clone()))
+        .collect();
+    if f.extensions.iter().any(|e| e.contains(',')) {
+        return Err(EngineError::BadRequest(
+            "filtres : une extension ne contient pas de virgule".into(),
+        ));
+    }
+    f.regex = f.regex.filter(|r| !r.is_empty());
+    if let Some(regex) = &f.regex {
+        crate::rules::compile(regex)
+            .map_err(|e| EngineError::BadRequest(format!("filtres.regex : {e}")))?;
+    }
+    if let (Some(min), Some(max)) = (f.min_size, f.max_size)
+        && min > max
+    {
+        return Err(EngineError::BadRequest(
+            "filtres : taille mini au-delà de la maxi".into(),
+        ));
+    }
+    Ok(f)
+}
 
 /// Sélecteur de formats par défaut : la meilleure vidéo et le meilleur son, sinon le
 /// meilleur format complet.
@@ -812,6 +849,10 @@ enum Command {
     Restart {
         task_id: String,
         delete_files: bool,
+        reply: Reply<()>,
+    },
+    UpdateSite {
+        task_id: String,
         reply: Reply<()>,
     },
     Relocate {
@@ -1625,6 +1666,14 @@ impl Engine {
             reply,
         })
         .await
+    }
+
+    /// Met à jour une copie de site finie ou en échec, dans son dossier (SPEC §7.18 quater) :
+    /// ce qui n'a pas changé sur le serveur est gardé.
+    pub async fn update_site(&self, task_id: &str) -> Result<(), EngineError> {
+        let task_id = task_id.to_owned();
+        self.ask(|reply| Command::UpdateSite { task_id, reply })
+            .await
     }
 
     /// Déplace ou renomme le fichier d'une tâche qui ne tourne pas (SPEC §7.12) : le
@@ -3212,6 +3261,12 @@ impl Scheduler {
                         .and_then(|()| self.restart(&task_id, delete_files)),
                 );
             }
+            Command::UpdateSite { task_id, reply } => {
+                let _ = reply.send(
+                    self.visible(&task_id)
+                        .and_then(|()| self.update_site(&task_id)),
+                );
+            }
             Command::Relocate {
                 task_id,
                 dest_dir,
@@ -4132,6 +4187,17 @@ impl Scheduler {
                 "site.files : {MAX_SITE_FILES} fichiers au plus"
             )));
         }
+        let filters = request.filters.map(check_filters).transpose()?;
+        if filters.is_some() && !request.files.is_empty() {
+            return Err(EngineError::BadRequest(
+                "site : des fichiers cochés ou des filtres, pas les deux".into(),
+            ));
+        }
+        if request.files_only && filters.is_none() && request.files.is_empty() {
+            return Err(EngineError::BadRequest(
+                "site : fichiers seuls, sans fichier coché ni filtre".into(),
+            ));
+        }
         let mut files: Vec<String> = Vec::with_capacity(request.files.len());
         let mut seen = std::collections::HashSet::new();
         for file in &request.files {
@@ -4176,10 +4242,33 @@ impl Scheduler {
                 settings: &settings,
                 files: &files,
                 public_only: task.public_only,
+                mode: if request.files_only {
+                    store::site::Mode::Files
+                } else {
+                    store::site::Mode::Copy
+                },
+                keep_tree: request.keep_tree || !request.files_only,
+                filters: filters.as_ref(),
             },
             start,
         )?;
         Ok(self.added(task_id, start))
+    }
+
+    /// Met à jour une copie finie ou en échec (SPEC §7.18 quater) : un nouveau lancement,
+    /// dans le même dossier.
+    fn update_site(&mut self, task_id: &str) -> Result<(), EngineError> {
+        let task = load_task(&self.conn, task_id)?;
+        let allowed = task.kind == TaskKind::Site
+            && matches!(task.state, TaskState::Completed | TaskState::Failed)
+            && task.file_name.is_some();
+        if !allowed || self.running.contains_key(task_id) {
+            return Err(Self::invalid(&task, "mise à jour"));
+        }
+        store::site::begin_update(&mut self.conn, task_id)?;
+        self.broken.remove(task_id);
+        self.changed(task_id, task.state, TaskState::Queued);
+        Ok(())
     }
 
     fn add_torrent(&mut self, task: AddTask, start: tasks::Start) -> Result<String, EngineError> {

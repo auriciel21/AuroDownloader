@@ -34,9 +34,19 @@ fn engine(dir: &Path) -> Engine {
 type Pages = HashMap<String, (String, Vec<u8>)>;
 
 /// Un faux site : `{base}` vaut l'adresse du serveur (`127.0.0.1`), `{other}` la même vue
-/// sous un autre nom d'hôte (`localhost`). Un chemin absent répond `404`.
+/// sous un autre nom d'hôte (`localhost`). Un chemin absent répond `404`. Chaque réponse
+/// porte un `ETag` tiré de son contenu, et `If-None-Match` qui le donne reçoit `304`
+/// (mise à jour, SPEC §7.18 quater).
 struct Site {
     server: Server,
+    table: Arc<Mutex<Pages>>,
+}
+
+fn etag_of(body: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    format!("\"{:x}-{:x}\"", body.len(), hasher.finish())
 }
 
 impl Site {
@@ -67,11 +77,16 @@ impl Site {
                     } else {
                         body.clone()
                     };
+                    let etag = etag_of(&body);
+                    if r.header("If-None-Match") == Some(etag.as_str()) {
+                        return reply("304 Not Modified", &[("ETag", &etag)], b"");
+                    }
                     reply(
                         "200 OK",
                         &[
                             ("Content-Type", kind.as_str()),
                             ("Content-Length", &body.len().to_string()),
+                            ("ETag", &etag),
                         ],
                         &body,
                     )
@@ -86,7 +101,36 @@ impl Site {
                 .unwrap()
                 .insert((*path).to_owned(), ((*kind).to_owned(), body.to_vec()));
         }
-        Site { server }
+        Site { server, table }
+    }
+
+    /// Change (ou retire, sans contenu) une page du site.
+    fn set(&self, path: &str, page: Option<(&str, &[u8])>) {
+        let mut table = self.table.lock().unwrap();
+        match page {
+            Some((kind, body)) => {
+                table.insert(path.to_owned(), (kind.to_owned(), body.to_vec()));
+            }
+            None => {
+                table.remove(path);
+            }
+        }
+    }
+
+    /// Ajoute du texte à la fin d'une page.
+    fn append(&self, path: &str, extra: &[u8]) {
+        let mut table = self.table.lock().unwrap();
+        table.get_mut(path).expect(path).1.extend_from_slice(extra);
+    }
+
+    /// En-têtes `If-None-Match` des requêtes faites pour `path`.
+    fn conditions(&self, path: &str) -> Vec<Option<String>> {
+        self.server
+            .requests()
+            .iter()
+            .filter(|r| r.path == path)
+            .map(|r| r.header("If-None-Match").map(str::to_owned))
+            .collect()
     }
 
     fn url(&self, path: &str) -> String {
@@ -253,6 +297,182 @@ fn full_site() -> Site {
         ("/files/autre.zip", "application/zip", b"PK"),
         ("/robots.txt", "text/plain", b"User-agent: *\nDisallow: /private/\n"),
     ])
+}
+
+/// Un projet de fichiers seuls (SPEC §7.18 quater) : les pages lues sans être gardées, les
+/// fichiers retenus par ses filtres à plat dans le dossier, les autres ignorés.
+#[tokio::test]
+async fn a_files_only_copy_takes_the_files_of_its_filters_and_nothing_else() {
+    let site = full_site();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let id = add(
+        &engine,
+        dir.path(),
+        SiteRequest {
+            files_only: true,
+            filters: Some(store_site::Filters {
+                extensions: vec!["PDF".into()],
+                ..store_site::Filters::default()
+            }),
+            ..request(&site, 1, &[])
+        },
+    )
+    .await;
+    let task = finished(&engine, &id).await;
+    assert_eq!(task.state, TaskState::Completed, "{:?}", task.error_detail);
+    let (main, _) = site.hosts();
+    let root = dir.path().join(&main);
+    assert_eq!(
+        std::fs::read(root.join("doc.pdf")).unwrap(),
+        b"%PDF-1.7 document"
+    );
+    let mut left: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["doc.pdf"],
+        "ni page, ni ressource, ni dossier provisoire"
+    );
+    assert_eq!(site.asked("/img/logo.png"), 0);
+    assert_eq!(site.asked("/style.css"), 0);
+    assert_eq!(site.asked("/files/autre.zip"), 0);
+    let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
+    let zip = store_site::items(&conn, &id)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.url.ends_with("autre.zip"))
+        .unwrap();
+    assert_eq!(zip.state, ItemState::Ignored);
+    assert_eq!(zip.error.as_deref(), Some(store_site::reason::FILTERED));
+    let counts = store_site::counts(&conn, &id).unwrap();
+    assert_eq!((counts.pages, counts.resources, counts.files), (3, 0, 1));
+    crate::testing::stop(&engine).await;
+}
+
+/// Un filtre de taille : la taille lue avant le téléchargement ; hors des bornes, le
+/// fichier est ignoré.
+#[tokio::test]
+async fn a_size_filter_reads_the_size_before_downloading() {
+    let site = full_site();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let id = add(
+        &engine,
+        dir.path(),
+        SiteRequest {
+            filters: Some(store_site::Filters {
+                min_size: Some(10),
+                ..store_site::Filters::default()
+            }),
+            ..request(&site, 1, &[])
+        },
+    )
+    .await;
+    let task = finished(&engine, &id).await;
+    assert_eq!(task.state, TaskState::Completed, "{:?}", task.error_detail);
+    let (main, _) = site.hosts();
+    let root = dir.path().join(&main);
+    assert!(root.join(&main).join("files/doc.pdf").is_file());
+    assert!(!root.join(&main).join("files/autre.zip").exists());
+    let index = read(&root.join(&main).join("index.html"));
+    assert!(index.contains(r#"<a href="files/doc.pdf">"#), "{index}");
+    let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
+    let zip = store_site::items(&conn, &id)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.url.ends_with("autre.zip"))
+        .unwrap();
+    assert_eq!(
+        (zip.state, zip.error.as_deref()),
+        (ItemState::Ignored, Some(store_site::reason::FILTERED))
+    );
+    crate::testing::stop(&engine).await;
+}
+
+/// Mise à jour sur place (SPEC §7.18 quater) : pages relues, ressource inchangée gardée par
+/// `304`, ressource et fichier changés remplacés, ressource disparue gardée et toujours
+/// liée en local ; une nouvelle page copiée.
+#[tokio::test]
+async fn an_update_keeps_what_did_not_change_and_replaces_the_rest() {
+    let site = full_site();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine(dir.path());
+    let id = add(&engine, dir.path(), request(&site, 1, &["/files/doc.pdf"])).await;
+    let task = finished(&engine, &id).await;
+    assert_eq!(task.state, TaskState::Completed, "{:?}", task.error_detail);
+    let (main, _) = site.hosts();
+    let root = dir.path().join(&main).join(&main);
+
+    site.set(
+        "/a.html",
+        Some((
+            HTML,
+            br#"<html><body><a href="/">accueil</a> <a href="/neuf.html">neuf</a> nouvelle</body></html>"#,
+        )),
+    );
+    site.set("/neuf.html", Some((HTML, b"<html>neuve</html>")));
+    site.append("/", br#"<a href="/neuf.html">neuf</a>"#);
+    site.set("/img/bg.png", Some(("image/png", b"\x89PNG autre fond")));
+    site.set("/fonts/f.woff2", None);
+    site.set(
+        "/files/doc.pdf",
+        Some(("application/pdf", b"%PDF-1.7 document, seconde version")),
+    );
+    // Un brut laissé par un arrêt (entre l'enregistrement d'un élément et l'effacement de
+    // son brut) : effacé avant la fin de la mise à jour.
+    std::fs::write(root.join("img/logo.png.part"), b"brut").unwrap();
+    engine.update_site(&id).await.unwrap();
+    // En cours : une seconde mise à jour est refusée.
+    assert!(engine.update_site(&id).await.is_err());
+    let task = finished(&engine, &id).await;
+    assert_eq!(task.state, TaskState::Completed, "{:?}", task.error_detail);
+    assert_eq!(
+        task.file_name.as_deref(),
+        Some(main.as_str()),
+        "même dossier"
+    );
+
+    assert!(read(&root.join("a.html")).contains("nouvelle"));
+    assert!(read(&root.join("neuf.html")).contains("neuve"));
+    assert_eq!(
+        std::fs::read(root.join("img/bg.png")).unwrap(),
+        b"\x89PNG autre fond"
+    );
+    assert_eq!(
+        std::fs::read(root.join("files/doc.pdf")).unwrap(),
+        b"%PDF-1.7 document, seconde version"
+    );
+    // Disparue du site : gardée, et le style la lie toujours en local.
+    assert_eq!(std::fs::read(root.join("fonts/f.woff2")).unwrap(), b"wOF2");
+    assert!(read(&root.join("style.css")).contains(r#"url("fonts/f.woff2")"#));
+    // Inchangée : redemandée sous condition, gardée.
+    let asked = site.conditions("/img/logo.png");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[0].is_none() && asked[1].is_some(), "{asked:?}");
+    assert_eq!(std::fs::read(root.join("img/logo.png")).unwrap(), PNG);
+    assert!(!root.join("img/logo.png.part").exists());
+    // Le fichier non coché reste en ligne à la mise à jour aussi.
+    assert!(!root.join("files/autre.zip").exists());
+    assert_eq!(site.asked("/files/autre.zip"), 0);
+    assert!(!dir.path().join(&main).join(".auro-maj").exists());
+    assert_local_links_lead_somewhere(&dir.path().join(&main));
+
+    let conn = crate::store::open(&dir.path().join("auro.db")).unwrap();
+    let counts = store_site::counts(&conn, &id).unwrap();
+    // logo.png, pic.png (autre hôte) et app.js : inchangés.
+    assert_eq!(counts.unchanged, 3, "{counts:?}");
+    assert_eq!(counts.files, 1, "{counts:?}");
+    assert_eq!(
+        counts.failed, 2,
+        "absent.png et la police disparue : {counts:?}"
+    );
+    let job = store_site::load_job(&conn, &id).unwrap();
+    assert_eq!(job.run, 2);
+    crate::testing::stop(&engine).await;
 }
 
 #[tokio::test]

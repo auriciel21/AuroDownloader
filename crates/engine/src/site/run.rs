@@ -31,7 +31,9 @@ use crate::net::filename::{NameRules, name_from_url, sanitize};
 use crate::net::{Client, NetError, Opened};
 use crate::store::claims::ClaimKind;
 use crate::store::now_ms;
-use crate::store::site::{self, Item, ItemKind, ItemState, NewItem, Phase, reason};
+use crate::store::site::{
+    self, Filters, Item, ItemKind, ItemState, Mode, NewItem, Phase, Validators, reason,
+};
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, load_task, reserved_names,
 };
@@ -53,6 +55,11 @@ const PER_HOST: usize = 2;
 const IN_FLIGHT: usize = 4;
 /// Erreurs de réseau de suite qui arrêtent l'exécution (`retry_wait`).
 const NET_FAILURES: u32 = 3;
+/// Mode `files` : brut des pages lues, dans le dossier de la copie, effacé après lecture.
+const PAGES_DIR: &str = ".auro-pages";
+/// Mise à jour : fichiers changés téléchargés à côté (un sous-dossier par lancement), puis
+/// mis à la place de l'ancien (SPEC §7.18 quater).
+const UPDATE_DIR: &str = ".auro-maj";
 
 /// Ce dont une exécution a besoin.
 pub struct Context<'a> {
@@ -289,7 +296,11 @@ enum Fetch {
         final_url: Url,
         size: u64,
         charset: Option<String>,
+        etag: Option<String>,
+        last_modified: Option<String>,
     },
+    /// Requête conditionnelle : `304`, la copie précédente reste.
+    Unchanged,
     Status {
         status: u16,
         retry_after: Option<Duration>,
@@ -312,15 +323,27 @@ struct Request {
     page: bool,
     judge: Option<Arc<Judge>>,
     auth: Option<Arc<Auth>>,
+    /// Validateurs d'une copie précédente : requête conditionnelle (mise à jour).
+    known: Option<(Option<String>, Option<String>)>,
 }
 
 /// Lit un élément dans son `.part` (vidé d'abord), dans la limite de taille et de débit.
 async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
-    let opened = match client.open_get(&request.url, request.auth.as_deref()).await {
+    let known = request
+        .known
+        .as_ref()
+        .map(|(etag, date)| (etag.as_deref(), date.as_deref()));
+    let opened = match client
+        .open_get(&request.url, request.auth.as_deref(), known)
+        .await
+    {
         Ok(opened) => opened,
         Err(e) => return Fetch::Net(e),
     };
-    let (final_url, content_type, charset, length, attachment, mut body) = match opened {
+    let (final_url, content_type, charset, length, attachment, parts) = match opened {
+        Opened::Status { status: 304, .. } if request.known.is_some() => {
+            return Fetch::Unchanged;
+        }
         Opened::Status {
             status,
             retry_after,
@@ -336,9 +359,19 @@ async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
             charset,
             length,
             attachment,
+            etag,
+            last_modified,
             body,
-        } => (final_url, content_type, charset, length, attachment, body),
+        } => (
+            final_url,
+            content_type,
+            charset,
+            length,
+            attachment,
+            (body, etag, last_modified),
+        ),
     };
+    let (mut body, etag, last_modified) = parts;
     if request.page {
         let html = !attachment
             && content_type
@@ -418,6 +451,8 @@ async fn fetch(client: Client, throttle: Throttle, request: Request) -> Fetch {
             final_url,
             size,
             charset: if request.page { charset } else { None },
+            etag,
+            last_modified,
         },
         Ok(Err(e)) => Fetch::Disk(e),
         Err(e) => Fetch::Disk(std::io::Error::other(e)),
@@ -469,6 +504,8 @@ struct Explorer {
     vault: crate::secrets::Vault,
     job: site::SiteJob,
     exclude: Option<regex::Regex>,
+    /// Expression des filtres d'un projet.
+    filter_regex: Option<regex::Regex>,
     judge: Option<Arc<Judge>>,
     /// Éléments à lire, dans l'ordre de leur découverte.
     queue: VecDeque<Item>,
@@ -512,8 +549,14 @@ impl Explorer {
             .exclude
             .as_deref()
             .and_then(|pattern| crate::rules::compile(pattern).ok());
-        let pages_read = items
-            .iter()
+        let filter_regex = job
+            .filters
+            .as_ref()
+            .and_then(|f| f.regex.as_deref())
+            .and_then(|pattern| crate::rules::compile(pattern).ok());
+        // Le lancement en cours seulement (mise à jour, SPEC §7.18 quater).
+        let current = || items.iter().filter(|i| i.run == job.run);
+        let pages_read = current()
             .filter(|i| {
                 i.kind == ItemKind::Page
                     && (matches!(
@@ -522,14 +565,12 @@ impl Explorer {
                     ) || (i.state == ItemState::Ignored && read_then_ignored(i)))
             })
             .count();
-        let bytes = items
-            .iter()
+        let bytes = current()
             .filter(|i| i.kind != ItemKind::File)
             .filter(|i| matches!(i.state, ItemState::Fetched | ItemState::Done))
             .filter_map(|i| i.size)
             .sum();
-        let written = items
-            .iter()
+        let written = current()
             .filter(|i| matches!(i.state, ItemState::Fetched | ItemState::Done))
             .filter_map(|i| i.size)
             .sum();
@@ -548,6 +589,7 @@ impl Explorer {
                 .collect(),
             job,
             exclude,
+            filter_regex,
             judge: None,
             pages_read: u32::try_from(pages_read).unwrap_or(u32::MAX),
             bytes,
@@ -798,14 +840,28 @@ impl Explorer {
             ItemKind::Style => layout::Content::Css,
             ItemKind::Resource | ItemKind::File => layout::Content::Other,
         };
+        let read_only = self.job.mode == Mode::Files && item.kind == ItemKind::Page;
         if item.path.is_none() {
-            match self.reserve(conn, &url, content, item.seq)? {
+            let reserved = if read_only {
+                let dirs = [PAGES_DIR.to_owned()];
+                self.reserve_at(conn, &dirs, &format!("{}.html", item.seq), item.seq)?
+            } else {
+                self.reserve(conn, &url, content, item.seq)?
+            };
+            match reserved {
                 Ok(path) => item.path = Some(path),
                 Err(Some(end)) => return Ok(Some(end)),
                 Err(None) => return Ok(None),
             }
         }
         let path = item.path.clone().unwrap_or_default();
+        // Une ressource déjà copiée, son fichier toujours là : redemandée sous condition. Pages
+        // et styles se relisent toujours (leurs liens, leur réécriture).
+        let known = (item.kind == ItemKind::Resource
+            && item.copied_before()
+            && (item.etag.is_some() || item.last_modified.is_some())
+            && on_disk(&self.root, &path).is_file())
+        .then(|| (item.etag.clone(), item.last_modified.clone()));
         let auth = self.login(conn, &url).await;
         let host = Self::host_of(&item.url);
         let page = item.kind == ItemKind::Page;
@@ -824,6 +880,7 @@ impl Explorer {
             },
             auth,
             url,
+            known,
         };
         *self.running.entry(host.clone()).or_default() += 1;
         self.started.insert(host.clone(), Instant::now());
@@ -844,6 +901,17 @@ impl Explorer {
     ) -> Result<Result<String, Option<End>>, TransferError> {
         let parts = layout::parts_of(url, content);
         let (name, dirs) = parts.split_last().expect("au moins l'hôte et un nom");
+        self.reserve_at(conn, dirs, name, seq)
+    }
+
+    /// Le nom `name` réservé dans `dirs`, sous le dossier de la copie.
+    fn reserve_at(
+        &self,
+        conn: &mut Connection,
+        dirs: &[String],
+        name: &str,
+        seq: i64,
+    ) -> Result<Result<String, Option<End>>, TransferError> {
         let dir = dirs.iter().fold(self.root.clone(), |p, d| p.join(d));
         if let Err(e) = std::fs::create_dir_all(&dir) {
             if e.kind() == std::io::ErrorKind::StorageFull {
@@ -894,10 +962,17 @@ impl Explorer {
         // Laissé en ligne par choix (décision de l'utilisateur du 2026-11-27).
         let ignore = |conn: &Connection, why: &str| give_up_as(conn, ItemState::Ignored, why);
         match fetched {
+            Fetch::Unchanged => {
+                self.net_failures = 0;
+                self.bytes += item.size.unwrap_or(0);
+                site::unchanged(conn, &self.task_id, seq)?;
+            }
             Fetch::Done {
                 final_url,
                 size,
                 charset,
+                etag,
+                last_modified,
             } => {
                 self.net_failures = 0;
                 self.bytes += size;
@@ -931,15 +1006,23 @@ impl Explorer {
                             })
                             .collect();
                         let final_text = final_url.as_str();
-                        let added = site::fetched(
-                            conn,
-                            &self.task_id,
-                            seq,
-                            (final_text != item.url).then_some(final_text),
-                            size,
-                            charset.as_deref(),
-                            &found,
-                        )?;
+                        let moved = (final_text != item.url).then_some(final_text);
+                        let added = if self.job.mode == Mode::Files {
+                            // Lue pour ses liens seulement : son brut s'efface d'abord (un
+                            // arrêt entre les deux la relit).
+                            let _ = std::fs::remove_file(&part);
+                            site::read_page(conn, &self.task_id, seq, moved, size, &found)?
+                        } else {
+                            site::fetched(
+                                conn,
+                                &self.task_id,
+                                seq,
+                                moved,
+                                size,
+                                charset.as_deref(),
+                                &found,
+                            )?
+                        };
                         if added.full && !self.stopped {
                             site::set_stop(conn, &self.task_id, "maxItems")?;
                             self.stopped = true;
@@ -955,12 +1038,16 @@ impl Explorer {
                         }
                         crate::io::mark_from_internet(&path);
                         let final_text = final_url.as_str();
-                        site::done(
+                        site::copied(
                             conn,
                             &self.task_id,
                             seq,
                             (final_text != item.url).then_some(final_text),
                             size,
+                            Validators {
+                                etag: etag.as_deref(),
+                                last_modified: last_modified.as_deref(),
+                            },
                         )?;
                     }
                 }
@@ -1087,9 +1174,15 @@ impl Explorer {
         for (url, role) in html::links(bytes, &scan, final_url) {
             match role {
                 html::Role::Navigate => {
-                    // Un fichier n'est copié que coché (élément connu dès l'ajout).
+                    // Un fichier n'est copié que coché (élément connu dès l'ajout), ou, pour un
+                    // projet, retenu par ses filtres (SPEC §7.18 quater).
                     if !page_like(&url) {
-                        let why = Some(reason::NOT_TICKED);
+                        let why = match &self.job.filters {
+                            Some(filters) => {
+                                (!self.filter_keeps(filters, &url)).then_some(reason::FILTERED)
+                            }
+                            None => Some(reason::NOT_TICKED),
+                        };
                         out.push((url.to_string(), ItemKind::File, None, why));
                         continue;
                     }
@@ -1110,6 +1203,8 @@ impl Explorer {
                     };
                     out.push((url.to_string(), ItemKind::Page, Some(depth), why));
                 }
+                // Fichiers seuls : ni styles ni ressources d'affichage.
+                html::Role::Resource | html::Role::Style if self.job.mode == Mode::Files => {}
                 html::Role::Resource => {
                     out.push((url.to_string(), ItemKind::Resource, None, None));
                 }
@@ -1119,9 +1214,21 @@ impl Explorer {
         }
         out
     }
+
+    /// Un lien de fichier retenu par les filtres d'un projet, avant la taille : extension,
+    /// expression trouvée dans l'adresse.
+    fn filter_keeps(&self, filters: &Filters, url: &Url) -> bool {
+        let ext = name_from_url(url).as_deref().and_then(extension);
+        filters.keeps_extension(ext.as_deref())
+            && self
+                .filter_regex
+                .as_ref()
+                .is_none_or(|r| r.is_match(url.as_str()))
+    }
 }
 
-/// Les fichiers cochés, chacun par sa tâche HTTP interne, un à la fois.
+/// Les fichiers cochés (ou retenus par les filtres d'un projet), chacun par sa tâche HTTP
+/// interne, un à la fois.
 async fn files(
     conn: &mut Connection,
     ctx: &Context<'_>,
@@ -1131,30 +1238,81 @@ async fn files(
     on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Option<End>, TransferError> {
     let task = load_task(conn, task_id)?;
+    let job = site::load_job(conn, task_id)?;
     let waiting: Vec<Item> = site::items(conn, task_id)?
         .into_iter()
         .filter(|i| i.kind == ItemKind::File && i.state == ItemState::Queued)
         .collect();
     for item in waiting {
         let base = written(conn, task_id)?;
-        if let Some(end) = file(conn, ctx, &task, root, &item, stop, base, on_progress).await? {
+        let place = Place {
+            task: &task,
+            job: &job,
+            root,
+        };
+        if let Some(end) = file(conn, ctx, &place, &item, stop, base, on_progress).await? {
             return Ok(Some(end));
         }
     }
     Ok(None)
 }
 
+/// Où va un fichier d'une copie.
+struct Place<'a> {
+    task: &'a TaskRow,
+    job: &'a site::SiteJob,
+    root: &'a Path,
+}
+
+impl Place<'_> {
+    /// Dossiers (sous celui de la copie) et nom d'un fichier : sous `<hôte>/<chemin>`, ou à
+    /// plat pour des fichiers seuls sans arborescence.
+    fn of(&self, url: &Url) -> (Vec<String>, String) {
+        let mut parts = layout::parts_of(url, layout::Content::Other);
+        let name = parts.pop().expect("au moins l'hôte et un nom");
+        if self.job.mode == Mode::Files && !self.job.keep_tree {
+            parts.clear();
+        }
+        (parts, name)
+    }
+
+    /// Dossier des fichiers changés de ce lancement (mise à jour).
+    fn update_dir(&self) -> PathBuf {
+        self.root.join(UPDATE_DIR).join(self.job.run.to_string())
+    }
+}
+
+/// Le serveur décrit-il le même fichier que la copie précédente ? Même taille, et même
+/// `ETag`, sinon même date ; sans validateur, il est retéléchargé.
+fn same_file(probe: &crate::net::Probe, item: &Item) -> bool {
+    let size = probe.total_bytes.is_some() && probe.total_bytes == item.size;
+    let validated = match (&probe.etag, &item.etag) {
+        (Some(a), Some(b)) => a == b,
+        _ => matches!((&probe.last_modified, &item.last_modified), (Some(a), Some(b)) if a == b),
+    };
+    size && validated
+}
+
+/// Validateurs connus de la tâche interne d'un fichier (sa source).
+fn child_validators(conn: &Connection, child_id: &str) -> (Option<String>, Option<String>) {
+    tasks::load_sources(conn, child_id)
+        .ok()
+        .and_then(|sources| sources.into_iter().next())
+        .map(|s| (s.etag, s.last_modified))
+        .unwrap_or_default()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn file(
     conn: &mut Connection,
     ctx: &Context<'_>,
-    task: &TaskRow,
-    root: &Path,
+    place: &Place<'_>,
     item: &Item,
     stop: &mut watch::Receiver<bool>,
     base: u64,
     on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Option<End>, TransferError> {
+    let task = place.task;
     let Ok(url) = Url::parse(&item.url) else {
         site::give_up(
             conn,
@@ -1165,9 +1323,64 @@ async fn file(
         )?;
         return Ok(None);
     };
-    let parts = layout::parts_of(&url, layout::Content::Other);
-    let (name, dirs) = parts.split_last().expect("au moins l'hôte et un nom");
-    let dir = dirs.iter().fold(root.to_path_buf(), |p, d| p.join(d));
+    let child = match &item.child_id {
+        Some(id) => Some(load_task(conn, id)?),
+        None => None,
+    };
+    let update_dir = place.update_dir();
+    // Une mise à jour de ce lancement déjà commencée : elle continue.
+    let updating = child
+        .as_ref()
+        .is_some_and(|c| Path::new(&c.dest_dir) == update_dir);
+    let previous = item
+        .path
+        .as_deref()
+        .map(|p| on_disk(place.root, p))
+        .filter(|p| item.copied_before() && p.is_file());
+    if !updating {
+        let sized = place.job.filters.as_ref().filter(|f| f.sized());
+        if sized.is_some() || previous.is_some() {
+            let probe = match ctx.client.probe(&item.url, &[]).await {
+                Ok(probe) => probe,
+                Err(e) if e.retryable() => {
+                    return Ok(Some(End::RetryLater {
+                        code: e.error_code().unwrap_or("NET_UNREACHABLE"),
+                        detail: e.to_string(),
+                    }));
+                }
+                Err(e) => {
+                    let code = e.error_code().unwrap_or("NET_UNREACHABLE");
+                    site::give_up(conn, &task.id, item.seq, ItemState::Failed, Some(code))?;
+                    return Ok(None);
+                }
+            };
+            if let Some(filters) = sized
+                && !filters.keeps_size(probe.total_bytes)
+            {
+                site::give_up(
+                    conn,
+                    &task.id,
+                    item.seq,
+                    ItemState::Ignored,
+                    Some(reason::FILTERED),
+                )?;
+                return Ok(None);
+            }
+            if previous.is_some() && same_file(&probe, item) {
+                site::unchanged(conn, &task.id, item.seq)?;
+                return Ok(None);
+            }
+        }
+    }
+    // Premier téléchargement : à sa place ; fichier changé : à côté, puis à la place de
+    // l'ancien, qui reste jusque-là (SPEC §7.18 quater).
+    let replacing = updating || previous.is_some();
+    let (dirs, name) = place.of(&url);
+    let dir = if replacing {
+        update_dir.clone()
+    } else {
+        dirs.iter().fold(place.root.to_path_buf(), |p, d| p.join(d))
+    };
     if let Err(e) = std::fs::create_dir_all(&dir) {
         if e.kind() == std::io::ErrorKind::StorageFull {
             return Ok(Some(disk(&e)));
@@ -1175,37 +1388,42 @@ async fn file(
         site::give_up(conn, &task.id, item.seq, ItemState::Failed, Some("DISK_IO"))?;
         return Ok(None);
     }
-    let child_id = match &item.child_id {
-        Some(id) => id.clone(),
-        None => {
+    let child_id = match child {
+        Some(child) if !replacing || updating => child.id,
+        _ => {
             let dir_text = dir.to_string_lossy();
             let (id, _) = tasks::create_task(
                 conn,
                 &NewTask {
                     queue_id: &task.queue_id,
                     url: &item.url,
-                    display_name: name,
+                    display_name: &name,
                     dest_dir: &dir_text,
                     max_connections: task.max_connections,
                     speed_limit_bps: None,
                     idempotency_key: None,
-                    requested_name: Some(name),
+                    requested_name: Some(&name),
                     checksum: None,
                     headers: &[],
                     parent_id: Some(&task.id),
                     public_only: task.public_only,
                 },
             )?;
-            site::set_child(conn, &task.id, item.seq, &id)?;
+            if replacing {
+                site::replace_child(conn, &task.id, item.seq, &id)?;
+            } else {
+                site::set_child(conn, &task.id, item.seq, &id)?;
+            }
             id
         }
     };
+    let finish = if replacing { put_in_place } else { done_file };
     let mut restarted = false;
     loop {
         let child = load_task(conn, &child_id)?;
         match child.state {
             TaskState::Completed => {
-                return done_file(conn, task, root, item, &child, base).map(|()| None);
+                return finish(conn, place, item, &child, base);
             }
             TaskState::Paused | TaskState::Failed => {
                 change_state(conn, &child_id, &Change::to(TaskState::Queued))?;
@@ -1224,16 +1442,15 @@ async fn file(
             &mut forward,
         )
         .await?;
-        return Ok(match outcome {
+        return match outcome {
             Outcome::Completed(_) => {
                 let child = load_task(conn, &child_id)?;
-                done_file(conn, task, root, item, &child, base)?;
-                None
+                finish(conn, place, item, &child, base)
             }
-            Outcome::Paused => Some(End::Stopped),
-            Outcome::DiskFull => Some(End::DiskFull(
+            Outcome::Paused => Ok(Some(End::Stopped)),
+            Outcome::DiskFull => Ok(Some(End::DiskFull(
                 "plus assez de place pour un fichier de la copie".into(),
-            )),
+            ))),
             Outcome::FileChanged if !restarted => {
                 restarted = true;
                 if let Some(name) = &load_task(conn, &child_id)?.file_name {
@@ -1250,34 +1467,34 @@ async fn file(
                     ItemState::Failed,
                     Some("FILE_CHANGED"),
                 )?;
-                None
+                Ok(None)
             }
-            Outcome::RetryLater { code, detail, .. } => Some(End::RetryLater { code, detail }),
-            // Un fichier coché mort : son lien reste en ligne, comme une page morte.
+            Outcome::RetryLater { code, detail, .. } => Ok(Some(End::RetryLater { code, detail })),
+            // Un fichier mort : son lien reste en ligne, comme une page morte ; la copie
+            // précédente reste.
             Outcome::Failed { code, .. } => {
                 site::give_up(conn, &task.id, item.seq, ItemState::Failed, Some(code))?;
-                None
+                Ok(None)
             }
-            Outcome::Seeding | Outcome::PostProcessing => Some(failed(
+            Outcome::Seeding | Outcome::PostProcessing => Ok(Some(failed(
                 "INTERNAL",
                 "issue inattendue pour un fichier de la copie",
-            )),
-        });
+            ))),
+        };
     }
 }
 
-/// Un fichier coché terminé : son chemin dans la copie.
+/// Un fichier terminé à sa place : son chemin dans la copie, ses validateurs.
 fn done_file(
     conn: &mut Connection,
-    task: &TaskRow,
-    root: &Path,
+    place: &Place<'_>,
     item: &Item,
     child: &TaskRow,
     base: u64,
-) -> Result<(), TransferError> {
+) -> Result<Option<End>, TransferError> {
     let full = Path::new(&child.dest_dir).join(child.file_name.as_deref().unwrap_or_default());
     let relative = full
-        .strip_prefix(root)
+        .strip_prefix(place.root)
         .map(|p| {
             p.components()
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -1286,22 +1503,77 @@ fn done_file(
         })
         .unwrap_or_default();
     let size = child.total_bytes.unwrap_or(child.done_bytes);
-    site::set_path(conn, &task.id, item.seq, &relative)?;
-    site::done(conn, &task.id, item.seq, None, size)?;
-    site::save_progress(conn, &task.id, base + size)?;
-    Ok(())
+    let (etag, last_modified) = child_validators(conn, &child.id);
+    site::set_path(conn, &place.task.id, item.seq, &relative)?;
+    site::copied(
+        conn,
+        &place.task.id,
+        item.seq,
+        None,
+        size,
+        Validators {
+            etag: etag.as_deref(),
+            last_modified: last_modified.as_deref(),
+        },
+    )?;
+    site::save_progress(conn, &place.task.id, base + size)?;
+    Ok(None)
+}
+
+/// Une nouvelle version d'un fichier, téléchargée à côté : mise à la place de l'ancien par
+/// un renommage (jamais de fichier à moitié écrit). Après un arrêt entre le renommage et
+/// son enregistrement, le fichier est déjà à sa place.
+fn put_in_place(
+    conn: &mut Connection,
+    place: &Place<'_>,
+    item: &Item,
+    child: &TaskRow,
+    base: u64,
+) -> Result<Option<End>, TransferError> {
+    let fresh = Path::new(&child.dest_dir).join(child.file_name.as_deref().unwrap_or_default());
+    let target = on_disk(place.root, item.path.as_deref().unwrap_or_default());
+    if fresh.is_file() {
+        let moved = std::fs::rename(&fresh, &target)
+            .map_err(|e| e.to_string())
+            .and_then(|()| sync_parent_dir(&target).map_err(|e| e.to_string()));
+        if let Err(e) = moved {
+            return Ok(Some(failed("DISK_IO", e)));
+        }
+        crate::io::mark_from_internet(&target);
+    }
+    let size = child.total_bytes.unwrap_or(child.done_bytes);
+    let (etag, last_modified) = child_validators(conn, &child.id);
+    site::copied(
+        conn,
+        &place.task.id,
+        item.seq,
+        None,
+        size,
+        Validators {
+            etag: etag.as_deref(),
+            last_modified: last_modified.as_deref(),
+        },
+    )?;
+    site::save_progress(conn, &place.task.id, base + size)?;
+    let _ = std::fs::remove_dir(&child.dest_dir);
+    let _ = std::fs::remove_dir(place.root.join(UPDATE_DIR));
+    Ok(None)
 }
 
 /// Réécriture des liens de chaque page et de chaque style lus, puis fin de la copie.
 async fn links(conn: &mut Connection, task_id: &str, root: &Path) -> Result<End, TransferError> {
     let items = site::items(conn, task_id)?;
-    // Adresse (demandée ou d'arrivée) d'un élément copié : son chemin.
+    let files_only = site::load_job(conn, task_id)?.mode == Mode::Files;
+    // Adresse (demandée ou d'arrivée) d'un élément copié : son chemin. Un élément copié par
+    // un lancement précédent, en échec ou ignoré cette fois, garde sa copie locale (SPEC
+    // §7.18 quater).
     let mut copied: HashMap<String, String> = HashMap::new();
     for item in &items {
-        if !matches!(item.state, ItemState::Fetched | ItemState::Done) {
+        let Some(path) = &item.path else { continue };
+        let kept = item.fetched_run.is_some() && on_disk(root, path).is_file();
+        if !matches!(item.state, ItemState::Fetched | ItemState::Done) && !kept {
             continue;
         }
-        let Some(path) = &item.path else { continue };
         if let Some(final_url) = &item.final_url {
             copied
                 .entry(final_url.clone())
@@ -1311,7 +1583,22 @@ async fn links(conn: &mut Connection, task_id: &str, root: &Path) -> Result<End,
             .entry(item.url.clone())
             .or_insert_with(|| path.clone());
     }
-    for item in items.iter().filter(|i| i.state == ItemState::Fetched) {
+    // Un brut qui ne sert plus : celui d'un élément réécrit (arrêt entre son enregistrement
+    // et l'effacement du brut), ou d'un élément en cours de lecture à un arrêt, puis écarté
+    // par une limite. Seuls les éléments lus attendent encore la réécriture.
+    for item in items.iter().filter(|i| i.state != ItemState::Fetched) {
+        if let Some(path) = &item.path {
+            let _ = std::fs::remove_file(part_path(&on_disk(root, path)));
+        }
+    }
+    // Fichiers seuls : le dossier des pages lues aussi.
+    if files_only {
+        let _ = std::fs::remove_dir(root.join(PAGES_DIR));
+    }
+    let rewritten = items
+        .iter()
+        .filter(|i| !files_only && i.state == ItemState::Fetched);
+    for item in rewritten {
         let Some(path) = item.path.clone() else {
             continue;
         };
@@ -1444,6 +1731,9 @@ pub fn delete_files(conn: &Connection, task: &TaskRow, finals: bool) -> std::io:
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
     for dir in dirs {
         let _ = std::fs::remove_dir(&dir);
+    }
+    for ours in [PAGES_DIR, UPDATE_DIR] {
+        let _ = std::fs::remove_dir(root.join(ours));
     }
     let _ = std::fs::remove_dir(&root);
     Ok(())

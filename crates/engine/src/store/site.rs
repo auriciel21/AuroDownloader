@@ -32,6 +32,8 @@ pub mod reason {
     pub const FOLDER: &str = "FOLDER";
     /// Lien vers un fichier que l'utilisateur n'a pas coché.
     pub const NOT_TICKED: &str = "NOT_TICKED";
+    /// Lien vers un fichier hors des filtres d'un projet (SPEC §7.18 quater).
+    pub const FILTERED: &str = "FILTERED";
     /// Trouvé après l'arrêt de l'exploration par une limite.
     pub const LIMIT: &str = "LIMIT";
     /// Lien de page qui mène à autre chose qu'une page web.
@@ -155,6 +157,79 @@ impl Phase {
     }
 }
 
+/// Mode d'une copie (SPEC §7.18 quater).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Pages, ressources d'affichage et fichiers, liens réécrits.
+    #[default]
+    Copy,
+    /// Fichiers seuls : les pages sont lues pour l'exploration, sans être gardées.
+    Files,
+}
+
+impl Mode {
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            Mode::Copy => "copy",
+            Mode::Files => "files",
+        }
+    }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "copy" => Some(Mode::Copy),
+            "files" => Some(Mode::Files),
+            _ => None,
+        }
+    }
+}
+
+/// Filtres des fichiers d'un projet (SPEC §7.18 quater), règles de `auro links` : extension
+/// parmi la liste (toutes si elle est vide), expression trouvée dans l'adresse, tailles ;
+/// avec un filtre de taille, une taille inconnue n'est pas prise.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filters {
+    /// En minuscules, sans point.
+    pub extensions: Vec<String>,
+    pub regex: Option<String>,
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+}
+
+impl Filters {
+    /// Un filtre de taille : la taille se lit avant le téléchargement.
+    pub fn sized(&self) -> bool {
+        self.min_size.is_some() || self.max_size.is_some()
+    }
+
+    pub fn keeps_size(&self, size: Option<u64>) -> bool {
+        if !self.sized() {
+            return true;
+        }
+        size.is_some_and(|s| {
+            self.min_size.is_none_or(|m| s >= m) && self.max_size.is_none_or(|m| s <= m)
+        })
+    }
+
+    /// Une extension (déjà en minuscules) gardée.
+    pub fn keeps_extension(&self, extension: Option<&str>) -> bool {
+        self.extensions.is_empty()
+            || extension.is_some_and(|e| self.extensions.iter().any(|k| k == e))
+    }
+
+    pub(crate) fn extensions_sql(&self) -> String {
+        self.extensions.join(",")
+    }
+
+    pub(crate) fn extensions_of(text: &str) -> Vec<String> {
+        text.split(',')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 /// Réglages d'une copie, ceux de l'exploration (SPEC §7.18 bis) et le volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -181,6 +256,11 @@ pub struct NewSite<'a> {
     pub files: &'a [String],
     /// Ajoutée par une connexion à jeton : réseau public seulement (SPEC §7.19).
     pub public_only: bool,
+    pub mode: Mode,
+    /// Mode `files` : fichiers sous `<hôte>/<chemin>` plutôt qu'à plat.
+    pub keep_tree: bool,
+    /// Filtres d'un projet : les fichiers sont pris pendant l'exploration.
+    pub filters: Option<&'a Filters>,
 }
 
 /// Crée une copie `queued`, sa source (la page de départ), sa ligne `site_jobs` et ses
@@ -223,10 +303,12 @@ pub fn create_site_task(
         params![new_id(), task_id, new.page_url],
     )?;
     let s = new.settings;
+    let size = |v: Option<u64>| v.map(|v| to_i64(v, "taille")).transpose();
     tx.execute(
         "INSERT INTO site_jobs (task_id, page_url, depth, max_pages, max_bytes, exclude,
-                                same_folder, ignore_robots)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                same_folder, ignore_robots, mode, keep_tree, filter_ext,
+                                filter_regex, filter_min, filter_max)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             task_id,
             new.page_url,
@@ -235,7 +317,13 @@ pub fn create_site_task(
             to_i64(s.max_bytes, "volume")?,
             s.exclude,
             s.same_folder,
-            s.ignore_robots
+            s.ignore_robots,
+            new.mode.as_sql(),
+            new.keep_tree,
+            new.filters.map(Filters::extensions_sql),
+            new.filters.and_then(|f| f.regex.clone()),
+            size(new.filters.and_then(|f| f.min_size))?,
+            size(new.filters.and_then(|f| f.max_size))?
         ],
     )?;
     insert_first_items(&tx, &task_id, new.page_url, new.files)?;
@@ -279,6 +367,12 @@ pub struct SiteJob {
     pub phase: Phase,
     /// Raison de la fin de l'exploration (`finished`, `maxPages`, `maxBytes`, `maxItems`).
     pub stop: Option<String>,
+    pub mode: Mode,
+    pub keep_tree: bool,
+    /// Filtres d'un projet ; `None` : fichiers cochés à l'ajout.
+    pub filters: Option<Filters>,
+    /// Numéro du lancement (1, puis un de plus à chaque mise à jour).
+    pub run: i64,
 }
 
 fn bad(task_id: &str, what: &str) -> StoreError {
@@ -289,7 +383,8 @@ pub fn load_job(conn: &Connection, task_id: &str) -> Result<SiteJob, StoreError>
     let row = conn
         .query_row(
             "SELECT page_url, start_url, start_path, depth, max_pages, max_bytes, exclude,
-                    same_folder, ignore_robots, phase, stop
+                    same_folder, ignore_robots, phase, stop, mode, keep_tree, filter_ext,
+                    filter_regex, filter_min, filter_max, run
              FROM site_jobs WHERE task_id = ?1",
             [task_id],
             |r| {
@@ -309,11 +404,28 @@ pub fn load_job(conn: &Connection, task_id: &str) -> Result<SiteJob, StoreError>
                     ),
                     r.get::<_, String>(9)?,
                     r.get::<_, Option<String>>(10)?,
+                    (
+                        r.get::<_, String>(11)?,
+                        r.get::<_, bool>(12)?,
+                        r.get::<_, Option<String>>(13)?,
+                        r.get::<_, Option<String>>(14)?,
+                        r.get::<_, Option<i64>>(15)?,
+                        r.get::<_, Option<i64>>(16)?,
+                        r.get::<_, i64>(17)?,
+                    ),
                 ))
             },
         )
         .optional()?
         .ok_or_else(|| bad(task_id, "pas une copie de site"))?;
+    let (mode, keep_tree, ext, regex, min, max, run) = row.4;
+    let size = |v: Option<i64>| v.map(|v| u64::try_from(v).unwrap_or(0));
+    let filters = ext.map(|ext| Filters {
+        extensions: Filters::extensions_of(&ext),
+        regex,
+        min_size: size(min),
+        max_size: size(max),
+    });
     let ((page_url, start_url, start_path), (depth, pages, bytes, exclude, folder, robots)) =
         (row.0, row.1);
     Ok(SiteJob {
@@ -330,7 +442,22 @@ pub fn load_job(conn: &Connection, task_id: &str) -> Result<SiteJob, StoreError>
         },
         phase: Phase::from_sql(&row.2).ok_or_else(|| bad(task_id, "phase"))?,
         stop: row.3,
+        mode: Mode::from_sql(&mode).ok_or_else(|| bad(task_id, "mode"))?,
+        keep_tree,
+        filters,
+        run,
     })
+}
+
+/// Numéro du lancement d'une copie.
+fn job_run(conn: &Connection, task_id: &str) -> Result<i64, StoreError> {
+    conn.query_row(
+        "SELECT run FROM site_jobs WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| bad(task_id, "pas une copie de site"))
 }
 
 /// Page de départ après redirections, et son chemin copié.
@@ -381,10 +508,24 @@ pub struct Item {
     pub error: Option<String>,
     /// Encodage annoncé par l'en-tête d'une page.
     pub charset: Option<String>,
+    /// Validateurs de sa dernière copie (requêtes conditionnelles d'une mise à jour).
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    /// Dernier lancement qui l'a vu.
+    pub run: i64,
+    /// Dernier lancement qui a écrit ses octets ; `None` : jamais copié.
+    pub fetched_run: Option<i64>,
 }
 
-const ITEM_COLUMNS: &str =
-    "seq, url, final_url, kind, depth, state, path, size, child_id, error, charset";
+impl Item {
+    /// Copié par un lancement précédent : son fichier peut rester, ou être gardé tel quel.
+    pub fn copied_before(&self) -> bool {
+        self.path.is_some() && self.fetched_run.is_some_and(|r| r < self.run)
+    }
+}
+
+const ITEM_COLUMNS: &str = "seq, url, final_url, kind, depth, state, path, size, child_id, error, \
+                            charset, etag, last_modified, run, fetched_run";
 
 fn read_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     let text = |i: usize, s: String| {
@@ -412,6 +553,10 @@ fn read_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         child_id: r.get(8)?,
         error: r.get(9)?,
         charset: r.get(10)?,
+        etag: r.get(11)?,
+        last_modified: r.get(12)?,
+        run: r.get(13)?,
+        fetched_run: r.get(14)?,
     })
 }
 
@@ -463,87 +608,109 @@ pub struct Added {
     pub ignored: usize,
 }
 
-/// Ajoute des éléments à la suite, sans doublon d'adresse, jusqu'à [`MAX_ITEMS`]. Un lien
-/// ignoré s'enregistre jusqu'à [`MAX_IGNORED`], puis se compte seulement ; un élément à
-/// copier prend la place d'un lien ignoré de même adresse (une page trop profonde depuis
-/// une page peut se suivre depuis une autre), avec un numéro neuf.
+/// Ajoute des éléments à la suite, sans doublon d'adresse, jusqu'à [`MAX_ITEMS`] pour le
+/// lancement en cours. Un lien ignoré s'enregistre jusqu'à [`MAX_IGNORED`], puis se compte
+/// seulement. Un élément à copier prend la place d'un lien ignoré de même adresse (une page
+/// trop profonde depuis une page peut se suivre depuis une autre), avec un numéro neuf ;
+/// de même un élément d'un lancement précédent, retrouvé (mise à jour, SPEC §7.18 quater),
+/// qui garde son chemin et ses validateurs.
 pub fn add_items(
     conn: &Connection,
     task_id: &str,
     items: &[NewItem<'_>],
 ) -> Result<Added, StoreError> {
+    let run = job_run(conn, task_id)?;
     let (mut count, mut ignored, mut next): (i64, i64, i64) = conn.query_row(
-        "SELECT COUNT(*) FILTER (WHERE state != 'ignored'),
-                COUNT(*) FILTER (WHERE state = 'ignored'),
+        "SELECT COUNT(*) FILTER (WHERE run = ?2 AND state != 'ignored'),
+                COUNT(*) FILTER (WHERE run = ?2 AND state = 'ignored'),
                 COALESCE(MAX(seq), -1) + 1
          FROM site_items WHERE task_id = ?1",
-        [task_id],
+        params![task_id, run],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let mut added = Added::default();
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR IGNORE INTO site_items (task_id, seq, url, kind, depth, state, error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO site_items (task_id, seq, url, kind, depth, state, error, run)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    let mut find = conn.prepare_cached(
+        "SELECT seq, state = 'ignored', run FROM site_items WHERE task_id = ?1 AND url = ?2",
     )?;
     let mut over: i64 = 0;
+    let full = |n: i64, max: usize| usize::try_from(n).unwrap_or(usize::MAX) >= max;
     for item in items {
+        let known: Option<(i64, bool, i64)> = find
+            .query_row(params![task_id, item.url], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
         if let Some(why) = item.ignored {
-            if usize::try_from(ignored).unwrap_or(usize::MAX) >= MAX_IGNORED {
-                let known: bool = conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM site_items WHERE task_id = ?1 AND url = ?2)",
-                    params![task_id, item.url],
-                    |r| r.get(0),
-                )?;
-                over += i64::from(!known);
+            match known {
+                // Déjà vu par ce lancement.
+                Some((_, _, seen)) if seen == run => {}
+                _ if full(ignored, MAX_IGNORED) => over += 1,
+                Some((seq, _, _)) => {
+                    conn.execute(
+                        "UPDATE site_items SET state = 'ignored', error = ?3, run = ?4, kind = ?5,
+                                               depth = ?6
+                         WHERE task_id = ?1 AND seq = ?2",
+                        params![task_id, seq, why, run, item.kind.as_sql(), item.depth],
+                    )?;
+                    ignored += 1;
+                    added.ignored += 1;
+                }
+                None => {
+                    insert.execute(params![
+                        task_id,
+                        next,
+                        item.url,
+                        item.kind.as_sql(),
+                        item.depth,
+                        ItemState::Ignored.as_sql(),
+                        why,
+                        run
+                    ])?;
+                    next += 1;
+                    ignored += 1;
+                    added.ignored += 1;
+                }
+            }
+            continue;
+        }
+        match known {
+            // Déjà à copier dans ce lancement : une adresse connue n'est pas un refus.
+            Some((_, false, seen)) if seen == run => continue,
+            _ if full(count, MAX_ITEMS) => {
+                added.full = true;
                 continue;
             }
-            if stmt.execute(params![
-                task_id,
-                next,
-                item.url,
-                item.kind.as_sql(),
-                item.depth,
-                ItemState::Ignored.as_sql(),
-                why
-            ])? == 1
-            {
-                next += 1;
-                ignored += 1;
-                added.ignored += 1;
+            Some((seq, was_ignored, seen)) => {
+                if was_ignored && seen == run {
+                    ignored -= 1;
+                }
+                conn.execute(
+                    "UPDATE site_items SET seq = ?3, state = 'queued', error = NULL, run = ?4,
+                                           kind = ?5, depth = ?6
+                     WHERE task_id = ?1 AND seq = ?2",
+                    params![task_id, seq, next, run, item.kind.as_sql(), item.depth],
+                )?;
             }
-            continue;
+            None => {
+                insert.execute(params![
+                    task_id,
+                    next,
+                    item.url,
+                    item.kind.as_sql(),
+                    item.depth,
+                    ItemState::Queued.as_sql(),
+                    None::<&str>,
+                    run
+                ])?;
+            }
         }
-        let replaced = conn.execute(
-            "DELETE FROM site_items WHERE task_id = ?1 AND url = ?2 AND state = 'ignored'",
-            params![task_id, item.url],
-        )?;
-        if replaced > 0 {
-            ignored -= 1;
-        }
-        if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_ITEMS {
-            // Une adresse déjà connue ne compte pas comme refusée.
-            let known: bool = conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM site_items WHERE task_id = ?1 AND url = ?2)",
-                params![task_id, item.url],
-                |r| r.get(0),
-            )?;
-            added.full |= !known;
-            continue;
-        }
-        if stmt.execute(params![
-            task_id,
-            next,
-            item.url,
-            item.kind.as_sql(),
-            item.depth,
-            ItemState::Queued.as_sql(),
-            None::<&str>
-        ])? == 1
-        {
-            next += 1;
-            count += 1;
-            added.added += 1;
-        }
+        next += 1;
+        count += 1;
+        added.added += 1;
     }
     if over > 0 {
         conn.execute(
@@ -586,7 +753,7 @@ pub fn fetched(
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "UPDATE site_items SET state = 'fetched', final_url = ?3, size = ?4, charset = ?5,
-                               error = NULL
+                               error = NULL, fetched_run = run
          WHERE task_id = ?1 AND seq = ?2",
         params![task_id, seq, final_url, to_i64(size, "taille")?, charset],
     )?;
@@ -605,10 +772,146 @@ pub fn done(
 ) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE site_items
-         SET state = 'done', final_url = COALESCE(?3, final_url), size = ?4, error = NULL
+         SET state = 'done', final_url = COALESCE(?3, final_url), size = ?4, error = NULL,
+             fetched_run = run
          WHERE task_id = ?1 AND seq = ?2",
         params![task_id, seq, final_url, to_i64(size, "taille")?],
     )?;
+    Ok(())
+}
+
+/// Validateurs d'une ressource ou d'un fichier copié (`ETag`, `Last-Modified`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Validators<'a> {
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+}
+
+/// Une ressource ou un fichier à son nom final, vidé sur disque, avec ses validateurs.
+pub fn copied(
+    conn: &Connection,
+    task_id: &str,
+    seq: i64,
+    final_url: Option<&str>,
+    size: u64,
+    validators: Validators<'_>,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE site_items
+         SET state = 'done', final_url = COALESCE(?3, final_url), size = ?4, error = NULL,
+             fetched_run = run, etag = ?5, last_modified = ?6
+         WHERE task_id = ?1 AND seq = ?2",
+        params![
+            task_id,
+            seq,
+            final_url,
+            to_i64(size, "taille")?,
+            validators.etag,
+            validators.last_modified
+        ],
+    )?;
+    Ok(())
+}
+
+/// Une ressource ou un fichier déjà copié, que le serveur dit inchangé : gardé tel quel.
+pub fn unchanged(conn: &Connection, task_id: &str, seq: i64) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE site_items SET state = 'done', error = NULL WHERE task_id = ?1 AND seq = ?2",
+        params![task_id, seq],
+    )?;
+    Ok(())
+}
+
+/// Mode `files` : une page lue pour ses liens, sans être gardée ; ses liens trouvés sont
+/// mis en attente dans la même transaction. Son brut s'efface ensuite.
+pub fn read_page(
+    conn: &mut Connection,
+    task_id: &str,
+    seq: i64,
+    final_url: Option<&str>,
+    size: u64,
+    found: &[NewItem<'_>],
+) -> Result<Added, StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "UPDATE site_items SET state = 'done', final_url = ?3, size = ?4, error = NULL,
+                               path = NULL, fetched_run = run
+         WHERE task_id = ?1 AND seq = ?2",
+        params![task_id, seq, final_url, to_i64(size, "taille")?],
+    )?;
+    let added = add_items(&tx, task_id, found)?;
+    tx.commit()?;
+    Ok(added)
+}
+
+/// Le fichier d'une mise à jour, téléchargé à côté par une nouvelle tâche interne : la
+/// précédente est oubliée (sa ligne ; son fichier, au chemin de l'élément, reste jusqu'au
+/// remplacement).
+pub fn replace_child(
+    conn: &mut Connection,
+    task_id: &str,
+    seq: i64,
+    child_id: &str,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let old: Option<String> = tx.query_row(
+        "SELECT child_id FROM site_items WHERE task_id = ?1 AND seq = ?2",
+        params![task_id, seq],
+        |r| r.get(0),
+    )?;
+    tx.execute(
+        "UPDATE site_items SET child_id = ?3 WHERE task_id = ?1 AND seq = ?2",
+        params![task_id, seq, child_id],
+    )?;
+    if let Some(old) = old {
+        tx.execute(
+            "DELETE FROM tasks WHERE id = ?1 AND parent_id = ?2",
+            params![old, task_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Mise à jour d'une copie finie ou en échec (SPEC §7.18 quater) : un nouveau lancement,
+/// la page de départ (et les fichiers cochés d'une copie sans filtres) de nouveau en
+/// attente, la tâche de nouveau en file. Les autres éléments gardent leur chemin, leurs
+/// validateurs et leur fichier : retrouvés par l'exploration, ils sont relus ou gardés.
+/// Comme `tasks::restart_task`, hors de la table des états (SPEC §5.5).
+pub fn begin_update(conn: &mut Connection, task_id: &str) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let task = super::tasks::load_task(&tx, task_id)?;
+    if !matches!(
+        task.state,
+        super::tasks::TaskState::Completed | super::tasks::TaskState::Failed
+    ) {
+        return Err(StoreError::BadTransition {
+            task_id: task_id.to_owned(),
+            from: task.state.as_sql(),
+            to: "mise à jour",
+        });
+    }
+    let job = load_job(&tx, task_id)?;
+    let run = job.run + 1;
+    tx.execute(
+        "UPDATE site_jobs SET run = ?2, phase = 'copy', stop = NULL, start_url = NULL,
+                             ignored_over = 0
+         WHERE task_id = ?1",
+        params![task_id, run],
+    )?;
+    tx.execute(
+        "UPDATE site_items SET state = 'queued', error = NULL, run = ?2
+         WHERE task_id = ?1 AND (seq = 0 OR (kind = 'file' AND state != 'ignored' AND ?3))",
+        params![task_id, run, job.filters.is_none()],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET state = 'queued', pause_reason = NULL, error_code = NULL,
+                          error_detail = NULL, retry_count = 0, next_retry_at = NULL,
+                          finished_at = NULL, updated_at = ?2
+         WHERE id = ?1",
+        params![task_id, now_ms()],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -625,6 +928,7 @@ pub fn give_up(
         state,
         ItemState::Failed | ItemState::Skipped | ItemState::Ignored
     ));
+    // Le fichier d'un lancement précédent reste : l'élément le garde (SPEC §7.18 quater).
     conn.execute(
         "UPDATE site_items SET state = ?3, error = ?4 WHERE task_id = ?1 AND seq = ?2",
         params![task_id, seq, state.as_sql(), error],
@@ -717,7 +1021,7 @@ pub fn reset(conn: &mut Connection, task_id: &str) -> Result<(), StoreError> {
     tx.execute("DELETE FROM tasks WHERE parent_id = ?1", [task_id])?;
     tx.execute(
         "UPDATE site_jobs SET start_url = NULL, start_path = NULL, phase = 'copy', stop = NULL,
-                             ignored_over = 0
+                             ignored_over = 0, run = 1
          WHERE task_id = ?1",
         [task_id],
     )?;
@@ -742,23 +1046,32 @@ pub struct Counts {
     pub ignored: u64,
     /// Dont ceux qui attendaient quand une limite a arrêté l'exploration.
     pub skipped: u64,
+    /// Ressources et fichiers d'un lancement précédent, gardés tels quels (mise à jour).
+    pub unchanged: u64,
     pub queued: u64,
     /// Octets des pages et ressources enregistrées (le volume limité, hors fichiers
     /// cochés).
     pub bytes: u64,
 }
 
+/// Nombres du lancement en cours.
 pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
+    let run = job_run(conn, task_id).or_else(|e| match e {
+        // Une tâche sans copie (pas encore créée) : aucun élément.
+        StoreError::BadValue(_) => Ok(0),
+        e => Err(e),
+    })?;
     let mut stmt = conn.prepare(
-        "SELECT kind, state, COUNT(*), COALESCE(SUM(size), 0)
-         FROM site_items WHERE task_id = ?1 GROUP BY kind, state",
+        "SELECT kind, state, fetched_run IS ?2, COUNT(*), COALESCE(SUM(size), 0)
+         FROM site_items WHERE task_id = ?1 AND run = ?2 GROUP BY 1, 2, 3",
     )?;
-    let rows = stmt.query_map([task_id], |r| {
+    let rows = stmt.query_map(params![task_id, run], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
+            r.get::<_, bool>(2)?,
             r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
         ))
     })?;
     let over: i64 = conn
@@ -774,7 +1087,7 @@ pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
         ..Counts::default()
     };
     for row in rows {
-        let (kind, state, n, size) = row?;
+        let (kind, state, written, n, size) = row?;
         let n = u64::try_from(n).unwrap_or(0);
         let size = u64::try_from(size).unwrap_or(0);
         let kind = ItemKind::from_sql(&kind).ok_or_else(|| bad(task_id, "sorte"))?;
@@ -789,6 +1102,7 @@ pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
             }
             ItemState::Fetched | ItemState::Done => {
                 match kind {
+                    _ if !written => c.unchanged += n,
                     ItemKind::Page => c.pages += n,
                     ItemKind::Style | ItemKind::Resource => c.resources += n,
                     ItemKind::File => c.files += n,

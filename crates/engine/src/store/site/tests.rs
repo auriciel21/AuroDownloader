@@ -28,6 +28,9 @@ fn create(conn: &mut Connection, files: &[String]) -> String {
             settings: &s,
             files,
             public_only: false,
+            mode: Mode::Copy,
+            keep_tree: true,
+            filters: None,
         },
         tasks::Start::default(),
     )
@@ -167,6 +170,7 @@ fn a_page_read_queues_its_links_once_in_the_same_transaction() {
             failed: 1,
             ignored: 0,
             skipped: 0,
+            unchanged: 0,
             queued: 0,
             bytes: 1500,
         }

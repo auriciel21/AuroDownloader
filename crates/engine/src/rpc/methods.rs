@@ -1846,6 +1846,8 @@ fn site_request(s: &serde_json::Map<String, Value>) -> Result<SiteRequest, RpcEr
         same_folder: p.bool("site.sameFolder")?,
         ignore_robots: p.bool("site.ignoreRobots")?,
         files: p.strings("site.files")?.unwrap_or_default(),
+        // Projets seulement (SPEC §7.18 quater).
+        ..SiteRequest::default()
     })
 }
 

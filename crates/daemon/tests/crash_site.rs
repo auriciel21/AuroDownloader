@@ -10,11 +10,16 @@
 //! raccourci (`aurod --site-spacing-ms`). Les copies s'ajoutent directement en base, moteur
 //! arrêté.
 //!
+//! Entre deux lancements, une partie des copies finies est mise à jour (SPEC §7.18 quater :
+//! nouveau lancement dans le même dossier ; le site ne change pas, ses images, styles et
+//! police répondent `304` à une requête conditionnelle), et les arrêts tombent aussi pendant
+//! ces mises à jour.
+//!
 //! Une première copie, sans arrêt, sert de référence. Après chaque arrêt, le banc vérifie
 //! qu'aucune copie n'est en échec ni annulée ; que la base n'annonce jamais plus que le
 //! disque (élément fait : son fichier à son nom ; élément lu : son brut entier dans son
-//! `.part`) ; et que chaque copie terminée est identique, fichier par fichier et octet par
-//! octet, à la référence, sans fichier provisoire.
+//! `.part`) ; et que chaque copie terminée, mise à jour ou non, est identique, fichier par
+//! fichier et octet par octet, à la référence, sans fichier provisoire.
 //!
 //! Réglages, par variables d'environnement :
 //! - `AURO_CRASH_CYCLES` : lancements d'`aurod` (défaut 6) ;
@@ -31,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use auro_engine::store::site::{self, ItemState, NewSite, Settings};
+use auro_engine::store::site::{self, ItemState, Mode, NewSite, Settings};
 use auro_engine::store::tasks::{self, TaskKind, TaskState, list_tasks};
 use auro_engine::testing::{FileSite, Pace, Server, reply, serve_file_paced, serve_paced};
 use serde_json::{Value, json};
@@ -202,11 +207,17 @@ fn site_handler(r: &auro_engine::testing::Request, file_url: &str) -> auro_engin
         }
         _ => return reply("404 Not Found", &[("Content-Length", "0")], b""),
     };
+    // Contenu fixe : son chemin suffit à l'`ETag`.
+    let etag = format!("\"{}\"", path.replace('/', "-"));
+    if r.header("If-None-Match") == Some(etag.as_str()) {
+        return reply("304 Not Modified", &[("ETag", &etag)], b"");
+    }
     reply(
         "200 OK",
         &[
             ("Content-Type", kind),
             ("Content-Length", &body.len().to_string()),
+            ("ETag", &etag),
         ],
         &body,
     )
@@ -223,6 +234,8 @@ struct Bench {
     /// La copie de référence, faite sans arrêt.
     reference: Tree,
     added: u64,
+    /// Mises à jour de copies finies.
+    updates: u64,
     /// Arrêts tombés pendant une réécriture, ou pendant le fichier coché.
     in_links: u64,
     in_files: u64,
@@ -258,6 +271,7 @@ impl Bench {
             file,
             reference: Tree::new(),
             added: 0,
+            updates: 0,
             in_links: 0,
             in_files: 0,
             verified: 0,
@@ -361,10 +375,30 @@ impl Bench {
                     settings: &settings,
                     files: &files,
                     public_only: false,
+                    mode: Mode::Copy,
+                    keep_tree: true,
+                    filters: None,
                 },
                 tasks::Start::default(),
             )
             .unwrap();
+        }
+    }
+
+    /// Moteur arrêté : met à jour à peu près une copie finie sur trois.
+    fn update_some(&mut self, rng: &mut Rng) {
+        let mut conn = auro_engine::store::open(&self.db).unwrap();
+        let done: Vec<String> = list_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.state == TaskState::Completed)
+            .map(|t| t.id)
+            .collect();
+        for id in done {
+            if rng.below(3) == 0 {
+                site::begin_update(&mut conn, &id).unwrap();
+                self.updates += 1;
+            }
         }
     }
 
@@ -529,6 +563,7 @@ fn killed_engine_finishes_its_site_copies_without_corruption() {
     let horizon_ms = (seconds * 1500.0) as u64;
     let (mut kills, mut shutdowns) = (0, 0);
     for cycle in 0..cycles {
+        bench.update_some(&mut rng);
         bench.top_up(tasks + 1);
         let mut child = bench.start();
         thread::sleep(Duration::from_millis(rng.below(horizon_ms)));
@@ -561,10 +596,12 @@ fn killed_engine_finishes_its_site_copies_without_corruption() {
     bench.check();
     let roots = std::fs::read_dir(&bench.downloads).unwrap().count() as u64;
     eprintln!(
-        "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} copies ajoutées, {} arrêts \
-         pendant un fichier coché, {} pendant une réécriture, {} copies terminées identiques à \
-         la référence ({} fichiers chacune), {roots} dossiers (dossier {})",
+        "{kills} arrêts brutaux, {shutdowns} arrêts demandés, {} copies ajoutées, {} mises à \
+         jour, {} arrêts pendant un fichier coché, {} pendant une réécriture, {} copies \
+         terminées identiques à la référence ({} fichiers chacune), {roots} dossiers (dossier \
+         {})",
         bench.added,
+        bench.updates,
         bench.in_files,
         bench.in_links,
         bench.verified,
@@ -572,5 +609,9 @@ fn killed_engine_finishes_its_site_copies_without_corruption() {
         bench.dir().display()
     );
     assert_eq!(bench.verified, bench.added);
+    assert!(
+        bench.updates > 0 || cycles < 3,
+        "aucune mise à jour essayée"
+    );
     assert_eq!(roots, bench.added, "un dossier par copie, rien d'autre");
 }

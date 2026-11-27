@@ -133,7 +133,10 @@ téléchargement.
   Copie d'un site (F-43, SPEC 7.18 ter, étape B du « Grabber », 2026-11-26) : tâche de sorte
   `site` (migration 18 : `tasks` refaite pour la sorte, `Migration::rebuild` ; tables
   `site_jobs` et `site_items`, `store::site` ; migration 19 : liens laissés en ligne par
-  choix, état `ignored` et sa raison, `store::site::reason`, à part des échecs techniques), `site::html` (liens d'une page par rôle,
+  choix, état `ignored` et sa raison, `store::site::reason`, à part des échecs techniques ;
+  migration 20 : mode `files`, filtres d'un projet, lancements `run`/`fetched_run`,
+  validateurs, table `projects` ; mise à jour sur place, `Engine::update_site`,
+  `store::site::begin_update`, SPEC 7.18 quater), `site::html` (liens d'une page par rôle,
   réécriture octet pour octet), `site::css` (`url(…)`, `@import`), `site::layout` (de
   l'adresse au chemin : un dossier par hôte, `@paramètres`, `.html` et `.css` ajoutés),
   `site::run` (exploration avec le `Judge` de `linkscan::crawl`, lecture au fil de l'eau par
@@ -579,8 +582,9 @@ adb shell pm clear org.aurodownloader ; adb uninstall org.aurodownloader.test
   Les messages d'erreur réseau ne citent jamais l'URL ni la valeur d'un en-tête (SPEC 8.2).
 - États d'une tâche : toujours par `store::tasks::change_state` ou `complete_task`, qui
   vérifient la table de la SPEC 5.5, `store::pieces::start_round` (tour de reprise des morceaux
-  faux, F-12) ou `restart_task` (retéléchargement, hors de la
-  table, SPEC 5.5). Ne jamais écrire `tasks.state` directement.
+  faux, F-12), `restart_task` (retéléchargement, hors de la
+  table, SPEC 5.5) ou `store::site::begin_update` (mise à jour d'une copie de site, hors de
+  la table, SPEC 5.5 et 7.18 quater). Ne jamais écrire `tasks.state` directement.
 - Fichier d'une tâche déplacé (SPEC 7.12) : seulement par `Scheduler::relocate`, journal
   `store::moves` écrit avant de toucher au disque ; la tâche ne prend son nouvel
   emplacement que quand le fichier y est, et l'original d'une copie n'est effacé

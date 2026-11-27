@@ -809,6 +809,62 @@ CREATE INDEX site_items_state ON site_items (task_id, state, seq);
 -- éléments) ; au-delà, seulement comptés :
 ALTER TABLE site_jobs ADD COLUMN ignored_over INTEGER NOT NULL DEFAULT 0;
 
+-- Migration 0020 (2026-11-27, section 7.18 quater, F-44) : projets enregistrés et
+-- programmés, mise à jour d'une copie sur place.
+-- Une copie : mode (copy, ou files : fichiers seuls, pages lues sans être gardées),
+-- arborescence des fichiers en mode files, filtres d'un projet (filter_ext non NULL : les
+-- fichiers sont pris pendant l'exploration ; extensions en minuscules séparées par des
+-- virgules, vide : toutes), numéro du lancement.
+ALTER TABLE site_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy' CHECK (mode IN ('copy', 'files'));
+ALTER TABLE site_jobs ADD COLUMN keep_tree INTEGER NOT NULL DEFAULT 1 CHECK (keep_tree IN (0, 1));
+ALTER TABLE site_jobs ADD COLUMN filter_ext TEXT;
+ALTER TABLE site_jobs ADD COLUMN filter_regex TEXT;
+ALTER TABLE site_jobs ADD COLUMN filter_min INTEGER CHECK (filter_min >= 0);
+ALTER TABLE site_jobs ADD COLUMN filter_max INTEGER CHECK (filter_max >= 0);
+ALTER TABLE site_jobs ADD COLUMN run INTEGER NOT NULL DEFAULT 1 CHECK (run >= 1);
+-- Un élément : validateurs de sa dernière copie (requêtes conditionnelles), dernier
+-- lancement qui l'a vu (run) et dernier qui a écrit ses octets (fetched_run ; NULL :
+-- jamais copié). Un élément du lancement en cours, fait sans avoir été réécrit, est
+-- « inchangé » ; ceux d'un lancement précédent ne comptent pas, leurs fichiers restent.
+ALTER TABLE site_items ADD COLUMN etag TEXT;
+ALTER TABLE site_items ADD COLUMN last_modified TEXT;
+ALTER TABLE site_items ADD COLUMN run INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE site_items ADD COLUMN fetched_run INTEGER;
+-- Un projet : réglages de l'exploration, filtres, copie ou fichiers seuls, dossier (NULL :
+-- celui des téléchargements du moteur), file, programme (schedule_time HH:MM, heure locale ;
+-- schedule_days : bits 1, lundi, à 7, dimanche ; 0 : une seule fois ; schedule_time NULL :
+-- à la main), prochain lancement, tâche (une par projet), dernier lancement et dernière
+-- occurrence sautée. public_only : créé par une connexion à jeton.
+CREATE TABLE projects (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  page_url        TEXT NOT NULL,
+  depth           INTEGER NOT NULL CHECK (depth BETWEEN 1 AND 5),
+  max_pages       INTEGER NOT NULL CHECK (max_pages BETWEEN 1 AND 2000),
+  exclude         TEXT,
+  same_folder     INTEGER NOT NULL DEFAULT 0 CHECK (same_folder IN (0, 1)),
+  ignore_robots   INTEGER NOT NULL DEFAULT 0 CHECK (ignore_robots IN (0, 1)),
+  filter_ext      TEXT NOT NULL DEFAULT '',
+  filter_regex    TEXT,
+  filter_min      INTEGER CHECK (filter_min >= 0),
+  filter_max      INTEGER CHECK (filter_max >= 0),
+  copy_site       INTEGER NOT NULL DEFAULT 1 CHECK (copy_site IN (0, 1)),
+  max_bytes       INTEGER NOT NULL CHECK (max_bytes > 0),
+  keep_tree       INTEGER NOT NULL DEFAULT 1 CHECK (keep_tree IN (0, 1)),
+  dest_dir        TEXT,
+  queue_id        TEXT REFERENCES queues(id) ON DELETE SET NULL,
+  schedule_time   TEXT,
+  schedule_days   INTEGER NOT NULL DEFAULT 0 CHECK (schedule_days BETWEEN 0 AND 127),
+  next_run_at     INTEGER,
+  task_id         TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  last_run_at     INTEGER,
+  last_skipped_at INTEGER,
+  public_only     INTEGER NOT NULL DEFAULT 0 CHECK (public_only IN (0, 1)),
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+CREATE INDEX projects_next_run ON projects (next_run_at) WHERE next_run_at IS NOT NULL;
+
 CREATE INDEX idx_tasks_queue_state ON tasks (queue_id, state, priority DESC, position);
 CREATE INDEX idx_segments_state    ON segments (task_id, state);   -- retiré par la migration 0017
 CREATE INDEX idx_sources_task      ON sources (task_id, rank);
@@ -842,6 +898,8 @@ Une tâche `post_processing` interrompue par un arrêt du moteur reprend au dém
 `verifying` → `paused` (depuis le 2026-11-08) : un arrêt demandé pendant le calcul de l'empreinte, ou l'arrêt du moteur, interrompt le calcul ; la tâche en pause le refait depuis le début à sa reprise (section 7.9). Une annulation passe par cette pause, comme pour `active`.
 
 Retéléchargement (`task.restart`, depuis le 2026-11-07) : hors de cette table, qui décrit le cours d'un téléchargement, une tâche `completed`, `failed`, `cancelled`, `paused` (quelle qu'en soit la cause, `file_changed` compris : c'est le « repartir de zéro » de F-13) ou `retry_wait` repart à zéro en `queued`. Sa préparation est oubliée (nom, taille, segments, validateurs des sources), comme ses erreurs et ses tentatives ; son adresse, sa file, ses réglages et ses en-têtes restent. Une tâche `queued` ou `active` est refusée (`INVALID_STATE`).
+
+Mise à jour d'une copie de site (section 7.18 quater, depuis le 2026-11-27) : hors de cette table aussi, une copie `completed` ou `failed` repart en `queued` pour un nouveau lancement dans son dossier (`store::site::begin_update`) ; ses erreurs et ses tentatives sont oubliées, ses éléments, ses fichiers et sa préparation (dossier) restent.
 
 Précisions du 2026-11-23 (audit) : une tâche ajoutée avec `paused` est créée en pause (cause `user`) dans la transaction qui la crée, avec sa base de règles (`rule_base`) ; le passage `queued` → `paused` reste annoncé après `task.added` (P14). Une annulation demandée pendant qu'une exécution échoue s'applique quand même, par `failed` → `queued` → `cancelled` dans le même tour de la boucle (P13) ; une pause demandée après une annulation en cours ne la remplace pas (P8). Une exécution arrêtée par une erreur du moteur pendant un partage termine la tâche (`completed`) au lieu de viser `failed` ; une tâche qui ne peut plus changer d'état reste de côté jusqu'au prochain démarrage, annoncée par `engine.warning` `TASK_SET_ASIDE` (P12). Les commandes des clients ne voient pas les tâches internes d'une vidéo : `TASK_NOT_FOUND` (P20). L'empreinte d'une tâche dont le fichier est déjà à son nom final (`post_processing`, ou `failed` `POSTPROCESS_FAILED`) ne change plus (P9).
 
@@ -2047,7 +2105,7 @@ F-44, étape C du « Grabber » (section 7.18 bis). Les décisions de l'utilisat
 
 - **Principe** (décision : réglages et filtres) : un projet est une exploration enregistrée sous un nom, que l'on relance à la main ou à heure fixe. Il garde : nom (unique), page de départ, réglages de l'exploration (`depth`, `maxPages`, `exclude`, `sameFolder`, `ignoreRobots`), filtres des fichiers (extensions, expression sur l'adresse, tailles mini et maxi, comme `auro links`), copie du site ou fichiers seuls, volume maximal d'une copie, « Garder l'arborescence du site » (fichiers seuls), dossier (`null` : dossier des téléchargements du moteur), file d'attente, programme. Il ne garde pas la liste des fichiers cochés : à chaque lancement, l'exploration est refaite et les fichiers qui répondent aux filtres sont pris d'office ; un fichier nouveau sur le site l'est donc aussi.
 - **Une tâche par projet** (choix par défaut) : chaque projet a sa tâche de sorte `site` (section 7.18 ter), créée à son premier lancement et reprise aux suivants : une seule ligne dans la liste, « Site : exemple.org » ou « Fichiers : exemple.org », qui montre le dernier lancement. Retirer cette tâche de la liste ne retire pas le projet : son lancement suivant crée une nouvelle tâche, dans un nouveau dossier (`exemple.org (1)`). Supprimer le projet ne retire pas sa tâche ni ses fichiers.
-- **Fichiers seuls** (choix par défaut) : un projet sans copie du site est une tâche `site` de mode `files` : les pages sont lues pour l'exploration (même rythme, mêmes règles), sans être gardées ni réécrites ; aucune ressource d'affichage ; seuls les fichiers retenus par les filtres sont téléchargés, à plat dans le dossier ou sous `<hôte>/<chemin>` avec « Garder l'arborescence du site ». Ses nombres et sa liste d'éléments sont ceux d'une copie (pages lues comptées à part).
+- **Fichiers seuls** (choix par défaut) : un projet sans copie du site est une tâche `site` de mode `files` : les pages sont lues pour l'exploration (même rythme, mêmes règles), sans être gardées ni réécrites ; aucune ressource d'affichage ; seuls les fichiers retenus par les filtres sont téléchargés, dans le dossier de la tâche (`<dossier>/<hôte>`, comme une copie), à plat ou sous `<hôte>/<chemin>` avec « Garder l'arborescence du site ». Ses nombres et sa liste d'éléments sont ceux d'une copie (pages lues comptées à part).
 - **Filtres dans le moteur** (choix par défaut, nécessaire pour un lancement programmé, sans client) : pendant l'exploration d'un projet, un lien de navigation qui n'a pas l'allure d'une page devient un fichier à télécharger s'il passe les filtres (extension parmi la liste, ou toute extension si elle est vide ; expression trouvée dans l'adresse ; tailles), sinon un lien ignoré de raison `FILTERED` (« hors des filtres ») ; `NOT_TICKED` reste celle d'une copie lancée depuis la boîte « Liens ». Avec un filtre de taille, la taille se lit avant le téléchargement (`HEAD`, comme `linkscan.probe`) ; inconnue, le fichier n'est pas pris (même règle que `auro links`). Les filtres des clients et ceux du moteur sont décrits par les mêmes règles et vérifiés par les mêmes cas de test.
 - **Mise à jour sur place** (décision) : un projet relancé met à jour sa copie dans le même dossier :
   - les pages sont toujours relues (elles donnent les liens, et la réécriture part de leur brut) ; une page inchangée est réécrite à l'identique ;
@@ -2060,7 +2118,7 @@ F-44, étape C du « Grabber » (section 7.18 bis). Les décisions de l'utilisat
   - Lancement manqué (décision) : moteur ou ordinateur arrêté à l'heure dite, le projet est lancé une seule fois au démarrage suivant, même si plusieurs heures ont été manquées.
   - Un projet dont la tâche tourne encore à l'heure dite n'est pas relancé ; l'occurrence est sautée et notée (`lastRun.skipped`).
   - `nextRunAt` : prochain lancement prévu (millisecondes Unix), `null` sans programme.
-- **Données** (migration 20, choix par défaut) : table `projects` (identifiant, nom unique, réglages et filtres, `copy_site`, `max_bytes`, `keep_tree`, `dest_dir`, `queue_id`, `schedule_time`, `schedule_days`, `next_run_at`, `task_id`, `last_run_at`, `last_state`, `public_only`) ; `site_jobs` reçoit `mode` (`copy` ou `files`), les filtres d'un projet, `keep_tree`, `run` (numéro du lancement) ; `site_items` reçoit `etag`, `last_modified` et `run` (dernier lancement qui l'a vu ou copié) et l'état `unchanged`. Aucun secret.
+- **Données** (migration 20, section 5) : table `projects` (identifiant, nom unique, réglages et filtres, `copy_site`, `max_bytes`, `keep_tree`, `dest_dir`, `queue_id`, `schedule_time`, `schedule_days`, `next_run_at`, `task_id`, `last_run_at`, `last_skipped_at`, `public_only`) ; `site_jobs` reçoit `mode` (`copy` ou `files`), les filtres d'un projet, `keep_tree`, `run` (numéro du lancement) ; `site_items` reçoit `etag`, `last_modified`, `run` (dernier lancement qui l'a vu) et `fetched_run` (dernier qui a écrit ses octets) : un élément vu par le lancement en cours sans être réécrit est inchangé, sans nouvel état (mise en œuvre du 2026-11-27 : la table des éléments n'est pas refaite une deuxième fois). Un élément d'un lancement précédent retrouvé par l'exploration reprend un numéro neuf (comme un lien ignoré devenu à copier) ; une page de fichiers seuls est lue dans `.auro-pages` sous le dossier de la tâche, un fichier changé téléchargé dans `.auro-maj/<lancement>`, tous deux effacés ensuite. Aucun secret.
 - **Protocole** (choix par défaut) : capacité `projects` ; `project.list` (projets avec `projectId`, réglages, `schedule`, `nextRunAt`, `taskId`, `lastRun` : `at`, `state`, nombres, `skipped`) ; `project.set` (crée sans `projectId`, sinon remplace ; nom en double : `PROJECT_EXISTS`), `project.delete`, `project.run` (rend `taskId` ; projet en cours : `INVALID_STATE`) ; inconnu : `PROJECT_NOT_FOUND` ; notification `project.updated` avec révision, projets dans `sync.snapshot`. Portées (section 6.9) : `project.set` et `project.delete` demandent `admin`, `project.run` `control`, `project.list` `read`. Un projet créé par une connexion à jeton ne lit que le réseau public, comme ses tâches (`public_only`).
 - **Interfaces** (décision : boîte « Projets » et CLI, pas Android) :
   - boîte « Liens » : bouton « Enregistrer comme projet… » (nom, programme : heure et jours, « Lancer maintenant ») qui garde la page, les réglages, les filtres, la case de copie, l'arborescence et le dossier de la boîte ;

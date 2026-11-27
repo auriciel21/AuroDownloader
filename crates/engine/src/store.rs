@@ -171,6 +171,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0019_site_ignored.sql"),
         rebuild: None,
     },
+    Migration {
+        version: 20,
+        name: "projects",
+        sql: include_str!("../migrations/0020_projects.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Contrainte de `tasks.kind` avant la migration 18, et après (SPEC §7.18 ter).
@@ -479,7 +485,7 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 25] = [
+    const EXPECTED_TABLES: [&str; 26] = [
         "event_log",
         "file_moves",
         "history",
@@ -487,6 +493,7 @@ mod tests {
         "media_streams",
         "name_claims",
         "plugins",
+        "projects",
         "queues",
         "remote_sessions",
         "remote_tokens",
@@ -549,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_create_the_25_tables_of_the_spec() {
+    fn migrations_create_the_26_tables_of_the_spec() {
         let conn = open_in_memory().unwrap();
         assert_eq!(table_names(&conn), EXPECTED_TABLES);
         assert_eq!(current_version(&conn).unwrap(), latest());
@@ -679,7 +686,7 @@ mod tests {
         assert!(dir.path().join("auro.db.bak-v17").exists());
         let after_rows: Vec<_> = rows_of_every_table(&conn)
             .into_iter()
-            .filter(|(t, _)| t != "site_jobs" && t != "site_items")
+            .filter(|(t, _)| !matches!(t.as_str(), "site_jobs" | "site_items" | "projects"))
             .collect();
         assert_eq!(after_rows, before_rows);
         let after_tasks: Vec<(String, String, Option<String>, i64)> = conn
