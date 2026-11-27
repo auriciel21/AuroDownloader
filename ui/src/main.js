@@ -525,6 +525,8 @@ function renderRow(taskId) {
   paintMeter(cell("progress").querySelector(".meter"), task);
   // Copie d'un site : ses éléments, le volume n'étant connu qu'à la fin (SPEC §7.18 ter).
   cell("pct").textContent = task.kind === "site" && task.site ? siteCountsText(task.site) : percentText(task);
+  // Colonne étroite : le texte entier en info-bulle.
+  cell("pct").title = cell("pct").textContent;
   cell("state").textContent = taskStateText(task);
   cell("state").title = cell("state").textContent;
   const active = task.state === "active";
@@ -1125,7 +1127,8 @@ function renderDetails() {
   const seeding = task.state === "seeding";
   const torrent = task.kind === "torrent";
   const source = detailsFull?.sources?.[0];
-  set("name", name);
+  // Une copie de site : le dossier de la copie, sous le dossier ci-dessous.
+  set("name", task.kind === "site" ? task.fileName ?? "" : name);
   set("dir", task.destDir ?? "");
   set("url", source?.url ?? "");
   // Tâche venue d'un plugin (SPEC §7.20) : sa page, et le plugin qui l'a lue.
@@ -1134,7 +1137,10 @@ function renderDetails() {
     ? t("{0} (plugin {1})", origin.page, origin.name ?? t("retiré"))
     : "");
   set("state", taskStateText(task));
-  set("size", task.totalBytes != null ? bytes(task.totalBytes, lang, t) : t("inconnue"));
+  // Finie sans taille annoncée (copie d'un site, serveur muet) : ce qui a été écrit, comme
+  // dans la liste.
+  const size = task.totalBytes ?? (task.state === "completed" ? task.doneBytes : null);
+  set("size", size != null ? bytes(size, lang, t) : t("inconnue"));
   set("done", pct ? t("{0} ({1})", bytes(task.doneBytes, lang, t), pct) : bytes(task.doneBytes, lang, t));
   set("rate", active ? rate(task.bps ?? 0) : seeding ? t("Envoi : {0}", rate(task.uploadBps ?? 0)) : "");
   set("eta", active ? duration(task.etaS, t) : "");

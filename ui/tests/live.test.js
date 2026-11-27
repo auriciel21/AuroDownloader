@@ -1079,6 +1079,7 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     await settle();
     assert.equal(row("copie").querySelector(".name .text").textContent, "Site : exemple.org");
     assert.equal(row("copie").querySelector(".pct").textContent, "3 page(s), 7 ressource(s), 0 fichier(s), 1 en échec");
+    assert.equal(row("copie").querySelector(".pct").title, "3 page(s), 7 ressource(s), 0 fichier(s), 1 en échec");
 
     // Finie : Propriétés de la copie, éléments en échec, « Ouvrir » vers la page de départ.
     const site = {
@@ -1099,6 +1100,8 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     await settle();
     assert.ok($("details").open);
     assert.equal($("d-site-section").hidden, false);
+    assert.equal($("d-name").textContent, "exemple.org", "le dossier de la copie");
+    assert.notEqual($("d-size").textContent, "inconnue");
     assert.equal($("d-site-page").textContent, "https://exemple.org/");
     assert.equal($("d-site-start").textContent, "exemple.org/index.html");
     assert.match($("d-site-settings").textContent, /^profondeur 2, 200 pages au plus, .* au plus, sous le dossier de départ$/);
