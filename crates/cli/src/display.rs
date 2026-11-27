@@ -110,9 +110,10 @@ pub struct SiteLine {
     pub pages: u64,
     pub resources: u64,
     pub files: u64,
+    /// Échecs techniques.
     pub failed: u64,
-    /// Liens laissés en ligne, pas des pages web : pas des échecs.
-    pub online: u64,
+    /// Ignorés, laissés en ligne par choix (robots.txt, exclusion, autre site, limites…).
+    pub ignored: u64,
     pub queued: u64,
 }
 
@@ -125,24 +126,41 @@ impl SiteLine {
             resources: n("resources"),
             files: n("files"),
             failed: n("failed"),
-            online: n("online"),
+            ignored: n("ignored"),
             queued: n("queued"),
         })
     }
 
-    /// « 12 page(s), 40 ressource(s), 2 fichier(s), 3 en échec, 1 laissé(s) en ligne ».
+    /// Éléments copiés : pages, ressources et fichiers.
+    pub fn downloaded(&self) -> u64 {
+        self.pages + self.resources + self.files
+    }
+
+    /// « 54 téléchargée(s), 3 échec(s), 37 ignorée(s) » (avancement).
     pub fn render(&self) -> String {
-        let mut text = format!(
-            "{} page(s), {} ressource(s), {} fichier(s)",
-            self.pages, self.resources, self.files
-        );
+        let mut text = format!("{} téléchargée(s)", self.downloaded());
         if self.failed > 0 {
-            text.push_str(&format!(", {} en échec", self.failed));
+            text.push_str(&format!(", {} échec(s)", self.failed));
         }
-        if self.online > 0 {
-            text.push_str(&format!(", {} laissé(s) en ligne", self.online));
+        if self.ignored > 0 {
+            text.push_str(&format!(", {} ignorée(s)", self.ignored));
         }
         text
+    }
+
+    /// Le bilan d'une copie, sur trois lignes.
+    pub fn report(&self) -> String {
+        format!(
+            "Téléchargées : {} ({} page(s), {} ressource(s), {} fichier(s))\n\
+             Échecs techniques : {}\n\
+             Ignorées / laissées en ligne : {}",
+            self.downloaded(),
+            self.pages,
+            self.resources,
+            self.files,
+            self.failed,
+            self.ignored
+        )
     }
 }
 

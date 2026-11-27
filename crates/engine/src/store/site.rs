@@ -13,6 +13,35 @@ use super::{StoreError, new_id, now_ms, to_i64};
 /// Éléments d'une copie au plus (pages, ressources, fichiers ; SPEC §7.18 ter).
 pub const MAX_ITEMS: usize = 20_000;
 
+/// Liens ignorés enregistrés au plus par copie ; au-delà, seulement comptés
+/// (`site_jobs.ignored_over`). Hors de [`MAX_ITEMS`].
+pub const MAX_IGNORED: usize = 10_000;
+
+/// Raisons d'un lien laissé en ligne par choix (`error` d'un élément `ignored`), à part
+/// des échecs techniques (décision de l'utilisateur du 2026-11-27).
+pub mod reason {
+    /// Refusé par robots.txt.
+    pub const ROBOTS: &str = "ROBOTS";
+    /// Répond à l'expression des pages à ne pas ouvrir.
+    pub const EXCLUDED: &str = "EXCLUDED";
+    /// Page d'un autre site (ou de `https` vers `http`).
+    pub const OFFSITE: &str = "OFFSITE";
+    /// Au-delà de la profondeur choisie.
+    pub const DEPTH: &str = "DEPTH";
+    /// Hors du dossier de départ.
+    pub const FOLDER: &str = "FOLDER";
+    /// Lien vers un fichier que l'utilisateur n'a pas coché.
+    pub const NOT_TICKED: &str = "NOT_TICKED";
+    /// Trouvé après l'arrêt de l'exploration par une limite.
+    pub const LIMIT: &str = "LIMIT";
+    /// Lien de page qui mène à autre chose qu'une page web.
+    pub const NOT_HTML: &str = "NOT_HTML";
+    /// Page redirigée vers une page refusée.
+    pub const REDIRECTED: &str = "REDIRECTED";
+    /// Au-delà de la taille permise d'une page ou d'une ressource.
+    pub const TOO_BIG: &str = "TOO_BIG";
+}
+
 /// Sorte d'un élément.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemKind {
@@ -59,10 +88,13 @@ pub enum ItemState {
     /// Page ou style lu, brut vidé sur disque, liens relevés : attend la réécriture.
     Fetched,
     Done,
-    /// Lien laissé en ligne.
+    /// Échec technique : lien laissé en ligne.
     Failed,
     /// Limite atteinte avant sa lecture.
     Skipped,
+    /// Lien laissé en ligne par choix (robots.txt, exclusion, autre site…) : sa raison
+    /// dans `error` ([`reason`]).
+    Ignored,
 }
 
 impl ItemState {
@@ -73,6 +105,7 @@ impl ItemState {
             ItemState::Done => "done",
             ItemState::Failed => "failed",
             ItemState::Skipped => "skipped",
+            ItemState::Ignored => "ignored",
         }
     }
 
@@ -83,6 +116,7 @@ impl ItemState {
             "done" => Some(ItemState::Done),
             "failed" => Some(ItemState::Failed),
             "skipped" => Some(ItemState::Skipped),
+            "ignored" => Some(ItemState::Ignored),
             _ => None,
         }
     }
@@ -221,11 +255,13 @@ fn insert_first_items(
         url: page_url,
         kind: ItemKind::Page,
         depth: Some(0),
+        ignored: None,
     }];
     items.extend(files.iter().map(|url| NewItem {
         url,
         kind: ItemKind::File,
         depth: None,
+        ignored: None,
     }));
     add_items(conn, task_id, &items)?;
     Ok(())
@@ -381,11 +417,16 @@ fn read_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
 
 /// Tous les éléments d'une copie, dans l'ordre de leur découverte.
 pub fn items(conn: &Connection, task_id: &str) -> Result<Vec<Item>, StoreError> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {ITEM_COLUMNS} FROM site_items WHERE task_id = ?1 ORDER BY seq"
+    items_after(conn, task_id, -1)
+}
+
+/// Les éléments d'une copie venus après `seq`, dans l'ordre de leur découverte.
+pub fn items_after(conn: &Connection, task_id: &str, seq: i64) -> Result<Vec<Item>, StoreError> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {ITEM_COLUMNS} FROM site_items WHERE task_id = ?1 AND seq > ?2 ORDER BY seq"
     ))?;
     let rows = stmt
-        .query_map([task_id], read_item)?
+        .query_map(params![task_id, seq], read_item)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -406,6 +447,9 @@ pub struct NewItem<'a> {
     pub url: &'a str,
     pub kind: ItemKind,
     pub depth: Option<u8>,
+    /// Lien laissé en ligne par choix : sa raison ([`reason`]) ; `None` pour un élément à
+    /// copier.
+    pub ignored: Option<&'static str>,
 }
 
 /// Issue d'un ajout d'éléments.
@@ -415,25 +459,67 @@ pub struct Added {
     pub added: usize,
     /// Des éléments n'ont pas été ajoutés : [`MAX_ITEMS`] atteint.
     pub full: bool,
+    /// Liens ignorés nouveaux enregistrés.
+    pub ignored: usize,
 }
 
-/// Ajoute des éléments à la suite, sans doublon d'adresse, jusqu'à [`MAX_ITEMS`].
+/// Ajoute des éléments à la suite, sans doublon d'adresse, jusqu'à [`MAX_ITEMS`]. Un lien
+/// ignoré s'enregistre jusqu'à [`MAX_IGNORED`], puis se compte seulement ; un élément à
+/// copier prend la place d'un lien ignoré de même adresse (une page trop profonde depuis
+/// une page peut se suivre depuis une autre), avec un numéro neuf.
 pub fn add_items(
     conn: &Connection,
     task_id: &str,
     items: &[NewItem<'_>],
 ) -> Result<Added, StoreError> {
-    let (mut count, mut next): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(MAX(seq), -1) + 1 FROM site_items WHERE task_id = ?1",
+    let (mut count, mut ignored, mut next): (i64, i64, i64) = conn.query_row(
+        "SELECT COUNT(*) FILTER (WHERE state != 'ignored'),
+                COUNT(*) FILTER (WHERE state = 'ignored'),
+                COALESCE(MAX(seq), -1) + 1
+         FROM site_items WHERE task_id = ?1",
         [task_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let mut added = Added::default();
     let mut stmt = conn.prepare_cached(
-        "INSERT OR IGNORE INTO site_items (task_id, seq, url, kind, depth)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR IGNORE INTO site_items (task_id, seq, url, kind, depth, state, error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
+    let mut over: i64 = 0;
     for item in items {
+        if let Some(why) = item.ignored {
+            if usize::try_from(ignored).unwrap_or(usize::MAX) >= MAX_IGNORED {
+                let known: bool = conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM site_items WHERE task_id = ?1 AND url = ?2)",
+                    params![task_id, item.url],
+                    |r| r.get(0),
+                )?;
+                over += i64::from(!known);
+                continue;
+            }
+            if stmt.execute(params![
+                task_id,
+                next,
+                item.url,
+                item.kind.as_sql(),
+                item.depth,
+                ItemState::Ignored.as_sql(),
+                why
+            ])? == 1
+            {
+                next += 1;
+                ignored += 1;
+                added.ignored += 1;
+            }
+            continue;
+        }
+        let replaced = conn.execute(
+            "DELETE FROM site_items WHERE task_id = ?1 AND url = ?2 AND state = 'ignored'",
+            params![task_id, item.url],
+        )?;
+        if replaced > 0 {
+            ignored -= 1;
+        }
         if usize::try_from(count).unwrap_or(usize::MAX) >= MAX_ITEMS {
             // Une adresse déjà connue ne compte pas comme refusée.
             let known: bool = conn.query_row(
@@ -449,13 +535,21 @@ pub fn add_items(
             next,
             item.url,
             item.kind.as_sql(),
-            item.depth
+            item.depth,
+            ItemState::Queued.as_sql(),
+            None::<&str>
         ])? == 1
         {
             next += 1;
             count += 1;
             added.added += 1;
         }
+    }
+    if over > 0 {
+        conn.execute(
+            "UPDATE site_jobs SET ignored_over = ignored_over + ?2 WHERE task_id = ?1",
+            params![task_id, over],
+        )?;
     }
     Ok(added)
 }
@@ -518,7 +612,8 @@ pub fn done(
     Ok(())
 }
 
-/// Un élément laissé en ligne : en échec (avec son code) ou écarté par une limite.
+/// Un élément laissé en ligne : en échec (avec son code), écarté par une limite, ou
+/// ignoré par choix (avec sa raison).
 pub fn give_up(
     conn: &Connection,
     task_id: &str,
@@ -526,7 +621,10 @@ pub fn give_up(
     state: ItemState,
     error: Option<&str>,
 ) -> Result<(), StoreError> {
-    debug_assert!(matches!(state, ItemState::Failed | ItemState::Skipped));
+    debug_assert!(matches!(
+        state,
+        ItemState::Failed | ItemState::Skipped | ItemState::Ignored
+    ));
     conn.execute(
         "UPDATE site_items SET state = ?3, error = ?4 WHERE task_id = ?1 AND seq = ?2",
         params![task_id, seq, state.as_sql(), error],
@@ -618,7 +716,8 @@ pub fn reset(conn: &mut Connection, task_id: &str) -> Result<(), StoreError> {
     tx.execute("DELETE FROM site_items WHERE task_id = ?1", [task_id])?;
     tx.execute("DELETE FROM tasks WHERE parent_id = ?1", [task_id])?;
     tx.execute(
-        "UPDATE site_jobs SET start_url = NULL, start_path = NULL, phase = 'copy', stop = NULL
+        "UPDATE site_jobs SET start_url = NULL, start_path = NULL, phase = 'copy', stop = NULL,
+                             ignored_over = 0
          WHERE task_id = ?1",
         [task_id],
     )?;
@@ -636,12 +735,12 @@ pub struct Counts {
     pub resources: u64,
     /// Fichiers cochés copiés.
     pub files: u64,
-    /// Éléments en échec (lien laissé en ligne), hors `online`.
+    /// Échecs techniques (lien laissé en ligne).
     pub failed: u64,
-    /// Liens laissés en ligne parce qu'ils ne mènent pas à une page web (`NOT_HTML` : un
-    /// fichier texte sans type annoncé…) : pas des échecs (décision de l'utilisateur du
-    /// 2026-11-27, après l'essai de l'interface).
-    pub online: u64,
+    /// Ignorés, laissés en ligne par choix (décision de l'utilisateur du 2026-11-27) :
+    /// éléments `ignored` et `skipped`, et liens comptés au-delà de [`MAX_IGNORED`].
+    pub ignored: u64,
+    /// Dont ceux qui attendaient quand une limite a arrêté l'exploration.
     pub skipped: u64,
     pub queued: u64,
     /// Octets des pages et ressources enregistrées (le volume limité, hors fichiers
@@ -649,35 +748,45 @@ pub struct Counts {
     pub bytes: u64,
 }
 
-/// Code d'erreur d'un élément laissé en ligne sans échec (`Counts::online`).
-pub const LEFT_ONLINE: &str = "NOT_HTML";
-
 pub fn counts(conn: &Connection, task_id: &str) -> Result<Counts, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT kind, state, error IS ?2, COUNT(*), COALESCE(SUM(size), 0)
-         FROM site_items WHERE task_id = ?1 GROUP BY 1, 2, 3",
+        "SELECT kind, state, COUNT(*), COALESCE(SUM(size), 0)
+         FROM site_items WHERE task_id = ?1 GROUP BY kind, state",
     )?;
-    let rows = stmt.query_map(params![task_id, LEFT_ONLINE], |r| {
+    let rows = stmt.query_map([task_id], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, bool>(2)?,
+            r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
-            r.get::<_, i64>(4)?,
         ))
     })?;
-    let mut c = Counts::default();
+    let over: i64 = conn
+        .query_row(
+            "SELECT ignored_over FROM site_jobs WHERE task_id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let mut c = Counts {
+        ignored: u64::try_from(over).unwrap_or(0),
+        ..Counts::default()
+    };
     for row in rows {
-        let (kind, state, online, n, size) = row?;
+        let (kind, state, n, size) = row?;
         let n = u64::try_from(n).unwrap_or(0);
         let size = u64::try_from(size).unwrap_or(0);
         let kind = ItemKind::from_sql(&kind).ok_or_else(|| bad(task_id, "sorte"))?;
         let state = ItemState::from_sql(&state).ok_or_else(|| bad(task_id, "état"))?;
         match state {
             ItemState::Queued => c.queued += n,
-            ItemState::Failed if online => c.online += n,
             ItemState::Failed => c.failed += n,
-            ItemState::Skipped => c.skipped += n,
+            ItemState::Ignored => c.ignored += n,
+            ItemState::Skipped => {
+                c.skipped += n;
+                c.ignored += n;
+            }
             ItemState::Fetched | ItemState::Done => {
                 match kind {
                     ItemKind::Page => c.pages += n,

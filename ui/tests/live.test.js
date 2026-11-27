@@ -1075,21 +1075,23 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     await settle();
     listeners.engine({ payload: { kind: "message", message: { method: "task.progress", params: { rev, items: [{
       taskId: "copie", doneBytes: 4000, totalBytes: null, bps: 100, connections: 0, etaS: null,
-      site: { pages: 3, resources: 7, files: 0, failed: 1, queued: 2 } }] } } } });
+      site: { pages: 3, resources: 7, files: 0, failed: 1, ignored: 5, queued: 2 } }] } } } });
     await settle();
     assert.equal(row("copie").querySelector(".name .text").textContent, "Site : exemple.org");
-    assert.equal(row("copie").querySelector(".pct").textContent, "3 page(s), 7 ressource(s), 0 fichier(s), 1 en échec");
-    assert.equal(row("copie").querySelector(".pct").title, "3 page(s), 7 ressource(s), 0 fichier(s), 1 en échec");
+    assert.equal(row("copie").querySelector(".pct").textContent, "10 téléchargée(s), 1 échec(s), 5 ignorée(s)");
+    assert.equal(row("copie").querySelector(".pct").title, "10 téléchargée(s), 1 échec(s), 5 ignorée(s)");
 
     // Finie : Propriétés de la copie, éléments en échec, « Ouvrir » vers la page de départ.
     const site = {
       pageUrl: "https://exemple.org/", startPath: "exemple.org/index.html", depth: 2, maxPages: 200,
       maxBytes: 1024 * MIB, exclude: "", sameFolder: true, ignoreRobots: false, stop: "maxPages",
-      pages: 3, resources: 7, files: 1, failed: 1, online: 1, skipped: 4, queued: 0,
+      pages: 3, resources: 7, files: 1, failed: 1, ignored: 6, skipped: 4, queued: 0,
       items: [
         { url: "https://exemple.org/", kind: "page", state: "done", path: "exemple.org/index.html", size: 100, error: null },
         { url: "https://exemple.org/manque.png", kind: "resource", state: "failed", path: null, size: null, error: "HTTP_STATUS" },
-        { url: "https://exemple.org/LISEZMOI", kind: "page", state: "failed", path: null, size: null, error: "NOT_HTML" },
+        { url: "https://exemple.org/LISEZMOI", kind: "page", state: "ignored", path: null, size: null, error: "NOT_HTML" },
+        { url: "https://ailleurs.org/", kind: "page", state: "ignored", path: null, size: null, error: "OFFSITE" },
+        { url: "https://exemple.org/p.html", kind: "page", state: "skipped", path: null, size: null, error: null },
       ],
     };
     ENGINE["task.get"] = ({ taskId }) => taskId === "copie"
@@ -1106,14 +1108,20 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     assert.equal($("d-site-page").textContent, "https://exemple.org/");
     assert.equal($("d-site-start").textContent, "exemple.org/index.html");
     assert.match($("d-site-settings").textContent, /^profondeur 2, 200 pages au plus, .* au plus, sous le dossier de départ$/);
-    assert.equal($("d-site-counts").textContent, "3 page(s), 7 ressource(s), 1 fichier(s), 1 en échec, 1 laissé(s) en ligne, 4 laissé(s) par les limites");
+    assert.equal($("d-site-counts").textContent, "11 (3 page(s), 7 ressource(s), 1 fichier(s))");
+    assert.equal($("d-site-failed-count").textContent, "1");
+    assert.equal($("d-site-ignored-count").textContent, "6");
     assert.equal($("d-site-stop").textContent, "arrêtée : limite de pages atteinte");
     const failed = [...$("d-site-failed").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
     assert.deepEqual(failed, [["https://exemple.org/manque.png", "refusé par le serveur"]]);
-    // Pas une page web : à part, pas en échec.
-    assert.equal($("d-site-online-box").hidden, false);
-    const online = [...$("d-site-online").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
-    assert.deepEqual(online, [["https://exemple.org/LISEZMOI", "pas une page web"]]);
+    // Laissés en ligne par choix : à part des échecs techniques, avec leur raison.
+    assert.equal($("d-site-ignored-box").hidden, false);
+    const ignored = [...$("d-site-ignored").tBodies[0].rows].map((r) => [...r.cells].map((c) => c.textContent));
+    assert.deepEqual(ignored, [
+      ["https://exemple.org/LISEZMOI", "pas une page web"],
+      ["https://ailleurs.org/", "autre site"],
+      ["https://exemple.org/p.html", "limite atteinte"],
+    ]);
     assert.equal($("d-open").hidden, false);
     assert.deepEqual(await audit($("details")), []);
     const before = calls.length;

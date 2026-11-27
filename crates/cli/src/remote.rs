@@ -576,11 +576,7 @@ fn report(task: &Value) -> Result<()> {
                 println!("Page de départ : {}", page.display());
             }
             if let Some(line) = SiteLine::of(copy) {
-                let skipped = match copy["skipped"].as_u64().unwrap_or(0) {
-                    0 => String::new(),
-                    n => format!(", {n} laissé(s) par les limites"),
-                };
-                println!("{}{skipped}", line.render());
+                println!("{}", line.report());
                 if let Some(why) = copy["stop"].as_str().and_then(site_stop) {
                     println!("Exploration arrêtée : {why}");
                 }
@@ -2606,14 +2602,14 @@ mod tests {
                                          "queued": 4}),
         )
         .unwrap();
+        assert_eq!(line.render(), "14 téléchargée(s), 2 échec(s)");
+        let ignored = SiteLine::of(&json!({"pages": 1, "ignored": 37})).unwrap();
+        assert_eq!(ignored.render(), "1 téléchargée(s), 37 ignorée(s)");
         assert_eq!(
-            line.render(),
-            "3 page(s), 10 ressource(s), 1 fichier(s), 2 en échec"
-        );
-        let online = SiteLine::of(&json!({"pages": 1, "online": 2})).unwrap();
-        assert_eq!(
-            online.render(),
-            "1 page(s), 0 ressource(s), 0 fichier(s), 2 laissé(s) en ligne"
+            line.report(),
+            "Téléchargées : 14 (3 page(s), 10 ressource(s), 1 fichier(s))\n\
+             Échecs techniques : 2\n\
+             Ignorées / laissées en ligne : 0"
         );
         assert_eq!(SiteLine::of(&Value::Null), None);
         let progress = Line {
@@ -2629,7 +2625,7 @@ mod tests {
         assert!(
             progress
                 .render()
-                .starts_with("3 page(s), 10 ressource(s), 1 fichier(s), 2 en échec, 4 en attente")
+                .starts_with("14 téléchargée(s), 2 échec(s), 4 en attente")
         );
     }
 }

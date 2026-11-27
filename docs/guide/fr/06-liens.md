@@ -92,12 +92,18 @@ La copie prend un dossier au nom du site dans le dossier choisi (« exemple.org 
 « exemple.org (1) » pour une deuxième copie), avec un sous-dossier par site. Elle garde
 toujours l'arborescence du site : « Garder l'arborescence du site » ne s'applique pas.
 
-Pendant la copie, la liste montre les pages, ressources et fichiers copiés au lieu d'un
-pourcentage (le volume n'est connu qu'à la fin). Une fois finie, **Ouvrir** montre la page de
-départ dans le navigateur, et **Afficher dans le dossier** le dossier de la copie. Les
-Propriétés donnent la page de départ, les réglages, les nombres d'éléments, les éléments en
-échec avec leur raison, et à part les liens laissés en ligne parce qu'ils ne mènent pas à une
-page web (un fichier texte, par exemple) : ce ne sont pas des échecs.
+Pendant la copie, la liste montre au lieu d'un pourcentage (le volume n'est connu qu'à la
+fin) trois nombres : les éléments téléchargés, les échecs techniques (serveur qui refuse,
+réseau) et les liens ignorés, laissés en ligne par choix. Un lien est ignoré quand
+robots.txt le refuse, qu'il répond aux « Pages à ne pas ouvrir », qu'il mène à un autre site,
+au-delà de la profondeur ou hors du dossier de départ, vers un fichier non coché ou une page
+redirigée vers une page refusée, qu'il ne mène pas à une page web (un fichier texte, par
+exemple), qu'il est trop gros, ou qu'une limite a arrêté la copie : ce ne sont pas des
+échecs. Une fois finie, **Ouvrir** montre la page de départ dans le navigateur, et
+**Afficher dans le dossier** le dossier de la copie. Les Propriétés donnent la page de
+départ, les réglages, les nombres **Téléchargées** (pages, ressources et fichiers),
+**Échecs techniques** et **Ignorées / laissées en ligne**, puis la liste de chacun avec sa
+cause ou sa raison.
 
 Limites : les pages faites par un script (JavaScript) sont copiées telles que le serveur les
 envoie, souvent vides ; un formulaire de connexion n'est pas rempli ; la copie s'arrête

@@ -350,6 +350,24 @@ async fn a_site_is_copied_with_its_resources_and_its_links_rewritten() {
     );
     let counts = store_site::counts(&conn, &id).unwrap();
     assert_eq!((counts.pages, counts.files, counts.failed), (3, 1, 1));
+    // Les liens laissés en ligne par choix, chacun avec sa raison, à part des échecs
+    // techniques (décision de l'utilisateur du 2026-11-27).
+    let mut ignored: Vec<(String, String)> = store_site::items(&conn, &id)
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.state == ItemState::Ignored)
+        .map(|i| (i.url, i.error.unwrap_or_default()))
+        .collect();
+    ignored.sort();
+    let mut expected = vec![
+        (site.url("/files/autre.zip"), "NOT_TICKED".to_owned()),
+        (site.url("/loin.html"), "DEPTH".to_owned()),
+        (site.url("/private/p.html"), "ROBOTS".to_owned()),
+        (other_page.clone(), "OFFSITE".to_owned()),
+    ];
+    expected.sort();
+    assert_eq!(ignored, expected);
+    assert_eq!(counts.ignored, 4);
     let history = engine
         .history(crate::store::history::HistoryFilter::default())
         .await
@@ -535,7 +553,7 @@ async fn a_page_without_a_type_is_html_only_if_it_starts_with_a_tag() {
     assert_eq!(errors, ["NOT_HTML", "NOT_HTML"]);
     // Laissés en ligne, pas en échec.
     let counts = store_site::counts(&conn, &id).unwrap();
-    assert_eq!((counts.pages, counts.failed, counts.online), (2, 0, 2));
+    assert_eq!((counts.pages, counts.failed, counts.ignored), (2, 0, 2));
     assert!(!root.join(&main).join("LISEZMOI.html").exists());
     crate::testing::stop(&engine).await;
 }

@@ -39,6 +39,7 @@ fn page<'a>(url: &'a str, depth: u8) -> NewItem<'a> {
         url,
         kind: ItemKind::Page,
         depth: Some(depth),
+        ignored: None,
     }
 }
 
@@ -47,6 +48,16 @@ fn resource(url: &str) -> NewItem<'_> {
         url,
         kind: ItemKind::Resource,
         depth: None,
+        ignored: None,
+    }
+}
+
+fn ignored<'a>(url: &'a str, why: &'static str) -> NewItem<'a> {
+    NewItem {
+        url,
+        kind: ItemKind::Page,
+        depth: Some(2),
+        ignored: Some(why),
     }
 }
 
@@ -133,7 +144,8 @@ fn a_page_read_queues_its_links_once_in_the_same_transaction() {
         added,
         Added {
             added: 2,
-            full: false
+            full: false,
+            ignored: 0,
         }
     );
     let items = items(&conn, &id).unwrap();
@@ -153,16 +165,16 @@ fn a_page_read_queues_its_links_once_in_the_same_transaction() {
             resources: 1,
             files: 0,
             failed: 1,
-            online: 0,
+            ignored: 0,
             skipped: 0,
             queued: 0,
             bytes: 1500,
         }
     );
-    // Pas une page web : laissé en ligne, compté hors des échecs.
-    give_up(&conn, &id, 1, ItemState::Failed, Some(LEFT_ONLINE)).unwrap();
+    // Pas une page web : ignoré, compté hors des échecs techniques.
+    give_up(&conn, &id, 1, ItemState::Ignored, Some(reason::NOT_HTML)).unwrap();
     let c = counts(&conn, &id).unwrap();
-    assert_eq!((c.failed, c.online), (0, 1));
+    assert_eq!((c.failed, c.ignored), (0, 1));
     give_up(&conn, &id, 1, ItemState::Failed, Some("HTTP_STATUS")).unwrap();
     assert_eq!(
         item(&conn, &id, 1).unwrap().error.as_deref(),
@@ -185,7 +197,8 @@ fn items_stop_at_the_limit_and_say_so() {
         added,
         Added {
             added: MAX_ITEMS - 1,
-            full: true
+            full: true,
+            ignored: 0,
         }
     );
     // Une adresse déjà connue n'est pas un refus.
@@ -194,7 +207,8 @@ fn items_stop_at_the_limit_and_say_so() {
         again,
         Added {
             added: 0,
-            full: false
+            full: false,
+            ignored: 0,
         }
     );
     let refused = add_items(&conn, &id, &[resource("https://exemple.org/neuf.png")]).unwrap();
@@ -202,9 +216,92 @@ fn items_stop_at_the_limit_and_say_so() {
         refused,
         Added {
             added: 0,
-            full: true
+            full: true,
+            ignored: 0,
         }
     );
+    // Les liens ignorés ne comptent pas dans la limite des éléments.
+    let left = add_items(
+        &conn,
+        &id,
+        &[ignored("https://ailleurs.org/", reason::OFFSITE)],
+    )
+    .unwrap();
+    assert_eq!(left.ignored, 1);
+}
+
+/// Liens ignorés : enregistrés avec leur raison, une fois chacun, jusqu'à [`MAX_IGNORED`]
+/// puis seulement comptés ; un élément à copier prend la place d'un lien ignoré.
+#[test]
+fn ignored_links_are_recorded_counted_and_replaced_when_followed() {
+    let mut conn = open_in_memory().unwrap();
+    let id = create(&mut conn, &[]);
+    let added = add_items(
+        &conn,
+        &id,
+        &[
+            ignored("https://exemple.org/loin.html", reason::DEPTH),
+            ignored("https://exemple.org/prive/", reason::ROBOTS),
+            ignored("https://exemple.org/prive/", reason::ROBOTS),
+            // Déjà la page de départ : rien.
+            ignored("https://exemple.org/doc/", reason::DEPTH),
+        ],
+    )
+    .unwrap();
+    assert_eq!((added.added, added.ignored), (0, 2));
+    let loin = items(&conn, &id)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.url.ends_with("loin.html"))
+        .unwrap();
+    assert_eq!(loin.state, ItemState::Ignored);
+    assert_eq!(loin.error.as_deref(), Some(reason::DEPTH));
+    let c = counts(&conn, &id).unwrap();
+    assert_eq!((c.ignored, c.queued, c.failed), (2, 1, 0));
+
+    // Trouvée plus près ensuite : à lire, avec un numéro neuf (lu par `items_after`).
+    let last = items(&conn, &id).unwrap().last().unwrap().seq;
+    let again = add_items(&conn, &id, &[page("https://exemple.org/loin.html", 1)]).unwrap();
+    assert_eq!((again.added, again.ignored), (1, 0));
+    let fresh = items_after(&conn, &id, last).unwrap();
+    assert_eq!(fresh.len(), 1);
+    assert_eq!(fresh[0].state, ItemState::Queued);
+    assert_eq!(fresh[0].error, None);
+    assert_eq!(fresh[0].depth, Some(1));
+    let c = counts(&conn, &id).unwrap();
+    assert_eq!((c.ignored, c.queued), (1, 2));
+    // Un lien ignoré ne remplace jamais un élément connu.
+    let none = add_items(
+        &conn,
+        &id,
+        &[ignored("https://exemple.org/loin.html", reason::EXCLUDED)],
+    )
+    .unwrap();
+    assert_eq!(none.ignored, 0);
+
+    // Au-delà de MAX_IGNORED : comptés seulement, une adresse connue exceptée.
+    let urls: Vec<String> = (0..MAX_IGNORED + 3)
+        .map(|i| format!("https://ailleurs.org/{i}"))
+        .collect();
+    let many: Vec<NewItem<'_>> = urls.iter().map(|u| ignored(u, reason::OFFSITE)).collect();
+    let tx = conn.transaction().unwrap();
+    let added = add_items(&tx, &id, &many).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(added.ignored, MAX_IGNORED - 1);
+    let c = counts(&conn, &id).unwrap();
+    assert_eq!(c.ignored, MAX_IGNORED as u64 + 4);
+    add_items(
+        &conn,
+        &id,
+        &[ignored("https://exemple.org/prive/", reason::ROBOTS)],
+    )
+    .unwrap();
+    assert_eq!(counts(&conn, &id).unwrap().ignored, MAX_IGNORED as u64 + 4);
+
+    // Retéléchargement : tout est oublié, le compte au-delà aussi.
+    reset(&mut conn, &id).unwrap();
+    let c = counts(&conn, &id).unwrap();
+    assert_eq!((c.ignored, c.queued), (0, 1));
 }
 
 #[test]

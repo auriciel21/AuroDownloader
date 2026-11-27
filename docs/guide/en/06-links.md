@@ -84,12 +84,17 @@ The copy takes a folder named after the site in the chosen folder ("example.org"
 "example.org (1)" for a second copy), with one subfolder per site. It always keeps the tree
 of the site: "Keep the tree of the site" does not apply.
 
-During the copy, the list shows the pages, resources and files copied instead of a
-percentage (the size is only known at the end). Once finished, **Open** shows the start page
-in the browser, and **Show in folder** the folder of the copy. The Properties give the start
-page, the settings, the numbers of items, the failed items with their reason, and apart
-the links left online because they do not lead to a web page (a text file, for example):
-these are not failures.
+During the copy, the list shows three numbers instead of a percentage (the size is only
+known at the end): the items downloaded, the technical failures (server refusal, network)
+and the ignored links, left online by choice. A link is ignored when robots.txt refuses it,
+when it matches the "Pages not to open", when it leads to another site, beyond the depth or
+outside the start folder, to a file not ticked or to a page redirected to a refused page,
+when it does not lead to a web page (a text file, for example), when it is too big, or when
+a limit stopped the copy: these are not failures. Once finished, **Open** shows the start
+page in the browser, and **Show in folder** the folder of the copy. The Properties give the
+start page, the settings, the numbers **Downloaded** (pages, resources and files),
+**Technical failures** and **Ignored / left online**, then the list of each with its cause
+or reason.
 
 Limits: pages made by a script (JavaScript) are copied as the server sends them, often empty;
 a login form is not filled in; the copy stops exploring after 1 GiB of pages and resources.

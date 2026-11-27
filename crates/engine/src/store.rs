@@ -165,6 +165,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0018_site.sql"),
         rebuild: Some(rebuild_tasks_for_sites),
     },
+    Migration {
+        version: 19,
+        name: "site_ignored",
+        sql: include_str!("../migrations/0019_site_ignored.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Contrainte de `tasks.kind` avant la migration 18, et après (SPEC §7.18 ter).
@@ -743,6 +749,86 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Migration 19 (SPEC §7.18 ter) : les liens d'une copie laissés en ligne par choix
+    /// passent à `ignored`, les échecs techniques restent ; toutes les lignes restent.
+    #[test]
+    fn migration_19_sets_apart_the_links_left_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auro.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            configure(&conn).unwrap();
+            migrate(&mut conn, &MIGRATIONS[..18]).unwrap();
+            let queue = tasks::ensure_queue(&conn, "default").unwrap();
+            insert_task(&conn, "s1", &queue, "completed").unwrap();
+            conn.execute_batch(
+                "UPDATE tasks SET kind = 'site' WHERE id = 's1';
+                 INSERT INTO site_jobs (task_id, page_url, depth, max_pages, max_bytes)
+                 VALUES ('s1', 'https://exemple.org/', 1, 200, 1000);
+                 INSERT INTO site_items (task_id, seq, url, kind, state, path, size, error)
+                 VALUES ('s1', 0, 'https://exemple.org/', 'page', 'done', 'e/index.html', 10,
+                         NULL),
+                        ('s1', 1, 'https://exemple.org/LISEZMOI', 'page', 'failed', NULL, NULL,
+                         'NOT_HTML'),
+                        ('s1', 2, 'https://exemple.org/r', 'page', 'failed', NULL, NULL,
+                         'REDIRECTED'),
+                        ('s1', 3, 'https://exemple.org/gros.png', 'resource', 'failed', NULL,
+                         NULL, 'TOO_BIG'),
+                        ('s1', 4, 'https://exemple.org/manque.png', 'resource', 'failed', NULL,
+                         NULL, 'HTTP_STATUS'),
+                        ('s1', 5, 'https://exemple.org/p.html', 'page', 'skipped', NULL, NULL,
+                         NULL);",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), latest());
+        let states: Vec<(i64, String, Option<String>)> = conn
+            .prepare("SELECT seq, state, error FROM site_items ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let states: Vec<(i64, &str, Option<&str>)> = states
+            .iter()
+            .map(|(s, st, e)| (*s, st.as_str(), e.as_deref()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (0, "done", None),
+                (1, "ignored", Some("NOT_HTML")),
+                (2, "ignored", Some("REDIRECTED")),
+                (3, "ignored", Some("TOO_BIG")),
+                (4, "failed", Some("HTTP_STATUS")),
+                (5, "skipped", None),
+            ]
+        );
+        let counts = site::counts(&conn, "s1").unwrap();
+        assert_eq!((counts.pages, counts.failed, counts.ignored), (1, 1, 4));
+        // Index refait, contrainte élargie, sans plus.
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'site_items_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+        assert!(
+            conn.execute("UPDATE site_items SET state = 'autre' WHERE seq = 0", [])
+                .is_err()
+        );
+        // Les cascades suivent toujours `tasks`.
+        conn.execute("DELETE FROM tasks WHERE id = 's1'", [])
+            .unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM site_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     /// Une migration qui refait une table et laisserait une ligne orpheline est annulée,

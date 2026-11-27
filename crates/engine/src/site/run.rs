@@ -31,7 +31,7 @@ use crate::net::filename::{NameRules, name_from_url, sanitize};
 use crate::net::{Client, NetError, Opened};
 use crate::store::claims::ClaimKind;
 use crate::store::now_ms;
-use crate::store::site::{self, Item, ItemKind, ItemState, NewItem, Phase};
+use crate::store::site::{self, Item, ItemKind, ItemState, NewItem, Phase, reason};
 use crate::store::tasks::{
     self, Change, NewTask, PauseReason, TaskRow, TaskState, change_state, load_task, reserved_names,
 };
@@ -440,6 +440,15 @@ fn looks_like_html(head: &[u8]) -> Option<bool> {
         .map(|&b| b == b'<')
 }
 
+/// Un élément ignoré après sa lecture (pas une page web, redirigé, trop gros) : une page
+/// lue pour la limite de pages.
+fn read_then_ignored(item: &Item) -> bool {
+    matches!(
+        item.error.as_deref(),
+        Some(reason::NOT_HTML | reason::REDIRECTED | reason::TOO_BIG)
+    )
+}
+
 /// Une page à suivre ? Une adresse de sorte page (extension de page web, ou aucune),
 /// comme pour l'analyse d'une page (SPEC §7.18).
 fn page_like(url: &Url) -> bool {
@@ -482,6 +491,9 @@ struct Explorer {
     stopped: bool,
     /// Derniers nombres d'éléments annoncés, et quand ils ont été relevés.
     counts: Option<(Instant, site::Counts)>,
+    /// Liens ignorés déjà passés à la base pendant cette exécution : un lien de chaque page
+    /// (menu, pied de page) ne se recompte pas au-delà de `MAX_IGNORED`.
+    ignored_seen: HashSet<String>,
 }
 
 impl Explorer {
@@ -504,10 +516,10 @@ impl Explorer {
             .iter()
             .filter(|i| {
                 i.kind == ItemKind::Page
-                    && matches!(
+                    && (matches!(
                         i.state,
                         ItemState::Fetched | ItemState::Done | ItemState::Failed
-                    )
+                    ) || (i.state == ItemState::Ignored && read_then_ignored(i)))
             })
             .count();
         let bytes = items
@@ -549,6 +561,7 @@ impl Explorer {
             logins: HashMap::new(),
             stopped: false,
             counts: None,
+            ignored_seen: HashSet::new(),
         })
     }
 
@@ -870,11 +883,16 @@ impl Explorer {
             self.pages_read += 1;
         }
         let task_id = self.task_id.clone();
-        let give_up = |conn: &Connection, code: &str| -> Result<(), TransferError> {
-            let _ = std::fs::remove_file(&part);
-            site::give_up(conn, &task_id, seq, ItemState::Failed, Some(code))?;
-            Ok(())
-        };
+        let give_up_as =
+            |conn: &Connection, state: ItemState, code: &str| -> Result<(), TransferError> {
+                let _ = std::fs::remove_file(&part);
+                site::give_up(conn, &task_id, seq, state, Some(code))?;
+                Ok(())
+            };
+        // Échec technique.
+        let give_up = |conn: &Connection, code: &str| give_up_as(conn, ItemState::Failed, code);
+        // Laissé en ligne par choix (décision de l'utilisateur du 2026-11-27).
+        let ignore = |conn: &Connection, why: &str| give_up_as(conn, ItemState::Ignored, why);
         match fetched {
             Fetch::Done {
                 final_url,
@@ -899,12 +917,17 @@ impl Explorer {
                             Ok(bytes) => self.found(&item, &final_url, &bytes),
                             Err(e) => return Ok(Some(disk(&e))),
                         };
+                        let mut found = found;
+                        found.retain(|(url, _, _, why)| {
+                            why.is_none() || self.ignored_seen.insert(url.clone())
+                        });
                         let found: Vec<NewItem<'_>> = found
                             .iter()
-                            .map(|(url, kind, depth)| NewItem {
+                            .map(|(url, kind, depth, why)| NewItem {
                                 url,
                                 kind: *kind,
                                 depth: *depth,
+                                ignored: *why,
                             })
                             .collect();
                         let final_text = final_url.as_str();
@@ -978,15 +1001,15 @@ impl Explorer {
                     "la page de départ n'est pas une page web (HTML)",
                 )));
             }
-            Fetch::NotHtml => give_up(conn, "NOT_HTML")?,
-            Fetch::Elsewhere => give_up(conn, "REDIRECTED")?,
+            Fetch::NotHtml => ignore(conn, reason::NOT_HTML)?,
+            Fetch::Elsewhere => ignore(conn, reason::REDIRECTED)?,
             Fetch::TooBig if seq == 0 => {
                 return Ok(Some(failed(
                     "SITE_NOT_HTML",
                     format!("page de départ de plus de {} Mio", MAX_PAGE >> 20),
                 )));
             }
-            Fetch::TooBig => give_up(conn, "TOO_BIG")?,
+            Fetch::TooBig => ignore(conn, reason::TOO_BIG)?,
             Fetch::Net(e) => {
                 let code = e.error_code().unwrap_or("NET_UNREACHABLE");
                 if e.retryable() {
@@ -1020,10 +1043,7 @@ impl Explorer {
 
     /// Les éléments ajoutés depuis la dernière lecture de la table.
     fn load_new(&mut self, conn: &Connection) -> Result<(), TransferError> {
-        let fresh: Vec<Item> = site::items(conn, &self.task_id)?
-            .into_iter()
-            .filter(|i| i.seq > self.last_seq)
-            .collect();
+        let fresh: Vec<Item> = site::items_after(conn, &self.task_id, self.last_seq)?;
         if let Some(last) = fresh.last() {
             self.last_seq = last.seq;
         }
@@ -1037,13 +1057,14 @@ impl Explorer {
     }
 
     /// Les liens d'une page ou d'un style lus : pages à suivre (même site, profondeur,
-    /// robots.txt, exclusions), ressources d'affichage et styles de tout hôte.
+    /// robots.txt, exclusions), ressources d'affichage et styles de tout hôte ; et les liens
+    /// laissés en ligne par choix, avec leur raison.
     fn found(
         &self,
         item: &Item,
         final_url: &Url,
         bytes: &[u8],
-    ) -> Vec<(String, ItemKind, Option<u8>)> {
+    ) -> Vec<(String, ItemKind, Option<u8>, Option<&'static str>)> {
         let mut out = Vec::new();
         if item.kind == ItemKind::Style {
             for r in css::refs(bytes) {
@@ -1053,7 +1074,7 @@ impl Explorer {
                     } else {
                         ItemKind::Resource
                     };
-                    out.push((url.to_string(), kind, None));
+                    out.push((url.to_string(), kind, None, None));
                 }
             }
             return out;
@@ -1066,18 +1087,33 @@ impl Explorer {
         for (url, role) in html::links(bytes, &scan, final_url) {
             match role {
                 html::Role::Navigate => {
-                    let follow = !self.stopped
-                        && page_like(&url)
-                        && self
-                            .judge
-                            .as_ref()
-                            .is_some_and(|j| j.visit(&url, depth) == Visit::Queued);
-                    if follow {
-                        out.push((url.to_string(), ItemKind::Page, Some(depth)));
+                    // Un fichier n'est copié que coché (élément connu dès l'ajout).
+                    if !page_like(&url) {
+                        let why = Some(reason::NOT_TICKED);
+                        out.push((url.to_string(), ItemKind::File, None, why));
+                        continue;
                     }
+                    let Some(judge) = &self.judge else { continue };
+                    let why = if self.stopped {
+                        Some(reason::LIMIT)
+                    } else {
+                        match judge.visit(&url, depth) {
+                            Visit::Queued => None,
+                            Visit::Depth => Some(reason::DEPTH),
+                            Visit::Offsite => Some(reason::OFFSITE),
+                            Visit::Folder => Some(reason::FOLDER),
+                            Visit::Robots => Some(reason::ROBOTS),
+                            Visit::Excluded => Some(reason::EXCLUDED),
+                            // Jamais rendus par `visit`.
+                            Visit::Read | Visit::Failed | Visit::Limit => continue,
+                        }
+                    };
+                    out.push((url.to_string(), ItemKind::Page, Some(depth), why));
                 }
-                html::Role::Resource => out.push((url.to_string(), ItemKind::Resource, None)),
-                html::Role::Style => out.push((url.to_string(), ItemKind::Style, None)),
+                html::Role::Resource => {
+                    out.push((url.to_string(), ItemKind::Resource, None, None));
+                }
+                html::Role::Style => out.push((url.to_string(), ItemKind::Style, None, None)),
                 html::Role::Other => {}
             }
         }
@@ -1338,7 +1374,7 @@ async fn links(conn: &mut Connection, task_id: &str, root: &Path) -> Result<End,
         resources = counts.resources,
         files = counts.files,
         failed = counts.failed,
-        online = counts.online,
+        ignored = counts.ignored,
         "copie d'un site finie"
     );
     Ok(End::Completed(root.to_path_buf()))

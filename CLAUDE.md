@@ -132,7 +132,8 @@ téléchargement.
   `auro links <page> --depth`.
   Copie d'un site (F-43, SPEC 7.18 ter, étape B du « Grabber », 2026-11-26) : tâche de sorte
   `site` (migration 18 : `tasks` refaite pour la sorte, `Migration::rebuild` ; tables
-  `site_jobs` et `site_items`, `store::site`), `site::html` (liens d'une page par rôle,
+  `site_jobs` et `site_items`, `store::site` ; migration 19 : liens laissés en ligne par
+  choix, état `ignored` et sa raison, `store::site::reason`, à part des échecs techniques), `site::html` (liens d'une page par rôle,
   réécriture octet pour octet), `site::css` (`url(…)`, `@import`), `site::layout` (de
   l'adresse au chemin : un dossier par hôte, `@paramètres`, `.html` et `.css` ajoutés),
   `site::run` (exploration avec le `Judge` de `linkscan::crawl`, lecture au fil de l'eau par

@@ -73,11 +73,12 @@
                     "minimum": 0
                   },
                   "failed": {
+                    "description": "Échecs techniques ; depuis le 2026-11-27, sans les liens ignorés.",
                     "type": "integer",
                     "minimum": 0
                   },
-                  "online": {
-                    "description": "Liens laissés en ligne parce qu'ils ne mènent pas à une page web (éléments en échec NOT_HTML), comptés hors de failed ; depuis le 2026-11-27.",
+                  "ignored": {
+                    "description": "Ignorés, laissés en ligne par choix (éléments ignored et skipped, et liens comptés au-delà des 10 000 enregistrés) ; depuis le 2026-11-27.",
                     "type": "integer",
                     "minimum": 0
                   },
