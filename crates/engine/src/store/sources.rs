@@ -1,7 +1,7 @@
 //! Sources d'une tâche HTTP : la référence et ses miroirs (SPEC §5.3 et §7.7, phase 6).
 //! Ajout d'un miroir, résultat de sa validation, échecs.
 
-use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 
 use super::tasks::SourceState;
 use super::{StoreError, new_id};
@@ -34,7 +34,8 @@ pub(super) fn insert(
 
 /// Ajoute un miroir à la fin des sources d'une tâche ; renvoie son identifiant.
 pub fn add_source(conn: &mut Connection, task_id: &str, url: &str) -> Result<String, StoreError> {
-    let tx = conn.transaction()?;
+    // Immédiate : lue puis écrite, pendant que d'autres connexions écrivent (WAL).
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (count, last): (i64, Option<i64>) = tx.query_row(
         "SELECT COUNT(*), MAX(rank) FROM sources WHERE task_id = ?1",
         [task_id],
@@ -161,7 +162,8 @@ pub fn promote(
     next_id: &str,
     reason: &str,
 ) -> Result<Vec<String>, StoreError> {
-    let tx = conn.transaction()?;
+    // Immédiate : lue puis écrite, pendant que d'autres connexions écrivent (WAL).
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let read = |id: &str| -> Result<(i64, String), StoreError> {
         tx.query_row(
             "SELECT rank, url FROM sources WHERE id = ?1 AND task_id = ?2",
@@ -370,5 +372,31 @@ mod tests {
             .collect();
         assert_eq!(kept, ["User-Agent"]);
         assert_eq!(load_sources(&conn, &id).unwrap()[0].id, sources[2].id);
+    }
+
+    /// Une autre connexion écrit pendant l'ajout (une copie de site, un transfert) : l'ajout
+    /// attend son tour et réussit. Une transaction différée lisait d'abord, puis échouait à
+    /// l'écriture (« database is locked », vu par le corpus de la page le 2026-11-28).
+    #[test]
+    fn a_source_is_added_while_another_connection_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auro.db");
+        let mut conn = open(&path).unwrap();
+        let id = task(&mut conn, &[]);
+        let mut other = open(&path).unwrap();
+        let writing = other
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        writing
+            .execute("UPDATE tasks SET display_name = 'g.iso' WHERE id = ?1", [&id])
+            .unwrap();
+        let adding = {
+            let id = id.clone();
+            std::thread::spawn(move || add_source(&mut conn, &id, "https://c.exemple/f.iso"))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        writing.commit().unwrap();
+        adding.join().unwrap().unwrap();
+        assert_eq!(load_sources(&other, &id).unwrap().len(), 2);
     }
 }

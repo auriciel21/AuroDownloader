@@ -16,13 +16,24 @@ const WAIT: Duration = Duration::from_secs(30);
 struct Inbox(mpsc::Receiver<String>);
 
 impl Inbox {
+    /// Démarre un moteur sur `db`. Un moteur arrêté juste avant peut tenir encore le verrou
+    /// de la base : son arrêt rend la main après `SHUTDOWN` même si un vidage sur disque
+    /// traîne (pauses de plusieurs secondes vues sous WSL, 2026-11-28) ; on attend qu'il
+    /// le rende, `WAIT` au plus.
     fn start(db: &Path) -> (Host, Inbox) {
-        let (tx, rx) = mpsc::channel();
-        let host = Host::start(db, move |line| {
-            let _ = tx.send(line);
-        })
-        .unwrap();
-        (host, Inbox(rx))
+        let end = Instant::now() + WAIT;
+        loop {
+            let (tx, rx) = mpsc::channel();
+            match Host::start(db, move |line| {
+                let _ = tx.send(line);
+            }) {
+                Ok(host) => return (host, Inbox(rx)),
+                Err(e) if e.contains("déjà ouverte") && Instant::now() < end => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
     }
 
     /// Premier message qui satisfait `wanted` ; les autres sont passés.

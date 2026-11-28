@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::StoreError;
 
@@ -85,7 +85,8 @@ pub fn replace(
     task_id: &str,
     headers: &[StoredHeader],
 ) -> Result<Vec<String>, StoreError> {
-    let tx = conn.transaction()?;
+    // Immédiate : lue puis écrite, pendant que d'autres connexions écrivent (WAL).
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Les mêmes que `secret_refs` (audit S14).
     let old = secret_refs(&tx, task_id)?;
     tx.execute("DELETE FROM task_headers WHERE task_id = ?1", [task_id])?;
