@@ -715,7 +715,10 @@ pub(super) async fn call(ctx: &mut Ctx, method: &str, params: Value) -> Result<V
         }
         "project.set" => {
             let spec = project_spec(&p)?;
-            let id = ctx.engine.set_project(p.str("projectId")?, spec).await?;
+            let id = ctx
+                .engine
+                .set_project_in(p.str("projectId")?, spec, sub_dir_param(&p)?)
+                .await?;
             Ok(json!({"projectId": id}))
         }
         "project.delete" => {

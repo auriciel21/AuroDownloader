@@ -57,6 +57,7 @@ impl Scheduler {
         &mut self,
         project_id: Option<String>,
         mut spec: ProjectSpec,
+        sub_dir: &[String],
         remote: bool,
         public_only: bool,
     ) -> Result<String, EngineError> {
@@ -76,8 +77,18 @@ impl Scheduler {
             spec.filters = filters;
         }
         // Dossier et file : vérifiés maintenant, gardés tels quels (un dossier absent suit
-        // le réglage des téléchargements à chaque lancement).
-        self.destination(spec.dest_dir.clone(), spec.queue_id.clone(), remote)?;
+        // le réglage des téléchargements à chaque lancement). Un sous-dossier est créé
+        // maintenant, et son chemin devient le dossier du projet.
+        if sub_dir.is_empty() {
+            self.destination(spec.dest_dir.clone(), spec.queue_id.clone(), remote)?;
+        } else {
+            spec.dest_dir = Some(self.resolve_sub_dir(
+                spec.dest_dir.clone(),
+                spec.queue_id.clone(),
+                remote,
+                sub_dir,
+            )?);
+        }
         let next = spec.schedule.map(|s| self.next_run_of(s));
         let id = match project_id {
             Some(id) => {

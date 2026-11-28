@@ -110,6 +110,35 @@ envoie, souvent vides ; un formulaire de connexion n'est pas rempli ; la copie s
 d'explorer après 1 Gio de pages et de ressources. « Supprimer aussi les fichiers terminés du
 disque » n'efface que ce que la copie a écrit.
 
+## Projets : explorations enregistrées et programmées
+
+Un projet garde une exploration pour la refaire à la main ou à heure fixe : la page de
+départ, les réglages de l'exploration, les filtres (extensions, tailles, expression sur
+l'adresse), le choix entre la copie du site et les fichiers seuls, l'arborescence du site
+et le dossier. Il ne garde pas les fichiers cochés : chaque lancement explore de nouveau le
+site et prend les fichiers qui passent les filtres, nouveaux compris.
+
+Dans la boîte « Liens », **Enregistrer comme projet…** (avec « Explorer le site ») montre
+la partie **Projet** : **Nom du projet** (celui du site, proposé), **Lancer à heure fixe**
+avec l'**Heure** et les jours (sans jour coché : une seule fois) et **Lancer maintenant**.
+**Enregistrer le projet** l'enregistre ; **Retour aux liens** revient à l'ajout. Les filtres
+de la boîte choisissent les fichiers ; sans **Copier le site pour la navigation hors ligne**,
+le projet ne télécharge que ces fichiers (« Fichiers seuls »), à plat ou avec **Garder
+l'arborescence du site**, et sa ligne s'appelle « Fichiers : exemple.org ».
+
+La boîte **Projets** (barre d'outils) liste les projets : nom, page de départ, programme,
+prochain et dernier lancement, avec l'état de sa copie et ses nombres. **Lancer** le lance
+tout de suite, **Modifier** rouvre la boîte « Liens » remplie, **Supprimer** le supprime
+(sa tâche et ses fichiers restent) ; **Nouveau projet…** en crée un.
+
+Un projet n'a qu'une tâche, reprise à chaque lancement : sa copie est mise à jour sur place,
+dans le même dossier. Les pages sont relues ; une ressource ou un fichier que le serveur dit
+inchangé n'est pas retéléchargé, et compte dans **Inchangées** (dans la liste et les
+Propriétés) ; un fichier changé remplace l'ancien ; un fichier disparu du site reste sur le
+disque. Un lancement manqué (ordinateur éteint, moteur arrêté) se fait une fois au démarrage
+suivant ; si la copie tourne encore à l'heure dite, ce lancement est sauté. Retirer la tâche
+de la liste ne supprime pas le projet : son lancement suivant fait une nouvelle copie.
+
 ## Liens copiés
 
 Option « Proposer d'ajouter les liens copiés » (Options, Général, désactivée par défaut) :

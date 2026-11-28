@@ -5533,6 +5533,32 @@ async fn projects_are_set_announced_run_and_removed() {
     let snapshot = c.result("sync.snapshot", json!({})).await;
     assert_eq!(snapshot["projects"], json!([project]));
 
+    // Sous-dossier de la page : créé, et gardé comme dossier du projet.
+    let sub = c
+        .result(
+            "project.set",
+            json!({"name": "Rangé", "pageUrl": pages.url("/"), "destDir": dest,
+                   "subDir": "Docs/PDF"}),
+        )
+        .await["projectId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let note = c
+        .notification("project.updated", |n| n["projectId"] == sub.as_str())
+        .await;
+    let placed = dir.path().join("Docs").join("PDF");
+    assert!(placed.is_dir());
+    assert_eq!(
+        note["project"]["destDir"],
+        placed.to_string_lossy().as_ref()
+    );
+    c.result("project.delete", json!({"projectId": sub})).await;
+    c.notification("project.updated", |n| {
+        n["projectId"] == sub.as_str() && n["project"].is_null()
+    })
+    .await;
+
     let task = c.result("project.run", json!({"projectId": id})).await["taskId"]
         .as_str()
         .unwrap()
@@ -5563,6 +5589,11 @@ async fn projects_are_set_announced_run_and_removed() {
         (
             "project.set",
             json!({"name": "X", "pageUrl": pages.url("/"), "filters": {"extensions": [3]}}),
+            "INVALID_PARAMS",
+        ),
+        (
+            "project.set",
+            json!({"name": "X", "pageUrl": pages.url("/"), "destDir": dest, "subDir": "a/../b"}),
             "INVALID_PARAMS",
         ),
         (

@@ -181,6 +181,12 @@ Colonnes :
   téléchargements » au lieu du bouton « Ajouter », après un ajout qui suivait une erreur
   dans la même boîte. Non reproduit ensuite, avec ou sans l'option « afficher la fenêtre à
   l'ajout » ; rien changé. À surveiller.
+- **Projets (étape C3, 2026-11-28).** Boîte « Projets » et mode projet de la boîte
+  « Liens » contrôlés par axe (balisage et page vivante), erreurs liées au champ (A15),
+  annonces dans la boîte au premier plan (A14), boutons de chaque ligne nommés avec le
+  projet (« Lancer Docs »), colonne « Dernier lancement » mise à jour à sa place pendant une
+  copie (le tableau n'est pas refait sous le lecteur d'écran). Pas encore essayés avec un
+  lecteur d'écran réel.
 - **Messages hors d'une boîte.** La bannière de l'action de fin reste dans la fenêtre :
   derrière une boîte, son texte est dit dans la boîte, mais « Annuler » ne se joint
   qu'après Échap.

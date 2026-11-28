@@ -100,6 +100,35 @@ Limits: pages made by a script (JavaScript) are copied as the server sends them,
 a login form is not filled in; the copy stops exploring after 1 GiB of pages and resources.
 "Also delete finished files from the disk" only deletes what the copy wrote.
 
+## Projects: saved and scheduled explorations
+
+A project keeps an exploration to run it again by hand or at a set time: the start page,
+the exploration settings, the filters (extensions, sizes, expression on the address), the
+choice between the site copy and files only, the tree of the site and the folder. It does
+not keep the checked files: each run explores the site again and takes the files that pass
+the filters, new ones included.
+
+In the "Links" dialog, **Save as project…** (with "Explore the site") shows the **Project**
+part: **Project name** (the site's, proposed), **Run at a set time** with the **Time** and
+the days (with no day checked: once only) and **Run now**. **Save the project** saves it;
+**Back to the links** returns to adding. The filters of the dialog choose the files; without
+**Copy the site for offline browsing**, the project only downloads those files ("files
+only"), flat or with **Keep the tree of the site**, and its row is called "Files:
+example.org".
+
+The **Projects** dialog (toolbar) lists the projects: name, start page, schedule, next and
+last run, with the state of its copy and its numbers. **Run** runs it at once, **Edit**
+reopens the "Links" dialog filled in, **Delete** deletes it (its task and its files stay);
+**New project…** creates one.
+
+A project has a single task, taken up again at each run: its copy is updated in place, in
+the same folder. Pages are read again; a resource or file that the server says is unchanged
+is not downloaded again, and counts in **Unchanged** (in the list and the Properties); a
+changed file replaces the old one; a file gone from the site stays on the disk. A missed run
+(computer off, engine stopped) is done once at the next start; if the copy is still running
+at the set time, that run is skipped. Removing the task from the list does not delete the
+project: its next run makes a new copy.
+
 ## Copied links
 
 Option "Offer to add copied links" (Options, General, off by default): when you copy the

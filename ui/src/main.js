@@ -12,7 +12,7 @@ import {
   subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
-  pendingKeyFor, blockedByHostKey,
+  pendingKeyFor, blockedByHostKey, projectParams, projectFields,
 } from "./model.js";
 import { tauriHost } from "./host.js";
 import { webHost } from "./web.js";
@@ -274,19 +274,27 @@ const QUEUE_LABELS = {
 
 const ICONS = { all: "i-all", incomplete: "i-incomplete", completed: "i-completed" };
 
-const taskName = (task) => task.kind === "site"
-  ? t("Site : {0}", task.displayName || taskFileName(task))
-  : taskFileName(task) || t("(sans nom)");
+/// Nom d'une ligne ; une copie de site : « Site : … », ou « Fichiers : … » pour les
+/// fichiers seuls d'un projet (SPEC §7.18 quater).
+function taskName(task) {
+  if (task.kind !== "site") return taskFileName(task) || t("(sans nom)");
+  const name = task.displayName || taskFileName(task);
+  return store.siteMode(task) === "files" ? t("Fichiers : {0}", name) : t("Site : {0}", name);
+}
 
-/// Éléments copiés d'une copie de site.
-const siteDownloaded = (counts) => (counts.pages ?? 0) + (counts.resources ?? 0) + (counts.files ?? 0);
+/// Éléments téléchargés d'une copie de site ; en fichiers seuls, les fichiers (les pages lues
+/// ne sont pas gardées).
+const siteDownloaded = (counts, mode = "copy") => mode === "files"
+  ? (counts.files ?? 0)
+  : (counts.pages ?? 0) + (counts.resources ?? 0) + (counts.files ?? 0);
 
 /// Éléments d'une copie de site : « 54 téléchargée(s), 3 échec(s), 37 ignorée(s) ».
 /// Échecs techniques à part des liens laissés en ligne par choix (décision de
-/// l'utilisateur du 2026-11-27).
-function siteCountsText(counts) {
+/// l'utilisateur du 2026-11-27) ; « inchangée(s) » : gardés par une mise à jour.
+function siteCountsText(counts, mode = "copy") {
   if (!counts) return "";
-  let text = t("{0} téléchargée(s)", siteDownloaded(counts));
+  let text = t("{0} téléchargée(s)", siteDownloaded(counts, mode));
+  if (counts.unchanged) text = t("{0}, {1} inchangée(s)", text, counts.unchanged);
   if (counts.failed) text = t("{0}, {1} échec(s)", text, counts.failed);
   if (counts.ignored) text = t("{0}, {1} ignorée(s)", text, counts.ignored);
   return text;
@@ -531,7 +539,7 @@ function renderRow(taskId) {
   }
   paintMeter(cell("progress").querySelector(".meter"), task);
   // Copie d'un site : ses éléments, le volume n'étant connu qu'à la fin (SPEC §7.18 ter).
-  cell("pct").textContent = task.kind === "site" && task.site ? siteCountsText(task.site) : percentText(task);
+  cell("pct").textContent = task.kind === "site" && task.site ? siteCountsText(task.site, store.siteMode(task)) : percentText(task);
   // Colonne étroite : le texte entier en info-bulle.
   cell("pct").title = cell("pct").textContent;
   cell("state").textContent = taskStateText(task);
@@ -1244,6 +1252,11 @@ function renderSite(task) {
     $(`d-${key}`).textContent = text;
     $(`f-${key}`).hidden = !text;
   };
+  const mode = copy.mode ?? store.siteMode(task);
+  set("site-project", store.projectOfTask(task.taskId)?.name ?? "");
+  set("site-mode", mode === "files"
+    ? (copy.keepTree ? t("fichiers seuls, arborescence du site gardée") : t("fichiers seuls"))
+    : t("copie pour la navigation hors ligne"));
   set("site-page", copy.pageUrl ?? "");
   set("site-start", copy.startPath ?? "");
   const settings = [
@@ -1254,16 +1267,32 @@ function renderSite(task) {
   if (copy.sameFolder) settings.push(t("sous le dossier de départ"));
   if (copy.ignoreRobots) settings.push(t("robots.txt ignoré"));
   set("site-settings", settings.join(", "));
+  set("site-filters", siteFiltersText(copy.filters));
+  set("site-run", copy.run > 1 ? t("n° {0} (mise à jour sur place)", copy.run) : "");
   // L'avancement est plus frais que la dernière lecture pendant la copie.
   const counts = task.state === "active" && task.site ? task.site : copy;
-  set("site-counts", t("{0} ({1})", siteDownloaded(counts),
-    t("{0} page(s), {1} ressource(s), {2} fichier(s)", counts.pages ?? 0, counts.resources ?? 0, counts.files ?? 0)));
+  set("site-counts", mode === "files"
+    ? t("{0} fichier(s) ({1} page(s) lue(s))", counts.files ?? 0, counts.pages ?? 0)
+    : t("{0} ({1})", siteDownloaded(counts),
+      t("{0} page(s), {1} ressource(s), {2} fichier(s)", counts.pages ?? 0, counts.resources ?? 0, counts.files ?? 0)));
+  set("site-unchanged-count", counts.unchanged ? String(counts.unchanged) : "");
   set("site-failed-count", String(counts.failed ?? 0));
   set("site-ignored-count", String(counts.ignored ?? 0));
   set("site-stop", copy.stop ? t(SITE_STOPS[copy.stop] ?? copy.stop) : t("en cours"));
   const items = copy.items ?? [];
   siteItems("failed", items.filter((i) => i.state === "failed"));
   siteItems("ignored", items.filter((i) => i.state === "ignored" || i.state === "skipped"));
+}
+
+/// Filtres d'un projet, en clair ; vide pour une copie de fichiers cochés.
+function siteFiltersText(filters) {
+  if (!filters) return "";
+  const parts = [];
+  if (filters.extensions?.length) parts.push(t("extensions : {0}", filters.extensions.join(", ")));
+  if (filters.regex) parts.push(t("adresse : {0}", filters.regex));
+  if (filters.minSize != null) parts.push(t("{0} au moins", bytes(filters.minSize, lang, t)));
+  if (filters.maxSize != null) parts.push(t("{0} au plus", bytes(filters.maxSize, lang, t)));
+  return parts.length ? parts.join(", ") : t("tous les fichiers");
 }
 
 /// Une liste d'éléments d'une copie de site (échecs techniques, ignorés), avec leur cause
@@ -1849,7 +1878,10 @@ function onStatus(status) {
     $("l-crawl-box").hidden = !crawlCapable;
     // Copie d'un site (SPEC §7.18 ter) : depuis le 2026-11-26.
     siteCapable = status.engine?.capabilities?.includes("site") === true;
-    setCrawled(crawled);
+    // Projets (SPEC §7.18 quater) : depuis le 2026-11-27.
+    projectsCapable = status.engine?.capabilities?.includes("projects") === true;
+    $("tb-projects").hidden = !projectsCapable;
+    syncProjectMode();
     $("tab-media").hidden = !mediaCapable;
     resync();
     loadTools();
@@ -1926,6 +1958,8 @@ function onEngine(event) {
       // Une file en attente de son interface change d'état affiché.
       if (result.torrentInterface) renderAll();
       if (result.planning) renderPlanning();
+      if (result.projects) renderProjects();
+      else if ($("projects-dialog").open && result.changed.size) refreshProjectRows();
       for (const { taskId, error } of result.moveErrors) {
         const task = store.tasks.get(taskId);
         showError(t("Déplacement de « {0} » impossible : {1}", task ? taskName(task) : taskId, error));
@@ -3059,11 +3093,12 @@ async function stopCrawl() {
 function setCrawled(on) {
   crawled = on;
   $("l-links").classList.toggle("crawled", on);
-  $("l-tree-box").hidden = !on;
-  $("l-tree-note").hidden = !on;
-  // Copie du site (SPEC §7.18 ter) : seulement après une exploration.
-  $("l-site-box").hidden = !(on && siteCapable);
-  $("l-site-note").hidden = !(on && siteCapable);
+  // Copie du site (SPEC §7.18 ter) : seulement après une exploration, ou pour un projet.
+  const shown = on || projectEdit !== null;
+  $("l-tree-box").hidden = !shown;
+  $("l-tree-note").hidden = !shown;
+  $("l-site-box").hidden = !(shown && siteCapable);
+  $("l-site-note").hidden = !(shown && siteCapable);
   $("l-tree").disabled = siteChosen();
 }
 
@@ -3208,6 +3243,8 @@ function renderLinkCount() {
 
 function renderLinkList() {
   $("l-result").hidden = !scanLinks.length;
+  // Les filtres servent aussi à un projet, qui les garde.
+  $("l-filters").hidden = !scanLinks.length && projectEdit === null;
   const lists = chosenLinks();
   if (!lists) {
     showLinksError(filterError(linkFields()));
@@ -3313,7 +3350,8 @@ async function addLinks(choice) {
 }
 
 /// « Copier le site pour la navigation hors ligne » est coché, après une exploration.
-const siteChosen = () => crawled && siteCapable && crawlSettings !== null && $("l-site").checked;
+const siteChosen = () => siteCapable && $("l-site").checked
+  && (projectEdit !== null || (crawled && crawlSettings !== null));
 
 /// La copie garde toujours l'arborescence du site : la case des fichiers ne s'applique pas.
 function syncSiteChoice() {
@@ -3359,7 +3397,11 @@ function closeLinks() {
   if (crawlId) host.call("linkscan.cancel", { crawlId }).catch(() => {});
   crawlId = null;
   endCrawling();
-  if ($("links-dialog").returnValue === "added") {
+  // Un projet enregistré depuis les liens de la boîte les emporte ; ouvert depuis
+  // « Projets », la boîte retrouve ce qu'elle avait.
+  const saved = $("links-dialog").returnValue === "project" && !projectEdit?.saved;
+  if (projectEdit !== null) leaveProjectMode();
+  if ($("links-dialog").returnValue === "added" || saved) {
     scanLinks = [];
     linkSizes.clear();
     linkUnchecked.clear();
@@ -3369,7 +3411,15 @@ function closeLinks() {
     $("l-tree").disabled = false;
   }
   delete $("l-error").dataset.kind;
-  $("tb-links").focus();
+  const notice = linksNotice;
+  linksNotice = "";
+  if (projectsReturn) {
+    projectsReturn = false;
+    openProjects();
+  } else {
+    $("tb-links").focus();
+  }
+  if (notice) announce(notice);
 }
 
 // ---------- Historique (F-35) ----------
@@ -3377,6 +3427,336 @@ function closeLinks() {
 const HISTORY_PAGE = 200;
 /// Entrées affichées, curseur de la page suivante, et numéro de la dernière lecture : une
 /// réponse arrivée après une autre recherche est écartée.
+// ---------- Projets enregistrés (F-44, SPEC §7.18 quater, étape C3) ----------
+
+/// Le moteur sait les projets (capacité `projects`, depuis le 2026-11-27).
+let projectsCapable = false;
+/// Boîte « Liens » en mode projet : `{ project }` (`null` : nouveau projet), sinon `null`.
+let projectEdit = null;
+/// La boîte « Liens » a été ouverte depuis « Projets », qui se rouvre à sa fermeture.
+let projectsReturn = false;
+/// Annonce à faire une fois la boîte « Liens » fermée (et « Projets » rouverte).
+let linksNotice = "";
+
+/// Cases des jours du programme, cochées selon `days`.
+function projectDayBoxes(days) {
+  const box = $("l-p-days");
+  const labels = [];
+  for (let day = 1; day <= 7; day++) {
+    const label = document.createElement("label");
+    label.className = "day";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = String(day);
+    input.checked = days.includes(day);
+    input.setAttribute("aria-label", dayName(day, "long"));
+    const short = document.createElement("span");
+    short.setAttribute("aria-hidden", "true");
+    short.textContent = dayName(day, "short");
+    label.append(input, short);
+    labels.push(label);
+  }
+  box.replaceChildren(box.querySelector("legend"), ...labels);
+}
+
+/// Hôte d'une adresse, nom proposé à un nouveau projet ; vide si illisible.
+function pageHost(text) {
+  const request = scanRequest(text);
+  if (!request?.pageUrl) return "";
+  try {
+    return new URL(request.pageUrl).host;
+  } catch {
+    return "";
+  }
+}
+
+/// Champs de la boîte « Liens » qu'un projet ouvert depuis « Projets » remplit : notés à
+/// l'entrée, remis à la sortie (la boîte retrouve son usage d'avant).
+const LINK_FIELDS = ["l-source", "l-crawl", "l-template", "l-depth", "l-max-pages", "l-exclude", "l-same-folder",
+  "l-ignore-robots", "l-ext", "l-min", "l-max", "l-regex", "l-all", "l-site", "l-tree", "l-subdir"];
+
+const linkFieldValues = () => LINK_FIELDS.map((id) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]);
+
+function restoreLinkFields(values) {
+  for (const [id, value] of values) {
+    if (typeof value === "boolean") $(id).checked = value;
+    else $(id).value = value;
+  }
+}
+
+/// Passe la boîte « Liens » en mode projet : `project` (« Modifier ») remplit ses champs ;
+/// sans lui, le projet garde ce que la boîte montre.
+function enterProjectMode(project) {
+  projectEdit = { project, saved: projectsReturn ? linkFieldValues() : null };
+  const f = project ? projectFields(project) : null;
+  if (f) {
+    $("l-source").value = f.source;
+    $("l-depth").value = f.depth;
+    $("l-max-pages").value = f.maxPages;
+    $("l-exclude").value = f.exclude;
+    $("l-same-folder").checked = f.sameFolder;
+    $("l-ignore-robots").checked = f.ignoreRobots;
+    $("l-ext").value = f.extensions;
+    $("l-min").value = f.min;
+    $("l-max").value = f.max;
+    $("l-regex").value = f.regex;
+    $("l-site").checked = f.copySite;
+    $("l-tree").checked = f.keepTree;
+    $("l-subdir").value = "";
+    syncTemplate();
+  }
+  $("l-crawl").checked = true;
+  $("l-p-name").value = f?.name ?? pageHost($("l-source").value);
+  $("l-p-scheduled").checked = f?.scheduled ?? false;
+  $("l-p-time").value = f?.time ?? "03:00";
+  projectDayBoxes(f?.days ?? [1, 2, 3, 4, 5, 6, 7]);
+  // Un projet neuf se lance d'habitude tout de suite ; un projet modifié, à son heure.
+  $("l-p-run").checked = !project;
+  $("l-dest").textContent = project?.destDir ?? store.settings["downloads.dir"] ?? t("(aucun)");
+  showLinksError("");
+  syncProjectMode();
+  $("l-p-name").focus();
+}
+
+/// Retour aux liens : la boîte ajoute de nouveau ; ouverte depuis « Projets », elle retrouve
+/// ses champs d'avant.
+function leaveProjectMode() {
+  if (projectEdit?.saved) restoreLinkFields(projectEdit.saved);
+  projectEdit = null;
+  $("l-dest").textContent = store.settings["downloads.dir"] ?? t("(aucun)");
+  syncProjectMode();
+}
+
+/// Boutons et champs du mode projet ; le programme ne sert que s'il est coché.
+function syncProjectMode() {
+  const on = projectEdit !== null;
+  $("l-project-box").hidden = !on;
+  $("l-p-save").hidden = !on;
+  $("l-p-back").hidden = !on || projectsReturn;
+  $("l-later").hidden = on;
+  $("l-start").hidden = on;
+  $("l-project").hidden = on || !projectsCapable || !crawlCapable;
+  // Un projet explore toujours le site.
+  $("l-crawl").disabled = on;
+  const scheduled = $("l-p-scheduled").checked;
+  $("l-p-time").disabled = !scheduled;
+  $("l-p-days").disabled = !scheduled;
+  $("l-p-save").disabled = !connected;
+  setCrawled(crawled);
+  renderLinkList();
+}
+
+/// Champ et texte d'une erreur de `projectParams`.
+const PROJECT_ERRORS = {
+  name: ["l-p-name", () => t("Nom du projet : de 1 à 100 caractères.")],
+  page: ["l-source", () => t("Un projet demande l'adresse d'une page web.")],
+  depth: ["l-depth", () => t("Profondeur refusée : de 1 à 5.")],
+  maxPages: ["l-max-pages", () => t("Nombre de pages refusé : de 1 à 2000.")],
+  exclude: ["l-exclude", (m) => t("Expression des pages à ne pas ouvrir illisible : {0}", m)],
+  min: ["l-min", () => t("Taille minimale illisible (exemples : 500K, 10M, 1G).")],
+  max: ["l-max", () => t("Taille maximale illisible (exemples : 500K, 10M, 1G).")],
+  regex: ["l-regex", (m) => t("Expression régulière illisible : {0}", m)],
+  time: ["l-p-time", () => t("Heure du lancement illisible.")],
+  subDir: ["l-subdir", () => t("Sous-dossier refusé : « . » et « .. » ne sont pas permis.")],
+};
+
+/// « Enregistrer le projet » : `project.set`, puis `project.run` si « Lancer maintenant ».
+async function saveProject() {
+  if (!projectEdit) return;
+  const project = projectEdit.project;
+  clearFieldErrors($("links-dialog"));
+  showLinksError("");
+  const read = projectParams({
+    name: $("l-p-name").value,
+    source: $("l-source").value,
+    depth: $("l-depth").value,
+    maxPages: $("l-max-pages").value,
+    exclude: $("l-exclude").value,
+    sameFolder: $("l-same-folder").checked,
+    ignoreRobots: $("l-ignore-robots").checked,
+    extensions: $("l-ext").value,
+    min: $("l-min").value,
+    max: $("l-max").value,
+    regex: $("l-regex").value,
+    copySite: siteCapable && $("l-site").checked,
+    keepTree: $("l-tree").checked,
+    scheduled: $("l-p-scheduled").checked,
+    time: $("l-p-time").value,
+    days: [...$("l-p-days").querySelectorAll("input:checked")].map((box) => Number(box.value)),
+    subDir: caps.remote ? $("l-subdir").value : undefined,
+  }, project
+    ? { projectId: project.projectId, destDir: project.destDir, queueId: project.queueId, maxBytes: project.maxBytes }
+    : {});
+  if (read.error) {
+    const [field, text] = PROJECT_ERRORS[read.error];
+    return linkedError(field, "l-error", text(read.message ?? ""));
+  }
+  const name = read.params.name;
+  const launch = $("l-p-run").checked;
+  $("l-p-save").disabled = true;
+  let projectId;
+  try {
+    projectId = (await host.call("project.set", read.params)).projectId;
+  } catch (e) {
+    $("l-p-save").disabled = !connected;
+    showLinksError(refused(e));
+    $("l-error").dataset.kind = "add";
+    return;
+  }
+  let notice = t("Projet « {0} » enregistré", name);
+  if (launch) {
+    try {
+      await host.call("project.run", { projectId });
+      notice = t("Projet « {0} » enregistré et lancé", name);
+      if (view.startsWith("completed")) chooseView("all");
+    } catch (e) {
+      // Enregistré : la boîte se ferme (le renvoyer en ferait un double).
+      notice = t("Projet « {0} » enregistré ; lancement refusé : {1}", name, e?.message ?? String(e));
+    }
+  }
+  linksNotice = notice;
+  $("links-dialog").close("project");
+}
+
+/// Programme d'un projet, en clair.
+function projectScheduleText(schedule) {
+  if (!schedule) return t("À la main");
+  if (!schedule.days.length) return t("Une fois, à {0}", schedule.time);
+  if (schedule.days.length === 7) return t("Chaque jour à {0}", schedule.time);
+  return t("{0} à {1}", schedule.days.map((d) => dayName(d, "short")).join(" "), schedule.time);
+}
+
+/// États où la copie d'un projet tourne : « Lancer » est refusé (`INVALID_STATE`).
+const PROJECT_BUSY = new Set(["queued", "active", "retry_wait", "verifying", "post_processing"]);
+
+/// Dernier lancement : sa date, l'état de sa copie et ses nombres ; un lancement sauté.
+function projectLastText(p) {
+  if (!p.lastRunAt) return t("Jamais");
+  const parts = [dateText(p.lastRunAt)];
+  const task = p.taskId ? store.tasks.get(p.taskId) : null;
+  if (task) {
+    parts.push(stateText(task, t));
+    if (task.site) parts.push(siteCountsText(task.site, store.siteMode(task)));
+  }
+  if (p.lastSkippedAt && p.lastSkippedAt > p.lastRunAt) {
+    parts.push(t("lancement du {0} sauté : copie en cours", dateText(p.lastSkippedAt)));
+  }
+  return parts.join(" — ");
+}
+
+/// « Lancer » est refusé pendant que la copie du projet tourne.
+function projectBusy(p) {
+  const task = p.taskId ? store.tasks.get(p.taskId) : null;
+  return task != null && PROJECT_BUSY.has(task.state);
+}
+
+/// Avancement des copies : la colonne « Dernier lancement » et « Lancer », à leur place
+/// (sans refaire le tableau, que parcourt peut-être un lecteur d'écran).
+function refreshProjectRows() {
+  for (const row of $("pj-table").tBodies[0].rows) {
+    const p = store.projects.get(row.dataset.project);
+    if (!p) continue;
+    const last = projectLastText(p);
+    if (row.cells[4].textContent !== last) row.cells[4].textContent = last;
+    row.querySelector('button[data-action="run"]').disabled = !connected || projectBusy(p);
+  }
+}
+
+function renderProjects() {
+  const body = $("pj-table").tBodies[0];
+  const focused = document.activeElement?.closest?.("#pj-table") ? document.activeElement : null;
+  const keep = focused?.dataset?.project ? [focused.dataset.project, focused.dataset.action] : null;
+  const list = store.projectList();
+  body.replaceChildren(...list.map((p) => {
+    const row = document.createElement("tr");
+    row.dataset.project = p.projectId;
+    const cell = (text, className = "") => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (className) td.className = className;
+      row.append(td);
+      return td;
+    };
+    cell(p.name);
+    cell(p.pageUrl, "path");
+    cell(projectScheduleText(p.schedule));
+    cell(p.nextRunAt ? dateText(p.nextRunAt) : "—");
+    cell(projectLastText(p));
+    const actions = cell("");
+    for (const [action, label, named, needs] of [
+      ["run", t("Lancer"), t("Lancer {0}", p.name), "control"],
+      ["edit", t("Modifier"), t("Modifier {0}", p.name), "admin"],
+      ["delete", t("Supprimer"), t("Supprimer {0}", p.name), "admin"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.project = p.projectId;
+      button.dataset.action = action;
+      button.dataset.needs = needs;
+      button.textContent = label;
+      button.setAttribute("aria-label", named);
+      button.disabled = !connected || (action === "run" && projectBusy(p));
+      if (action === "delete") button.className = "danger";
+      actions.append(button);
+    }
+    return row;
+  }));
+  markNeeds(body);
+  const status = list.length
+    ? t("{0} projet(s)", list.length)
+    : t("Aucun projet : enregistrez une exploration depuis la boîte « Liens », ou créez-en un avec « Nouveau projet… ».");
+  if ($("pj-status").textContent !== status) $("pj-status").textContent = status;
+  $("pj-new").disabled = !connected || !crawlCapable;
+  if (keep) {
+    const again = body.querySelector(`button[data-project="${CSS.escape(keep[0])}"][data-action="${keep[1]}"]`);
+    (again && !again.disabled ? again : $("pj-new")).focus();
+  }
+}
+
+function openProjects() {
+  if (!connected || !projectsCapable || document.querySelector("dialog[open]")) return;
+  $("pj-error").hidden = true;
+  renderProjects();
+  const dialog = $("projects-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
+/// Ouvre la boîte « Liens » en mode projet depuis « Projets » (« Modifier », « Nouveau
+/// projet… ») ; « Projets » se rouvre à sa fermeture.
+function editProject(project) {
+  projectsReturn = true;
+  $("projects-dialog").close();
+  openLinks();
+  if (!$("links-dialog").open) {
+    projectsReturn = false;
+    return;
+  }
+  enterProjectMode(project);
+}
+
+async function projectAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const project = store.projects.get(button.dataset.project);
+  if (!project) return;
+  $("pj-error").hidden = true;
+  if (button.dataset.action === "edit") return editProject(project);
+  try {
+    if (button.dataset.action === "run") {
+      await host.call("project.run", { projectId: project.projectId });
+      if (view.startsWith("completed")) chooseView("all");
+      announce(t("Projet « {0} » lancé", project.name));
+    } else {
+      await host.call("project.delete", { projectId: project.projectId });
+      announce(t("Projet « {0} » supprimé ; sa tâche et ses fichiers restent", project.name));
+    }
+  } catch (e) {
+    $("pj-error").textContent = refused(e);
+    $("pj-error").hidden = false;
+  }
+}
+
 let historyItems = [];
 let historyNext = null;
 let historySeq = 0;
@@ -4714,6 +5094,26 @@ function wire() {
     addLinks(value);
   });
   $("links-dialog").addEventListener("close", closeLinks);
+  // Projets (étape C3).
+  $("tb-projects").addEventListener("click", openProjects);
+  $("l-project").addEventListener("click", () => enterProjectMode(null));
+  $("l-p-back").addEventListener("click", () => {
+    leaveProjectMode();
+    $("l-project").focus();
+  });
+  $("l-p-save").addEventListener("click", saveProject);
+  // Entrée dans le nom enregistre (sinon le premier bouton du formulaire, « Annuler »).
+  $("l-p-name").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    saveProject();
+  });
+  $("l-p-scheduled").addEventListener("change", syncProjectMode);
+  $("pj-table").addEventListener("click", projectAction);
+  $("pj-new").addEventListener("click", () => editProject(null));
+  $("projects-dialog").addEventListener("close", () => {
+    if (!$("links-dialog").open) $("tb-projects").focus();
+  });
   $("v-probe").addEventListener("click", probeVideo);
   $("v-page").addEventListener("keydown", (event) => {
     // Entrée analyse la page, au lieu d'actionner le premier bouton du formulaire.

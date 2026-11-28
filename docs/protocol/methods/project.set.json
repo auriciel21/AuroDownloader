@@ -57,6 +57,10 @@
             "null"
           ]
         },
+        "subDir": {
+          "description": "Sous-dossier créé sous destDir (ou le dossier des téléchargements), parties séparées par / ; son chemin devient le dossier du projet (depuis le 2026-11-28).",
+          "type": "string"
+        },
         "queueId": {
           "type": [
             "string",

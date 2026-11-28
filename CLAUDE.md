@@ -149,7 +149,8 @@ téléchargement.
   `remote::add_site`, fichiers cochés par `links::find`) ; bureau et page (étape B3) : case
   « Copier le site pour la navigation hors ligne » de la boîte « Liens » (réglages de
   l'exploration lancée), ligne « Site : … » et ses éléments, section « Copie du site » des
-  Propriétés, « Ouvrir » vers la page de départ.
+  Propriétés, « Ouvrir » vers la page de départ ; projets (étape C3) : boîte « Projets », mode
+  projet de la boîte « Liens » (« Enregistrer comme projet… »), ligne « Fichiers : … ».
   Interface distante (F-39, SPEC 7.19, étape 3) : `remote` (jetons et sessions, empreintes
   seules ; `remote::run`, l'écoute selon `remote.enabled` et `remote.listen`, lancée par
   `aurod`), `remote::server` (hyper et tokio-tungstenite : `/ws`, `POST /rpc`, `/login`,

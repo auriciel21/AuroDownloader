@@ -10,7 +10,7 @@ import {
   takeHashToken, sessionError, subDirParts, scopeAllows, pastedToken, isToken, pluginCandidate, pluginLinkName,
   splitListen, joinListen, pageLink, isLoopbackUrl, qrUrls, qrPath, remoteSettled, plannedUrls,
   splitList, splitArgs, ruleFromFields, ruleForSet, ruleSummary, ruleError, moveRule,
-  isFileTransferUrl, sshServer, pendingKeyFor, blockedByHostKey,
+  isFileTransferUrl, sshServer, pendingKeyFor, blockedByHostKey, projectParams, projectFields, sizeField,
 } from "../src/model.js";
 
 const task = (id, state = "queued", extra = {}) => ({
@@ -816,4 +816,93 @@ test("exploration d'un site : modèles, paramètres et arborescence (SPEC 7.18 b
   assert.equal(siteSubDir("ISO", "exemple.org/a"), "ISO/exemple.org/a");
   assert.equal(siteSubDir("a/b/c", "h/1/2/3/4/5/6"), "a/b/c/h/1/2/3/4");
   assert.equal(siteSubDir(undefined, ""), "");
+});
+
+// ---------- Projets (F-44, SPEC §7.18 quater, étape C3) ----------
+
+const PROJECT_FIELDS = {
+  name: " Docs ", source: "https://exemple.org/docs/", depth: "2", maxPages: "50", exclude: "(?i)logout",
+  sameFolder: true, ignoreRobots: false, extensions: ".PDF, zip pdf", min: "1M", max: "", regex: "rapport",
+  copySite: false, keepTree: true, scheduled: true, time: "03:30", days: [5, 1, 3, 1],
+};
+
+test("projets : les champs de la boîte « Liens » font les paramètres de project.set", () => {
+  assert.deepEqual(projectParams(PROJECT_FIELDS), { params: {
+    name: "Docs", pageUrl: "https://exemple.org/docs/", depth: 2, maxPages: 50, exclude: "(?i)logout",
+    sameFolder: true, ignoreRobots: false,
+    filters: { extensions: ["pdf", "zip"], regex: "rapport", minSize: 1024 * 1024, maxSize: null },
+    copySite: false, keepTree: true, schedule: { time: "03:30", days: [1, 3, 5] },
+  } });
+  // Une copie garde toujours l'arborescence ; sans programme, à la main.
+  const copy = projectParams({ ...PROJECT_FIELDS, copySite: true, scheduled: false }).params;
+  assert.equal(copy.keepTree, false);
+  assert.equal(copy.schedule, null);
+  // Modifié : son identifiant, et ce que la boîte ne montre pas ; sous-dossier de la page.
+  const kept = projectParams({ ...PROJECT_FIELDS, subDir: "a\\b" }, { projectId: "p1", destDir: "/d", queueId: null, maxBytes: 5 }).params;
+  assert.equal(kept.projectId, "p1");
+  assert.equal(kept.destDir, "/d");
+  assert.equal(kept.maxBytes, 5);
+  assert.ok(!("queueId" in kept));
+  assert.equal(kept.subDir, "a/b");
+  assert.ok(!("subDir" in projectParams({ ...PROJECT_FIELDS, subDir: "" }).params));
+});
+
+test("projets : champs refusés", () => {
+  const error = (extra) => projectParams({ ...PROJECT_FIELDS, ...extra }).error;
+  assert.equal(error({ name: "  " }), "name");
+  assert.equal(error({ name: "x".repeat(101) }), "name");
+  assert.equal(error({ name: "é".repeat(100) }), undefined);
+  assert.equal(error({ source: "https://exemple.org/a.zip" }), "page");
+  assert.equal(error({ source: "deux https://a.org/ https://b.org/" }), "page");
+  assert.equal(error({ depth: "6" }), "depth");
+  assert.equal(error({ min: "beaucoup" }), "min");
+  assert.equal(error({ max: "1 Q" }), "max");
+  assert.equal(error({ regex: "(" }), "regex");
+  assert.equal(error({ regex: "(?i)rapport" }), undefined, "syntaxe du moteur");
+  assert.equal(error({ time: "" }), "time");
+  assert.equal(error({ time: "25:00" }), "time");
+  assert.equal(error({ scheduled: false, time: "" }), undefined);
+  assert.equal(error({ subDir: "a/../b" }), "subDir");
+});
+
+test("projets : un projet enregistré remplit la boîte, et ses champs le redonnent", () => {
+  const project = {
+    projectId: "p1", name: "Docs", pageUrl: "https://exemple.org/docs/", depth: 2, maxPages: 50,
+    maxBytes: 1024 ** 3, exclude: null, sameFolder: true, ignoreRobots: false,
+    filters: { extensions: ["pdf", "zip"], regex: null, minSize: 3 * 1024 ** 3, maxSize: 1500 },
+    copySite: false, keepTree: true, destDir: null, queueId: null, schedule: null,
+  };
+  const fields = projectFields(project);
+  assert.equal(fields.extensions, "pdf, zip");
+  assert.equal(fields.min, "3G");
+  assert.equal(fields.max, "1500");
+  assert.equal(fields.scheduled, false);
+  assert.deepEqual(fields.days, [1, 2, 3, 4, 5, 6, 7]);
+  const back = projectParams(fields, project).params;
+  assert.deepEqual(back.filters, project.filters);
+  assert.equal(back.exclude, "");
+  assert.equal(back.projectId, "p1");
+  assert.equal(sizeField(null), "");
+  assert.equal(sizeField(2048), "2K");
+  assert.equal(sizeField(5 * 1024 ** 4), "5T");
+});
+
+test("projets : instantané, project.updated, mode de la copie d'un projet", () => {
+  const store = new TaskStore();
+  const docs = { projectId: "p1", name: "Docs", copySite: false, taskId: "t1" };
+  store.load({ ...snapshot(1, [task("t1", "completed", { kind: "site" })]), projects: [docs] });
+  assert.deepEqual(store.projectList(), [docs]);
+  assert.equal(store.siteMode(store.tasks.get("t1")), "files");
+  // Un projet de plus : la liste par nom ; un projet supprimé : sa copie redevient une copie.
+  const r = store.apply("project.updated", { rev: 2, projectId: "p0", project: { projectId: "p0", name: "Archives", copySite: true, taskId: null } });
+  assert.equal(r.projects, true);
+  assert.deepEqual(store.projectList().map((p) => p.name), ["Archives", "Docs"]);
+  const removed = store.apply("project.updated", { rev: 3, projectId: "p1", project: null });
+  assert.ok(removed.changed.has("t1"), "la ligne de sa copie change de nom");
+  assert.equal(store.siteMode(store.tasks.get("t1")), "copy");
+  // L'avancement dit le mode, avant le projet.
+  store.apply("task.progress", { rev: 3, items: [{ taskId: "t1", site: { mode: "files" } }] });
+  assert.equal(store.siteMode(store.tasks.get("t1")), "files");
+  // Une notification sautée fait relire l'instantané, comme les autres.
+  assert.equal(store.apply("project.updated", { rev: 5, projectId: "p0", project: null }).resync, true);
 });

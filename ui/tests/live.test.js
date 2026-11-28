@@ -1141,3 +1141,156 @@ test("copie d'un site : case de la boîte « Liens », ligne, Propriétés, Ouvr
     await settle();
   }
 });
+
+test("projets : boîte « Projets », « Enregistrer comme projet… », « Modifier », ligne « Fichiers : … »", async () => {
+  await closeAll();
+  const document = window.document;
+  const $ = (id) => document.getElementById(id);
+  listeners.engine({ payload: { kind: "status", state: "up", engine: { engine: { version: "0.1.0" }, capabilities: ["media", "linkscan", "crawl", "site", "projects"], scope: "admin" } } });
+  await settle();
+  rev = 1;
+  const sent = [];
+  for (const method of ["project.set", "project.run", "project.delete"]) {
+    ENGINE[method] = (params) => {
+      sent.push([method, params]);
+      if (method === "project.set") return { projectId: params.projectId ?? "neuf" };
+      return method === "project.run" ? { taskId: "projtache" } : {};
+    };
+  }
+  const docs = {
+    projectId: "p1", name: "Docs", pageUrl: "https://exemple.org/docs/", depth: 2, maxPages: 200, maxBytes: 1024 * MIB,
+    exclude: null, sameFolder: false, ignoreRobots: false,
+    filters: { extensions: ["pdf"], regex: null, minSize: MIB, maxSize: null },
+    copySite: false, keepTree: true, destDir: "/home/essai/Docs", queueId: null,
+    schedule: { time: "03:30", days: [1, 2, 3, 4, 5] }, nextRunAt: NOW + 3600_000,
+    taskId: "projtache", lastRunAt: NOW - 60_000, lastSkippedAt: null, publicOnly: false,
+  };
+  try {
+    assert.equal($("tb-projects").hidden, false);
+    notify("project.updated", { projectId: "p1", project: docs });
+    notify("task.added", { task: task("projtache", "completed", { kind: "site", displayName: "exemple.org", fileName: "exemple.org", totalBytes: null }) });
+    await settle();
+    // Fichiers seuls d'un projet : le nom de la ligne le dit, avant tout avancement.
+    assert.equal(row("projtache").querySelector(".name .text").textContent, "Fichiers : exemple.org");
+
+    $("tb-projects").click();
+    await settle();
+    assert.ok($("projects-dialog").open);
+    const cells = [...$("pj-table").tBodies[0].rows[0].cells].map((c) => c.textContent);
+    assert.equal(cells[0], "Docs");
+    assert.equal(cells[1], "https://exemple.org/docs/");
+    assert.match(cells[2], / à 03:30$/);
+    assert.match(cells[4], /Terminé/);
+    assert.deepEqual(await audit($("projects-dialog")), []);
+
+    // « Lancer » : la copie du projet.
+    $("pj-table").querySelector('button[data-action="run"]').click();
+    await settle();
+    assert.deepEqual(sent.pop(), ["project.run", { projectId: "p1" }]);
+
+    // « Modifier » : la boîte « Liens » remplie, en mode projet ; « Projets » se ferme.
+    $("pj-table").querySelector('button[data-action="edit"]').click();
+    await settle();
+    assert.equal($("projects-dialog").open, false);
+    assert.ok($("links-dialog").open);
+    assert.equal(document.activeElement, $("l-p-name"));
+    assert.equal($("l-p-name").value, "Docs");
+    assert.equal($("l-source").value, "https://exemple.org/docs/");
+    assert.equal($("l-depth").value, "2");
+    assert.equal($("l-ext").value, "pdf");
+    assert.equal($("l-min").value, "1M");
+    assert.equal($("l-filters").hidden, false, "les filtres, sans liens analysés");
+    assert.equal($("l-site").checked, false);
+    assert.equal($("l-tree").checked, true);
+    assert.equal($("l-p-scheduled").checked, true);
+    assert.equal($("l-p-time").value, "03:30");
+    assert.deepEqual([...$("l-p-days").querySelectorAll("input:checked")].map((b) => b.value), ["1", "2", "3", "4", "5"]);
+    assert.equal($("l-p-run").checked, false);
+    assert.equal($("l-p-back").hidden, true, "ouverte depuis « Projets »");
+    assert.equal($("l-start").hidden, true);
+    assert.equal($("l-dest").textContent, "/home/essai/Docs");
+    assert.deepEqual(await audit($("links-dialog")), []);
+
+    // Un nom vide : refusé, lié au champ, qui prend le focus ; rien d'envoyé.
+    $("l-p-name").value = " ";
+    $("l-p-save").click();
+    await settle();
+    assert.equal(sent.length, 0);
+    assert.equal(document.activeElement, $("l-p-name"));
+    assert.equal($("l-p-name").getAttribute("aria-invalid"), "true");
+    assertAlertIn($("links-dialog"), /Nom du projet : de 1 à 100 caractères/);
+
+    // Enregistré : ce que la boîte montre, plus ce qu'elle ne montre pas (dossier, volume).
+    $("l-p-name").value = "Docs 2";
+    $("l-p-save").click();
+    await settle();
+    assert.deepEqual(sent.pop(), ["project.set", {
+      projectId: "p1", name: "Docs 2", pageUrl: "https://exemple.org/docs/", depth: 2, maxPages: 200, exclude: "",
+      sameFolder: false, ignoreRobots: false,
+      filters: { extensions: ["pdf"], regex: null, minSize: MIB, maxSize: null },
+      copySite: false, keepTree: true, schedule: { time: "03:30", days: [1, 2, 3, 4, 5] },
+      destDir: "/home/essai/Docs", maxBytes: 1024 * MIB,
+    }]);
+    assert.equal(sent.length, 0, "pas de lancement : « Lancer maintenant » décoché");
+    assert.equal($("links-dialog").open, false);
+    assert.ok($("projects-dialog").open, "« Projets » rouverte");
+
+    // « Supprimer » : envoyé ; la notification retire la ligne.
+    $("pj-table").querySelector('button[data-action="delete"]').click();
+    await settle();
+    assert.deepEqual(sent.pop(), ["project.delete", { projectId: "p1" }]);
+    notify("project.updated", { projectId: "p1", project: null });
+    await settle();
+    assert.equal($("pj-table").tBodies[0].rows.length, 0);
+    assert.match($("pj-status").textContent, /^Aucun projet/);
+    // Sans son projet, la copie reprend le nom d'une copie, jusqu'à son avancement.
+    assert.equal(row("projtache").querySelector(".name .text").textContent, "Site : exemple.org");
+    listeners.engine({ payload: { kind: "message", message: { method: "task.progress", params: { rev, items: [{
+      taskId: "projtache", doneBytes: 10, totalBytes: null, bps: 0, connections: 0, etaS: null,
+      site: { pages: 3, resources: 0, files: 2, failed: 0, ignored: 1, unchanged: 4, queued: 0, mode: "files" } }] } } } });
+    await settle();
+    assert.equal(row("projtache").querySelector(".name .text").textContent, "Fichiers : exemple.org");
+    assert.equal(row("projtache").querySelector(".pct").textContent, "2 téléchargée(s), 4 inchangée(s), 1 ignorée(s)");
+
+    // Depuis la boîte « Liens » : la page et ses réglages, le nom de son hôte, lancé.
+    await closeAll();
+    $("tb-links").click();
+    await settle();
+    $("l-source").value = "https://exemple.org/docs/";
+    $("l-depth").value = "1";
+    $("l-ext").value = "";
+    $("l-min").value = "";
+    $("l-tree").checked = false;
+    assert.equal($("l-project").hidden, false);
+    $("l-project").click();
+    await settle();
+    assert.equal($("l-project-box").hidden, false);
+    assert.equal($("l-p-name").value, "exemple.org");
+    assert.equal($("l-p-run").checked, true);
+    assert.equal($("l-p-back").hidden, false);
+    assert.equal($("l-p-time").disabled, true, "programme décoché");
+    $("l-p-scheduled").checked = true;
+    $("l-p-scheduled").dispatchEvent(new window.Event("change"));
+    assert.equal($("l-p-time").disabled, false);
+    $("l-p-days").querySelectorAll("input").forEach((b) => { b.checked = false; });
+    $("l-p-save").click();
+    await settle();
+    assert.deepEqual(sent.shift(), ["project.set", {
+      name: "exemple.org", pageUrl: "https://exemple.org/docs/", depth: 1, maxPages: 200,
+      exclude: "(?i)logout|signout|deconnexion|déconnexion|[?&;]C=[NMSD][;&]O=[AD]", sameFolder: false, ignoreRobots: false,
+      filters: { extensions: [], regex: null, minSize: null, maxSize: null },
+      copySite: false, keepTree: false, schedule: { time: "03:00", days: [] },
+    }]);
+    assert.deepEqual(sent.shift(), ["project.run", { projectId: "neuf" }]);
+    assert.equal($("links-dialog").open, false);
+    assert.equal(document.activeElement, $("tb-links"));
+    assert.equal($("announce").textContent, "Projet « exemple.org » enregistré et lancé");
+  } finally {
+    for (const m of ["project.set", "project.run", "project.delete"]) delete ENGINE[m];
+    $("l-crawl").checked = false;
+    $("l-depth").value = "1";
+    await closeAll();
+    notify("task.removed", { taskId: "projtache" });
+    await settle();
+  }
+});

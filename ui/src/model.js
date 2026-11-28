@@ -291,6 +291,8 @@ function outcome() {
     torrentInterface: false,
     /// L'état des outils de la vidéo a changé (SPEC §7.17).
     tools: false,
+    /// Les projets enregistrés ont changé (SPEC §7.18 quater).
+    projects: false,
   };
 }
 
@@ -307,6 +309,7 @@ function merge(into, other) {
   into.warnings.push(...other.warnings);
   into.torrentInterface ||= other.torrentInterface;
   into.tools ||= other.tools;
+  into.projects ||= other.projects;
 }
 
 /// Tâche telle que la liste la garde : l'avancement manque à l'instantané.
@@ -328,6 +331,8 @@ export class TaskStore {
     this.settings = {};
     /// Planifications (F-16), par identifiant, avec leur ouverture.
     this.schedules = new Map();
+    /// Projets enregistrés (F-44, SPEC §7.18 quater), par identifiant.
+    this.projects = new Map();
     /// Action de fin annoncée (`{queueId, action, at}`), ou `null`.
     this.endAction = null;
     /// L'interface réseau des torrents est là, ou aucune n'est demandée (SPEC §7.16).
@@ -354,6 +359,7 @@ export class TaskStore {
     this.limits = snapshot.limits ?? null;
     this.settings = { ...snapshot.settings };
     this.schedules = new Map((snapshot.schedules ?? []).map((s) => [s.scheduleId, s]));
+    this.projects = new Map((snapshot.projects ?? []).map((p) => [p.projectId, p]));
     this.endAction = snapshot.endAction ?? null;
     this.torrentInterfaceUp = snapshot.torrentInterfaceUp ?? true;
     this.rev = snapshot.rev;
@@ -363,6 +369,7 @@ export class TaskStore {
     result.settings = true;
     result.planning = true;
     result.torrentInterface = true;
+    result.projects = true;
     for (const id of this.tasks.keys()) result.changed.add(id);
     const waiting = this.waiting;
     this.waiting = [];
@@ -412,6 +419,7 @@ export class TaskStore {
       case "settings.updated":
       case "schedule.updated":
       case "schedule.removed":
+      case "project.updated":
       case "engine.endAction":
       // Réseau utilisable ou non (SPEC §7.15, application Android) : numérotée, sans effet ici.
       case "engine.network":
@@ -497,6 +505,17 @@ export class TaskStore {
         this.schedules.delete(params.scheduleId);
         result.planning = true;
         break;
+      case "project.updated": {
+        // Sa tâche peut changer de nom affiché (« Fichiers : … ») : la liste se redessine.
+        const before = this.projects.get(params.projectId)?.taskId;
+        if (params.project) this.projects.set(params.projectId, params.project);
+        else this.projects.delete(params.projectId);
+        result.projects = true;
+        for (const id of [before, params.project?.taskId]) {
+          if (id && this.tasks.has(id)) result.changed.add(id);
+        }
+        break;
+      }
       case "engine.endAction":
         this.endAction = params.pending ?? null;
         result.endActionError = params.error ?? null;
@@ -534,6 +553,24 @@ export class TaskStore {
     for (const task of this.tasks.values()) {
       if (task.queueId === queueId) result.changed.add(task.taskId);
     }
+  }
+
+  /// Projet dont `taskId` est la tâche, ou `null`.
+  projectOfTask(taskId) {
+    for (const p of this.projects.values()) if (p.taskId === taskId) return p;
+    return null;
+  }
+
+  /// Mode d'une copie de site : `files` (fichiers seuls) ou `copy` ; d'après son
+  /// avancement, sinon son projet (l'instantané ne le dit pas).
+  siteMode(task) {
+    if (task.site?.mode) return task.site.mode;
+    return this.projectOfTask(task.taskId)?.copySite === false ? "files" : "copy";
+  }
+
+  /// Projets, par nom.
+  projectList() {
+    return [...this.projects.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /// Planification d'une file, ou `null`.
@@ -808,6 +845,98 @@ export function siteSubDir(subDir, sitePath) {
     .map((p) => p.trim())
     .filter(Boolean);
   return parts.slice(0, 8).join("/");
+}
+
+// ---------- Projets enregistrés (F-44, SPEC §7.18 quater) ----------
+
+/// Nom d'un projet : 100 caractères au plus (`scheduler::projects`).
+export const MAX_PROJECT_NAME = 100;
+
+/// Une expression régulière du moteur (Rust) vérifiée par JavaScript : `(?i)` en tête, que
+/// JavaScript n'écrit pas ainsi, est retiré ; rend le message d'erreur, ou `null`.
+function engineRegexError(pattern) {
+  try {
+    new RegExp(pattern.replace(/^\(\?i\)/, ""));
+    return null;
+  } catch (e) {
+    return e.message;
+  }
+}
+
+/// Paramètres de `project.set` lus des champs de la boîte « Liens » en mode projet :
+/// `{params}`, ou `{error}` (`name`, `page`, `depth`, `maxPages`, `exclude`, `min`, `max`,
+/// `regex`, `time`, `days`, `subDir` ; `message` pour une expression). `keep` : ce que la
+/// boîte ne montre pas et qu'un projet modifié garde (`destDir`, `queueId`, `maxBytes`).
+export function projectParams(f, keep = {}) {
+  const name = (f.name ?? "").trim();
+  if (!name || [...name].length > MAX_PROJECT_NAME) return { error: "name" };
+  const request = scanRequest(f.source);
+  if (!request?.pageUrl) return { error: "page" };
+  const crawl = crawlParams(request.pageUrl, f);
+  if (crawl.error) return crawl;
+  const minSize = parseSizeText(f.min);
+  const maxSize = parseSizeText(f.max);
+  if (Number.isNaN(minSize)) return { error: "min" };
+  if (Number.isNaN(maxSize)) return { error: "max" };
+  const regex = (f.regex ?? "").trim();
+  const message = regex ? engineRegexError(regex) : null;
+  if (message !== null) return { error: "regex", message };
+  let schedule = null;
+  if (f.scheduled) {
+    if (!/^([01]\d|2[0-3]):[0-5]\d/.test(f.time ?? "")) return { error: "time" };
+    const days = [...new Set(f.days ?? [])].filter((d) => Number.isInteger(d) && d >= 1 && d <= 7).sort();
+    schedule = { time: f.time.slice(0, 5), days };
+  }
+  const params = {
+    name,
+    ...crawl.params,
+    filters: { extensions: splitList(f.extensions, { extensions: true }), regex: regex || null, minSize, maxSize },
+    copySite: !!f.copySite,
+    keepTree: !f.copySite && !!f.keepTree,
+    schedule,
+  };
+  if (keep.projectId) params.projectId = keep.projectId;
+  for (const key of ["destDir", "queueId", "maxBytes"]) {
+    if (keep[key] != null) params[key] = keep[key];
+  }
+  if (f.subDir !== undefined) {
+    const parts = subDirParts(f.subDir);
+    if (parts === null) return { error: "subDir" };
+    if (parts) params.subDir = parts;
+  }
+  return { params };
+}
+
+/// Une taille gardée par un projet, écrite pour le champ : « 10M » si elle tombe juste,
+/// sinon en octets ; vide si aucune.
+export function sizeField(n) {
+  if (n == null) return "";
+  for (const [unit, factor] of [["T", 1024 ** 4], ["G", 1024 ** 3], ["M", 1024 ** 2], ["K", 1024]]) {
+    if (n >= factor && n % factor === 0) return `${n / factor}${unit}`;
+  }
+  return String(n);
+}
+
+/// Les champs de la boîte « Liens » d'un projet enregistré (« Modifier »).
+export function projectFields(p) {
+  return {
+    name: p.name,
+    source: p.pageUrl,
+    depth: String(p.depth),
+    maxPages: String(p.maxPages),
+    exclude: p.exclude ?? "",
+    sameFolder: !!p.sameFolder,
+    ignoreRobots: !!p.ignoreRobots,
+    extensions: (p.filters?.extensions ?? []).join(", "),
+    min: sizeField(p.filters?.minSize),
+    max: sizeField(p.filters?.maxSize),
+    regex: p.filters?.regex ?? "",
+    copySite: !!p.copySite,
+    keepTree: !!p.keepTree,
+    scheduled: !!p.schedule,
+    time: p.schedule?.time ?? "03:00",
+    days: p.schedule?.days ?? [1, 2, 3, 4, 5, 6, 7],
+  };
 }
 
 /// Un lien classé « page » (sans extension, ou extension de page web) que le serveur décrit

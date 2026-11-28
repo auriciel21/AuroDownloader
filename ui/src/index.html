@@ -36,6 +36,7 @@
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8M12 8v4.5l3 1.8"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4.5H6.5v15H14M10.5 12h10M17 8.5l3.5 3.5-3.5 3.5"/></symbol>
+    <symbol id="i-projects" viewBox="0 0 24 24"><path d="M3.5 6h6l2 2h9v11.5h-17z"/><circle cx="15.5" cy="14" r="3.2"/><path d="M15.5 12.3V14l1.1.9"/></symbol>
     <symbol id="i-links" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3.6-3.6a4 4 0 0 0-5.7-5.7l-1.4 1.4M14 10a4 4 0 0 0-5.7 0l-3.6 3.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/></symbol>
   </svg>
 
@@ -52,6 +53,11 @@
       data-i18n-title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois"
       title="Relever les fichiers d'une page web, d'un texte ou d'une liste, et en télécharger plusieurs à la fois">
       <svg aria-hidden="true"><use href="#i-links"/></svg><span data-i18n="Liens">Liens</span></button>
+    <!-- Projets enregistrés (F-44, SPEC 7.18 quater) : si le moteur annonce `projects`. -->
+    <button type="button" id="tb-projects" class="tool" data-needs="read" hidden
+      data-i18n-title="Explorations enregistrées, relancées à la main ou à heure fixe"
+      title="Explorations enregistrées, relancées à la main ou à heure fixe">
+      <svg aria-hidden="true"><use href="#i-projects"/></svg><span data-i18n="Projets">Projets</span></button>
     <button type="button" id="tb-resume" data-needs="control" class="tool resume">
       <svg aria-hidden="true"><use href="#i-resume"/></svg><span data-i18n="Reprendre">Reprendre</span></button>
     <button type="button" id="tb-pause" data-needs="control" class="tool pause">
@@ -316,19 +322,19 @@
         <span id="l-progress" class="note"></span>
         <button type="button" id="l-stop" data-i18n="Arrêter l'exploration">Arrêter l'exploration</button>
       </p>
+      <fieldset class="link-filters" id="l-filters" hidden>
+        <legend data-i18n="Filtres">Filtres</legend>
+        <label><span data-i18n="Extensions">Extensions</span>
+          <input id="l-ext" type="text" spellcheck="false" autocomplete="off" placeholder="iso, zip, mp4"></label>
+        <label><span data-i18n="Taille minimale">Taille minimale</span>
+          <input id="l-min" type="text" spellcheck="false" autocomplete="off" placeholder="10M"></label>
+        <label><span data-i18n="Taille maximale">Taille maximale</span>
+          <input id="l-max" type="text" spellcheck="false" autocomplete="off" placeholder="4G"></label>
+        <label class="wide-field"><span data-i18n="Expression régulière sur l'adresse">Expression régulière sur l'adresse</span>
+          <input id="l-regex" type="text" spellcheck="false" autocomplete="off"></label>
+        <label class="check"><input id="l-all" type="checkbox"><span data-i18n="Montrer aussi les pages et les liens sans extension">Montrer aussi les pages et les liens sans extension</span></label>
+      </fieldset>
       <div id="l-result" hidden>
-        <fieldset class="link-filters">
-          <legend data-i18n="Filtres">Filtres</legend>
-          <label><span data-i18n="Extensions">Extensions</span>
-            <input id="l-ext" type="text" spellcheck="false" autocomplete="off" placeholder="iso, zip, mp4"></label>
-          <label><span data-i18n="Taille minimale">Taille minimale</span>
-            <input id="l-min" type="text" spellcheck="false" autocomplete="off" placeholder="10M"></label>
-          <label><span data-i18n="Taille maximale">Taille maximale</span>
-            <input id="l-max" type="text" spellcheck="false" autocomplete="off" placeholder="4G"></label>
-          <label class="wide-field"><span data-i18n="Expression régulière sur l'adresse">Expression régulière sur l'adresse</span>
-            <input id="l-regex" type="text" spellcheck="false" autocomplete="off"></label>
-          <label class="check"><input id="l-all" type="checkbox"><span data-i18n="Montrer aussi les pages et les liens sans extension">Montrer aussi les pages et les liens sans extension</span></label>
-        </fieldset>
         <span class="row">
           <button type="button" id="l-check-all" data-i18n="Tout cocher">Tout cocher</button>
           <button type="button" id="l-check-none" data-i18n="Tout décocher">Tout décocher</button>
@@ -363,12 +369,30 @@
       <!-- Copie d'un site (F-43, SPEC 7.18 ter) : après une exploration, si le moteur annonce `site`. -->
       <label class="check" id="l-site-box" hidden><input id="l-site" type="checkbox" aria-describedby="l-site-note"><span data-i18n="Copier le site pour la navigation hors ligne">Copier le site pour la navigation hors ligne</span></label>
       <span class="note" id="l-site-note" data-i18n="Une seule tâche copie les pages explorées, avec leurs images, styles, scripts et polices, et les fichiers cochés ; les liens des pages mènent à la copie. Les pages suivent les réglages de l'exploration : les pages cochées sont ignorées." hidden>Une seule tâche copie les pages explorées, avec leurs images, styles, scripts et polices, et les fichiers cochés ; les liens des pages mènent à la copie. Les pages suivent les réglages de l'exploration : les pages cochées sont ignorées.</span>
+      <!-- Projet (F-44, SPEC 7.18 quater) : la boîte en mode projet (« Enregistrer comme projet… »,
+           « Modifier », « Nouveau projet… » de la boîte « Projets »). -->
+      <fieldset id="l-project-box" hidden>
+        <legend data-i18n="Projet">Projet</legend>
+        <label class="field"><span data-i18n="Nom du projet">Nom du projet</span>
+          <input id="l-p-name" type="text" maxlength="100" spellcheck="false" autocomplete="off" aria-describedby="l-p-note"></label>
+        <span class="note" id="l-p-note" data-i18n="Le projet garde la page, les réglages de l'exploration, les filtres, le choix entre copie du site et fichiers seuls, et le dossier. Chaque lancement explore de nouveau le site et prend les fichiers qui passent les filtres ; une copie déjà faite est mise à jour sur place.">Le projet garde la page, les réglages de l'exploration, les filtres, le choix entre copie du site et fichiers seuls, et le dossier. Chaque lancement explore de nouveau le site et prend les fichiers qui passent les filtres ; une copie déjà faite est mise à jour sur place.</span>
+        <label class="check"><input id="l-p-scheduled" type="checkbox"><span data-i18n="Lancer à heure fixe">Lancer à heure fixe</span></label>
+        <div class="row" id="l-p-when">
+          <label class="time"><span data-i18n="Heure">Heure</span> <input id="l-p-time" type="time" value="03:00"></label>
+          <fieldset id="l-p-days" class="days" aria-describedby="l-p-days-note"><legend class="visually-hidden" data-i18n="Jours">Jours</legend></fieldset>
+        </div>
+        <span class="note" id="l-p-days-note" data-i18n="Sans jour coché : une seule fois. Un lancement manqué (ordinateur éteint) se fait une fois au démarrage suivant.">Sans jour coché : une seule fois. Un lancement manqué (ordinateur éteint) se fait une fois au démarrage suivant.</span>
+        <label class="check"><input id="l-p-run" type="checkbox"><span data-i18n="Lancer maintenant">Lancer maintenant</span></label>
+      </fieldset>
       <p id="l-error" class="form-error" role="alert" hidden></p>
       <div class="buttons">
         <button value="cancel" formnovalidate data-i18n="Annuler">Annuler</button>
         <span class="row">
+          <button type="button" id="l-project" data-needs="admin" hidden data-i18n="Enregistrer comme projet…">Enregistrer comme projet…</button>
+          <button type="button" id="l-p-back" hidden data-i18n="Retour aux liens">Retour aux liens</button>
           <button value="later" id="l-later" data-i18n="Télécharger plus tard">Télécharger plus tard</button>
           <button value="start" id="l-start" class="primary" data-i18n="Démarrer">Démarrer</button>
+          <button type="button" id="l-p-save" class="primary" hidden data-i18n="Enregistrer le projet">Enregistrer le projet</button>
         </span>
       </div>
     </form>
@@ -520,6 +544,33 @@
     </form>
   </dialog>
 
+  <!-- Projets enregistrés (F-44, SPEC 7.18 quater). -->
+  <dialog id="projects-dialog" class="wide" aria-labelledby="projects-title" aria-describedby="pj-note">
+    <form method="dialog">
+      <h2 id="projects-title" data-i18n="Projets">Projets</h2>
+      <p class="note flush" id="pj-note" data-i18n="Un projet est une exploration enregistrée : relancée à la main ou à heure fixe, elle met à jour sa copie sur place.">Un projet est une exploration enregistrée : relancée à la main ou à heure fixe, elle met à jour sa copie sur place.</p>
+      <div class="history-box">
+        <table id="pj-table">
+          <thead><tr>
+            <th scope="col" data-i18n="Nom">Nom</th>
+            <th scope="col" data-i18n="Page de départ">Page de départ</th>
+            <th scope="col" data-i18n="Programme">Programme</th>
+            <th scope="col" data-i18n="Prochain lancement">Prochain lancement</th>
+            <th scope="col" data-i18n="Dernier lancement">Dernier lancement</th>
+            <th scope="col" data-i18n="Actions">Actions</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note flush" id="pj-status" role="status"></p>
+      <p id="pj-error" class="form-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" id="pj-new" data-needs="admin" data-i18n="Nouveau projet…">Nouveau projet…</button>
+        <button value="close" data-i18n="Fermer">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="details" class="wide" aria-labelledby="details-title">
     <form method="dialog">
       <h2 id="details-title" data-i18n="Propriétés">Propriétés</h2>
@@ -605,8 +656,13 @@
         <dl class="facts">
           <div id="f-site-page"><dt data-i18n="Page de départ">Page de départ</dt><dd id="d-site-page" class="path"></dd></div>
           <div id="f-site-start"><dt data-i18n="Page copiée">Page copiée</dt><dd id="d-site-start" class="path"></dd></div>
+          <div id="f-site-project"><dt data-i18n="Projet">Projet</dt><dd id="d-site-project"></dd></div>
+          <div id="f-site-mode"><dt data-i18n="Mode">Mode</dt><dd id="d-site-mode"></dd></div>
           <div id="f-site-settings"><dt data-i18n="Réglages">Réglages</dt><dd id="d-site-settings"></dd></div>
+          <div id="f-site-filters"><dt data-i18n="Filtres">Filtres</dt><dd id="d-site-filters"></dd></div>
+          <div id="f-site-run"><dt data-i18n="Lancement">Lancement</dt><dd id="d-site-run"></dd></div>
           <div id="f-site-counts"><dt data-i18n="Téléchargées">Téléchargées</dt><dd id="d-site-counts"></dd></div>
+          <div id="f-site-unchanged-count"><dt data-i18n="Inchangées">Inchangées</dt><dd id="d-site-unchanged-count"></dd></div>
           <div id="f-site-failed-count"><dt data-i18n="Échecs techniques">Échecs techniques</dt><dd id="d-site-failed-count"></dd></div>
           <div id="f-site-ignored-count"><dt data-i18n="Ignorées / laissées en ligne">Ignorées / laissées en ligne</dt><dd id="d-site-ignored-count"></dd></div>
           <div id="f-site-stop"><dt data-i18n="Exploration">Exploration</dt><dd id="d-site-stop"></dd></div>

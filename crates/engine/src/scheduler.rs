@@ -955,6 +955,7 @@ enum Command {
     SetProject {
         project_id: Option<String>,
         spec: Box<store::projects::ProjectSpec>,
+        sub_dir: Vec<String>,
         remote: bool,
         public_only: bool,
         reply: Reply<String>,
@@ -1793,10 +1794,22 @@ impl Engine {
         project_id: Option<String>,
         spec: store::projects::ProjectSpec,
     ) -> Result<String, EngineError> {
+        self.set_project_in(project_id, spec, Vec::new()).await
+    }
+
+    /// [`Engine::set_project`], avec un sous-dossier (`subDir` de la page) créé sous le
+    /// dossier du projet, ou celui des téléchargements, et gardé comme son dossier.
+    pub async fn set_project_in(
+        &self,
+        project_id: Option<String>,
+        spec: store::projects::ProjectSpec,
+        sub_dir: Vec<String>,
+    ) -> Result<String, EngineError> {
         let (remote, public_only) = (self.remote, self.public_only);
         self.ask(|reply| Command::SetProject {
             project_id,
             spec: Box::new(spec),
+            sub_dir,
             remote,
             public_only,
             reply,
@@ -3431,11 +3444,13 @@ impl Scheduler {
             Command::SetProject {
                 project_id,
                 spec,
+                sub_dir,
                 remote,
                 public_only,
                 reply,
             } => {
-                let _ = reply.send(self.set_project(project_id, *spec, remote, public_only));
+                let _ =
+                    reply.send(self.set_project(project_id, *spec, &sub_dir, remote, public_only));
             }
             Command::DeleteProject { project_id, reply } => {
                 let _ = reply.send(self.delete_project(&project_id));
@@ -4069,7 +4084,12 @@ impl Scheduler {
             ruled: task.dest_dir.is_none() && task.sub_dir.is_empty(),
         };
         if !task.sub_dir.is_empty() {
-            task.dest_dir = Some(self.resolve_sub_dir(&task)?);
+            task.dest_dir = Some(self.resolve_sub_dir(
+                task.dest_dir.clone(),
+                task.queue_id.clone(),
+                task.remote,
+                &task.sub_dir,
+            )?);
             task.sub_dir.clear();
         }
         if task.pieces.is_some()
@@ -4227,8 +4247,14 @@ impl Scheduler {
     /// destination ; pour tout téléchargement (HTTP, torrent, vidéo). Les noms sont vérifiés
     /// tels quels, et pour une connexion à jeton le dossier obtenu doit rester sous celui
     /// des téléchargements (un sous-dossier déjà là pourrait être un lien vers ailleurs).
-    fn resolve_sub_dir(&self, task: &AddTask) -> Result<String, EngineError> {
-        for part in &task.sub_dir {
+    pub(super) fn resolve_sub_dir(
+        &self,
+        dest_dir: Option<String>,
+        queue_id: Option<String>,
+        remote: bool,
+        parts: &[String],
+    ) -> Result<String, EngineError> {
+        for part in parts {
             if part == "." || part == ".." {
                 return Err(EngineError::BadRequest(format!(
                     "sous-dossier refusé : {part:?}"
@@ -4236,10 +4262,9 @@ impl Scheduler {
             }
             check_file_name(part)?;
         }
-        let (base, _) =
-            self.destination(task.dest_dir.clone(), task.queue_id.clone(), task.remote)?;
-        let dir = sub_dir(&base, &task.sub_dir)?;
-        if task.remote {
+        let (base, _) = self.destination(dest_dir, queue_id, remote)?;
+        let dir = sub_dir(&base, parts)?;
+        if remote {
             self.check_within_downloads(&dir)?;
         }
         Ok(dir)
