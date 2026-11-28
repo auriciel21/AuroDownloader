@@ -81,13 +81,17 @@ impl Case {
 
     /// Exécute la tâche ; rend aussi les sources vues dans l'avancement, segment par segment.
     async fn run_seen(&mut self) -> (Outcome, std::collections::HashSet<String>) {
+        self.run_with(&opts()).await
+    }
+
+    async fn run_with(&mut self, opts: &Options) -> (Outcome, std::collections::HashSet<String>) {
         let (_, stop) = watch::channel(false);
         let mut seen = std::collections::HashSet::new();
         let outcome = run(
             &mut self.conn,
             &client(),
             &self.task_id,
-            &opts(),
+            opts,
             stop,
             &mut |p| {
                 seen.extend(p.segments.iter().map(|s| s.source_id.to_string()));
@@ -277,7 +281,13 @@ async fn a_slow_mirror_gets_no_new_segments() {
     );
     let mut case = Case::new(&reference.url("/f.bin"));
     let mirror_id = case.mirror(&mirror.url("/f.bin"), LEN, "\"v1\"");
-    let outcome = case.run().await;
+    // Mesures rapprochées : les quatre qui la jugent lente tiennent dans le téléchargement,
+    // même sur une machine où la référence va plus vite (CI du 2026-11-27).
+    let opts = Options {
+        measure_every: Duration::from_millis(500),
+        ..opts()
+    };
+    let outcome = case.run_with(&opts).await.0;
     assert_eq!(outcome, Outcome::Completed(case.dir.path().join("f.bin")));
     assert_eq!(case.file("f.bin"), content(LEN as usize));
     let sources = case.sources();

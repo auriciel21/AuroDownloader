@@ -305,7 +305,12 @@ async fn a_hidden_page_gets_no_progress_and_is_told_to_reload() {
 
     sink.hidden.store(true, Ordering::SeqCst);
     let before = sink.count("task.progress");
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Attendre un avancement omis plutôt qu'une durée fixe : une machine lente (CI du
+    // 2026-11-27) peut n'en envoyer aucun en une seconde et demie.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !bridge.missed.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(sink.count("task.progress"), before, "page cachée : rien");
     assert!(bridge.take_missed(), "avancement omis");
     assert!(!bridge.take_missed(), "signalé une seule fois");
